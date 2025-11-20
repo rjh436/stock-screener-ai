@@ -1,0 +1,32 @@
+# Core scientific stack
+pandas>=2.2.2
+numpy>=1.26.0
+
+# Streamlit UI
+streamlit>=1.38.0
+python-dotenv>=1.0.1
+
+# Technical indicators (used in screener)
+ta>=0.11.0
+
+# Sentiment and parsing tools
+vaderSentiment>=3.3.2
+beautifulsoup4>=4.12.3
+feedparser>=6.0.11
+
+# HTTP and JSON APIs (Schwab data + news)
+requests>=2.32.3
+
+# Backtesting engine
+backtrader>=1.9.78.123
+
+# Performance / concurrency
+tqdm>=4.66.3
+
+# Visualization (optional, but recommended for charts)
+matplotlib>=3.9.2
+plotly>=5.24.1
+
+# (Optional) Token caching and OAuth if you expand Schwab API login flow
+requests-oauthlib>=2.0.0
+
