@@ -68,17 +68,19 @@ def fetch_data(symbols: List[str], days: int = 400) -> Dict[str, pd.DataFrame]:
 
 def calculate_fitness(result):
     """
-    NEW FITNESS FUNCTION: Prioritize Stability (Sharpe) over Gambling (Jackpots).
+    SWING MODE: Prioritize Profit Depth and Duration over Safety.
     """
     trades = result.get("trades", 0)
     sharpe = result.get("sharpe", 0) or 0
     cagr = result.get("cagr", 0) or 0
     win_rate = result.get("hit_rate", 0) or 0
     max_dd = abs(result.get("max_drawdown_pct", 0) or 0)
+    avg_profit_pct = result.get("avg_profit_pct", 0) or 0
 
-    # 1. Gatekeepers: Must have trades and not blow up account
-    if trades < 20: return -1000.0  # Too few trades = statistical noise
-    if max_dd > 22.0: return -1000.0 # Unacceptable risk (ITERATION 2: Relaxed from 20%)
+    # 1. Gatekeepers: SWING MODE - Favor depth over safety
+    if trades < 10: return -1000.0  # Reduced from 20 to allow longer holds
+    if max_dd > 50.0: return -1000.0 # RELAXED from 22% to allow volatile swings
+    if avg_profit_pct < 1.0: return -500.0  # KILL SCALPERS: Must average >1% per trade
 
     # 2. Sharpe is King (Risk-Adjusted Return)
     # A Sharpe of 2.0 is excellent. We weight this heavily.
@@ -110,7 +112,7 @@ def run_evolution(data_map, global_data):
     if not engine.population:
          engine.generate_initial_population()
 
-    generations = 10
+    generations = 3  # SWING MODE: Faster iteration
     
     for gen in range(generations):
         print(f"\nEvaluating Generation {engine.generation_count} ({len(engine.population)} strategies)...")

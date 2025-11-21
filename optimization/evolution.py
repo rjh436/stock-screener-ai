@@ -218,8 +218,8 @@ class EvolutionEngine:
             "type": "random",
             "entry_rules": [self._random_rule() for _ in range(random.randint(1, 3))],
             "exit_rules": [self._random_rule() for _ in range(random.randint(1, 2))],
-            "stop_loss_atr": round(random.uniform(1.2, 2.5), 1),  # RISK-FIRST: Tighter stops
-            "time_stop": random.choice([5, 10, 15, 20, 30])
+            "stop_loss_atr": round(random.uniform(2.0, 3.5), 1),  # SWING MODE: Wider stops
+            "time_stop": random.choice([10, 15, 20, 30])  # SWING MODE: Removed 5-day scalping
         }
         return genome
 
@@ -231,9 +231,9 @@ class EvolutionEngine:
             genome = copy.deepcopy(template)
             genome["name"] = f"Gen0_Strat{i}"
             
-            # Randomize parameters slightly (RISK-FIRST: Tighter stops)
-            genome["stop_loss_atr"] = round(random.uniform(1.2, 2.5), 1)
-            genome["time_stop"] = random.choice([5, 10, 15, 20, 30])
+            # Randomize parameters slightly (SWING MODE: Wider stops, longer holds)
+            genome["stop_loss_atr"] = round(random.uniform(2.0, 3.5), 1)
+            genome["time_stop"] = random.choice([10, 15, 20, 30])
             
             # Tweak values in rules
             for rule in genome["entry_rules"]:
@@ -254,13 +254,13 @@ class EvolutionEngine:
         
         r = random.random()
         
-        # Mutation Type 1: Change Stop Loss (30% chance) - RISK-FIRST
+        # Mutation Type 1: Change Stop Loss (30% chance) - SWING MODE
         if r < 0.3:
-            mutant["stop_loss_atr"] = round(random.uniform(1.2, 2.5), 1)
+            mutant["stop_loss_atr"] = round(random.uniform(2.0, 3.5), 1)
             
-        # Mutation Type 2: Change Time Stop (30% chance)
+        # Mutation Type 2: Change Time Stop (30% chance) - SWING MODE
         elif r < 0.6:
-            mutant["time_stop"] = random.choice([5, 10, 15, 20, 30])
+            mutant["time_stop"] = random.choice([10, 15, 20, 30])
             
         # Mutation Type 3: Modify a Rule Value (40% chance)
         else:
