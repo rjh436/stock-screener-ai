@@ -76,8 +76,9 @@ def calculate_fitness(result):
     max_dd = abs(result.get("max_drawdown_pct", 0) or 0)
     avg_profit_pct = result.get("avg_profit_pct", 0) or 0
 
-    # Gatekeepers (Relaxed for Swing Mode)
-    if trades < 10: return -1000.0 
+    # Gatekeepers (Swing Mode: Anti-Scalping)
+    if trades < 10: return -1000.0  # Min trades to be statistically significant
+    if trades > 500: return -1000.0 # Max trades penalty (Kill scalping behavior)
     if max_dd > 50.0: return -1000.0 
     if avg_profit_pct < 1.0: return -500.0
 
