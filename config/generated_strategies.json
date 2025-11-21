@@ -1,247 +1,257 @@
 [
     {
-        "name": "Cross_Cross_Gen0_Strat1_gen9",
+        "name": "Cross_Cross_Gen0_Strat2_gen9",
         "type": "hybrid",
         "entry_rules": [
             {
-                "col": "macd_hist",
-                "op": ">",
-                "val": 0.0
+                "col": "stoch_k",
+                "op": "<",
+                "val": 16.2
             },
             {
-                "col": "adx",
-                "op": ">",
-                "val": 20.6
+                "col": "rsi14",
+                "op": "<",
+                "val": 44.4
             }
         ],
         "exit_rules": [
             {
-                "col": "macd_hist",
-                "op": "<",
-                "val": 0
-            }
-        ],
-        "stop_loss_atr": 3.0,
-        "time_stop": 14
-    },
-    {
-        "type": "momentum_macd",
-        "entry_rules": [
-            {
-                "col": "macd_hist",
+                "col": "close",
                 "op": ">",
-                "val": 0.0
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 20.6
+                "ref": "bb_mid"
             }
         ],
-        "exit_rules": [
-            {
-                "col": "macd_hist",
-                "op": "<",
-                "val": 0
-            }
-        ],
-        "name": "Gen0_Strat1_gen9",
-        "stop_loss_atr": 3.2,
-        "time_stop": 10
-    },
-    {
-        "name": "Cross_Gen0_Strat1_gen9",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "macd_hist",
-                "op": ">",
-                "val": 0.0
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 20.6
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "macd_hist",
-                "op": "<",
-                "val": 0
-            }
-        ],
-        "stop_loss_atr": 3.1,
-        "time_stop": 11
-    },
-    {
-        "name": "Cross_Cross_Cross_Gen0_Strat1_gen9_Cross_Gen0_Strat1_gen9",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "macd_hist",
-                "op": ">",
-                "val": 0.0
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 20.6
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "macd_hist",
-                "op": "<",
-                "val": 0
-            }
-        ],
-        "stop_loss_atr": 3.0,
+        "stop_loss_atr": 2.2,
         "time_stop": 12
     },
     {
-        "name": "Cross_Cross_Gen0_Strat1_gen9_Cross_Cross_Gen0_Strat1_gen9",
+        "name": "Cross_Gen0_Strat2_gen9",
         "type": "hybrid",
         "entry_rules": [
             {
-                "col": "macd_hist",
-                "op": ">",
-                "val": 0.0
+                "col": "stoch_k",
+                "op": "<",
+                "val": 16.2
             },
             {
-                "col": "adx",
-                "op": ">",
-                "val": 20.6
+                "col": "rsi14",
+                "op": "<",
+                "val": 44.4
             }
         ],
         "exit_rules": [
             {
-                "col": "macd_hist",
-                "op": "<",
-                "val": 0
+                "col": "close",
+                "op": ">",
+                "ref": "bb_mid"
             }
         ],
-        "stop_loss_atr": 3.0,
+        "stop_loss_atr": 2.2,
+        "time_stop": 13
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen0_Strat2_gen9_Cross_Gen0_Strat2_gen9",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "stoch_k",
+                "op": "<",
+                "val": 16.2
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "val": 44.4
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "bb_mid"
+            }
+        ],
+        "stop_loss_atr": 2.2,
         "time_stop": 12
     },
     {
-        "name": "Cross_Cross_Gen0_Strat1_gen9_Gen0_Strat1_gen9",
+        "name": "Cross_Cross_Gen0_Strat2_gen9",
         "type": "hybrid",
         "entry_rules": [
             {
-                "col": "macd_hist",
-                "op": ">",
-                "val": 0.0
+                "col": "stoch_k",
+                "op": "<",
+                "val": 16.2
             },
             {
-                "col": "adx",
-                "op": ">",
-                "val": 20.6
+                "col": "rsi14",
+                "op": "<",
+                "val": 44.4
             }
         ],
         "exit_rules": [
             {
-                "col": "macd_hist",
-                "op": "<",
-                "val": 0
-            }
-        ],
-        "stop_loss_atr": 3.2,
-        "time_stop": 10
-    },
-    {
-        "name": "Cross_Cross_Gen0_Strat1_gen9_Cross_Cross_Gen0_Strat1_gen9",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "macd_hist",
+                "col": "close",
                 "op": ">",
-                "val": 0.0
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 20.6
+                "ref": "bb_mid"
             }
         ],
-        "exit_rules": [
-            {
-                "col": "macd_hist",
-                "op": "<",
-                "val": 0
-            }
-        ],
-        "stop_loss_atr": 3.0,
+        "stop_loss_atr": 2.2,
         "time_stop": 12
     },
     {
-        "type": "momentum_macd",
+        "name": "Cross_Cross_Cross_Gen0_Strat2_gen9_Cross_Gen0_Strat2_gen9",
+        "type": "hybrid",
         "entry_rules": [
             {
-                "col": "macd_hist",
-                "op": ">",
-                "val": 0.0
+                "col": "stoch_k",
+                "op": "<",
+                "val": 16.2
             },
             {
-                "col": "adx",
-                "op": ">",
-                "val": 20.6
+                "col": "rsi14",
+                "op": "<",
+                "val": 44.4
             }
         ],
         "exit_rules": [
             {
-                "col": "macd_hist",
-                "op": "<",
-                "val": 0
+                "col": "close",
+                "op": ">",
+                "ref": "bb_mid"
             }
         ],
-        "name": "Gen0_Strat1_gen9_mut",
-        "stop_loss_atr": 1.4,
-        "time_stop": 10
+        "stop_loss_atr": 2.2,
+        "time_stop": 12
     },
     {
-        "type": "momentum_macd",
+        "name": "Cross_Cross_Gen0_Strat2_gen9_Cross_Cross_Gen0_Strat2_gen9",
+        "type": "hybrid",
         "entry_rules": [
             {
-                "col": "macd_hist",
-                "op": ">",
-                "val": 0.0
+                "col": "stoch_k",
+                "op": "<",
+                "val": 16.2
             },
             {
-                "col": "adx",
-                "op": ">",
-                "val": 20.6
+                "col": "rsi14",
+                "op": "<",
+                "val": 44.4
             }
         ],
         "exit_rules": [
             {
-                "col": "macd_hist",
-                "op": "<",
-                "val": 0
+                "col": "close",
+                "op": ">",
+                "ref": "bb_mid"
             }
         ],
-        "name": "Gen0_Strat1_gen9_mut",
-        "stop_loss_atr": 3.2,
-        "time_stop": 10
+        "stop_loss_atr": 2.2,
+        "time_stop": 12
     },
     {
-        "name": "Gen9_Fresh_3701",
+        "name": "Cross_Cross_Cross_Gen0_Strat2_gen9_Cross_Gen0_Strat2_gen9",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "stoch_k",
+                "op": "<",
+                "val": 16.2
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "val": 44.4
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "bb_mid"
+            }
+        ],
+        "stop_loss_atr": 2.2,
+        "time_stop": 12
+    },
+    {
+        "name": "Gen9_Fresh_2937",
         "type": "random",
         "entry_rules": [
             {
-                "col": "volume",
+                "col": "vol_ma20",
+                "op": ">",
+                "ref": "volume"
+            },
+            {
+                "col": "rs_sma20",
                 "op": "<",
-                "ref": "avgvol50"
+                "val": 1.0
             }
         ],
         "exit_rules": [
             {
-                "col": "rsi14",
+                "col": "atr10",
                 "op": ">",
-                "ref": "plus_di"
+                "ref": "bb_width"
+            },
+            {
+                "col": "atr20",
+                "op": ">",
+                "val": 1.3401659017712706
             }
         ],
-        "stop_loss_atr": 3.6,
-        "time_stop": 10
+        "stop_loss_atr": 1.6,
+        "time_stop": 20
+    },
+    {
+        "name": "Gen9_Fresh_4987",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "vol_ma20",
+                "op": ">",
+                "ref": "avgvol50"
+            },
+            {
+                "col": "vix",
+                "op": "<",
+                "val": 23
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "stoch_d",
+                "op": ">",
+                "val": 68
+            }
+        ],
+        "stop_loss_atr": 1.2,
+        "time_stop": 30
+    },
+    {
+        "name": "Cross_Gen0_Strat2_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "stoch_k",
+                "op": "<",
+                "val": 16.2
+            },
+            {
+                "col": "bb_mid",
+                "op": ">",
+                "ref": "bb_lower"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "bb_mid"
+            }
+        ],
+        "stop_loss_atr": 2.2,
+        "time_stop": 13
     }
 ]

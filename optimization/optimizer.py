@@ -3,6 +3,7 @@ import os
 import json
 import itertools
 import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor  # UPGRADED: Memory-efficient threading
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,7 @@ from typing import List, Dict
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from data.schwab_client import sd
+from data.cache_manager import DataCache  # UPGRADED: Smart caching
 from execution.engine import run_backtest
 from data.indices import get_index_symbols
 from strategies.generic import GenericStrategy
@@ -20,25 +22,48 @@ from optimization.evolution import EvolutionEngine
 # Config Path
 GEN_CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config/generated_strategies.json'))
 
-def fetch_sp100_symbols():
-    return get_index_symbols("S&P 100")
+def fetch_sp1500_symbols():
+    """UPGRADED: Fetch S&P 1500 for small-cap volatility opportunities."""
+    return get_index_symbols("S&P 1500")
 
 def fetch_data(symbols: List[str], days: int = 400) -> Dict[str, pd.DataFrame]:
+    """UPGRADED: Fetch data with smart caching."""
     print(f"Fetching data for {len(symbols)} symbols over last {days} days...")
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days + 50) 
     
     data = {}
+    cache_hits = 0
+    cache_misses = 0
+    
     for sym in symbols:
         try:
+            # UPGRADED: Check cache first
+            df = DataCache.get_cached_data(sym)
+            
+            if df is not None:
+                # Filter to requested date range
+                df = df[(df.index >= start) & (df.index <= end)]
+                if len(df) >= days * 0.7:  # At least 70% of requested days
+                    data[sym] = df
+                    cache_hits += 1
+                    continue
+            
+            # Cache miss or stale - fetch from API
+            cache_misses += 1
             candles = sd.price_daily(sym, start_datetime=start, end_datetime=end)
             if candles:
                 df = pd.DataFrame(candles)
                 df["datetime"] = pd.to_datetime(df["datetime"], unit="ms", utc=True)
                 df = df.set_index("datetime").sort_index()
+                
+                # Save to cache for future runs
+                DataCache.save_to_cache(sym, df)
                 data[sym] = df
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Error fetching {sym}: {e}")
+    
+    print(f"Cache: {cache_hits} hits, {cache_misses} misses")
     return data
 
 def calculate_fitness(result):
@@ -53,7 +78,7 @@ def calculate_fitness(result):
 
     # 1. Gatekeepers: Must have trades and not blow up account
     if trades < 20: return -1000.0  # Too few trades = statistical noise
-    if max_dd > 25.0: return -1000.0 # Unacceptable risk
+    if max_dd > 22.0: return -1000.0 # Unacceptable risk (ITERATION 2: Relaxed from 20%)
 
     # 2. Sharpe is King (Risk-Adjusted Return)
     # A Sharpe of 2.0 is excellent. We weight this heavily.
@@ -91,8 +116,8 @@ def run_evolution(data_map, global_data):
         print(f"\nEvaluating Generation {engine.generation_count} ({len(engine.population)} strategies)...")
         
         pop_results = []
-        # Use fewer workers to prevent API rate limits
-        with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
+        # UPGRADED: ThreadPoolExecutor for memory efficiency (shared RAM)
+        with ThreadPoolExecutor(max_workers=10) as executor:
             futures = {executor.submit(run_backtest, GenericStrategy(genome), data_map, None, 100000.0, None, global_data): genome for genome in engine.population}
             
             for future in concurrent.futures.as_completed(futures):
@@ -114,7 +139,7 @@ def run_evolution(data_map, global_data):
         print(f"Top Gen {engine.generation_count}:")
         for i, r in enumerate(ranked[:3]):
             stats = r['stats']
-            print(f"#{i+1} Score: {r['score']:.1f} | Sharpe: {stats.get('sharpe',0):.2f} | WR: {stats.get('hit_rate',0):.1f}% | Trades: {stats.get('total_trades',0)}")
+            print(f"#{i+1} Score: {r['score']:.1f} | Sharpe: {stats.get('sharpe',0):.2f} | CAGR: {stats.get('cagr',0)*100:.1f}% | AvgProfit: {stats.get('avg_profit_pct',0):.2f}% | WR: {stats.get('hit_rate',0):.1f}% | Trades: {stats.get('total_trades',0)}")
 
         if gen < generations - 1:
             engine.evolve(ranked)
@@ -126,15 +151,29 @@ def run_evolution(data_map, global_data):
     print("\nEvolution complete. Clean population saved.")
 
 def run_optimization():
-    print("🚀 Initializing Optimizer...")
-    symbols = fetch_sp100_symbols()
+    print("🚀 Initializing Optimizer (S&P 1500 Universe)...")
+    symbols = fetch_sp1500_symbols()
     if not symbols: return
     
     data_map = fetch_data(symbols, days=400)
     if not data_map: return
 
-    # Mock Global Data for now to ensure it runs
-    global_data = {"SPY": None, "VIX": None}
+    # Fetch Global Data
+    print("Fetching Global Data (SPY, VIX)...")
+    # Try both VIX formats just in case
+    global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=400)
+    
+    vix_data = global_data_raw.get("$VIX")
+    if vix_data is None:
+        vix_data = global_data_raw.get("VIX")
+
+    global_data = {
+        "SPY": global_data_raw.get("SPY"),
+        "VIX": vix_data
+    }
+    
+    if global_data["VIX"] is None:
+        print("WARNING: VIX data not found. Volatility filters may fail.")
     
     run_evolution(data_map, global_data)
 

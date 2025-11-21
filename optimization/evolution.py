@@ -32,7 +32,9 @@ TEMPLATES = [
         "type": "trend_pullback",
         "entry_rules": [
             {"col": "close", "op": ">", "ref": "sma200"}, # Trend
-            {"col": "rsi2", "op": "<", "val": 10}         # Pullback
+            {"col": "rsi2", "op": "<", "val": 10},        # Pullback
+            {"col": "vix", "op": "<", "val": 25},         # Volatility Filter (Risk Gate - TIGHTENED)
+            {"col": "adx", "op": ">", "val": 20}           # Trend Strength Filter
         ],
         "exit_rules": [
             {"col": "close", "op": ">", "ref": "sma5"}    # Quick exit
@@ -216,7 +218,7 @@ class EvolutionEngine:
             "type": "random",
             "entry_rules": [self._random_rule() for _ in range(random.randint(1, 3))],
             "exit_rules": [self._random_rule() for _ in range(random.randint(1, 2))],
-            "stop_loss_atr": round(random.uniform(1.0, 4.0), 1),
+            "stop_loss_atr": round(random.uniform(1.2, 2.5), 1),  # RISK-FIRST: Tighter stops
             "time_stop": random.choice([5, 10, 15, 20, 30])
         }
         return genome
@@ -229,8 +231,8 @@ class EvolutionEngine:
             genome = copy.deepcopy(template)
             genome["name"] = f"Gen0_Strat{i}"
             
-            # Randomize parameters slightly
-            genome["stop_loss_atr"] = round(random.uniform(1.0, 4.0), 1)
+            # Randomize parameters slightly (RISK-FIRST: Tighter stops)
+            genome["stop_loss_atr"] = round(random.uniform(1.2, 2.5), 1)
             genome["time_stop"] = random.choice([5, 10, 15, 20, 30])
             
             # Tweak values in rules
@@ -252,9 +254,9 @@ class EvolutionEngine:
         
         r = random.random()
         
-        # Mutation Type 1: Change Stop Loss (30% chance)
+        # Mutation Type 1: Change Stop Loss (30% chance) - RISK-FIRST
         if r < 0.3:
-            mutant["stop_loss_atr"] = round(random.uniform(1.0, 4.0), 1)
+            mutant["stop_loss_atr"] = round(random.uniform(1.2, 2.5), 1)
             
         # Mutation Type 2: Change Time Stop (30% chance)
         elif r < 0.6:
@@ -323,8 +325,8 @@ class EvolutionEngine:
                 
         # 3. Mutation / New Blood: Fill remaining spots
         while len(next_gen) < self.population_size:
-            # 50% chance of mutation of a survivor, 50% fresh random
-            if random.random() < 0.5:
+            # 30% chance of fresh random, 70% mutation (ITERATION 2: Increased mutation rate)
+            if random.random() < 0.3:
                 parent = random.choice(survivors)
                 child = self.mutate(parent)
                 next_gen.append(child)
