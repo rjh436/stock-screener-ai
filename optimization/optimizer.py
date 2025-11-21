@@ -26,7 +26,7 @@ def fetch_sp1500_symbols():
     """UPGRADED: Fetch S&P 1500 for small-cap volatility opportunities."""
     return get_index_symbols("S&P 1500")
 
-def fetch_data(symbols: List[str], days: int = 400) -> Dict[str, pd.DataFrame]:
+def fetch_data(symbols: List[str], days: int = 1260) -> Dict[str, pd.DataFrame]:
     """UPGRADED: Fetch data with smart caching."""
     print(f"Fetching data for {len(symbols)} symbols over last {days} days...")
     end = datetime.now(timezone.utc)
@@ -157,13 +157,13 @@ def run_optimization():
     symbols = fetch_sp1500_symbols()
     if not symbols: return
     
-    data_map = fetch_data(symbols, days=400)
+    data_map = fetch_data(symbols, days=1260)
     if not data_map: return
 
     # Fetch Global Data
     print("Fetching Global Data (SPY, VIX)...")
     # Try both VIX formats just in case
-    global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=400)
+    global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=1260)
     
     vix_data = global_data_raw.get("$VIX")
     if vix_data is None:
