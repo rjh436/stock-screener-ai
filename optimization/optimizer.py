@@ -3,7 +3,7 @@ import os
 import json
 import itertools
 import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor # Explicit import
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
@@ -34,33 +34,37 @@ def fetch_data(symbols: List[str], days: int = 400) -> Dict[str, pd.DataFrame]:
     cache_hits = 0
     cache_misses = 0
     
-    for sym in symbols:
+    # Use ThreadPool for faster I/O during fetch
+    def load_symbol(sym):
         try:
             # Check cache first
             df = DataCache.get_cached_data(sym)
-            
             if df is not None:
-                # Filter to requested date range
                 df = df[(df.index >= start) & (df.index <= end)]
                 if len(df) >= days * 0.7:
-                    data[sym] = df
-                    cache_hits += 1
-                    continue
+                    return sym, df, "hit"
             
-            # Cache miss - fetch
-            cache_misses += 1
+            # Cache miss
             candles = sd.price_daily(sym, start_datetime=start, end_datetime=end)
             if candles:
                 df = pd.DataFrame(candles)
                 df["datetime"] = pd.to_datetime(df["datetime"], unit="ms", utc=True)
                 df = df.set_index("datetime").sort_index()
-                
-                # Save to cache
                 DataCache.save_to_cache(sym, df)
-                data[sym] = df
+                return sym, df, "miss"
         except Exception as e:
-            print(f"Error fetching {sym}: {e}")
-    
+            print(f"Error {sym}: {e}")
+        return sym, None, "error"
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = {executor.submit(load_symbol, sym): sym for sym in symbols}
+        for future in concurrent.futures.as_completed(futures):
+            sym, df, status = future.result()
+            if df is not None:
+                data[sym] = df
+                if status == "hit": cache_hits += 1
+                else: cache_misses += 1
+
     print(f"Cache: {cache_hits} hits, {cache_misses} misses")
     return data
 
@@ -94,8 +98,14 @@ def run_evolution(data_map, global_data):
     print("\n--- Starting System Repair Evolutionary Cycle ---")
     engine = EvolutionEngine()
     
-    if not engine.population:
-         engine.generate_initial_population()
+    # Force reload from file to pick up "Sniper" seeds
+    try:
+        with open(GEN_CONFIG_PATH, "r") as f:
+            engine.population = json.load(f)
+            print(f"Loaded {len(engine.population)} strategies from config.")
+    except:
+        print("Config missing, generating random.")
+        engine.generate_initial_population()
 
     generations = 3
     
@@ -103,7 +113,7 @@ def run_evolution(data_map, global_data):
         print(f"\nEvaluating Generation {engine.generation_count} ({len(engine.population)} strategies)...")
         
         pop_results = []
-        # Use ThreadPoolExecutor for Shared Memory (M3 Max Optimization)
+        # CRITICAL FIX: ThreadPoolExecutor ensures shared memory
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = {executor.submit(run_backtest, GenericStrategy(genome), data_map, None, 100000.0, None, global_data): genome for genome in engine.population}
             
@@ -131,7 +141,6 @@ def run_evolution(data_map, global_data):
             engine.evolve(ranked)
     
     with open(GEN_CONFIG_PATH, "w") as f:
-        # Save top 10 only
         top_genomes = [r["genome"] for r in ranked[:10]]
         json.dump(top_genomes, f, indent=4)
     print("\nEvolution complete. Clean population saved.")
@@ -141,10 +150,9 @@ def run_optimization():
     symbols = fetch_sp1500_symbols()
     if not symbols: return
     
-    data_map = fetch_data(symbols, days=1260) # 5 Years History
+    data_map = fetch_data(symbols, days=1260) # 5 Years
     if not data_map: return
 
-    # Global Data
     print("Fetching Global Data (SPY, VIX)...")
     global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=1260)
     
