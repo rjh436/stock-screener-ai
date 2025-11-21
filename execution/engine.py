@@ -152,7 +152,7 @@ def run_backtest(
     
     # Pre-process Global Data (SPY) for RS calculation
     spy_df = None
-    if global_data and "SPY" in global_data:
+    if global_data and "SPY" in global_data and global_data["SPY"] is not None:
         spy_df_raw = global_data["SPY"].copy()
         if not isinstance(spy_df_raw.index, pd.DatetimeIndex):
             if "date" in spy_df_raw.columns:
@@ -163,11 +163,14 @@ def run_backtest(
             # CRITICAL FIX: Normalize timezone to avoid comparison errors
             if isinstance(spy_df_raw.index, pd.DatetimeIndex) and spy_df_raw.index.tz is not None:
                 spy_df_raw.index = spy_df_raw.index.tz_localize(None)
-            spy_df = _compute_indicators(spy_df_raw) # Ensure SPY has indicators too
+            try:
+                spy_df = _compute_indicators(spy_df_raw) # Ensure SPY has indicators too
+            except Exception:
+                spy_df = None
         
     # Pre-process Global Data (VIX) for regime filtering
     vix_df_global = None
-    if global_data and "VIX" in global_data:
+    if global_data and "VIX" in global_data and global_data["VIX"] is not None:
         vix_df_raw = global_data["VIX"].copy()
         if not isinstance(vix_df_raw.index, pd.DatetimeIndex):
             if "date" in vix_df_raw.columns:
@@ -195,7 +198,10 @@ def run_backtest(
         if isinstance(df_local.index, pd.DatetimeIndex) and df_local.index.tz is not None:
             df_local.index = df_local.index.tz_convert(None)
 
-        df_local = _compute_indicators(df_local)
+        try:
+            df_local = _compute_indicators(df_local)
+        except Exception:
+            continue
         
         # Compute Relative Strength vs SPY
         if spy_df is not None:
@@ -281,7 +287,16 @@ def run_backtest(
             exit_now = strategy.exit(df_sym, i, pos["entry_i"], pos["entry_price"], pos["stop_price"])
 
             if exit_now:
-                exit_price = row["close"]
+                # Use stop fill if breached intraday; otherwise exit at close
+                # Use stop fill if breached intraday
+                if row["low"] < pos["stop_price"]:
+                    # GAP DOWN CHECK: If we opened below the stop, we get filled at Open
+                    if row["open"] < pos["stop_price"]:
+                        exit_price = row["open"]
+                    else:
+                        exit_price = pos["stop_price"]
+                else:
+                    exit_price = row["close"]
                 pnl = (exit_price - pos["entry_price"]) * pos["shares"]
                 pnl_pct_trade = ((exit_price - pos["entry_price"]) / pos["entry_price"]) * 100.0
                 cash += pos["shares"] * exit_price
@@ -335,9 +350,31 @@ def run_backtest(
 
             stop_price = float(entry_info["stop_price"])
             row_today = df_sym.iloc[i]
-            entry_price = float(row_today["open"])
-            
+
+            # Determine entry fill rules
+            entry_type = entry_info.get("entry_type") or entry_info.get("order_type") or "market"
+            desired_price = float(entry_info.get("entry_price", row_today["open"]))
+            open_px = float(row_today["open"])
+
+            if entry_type.lower() == "limit":
+                day_low = float(row_today.get("low", open_px))
+                day_high = float(row_today.get("high", open_px))
+                # Fill if the day's range touches the limit; price = better of open or limit
+                if day_low <= desired_price <= day_high:
+                    if open_px <= desired_price:
+                        entry_price = open_px  # gapped down through limit
+                    else:
+                        entry_price = desired_price
+                else:
+                    continue  # limit not reached intraday
+            else:
+                entry_price = open_px
+                desired_price = entry_price
+
             if entry_price <= 0 or math.isnan(entry_price):
+                continue
+
+            if stop_price >= entry_price:
                 continue
                 
             # Filter: Avoid penny stocks / bad data
@@ -389,6 +426,7 @@ def run_backtest(
     hit_rate = (win_total / total_trades) * 100.0 if total_trades > 0 else 0.0
     
     avg_win_duration = np.mean(winning_trade_durations) if winning_trade_durations else 0.0
+    duration_std = np.std(winning_trade_durations) if winning_trade_durations else 0.0
 
     # Max drawdown and Sharpe from equity curve
     max_drawdown_pct = 0.0
@@ -426,7 +464,7 @@ def run_backtest(
         "hit_rate": hit_rate,
         "max_drawdown_pct": max_drawdown_pct,
         "avg_win_duration": avg_win_duration,
-        "avg_win_duration": avg_win_duration,
+        "duration_std": duration_std,
         "avg_profit_pct": np.mean(trade_returns) if trade_returns else 0.0,
         "cagr": cagr,
         "sharpe": sharpe,

@@ -53,12 +53,12 @@ class StrategyApexSniper(BaseStrategy):
         if row.get("rs_trend", 1) == 0:
             return None
             
-        # Entry Signal
+        # Entry Signal (anchor on signal bar close; actual fill happens next bar at open)
+        anchor_price = row["close"]
+        atr = row.get("atr14", anchor_price * 0.02)
         return {
-            "entry_price": row["open"], # Enter at Open of next bar (simulated by current bar open if using i)
-            # Note: Engine passes i-1 as signal_i, so we check yesterday's close/indicators
-            # and enter at today's Open.
-            "stop_price": row["open"] - (row["atr14"] * self.params["stop_loss_atr"]),
+            "entry_price": anchor_price,
+            "stop_price": anchor_price - (atr * self.params["stop_loss_atr"]),
             "take_profit": None,
             "time_stop": self.params["time_stop"]
         }

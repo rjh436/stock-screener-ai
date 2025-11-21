@@ -40,26 +40,25 @@ class StrategyAIOptimized(BaseStrategy):
         
         row = df.iloc[i]
         
-        # 1. Strong Trend Filter (EMA50 > EMA200)
-        if not (row["ema50"] > row["ema200"]):
-            return None
-            
-        # 2. Price relative to Trend
-        if not (row["close"] > row["ema200"]):
+        # 1. Simple Trend Filter (Close > SMA200)
+        if not (row["close"] > row["sma200"]):
             return None
 
-        # 3. Bollinger Band Setup (Price pullback toward lower band)
-        # RELAXED: Changed to 1.25 to ensure we get trades for validation
-        if not (row["close"] <= row["bb_lower"] * 1.25):
+        # 2. Volatility Filter (ATR > 0.5% of Price)
+        # Avoid dead stocks that don't move enough to hit targets
+        atr = row.get("atr14", 0)
+        if atr < (row["close"] * 0.005):
             return None
             
-        # 4. RSI Confluence (Stricter)
-        # RELAXED: Changed to 25 to ensure we get trades
-        if not (row["rsi2"] < 25):
+        # 3. Entry Trigger: Double Confluence
+        # Require BOTH RSI2 < 10 AND Price below Lower BB
+        is_oversold_rsi = (row["rsi2"] < 10)
+        is_oversold_bb = (row["close"] < row["bb_lower"])
+        
+        if not (is_oversold_rsi and is_oversold_bb):
             return None
             
         # Calculate Stop
-        atr = row.get("atr14", row["close"]*0.02)
         stop_price = row["close"] - (atr * 3.0)
         
         if stop_price <= 0: return None
@@ -73,20 +72,22 @@ class StrategyAIOptimized(BaseStrategy):
         current_profit_pct = ((row["close"] - entry_price) / entry_price) * 100.0
         days_held = i - entry_i
         
-        # RADICAL TEST: TARGET OR BUST
-        # We strictly hold until +10% or -10%
+        # 1. Hard Stop (Intraday)
+        if row["low"] < stop_price:
+            return True
+            
+        # 2. Profit Target (+5%)
+        if current_profit_pct >= 5.0:
+            return True
+            
+        # 3. Time Stop (Market didn't move)
+        if days_held >= 40 and current_profit_pct < 1.0:
+            return True
+            
+        return False
         
-        # 1. Profit Target (+10%)
-        if current_profit_pct >= 10.0:
+        # 4. Time Stop (Market didn't move)
+        if days_held >= 40 and current_profit_pct < 1.0:
             return True
             
-        # 2. Stop Loss (-10%)
-        if current_profit_pct <= -10.0:
-            return True
-            
-        # 3. Max Time Stop (100 days - extreme)
-        if days_held >= 100:
-            return True
-            
-        # OTHERWISE HOLD NO MATTER WHAT
         return False

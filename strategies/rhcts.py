@@ -62,7 +62,7 @@ class StrategyRHCTS(BaseStrategy):
 
         # Strategy spec: entry at EMA20, not the close (limit order assumption)
         # Note: In the original backtester, it seemed to use EMA20 as entry price.
-        return {"entry_price": row["ema20"], "stop_price": stop_price}
+        return {"entry_price": row["ema20"], "stop_price": stop_price, "entry_type": "limit"}
 
     def exit(self, df: pd.DataFrame, i: int, entry_i: int, entry_price: float, stop_price: float) -> bool:
         row = df.iloc[i]

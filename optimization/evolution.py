@@ -148,42 +148,66 @@ class EvolutionEngine:
         return 0 # Fallback
 
     def _random_rule(self):
-        """Generate a random rule with type safety."""
+        """Generate a random rule with STRICT type safety."""
         # Pick a category first
         category = random.choice(list(self.INDICATORS.keys()))
         
         col = random.choice(self.INDICATORS[category])
         op = random.choice(self.OPERATORS)
         
-        # 50% chance to compare to a value, 50% to another indicator of SAME category
-        if random.random() < 0.5:
-            # Compare to another indicator
-            ref = random.choice(self.INDICATORS[category])
-            # Ensure we don't compare col to itself
+        # STRICT MATCHING LOGIC
+        if category == "oscillator":
+            # Oscillators (RSI, Stoch) -> Compare to Oscillator OR Constant (0-100)
+            if random.random() < 0.5:
+                # Compare to another oscillator
+                ref = random.choice(self.INDICATORS["oscillator"])
+                while ref == col:
+                    ref = random.choice(self.INDICATORS["oscillator"])
+                return {"col": col, "op": op, "ref": ref}
+            else:
+                # Compare to constant
+                val = random.randint(10, 90)
+                if "cci" in col: val = random.randint(-150, 150)
+                if "mom" in col or "roc" in col: val = random.uniform(-2, 2)
+                return {"col": col, "op": op, "val": val}
+
+        elif category == "price":
+            # Price (Close, Open) -> ONLY compare to Price Averages (SMA, EMA, BB)
+            # Never compare Price to a fixed number (e.g. Close > 100 is meaningless generally)
+            ref = random.choice(self.INDICATORS["price"])
             while ref == col:
-                ref = random.choice(self.INDICATORS[category])
+                ref = random.choice(self.INDICATORS["price"])
             return {"col": col, "op": op, "ref": ref}
-        else:
-            # Compare to a constant value (needs to be sensible for the category)
-            val = 0.0
-            if category == "oscillator":
-                val = random.uniform(5, 95) # RSI/Stoch range
-                if "cci" in col: val = random.uniform(-200, 200)
-            elif category == "price":
-                # Comparing price to a fixed number is usually dumb (stocks change price), 
-                # but maybe useful for "close > 0"? 
-                # Better to force price comparisons to be relative (e.g. Close > SMA).
-                # So we recurse to force a ref comparison for price.
-                ref = random.choice(self.INDICATORS[category])
+
+        elif category == "volume":
+            # Volume -> ONLY compare to Volume Averages
+            ref = random.choice(self.INDICATORS["volume"])
+            while ref == col:
+                ref = random.choice(self.INDICATORS["volume"])
+            return {"col": col, "op": op, "ref": ref}
+
+        elif category == "volatility":
+            # Volatility -> Compare to other volatility metrics or small constants
+            if random.random() < 0.5:
+                ref = random.choice(self.INDICATORS["volatility"])
                 return {"col": col, "op": op, "ref": ref}
-            elif category == "volatility":
-                val = random.uniform(-2, 2) # MACD/ROC range
-            elif category == "volume":
-                 # Volume vs fixed number is also brittle. Force relative.
-                ref = random.choice(self.INDICATORS[category])
-                return {"col": col, "op": op, "ref": ref}
-                
-            return {"col": col, "op": op, "val": val}
+            else:
+                val = random.uniform(0.5, 3.0)
+                return {"col": col, "op": op, "val": val}
+
+        elif category == "market_regime":
+             # Regime -> Compare to constants usually
+            if "vix" in col:
+                val = random.randint(15, 35)
+                return {"col": col, "op": op, "val": val}
+            elif "rs_trend" in col:
+                val = 0 # 0 or 1
+                return {"col": col, "op": op, "val": val}
+            else:
+                val = 1.0
+                return {"col": col, "op": op, "val": val}
+
+        return {"col": col, "op": op, "val": 0}
 
     def _create_random_strategy(self, name_prefix="Random") -> Dict:
         """Create a completely new random strategy."""

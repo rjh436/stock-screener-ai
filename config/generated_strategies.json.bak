@@ -1,0 +1,1492 @@
+[
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma5"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.8,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 18
+    },
+    {
+        "name": "Cross_Cross_Gen2_Fresh_2939_gen9",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_Cross_Cross_Cross_Gen2_Fresh_2939_gen9",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 11
+    },
+    {
+        "name": "Cross_Cross_Cross_Cross_Gen2_Fresh_2939_gen9_Cross_Cross_Cross_Gen2_Fresh_2939_gen9",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma5"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.8,
+        "time_stop": 11
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_Cross_Cross_Cross_Gen2_Fresh_2939_gen9",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 11
+    },
+    {
+        "name": "Cross_Cross_Cross_Cross_Gen2_Fresh_2939_gen9_Cross_Cross_Gen2_Fresh_2939_gen9",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 11
+    },
+    {
+        "name": "Gen9_Fresh_8656",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "atr14",
+                "op": "<",
+                "ref": "atr20"
+            },
+            {
+                "col": "rs_ratio",
+                "op": ">",
+                "ref": "rs_sma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "rsi14",
+                "op": "<",
+                "val": 49.300153864681185
+            }
+        ],
+        "stop_loss_atr": 1.7,
+        "time_stop": 20
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "lowest20"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 18
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma5"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 3.9,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma5"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 3.2,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma5"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.2,
+        "time_stop": 5
+    },
+    {
+        "name": "Gen9_Fresh_6894",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "cci",
+                "op": ">",
+                "ref": "plus_di"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "rs_sma20",
+                "op": ">",
+                "val": 0.0
+            },
+            {
+                "col": "rs_sma20",
+                "op": "<",
+                "val": 0.0
+            }
+        ],
+        "stop_loss_atr": 1.8,
+        "time_stop": 15
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma5"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 3.4,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "sma100"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma5"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.8,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.4,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma100"
+            },
+            {
+                "col": "avgvol50",
+                "op": "<",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.8,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "sma50"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 5
+    },
+    {
+        "name": "Gen9_Fresh_4795",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "sma5",
+                "op": ">",
+                "ref": "close"
+            },
+            {
+                "col": "atr14",
+                "op": "<",
+                "val": 1.7818520374693922
+            },
+            {
+                "col": "rs_sma20",
+                "op": "<",
+                "val": 0.0
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 1.457411945742082
+            }
+        ],
+        "stop_loss_atr": 3.9,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma5"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 3.5,
+        "time_stop": 5
+    },
+    {
+        "name": "Gen9_Fresh_2773",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "rs_sma20",
+                "op": "<",
+                "ref": "rs_ratio"
+            },
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": "<",
+                "ref": "volume"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "close"
+            }
+        ],
+        "stop_loss_atr": 1.1,
+        "time_stop": 30
+    },
+    {
+        "name": "Gen9_Fresh_9692",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "mom",
+                "op": ">",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "ema100",
+                "op": "<",
+                "ref": "sma20"
+            },
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 27.51741834619246
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "vix",
+                "op": "<",
+                "val": 0.0
+            },
+            {
+                "col": "mom",
+                "op": "<",
+                "val": 8.436388017293993
+            }
+        ],
+        "stop_loss_atr": 1.9,
+        "time_stop": 15
+    },
+    {
+        "name": "Gen9_Fresh_2509",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "kc_upper",
+                "op": ">",
+                "ref": "high"
+            },
+            {
+                "col": "macd_hist",
+                "op": "<",
+                "ref": "stoch_d"
+            },
+            {
+                "col": "sma10",
+                "op": ">",
+                "ref": "sma100"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "macd_signal",
+                "op": "<",
+                "val": 70.27321451413727
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 0.0
+            }
+        ],
+        "stop_loss_atr": 3.7,
+        "time_stop": 20
+    },
+    {
+        "name": "Gen9_Fresh_9546",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "atr14",
+                "op": "<",
+                "ref": "atr20"
+            },
+            {
+                "col": "vix",
+                "op": "<",
+                "val": 0.0
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "open",
+                "op": "<",
+                "ref": "ema200"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "ref": "rs_sma20"
+            }
+        ],
+        "stop_loss_atr": 2.3,
+        "time_stop": 20
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma5"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.8,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "close"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma5"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.8,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "low"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 5
+    },
+    {
+        "name": "Gen9_Fresh_3134",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "vol_ma20",
+                "op": "<",
+                "ref": "avgvol50"
+            },
+            {
+                "col": "mom",
+                "op": ">",
+                "ref": "plus_di"
+            },
+            {
+                "col": "lowest20",
+                "op": "<",
+                "ref": "bb_lower"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "atr_pct10",
+                "op": "<",
+                "val": 1.211291109232075
+            },
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "stop_loss_atr": 1.0,
+        "time_stop": 5
+    },
+    {
+        "name": "Gen9_Fresh_2034",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "sma50",
+                "op": "<",
+                "ref": "ema50"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "mom",
+                "op": "<",
+                "ref": "adx"
+            }
+        ],
+        "stop_loss_atr": 1.1,
+        "time_stop": 20
+    },
+    {
+        "name": "Gen9_Fresh_5000",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "atr_pct20",
+                "op": ">",
+                "ref": "atr14"
+            },
+            {
+                "col": "rs_ratio",
+                "op": ">",
+                "ref": "rs_sma20"
+            },
+            {
+                "col": "stoch_k",
+                "op": "<",
+                "ref": "macd_hist"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "cci",
+                "op": "<",
+                "ref": "macd"
+            },
+            {
+                "col": "rs_trend",
+                "op": "<",
+                "val": 0.0
+            }
+        ],
+        "stop_loss_atr": 2.6,
+        "time_stop": 20
+    },
+    {
+        "name": "Gen9_Fresh_5794",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "atr_pct10",
+                "op": ">",
+                "val": -0.21741286468049026
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": "<",
+                "ref": "avgvol50"
+            },
+            {
+                "col": "vol_ma20",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 1.1,
+        "time_stop": 20
+    },
+    {
+        "name": "Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 1.2,
+        "time_stop": 5
+    },
+    {
+        "name": "Gen9_Fresh_7802",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "atr20",
+                "op": ">",
+                "ref": "bb_width"
+            },
+            {
+                "col": "atr_pct10",
+                "op": ">",
+                "val": -1.6278668618575218
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0.0
+            }
+        ],
+        "stop_loss_atr": 1.0,
+        "time_stop": 20
+    },
+    {
+        "name": "Gen9_Fresh_3907",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "ref": "macd_hist"
+            },
+            {
+                "col": "mom",
+                "op": "<",
+                "ref": "rsi5"
+            },
+            {
+                "col": "atr_pct10",
+                "op": ">",
+                "ref": "bb_width"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "rs_ratio",
+                "op": "<",
+                "val": 0.0
+            },
+            {
+                "col": "atr20",
+                "op": "<",
+                "ref": "atr_pct20"
+            }
+        ],
+        "stop_loss_atr": 1.7,
+        "time_stop": 15
+    },
+    {
+        "name": "Gen9_Fresh_4075",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "macd",
+                "op": ">",
+                "ref": "rsi2"
+            },
+            {
+                "col": "rs_trend",
+                "op": "<",
+                "val": 0.0
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 94.26280309252625
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0.0
+            }
+        ],
+        "stop_loss_atr": 2.3,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "bb_mid"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 30
+    },
+    {
+        "name": "Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 3.9,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 10
+    },
+    {
+        "name": "Gen9_Fresh_3923",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "low",
+                "op": ">",
+                "ref": "ema200"
+            },
+            {
+                "col": "vol_ma20",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "sma10",
+                "op": ">",
+                "ref": "ema100"
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0.0
+            }
+        ],
+        "stop_loss_atr": 3.9,
+        "time_stop": 10
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "sma5"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 18
+    },
+    {
+        "name": "Gen9_Fresh_9511",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "atr14_ma20",
+                "op": "<",
+                "val": 0.2996529999850224
+            },
+            {
+                "col": "atr20",
+                "op": "<",
+                "val": 0.15560119853013532
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": "<",
+                "ref": "volume"
+            },
+            {
+                "col": "vol_ma20",
+                "op": ">",
+                "ref": "avgvol50"
+            }
+        ],
+        "stop_loss_atr": 1.6,
+        "time_stop": 30
+    },
+    {
+        "name": "Gen9_Fresh_5905",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": "<",
+                "ref": "rs_sma20"
+            },
+            {
+                "col": "atr14",
+                "op": "<",
+                "val": 0.6368351257520355
+            },
+            {
+                "col": "atr14_ma20",
+                "op": "<",
+                "ref": "atr20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 68.61010642103406
+            },
+            {
+                "col": "cci",
+                "op": ">",
+                "val": -115.81498980309179
+            }
+        ],
+        "stop_loss_atr": 3.7,
+        "time_stop": 20
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma50"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 18
+    },
+    {
+        "name": "Gen9_Fresh_7063",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "atr_pct20",
+                "op": ">",
+                "ref": "atr20"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 0.0
+            }
+        ],
+        "stop_loss_atr": 2.6,
+        "time_stop": 10
+    },
+    {
+        "name": "Gen9_Fresh_9211",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "cci",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "ref": "rs_sma20"
+            },
+            {
+                "col": "stoch_k",
+                "op": ">",
+                "val": 6.549117588243068
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "atr_pct20",
+                "op": "<",
+                "val": 1.2457322883734228
+            }
+        ],
+        "stop_loss_atr": 1.3,
+        "time_stop": 15
+    },
+    {
+        "name": "Gen9_Fresh_9786",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "ema10",
+                "op": ">",
+                "ref": "sma50"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": -1.910328472538927
+            }
+        ],
+        "stop_loss_atr": 3.6,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 1.2,
+        "time_stop": 5
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen2_Fresh_2939_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": "<",
+                "ref": "atr_pct10"
+            },
+            {
+                "col": "sma100",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "ema10"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            }
+        ],
+        "stop_loss_atr": 2.9,
+        "time_stop": 15
+    }
+]

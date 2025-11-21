@@ -35,7 +35,7 @@ class StrategyMindful(BaseStrategy):
         if entry_price <= 0 or stop_price <= 0:
             return None
 
-        return {"entry_price": entry_price, "stop_price": stop_price}
+        return {"entry_price": entry_price, "stop_price": stop_price, "entry_type": "limit"}
 
     def exit(self, df: pd.DataFrame, i: int, entry_i: int, entry_price: float, stop_price: float) -> bool:
         row = df.iloc[i]
