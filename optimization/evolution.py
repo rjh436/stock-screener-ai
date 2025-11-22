@@ -219,7 +219,7 @@ class EvolutionEngine:
             "entry_rules": [self._random_rule() for _ in range(random.randint(1, 3))],
             "exit_rules": [self._random_rule() for _ in range(random.randint(1, 2))],
             "stop_loss_atr": round(random.uniform(2.0, 3.5), 1),  # SWING MODE: Wider stops
-            "time_stop": random.choice([30, 45, 60, 80])  # SWING MODE: Removed 5-day scalping
+            "time_stop": random.choice([30, 45, 60, 80])  # SWING MODE: Patience!
         }
         return genome
 
@@ -260,7 +260,7 @@ class EvolutionEngine:
             
         # Mutation Type 2: Change Time Stop (30% chance) - SWING MODE
         elif r < 0.6:
-            mutant["time_stop"] = random.choice([10, 15, 20, 30])
+            mutant["time_stop"] = random.choice([30, 45, 60, 80])
             
         # Mutation Type 3: Modify a Rule Value (40% chance)
         else:
