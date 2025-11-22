@@ -25,7 +25,7 @@ GEN_CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../co
 def fetch_sp1500_symbols():
     return get_index_symbols("S&P 1500")
 
-def fetch_data(symbols: List[str], days: int = 400) -> Dict[str, pd.DataFrame]:
+def fetch_data(symbols: List[str], days: int = 1260) -> Dict[str, pd.DataFrame]:
     print(f"Fetching data for {len(symbols)} symbols over last {days} days...")
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days + 50) 
@@ -34,40 +34,42 @@ def fetch_data(symbols: List[str], days: int = 400) -> Dict[str, pd.DataFrame]:
     cache_hits = 0
     cache_misses = 0
     
-    for sym in symbols:
+    # Threaded Fetching
+    def load_symbol(sym):
         try:
-            # Check cache first
             df = DataCache.get_cached_data(sym)
-            
             if df is not None:
-                # Filter to requested date range
-                df = df[(df.index >= start) & (df.index <= end)]
-                if len(df) >= days * 0.7:
-                    data[sym] = df
-                    cache_hits += 1
-                    continue
+                # Check if we have enough history (at least 90% of requested)
+                if len(df) >= days * 0.9:
+                    df = df[(df.index >= start) & (df.index <= end)]
+                    return sym, df, "hit"
             
-            # Cache miss or stale - fetch from API
-            cache_misses += 1
             candles = sd.price_daily(sym, start_datetime=start, end_datetime=end)
             if candles:
                 df = pd.DataFrame(candles)
                 df["datetime"] = pd.to_datetime(df["datetime"], unit="ms", utc=True)
                 df = df.set_index("datetime").sort_index()
-                
-                # Save to cache for future runs
                 DataCache.save_to_cache(sym, df)
+                return sym, df, "miss"
+        except Exception:
+            pass
+        return sym, None, "error"
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = {executor.submit(load_symbol, sym): sym for sym in symbols}
+        for future in concurrent.futures.as_completed(futures):
+            sym, df, status = future.result()
+            if df is not None:
                 data[sym] = df
-        except Exception as e:
-            print(f"Error fetching {sym}: {e}")
+                if status == "hit": cache_hits += 1
+                else: cache_misses += 1
     
     print(f"Cache: {cache_hits} hits, {cache_misses} misses")
     return data
 
 def calculate_fitness(result):
     """
-    SNIPER MODE: 5-Year Calibration
-    Target: High Win Rate, High Profit, Moderate Frequency.
+    SNIPER MODE: 5-Year Calibration (Updated)
     """
     trades = result.get("trades", 0)
     sharpe = result.get("sharpe", 0) or 0
@@ -76,42 +78,34 @@ def calculate_fitness(result):
     max_dd = abs(result.get("max_drawdown_pct", 0) or 0)
     avg_profit_pct = result.get("avg_profit_pct", 0) or 0
 
-    # 1. Gatekeepers (Strict Filters)
-    if trades < 10: return -1000.0  # Statistical significance
+    # 1. Gatekeepers
+    if trades < 20: return -1000.0  # Need statistical significance
+    if trades > 3000: return -1000.0 # Kill Scalpers (>12 trades/week)
     
-    # Trade Limit: 3000 trades / 5 years = ~11 trades/week. 
-    # Anything higher is overtrading/scalping.
-    if trades > 3000: return -1000.0 
-    
-    # Profit Gate: Must average > 2.0% per trade to be a "Swing" strategy
-    if avg_profit_pct < 2.0: return -1000.0
-    
-    # Drawdown: Relaxed to 50% to allow the AI to find volatile winners first
-    if max_dd > 50.0: return -1000.0 
+    if avg_profit_pct < 1.5: return -1000.0 # Target > 1.5% avg profit
+    if max_dd > 55.0: return -1000.0 # Allow deep swings, but not total ruin
 
-    # 2. Scoring (Sharpe Dominant)
-    sharpe_score = min(sharpe, 3.0) * 50.0 
-    
+    # 2. Scoring
+    # Prioritize Avg Profit heavily now that we have patience
+    profit_score = avg_profit_pct * 50.0 
+    sharpe_score = min(sharpe, 3.0) * 30.0 
     win_score = 0
-    if win_rate > 50:
-        win_score = (win_rate - 50) * 2.0 
-        
-    cagr_score = min(cagr * 100, 50) * 0.5
-    
-    # Penalty for "Boring" strategies (under 50 trades in 5 years)
-    penalty = 0
-    if trades < 50: penalty = 20
+    if win_rate > 60: win_score = (win_rate - 60) * 2.0 
 
-    final_score = sharpe_score + win_score + cagr_score - penalty
-    return final_score
+    return profit_score + sharpe_score + win_score
 
 def run_evolution(data_map, global_data):
-    print("\n--- Starting System Repair Evolutionary Cycle ---")
+    print("\n--- Starting Sniper Evolution (5-Year Horizon) ---")
     engine = EvolutionEngine()
     
-    # Load if exists, otherwise gen new
-    if not engine.population:
-         engine.generate_initial_population()
+    # Force load from file
+    try:
+        with open(GEN_CONFIG_PATH, "r") as f:
+            engine.population = json.load(f)
+            print(f"Loaded {len(engine.population)} strategies from config.")
+    except:
+        print("Config missing, generating random.")
+        engine.generate_initial_population()
 
     generations = 3
     
@@ -119,7 +113,6 @@ def run_evolution(data_map, global_data):
         print(f"\nEvaluating Generation {engine.generation_count} ({len(engine.population)} strategies)...")
         
         pop_results = []
-        # ThreadPoolExecutor for Shared Memory (M3 Max Optimization)
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = {executor.submit(run_backtest, GenericStrategy(genome), data_map, None, 100000.0, None, global_data): genome for genome in engine.population}
             
@@ -147,7 +140,6 @@ def run_evolution(data_map, global_data):
             engine.evolve(ranked)
     
     with open(GEN_CONFIG_PATH, "w") as f:
-        # Save top 10 only
         top_genomes = [r["genome"] for r in ranked[:10]]
         json.dump(top_genomes, f, indent=4)
     print("\nEvolution complete. Clean population saved.")
@@ -157,10 +149,9 @@ def run_optimization():
     symbols = fetch_sp1500_symbols()
     if not symbols: return
     
-    data_map = fetch_data(symbols, days=1260) # 5 Years History
+    data_map = fetch_data(symbols, days=1260) # 5 YEARS (Fixed)
     if not data_map: return
 
-    # Global Data
     print("Fetching Global Data (SPY, VIX)...")
     global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=1260)
     
