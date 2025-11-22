@@ -120,6 +120,18 @@ def run_evolution(data_map, global_data):
     with open(GEN_CONFIG_PATH, "w") as f:
         top_genomes = [r["genome"] for r in ranked[:10]]
         json.dump(top_genomes, f, indent=4)
+    
+    # [TELEMETRY] Save metrics for Auto-Evolver
+    if ranked:
+        best_strat = ranked[0]
+        metrics = {
+            "sharpe": best_strat['stats'].get('sharpe', 0),
+            "avg_profit": best_strat['stats'].get('avg_profit_pct', 0),
+            "win_rate": best_strat['stats'].get('hit_rate', 0),
+            "trades": best_strat['stats'].get('total_trades', 0)
+        }
+        with open("latest_metrics.json", "w") as f:
+            json.dump(metrics, f)
     print("\nEvolution complete. Clean population saved.")
 
 def run_optimization():
