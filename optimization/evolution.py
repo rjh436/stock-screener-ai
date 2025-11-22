@@ -219,7 +219,7 @@ class EvolutionEngine:
             "entry_rules": [self._random_rule() for _ in range(random.randint(1, 3))],
             "exit_rules": [self._random_rule() for _ in range(random.randint(1, 2))],
             "stop_loss_atr": round(random.uniform(2.0, 3.5), 1),  # SWING MODE: Wider stops
-            "time_stop": random.choice([10, 15, 20, 30])  # SWING MODE: Removed 5-day scalping
+            "time_stop": random.choice([30, 45, 60, 80])  # SWING MODE: Removed 5-day scalping
         }
         return genome
 
@@ -233,7 +233,7 @@ class EvolutionEngine:
             
             # Randomize parameters slightly (SWING MODE: Wider stops, longer holds)
             genome["stop_loss_atr"] = round(random.uniform(2.0, 3.5), 1)
-            genome["time_stop"] = random.choice([10, 15, 20, 30])
+            genome["time_stop"] = random.choice([30, 45, 60, 80])
             
             # Tweak values in rules
             for rule in genome["entry_rules"]:
