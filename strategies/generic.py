@@ -47,15 +47,21 @@ class GenericStrategy(BaseStrategy):
         # 1. Hard Stop
         if row["low"] < stop_price: return True
         
-        # 2. Time Stop (Corrected parameter name)
+        # 2. Time Stop
         time_stop = self.genome.get("time_stop", 40)
         if days >= time_stop: return True
         
-        # 3. Exit Rules (If any exist)
-        # If list is empty, we HOLD until Time Stop or Stop Loss
+        # 3. Exit Rules (Profit Targets & Logic)
         exit_rules = self.genome.get("exit_rules", [])
         if exit_rules:
             for rule in exit_rules:
-                if self._check_condition(row, rule): return True
+                # Special logic for Profit Target (e.g. Close > 1.10 * Entry)
+                if rule.get("type") == "profit_target":
+                    target_price = entry_price * rule["val"]
+                    # Check High to see if we hit target intraday
+                    if row["high"] > target_price: return True
+                # Standard indicator logic
+                elif self._check_condition(row, rule): 
+                    return True
                 
         return False

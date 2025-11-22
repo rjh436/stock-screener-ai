@@ -1,6 +1,6 @@
 [
     {
-        "name": "Double_Seven_Sniper_Deep",
+        "name": "Double_Seven_Sniper",
         "type": "mean_reversion",
         "entry_rules": [
             {
@@ -15,16 +15,23 @@
             },
             {
                 "col": "vix",
-                "op": ">",
-                "val": 25.0
+                "op": "<",
+                "val": 35.0
             }
         ],
-        "exit_rules": [],
-        "stop_loss_atr": 5.0,
-        "time_stop": 40
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 1.10,
+                "type": "profit_target"
+            }
+        ],
+        "stop_loss_atr": 3.0,
+        "time_stop": 50
     },
     {
-        "name": "RSI_Power_Swing_Deep",
+        "name": "RSI_Power_Swing",
         "type": "hybrid",
         "entry_rules": [
             {
@@ -43,12 +50,19 @@
                 "val": 25.0
             }
         ],
-        "exit_rules": [],
-        "stop_loss_atr": 5.0,
-        "time_stop": 60
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 1.10,
+                "type": "profit_target"
+            }
+        ],
+        "stop_loss_atr": 3.0,
+        "time_stop": 70
     },
     {
-        "name": "Vol_Breakout_Squeeze_Wide",
+        "name": "Vol_Breakout_Squeeze",
         "type": "breakout",
         "entry_rules": [
             {
@@ -67,8 +81,15 @@
                 "ref": "vol_ma20"
             }
         ],
-        "exit_rules": [],
-        "stop_loss_atr": 5.0,
-        "time_stop": 50
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 1.10,
+                "type": "profit_target"
+            }
+        ],
+        "stop_loss_atr": 2.5,
+        "time_stop": 60
     }
 ]
