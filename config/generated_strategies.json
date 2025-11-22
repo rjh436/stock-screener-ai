@@ -1,6 +1,6 @@
 [
     {
-        "name": "Double_Seven_Sniper",
+        "name": "Double_Seven_Sniper_Deep",
         "type": "mean_reversion",
         "entry_rules": [
             {
@@ -15,22 +15,22 @@
             },
             {
                 "col": "vix",
-                "op": "<",
-                "val": 35.0
+                "op": ">",
+                "val": 25.0
             }
         ],
         "exit_rules": [],
-        "stop_loss_atr": 3.0,
+        "stop_loss_atr": 5.0,
         "time_stop": 40
     },
     {
-        "name": "RSI_Power_Swing",
+        "name": "RSI_Power_Swing_Deep",
         "type": "hybrid",
         "entry_rules": [
             {
                 "col": "rsi2",
                 "op": "<",
-                "val": 10.0
+                "val": 5.0
             },
             {
                 "col": "close",
@@ -40,15 +40,15 @@
             {
                 "col": "adx",
                 "op": ">",
-                "val": 20.0
+                "val": 25.0
             }
         ],
         "exit_rules": [],
-        "stop_loss_atr": 2.5,
+        "stop_loss_atr": 5.0,
         "time_stop": 60
     },
     {
-        "name": "Vol_Breakout_Squeeze",
+        "name": "Vol_Breakout_Squeeze_Wide",
         "type": "breakout",
         "entry_rules": [
             {
@@ -68,7 +68,7 @@
             }
         ],
         "exit_rules": [],
-        "stop_loss_atr": 2.0,
+        "stop_loss_atr": 5.0,
         "time_stop": 50
     }
 ]
