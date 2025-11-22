@@ -19,13 +19,7 @@
                 "val": 35.0
             }
         ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": "==",
-                "ref": "highest5"
-            }
-        ],
+        "exit_rules": [],
         "stop_loss_atr": 3.0,
         "time_stop": 40
     },
@@ -49,13 +43,7 @@
                 "val": 20.0
             }
         ],
-        "exit_rules": [
-            {
-                "col": "rsi2",
-                "op": ">",
-                "val": 75.0
-            }
-        ],
+        "exit_rules": [],
         "stop_loss_atr": 2.5,
         "time_stop": 60
     },
@@ -79,13 +67,7 @@
                 "ref": "vol_ma20"
             }
         ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": "<",
-                "ref": "ema20"
-            }
-        ],
+        "exit_rules": [],
         "stop_loss_atr": 2.0,
         "time_stop": 50
     }

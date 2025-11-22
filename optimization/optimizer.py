@@ -9,7 +9,9 @@ import numpy as np
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict
 
+# Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from data.schwab_client import sd
 from data.cache_manager import DataCache
 from execution.engine import run_backtest
@@ -17,6 +19,7 @@ from data.indices import get_index_symbols
 from strategies.generic import GenericStrategy
 from optimization.evolution import EvolutionEngine
 
+# Config Path
 GEN_CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config/generated_strategies.json'))
 
 def fetch_sp1500_symbols():
@@ -31,10 +34,12 @@ def fetch_data(symbols: List[str], days: int = 1260) -> Dict[str, pd.DataFrame]:
     cache_hits = 0
     cache_misses = 0
     
+    # Threaded Fetching
     def load_symbol(sym):
         try:
             df = DataCache.get_cached_data(sym)
             if df is not None:
+                # Check if we have enough history (at least 90% of requested)
                 if len(df) >= days * 0.9:
                     df = df[(df.index >= start) & (df.index <= end)]
                     return sym, df, "hit"
@@ -58,10 +63,14 @@ def fetch_data(symbols: List[str], days: int = 1260) -> Dict[str, pd.DataFrame]:
                 data[sym] = df
                 if status == "hit": cache_hits += 1
                 else: cache_misses += 1
+    
     print(f"Cache: {cache_hits} hits, {cache_misses} misses")
     return data
 
 def calculate_fitness(result):
+    """
+    SNIPER MODE: 5-Year Calibration (Strict)
+    """
     trades = result.get("trades", 0)
     sharpe = result.get("sharpe", 0) or 0
     cagr = result.get("cagr", 0) or 0
@@ -69,11 +78,14 @@ def calculate_fitness(result):
     max_dd = abs(result.get("max_drawdown_pct", 0) or 0)
     avg_profit_pct = result.get("avg_profit_pct", 0) or 0
 
-    if trades < 20: return -1000.0 
-    if trades > 3000: return -1000.0 # Kill Scalpers
-    if avg_profit_pct < 1.5: return -1000.0 # Must profit > 1.5% per trade
-    if max_dd > 55.0: return -1000.0 
+    # 1. Gatekeepers
+    if trades < 10: return -1000.0  # Need statistical significance
+    if trades > 3000: return -1000.0 # Kill Scalpers (>12 trades/week)
+    
+    if avg_profit_pct < 2.0: return -1000.0 # MUST Profit > 2.0% per trade
+    if max_dd > 55.0: return -1000.0 # Allow deep swings
 
+    # 2. Scoring
     profit_score = avg_profit_pct * 50.0 
     sharpe_score = min(sharpe, 3.0) * 30.0 
     win_score = 0
@@ -85,6 +97,7 @@ def run_evolution(data_map, global_data):
     print("\n--- Starting Sniper Evolution (5-Year Horizon) ---")
     engine = EvolutionEngine()
     
+    # Force load from file to pick up Sniper seeds
     try:
         with open(GEN_CONFIG_PATH, "r") as f:
             engine.population = json.load(f)
@@ -94,21 +107,29 @@ def run_evolution(data_map, global_data):
         engine.generate_initial_population()
 
     generations = 3
+    
     for gen in range(generations):
         print(f"\nEvaluating Generation {engine.generation_count} ({len(engine.population)} strategies)...")
+        
         pop_results = []
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = {executor.submit(run_backtest, GenericStrategy(genome), data_map, None, 100000.0, None, global_data): genome for genome in engine.population}
+            
             for future in concurrent.futures.as_completed(futures):
                 genome = futures[future]
                 try:
                     res = future.result()
                     score = calculate_fitness(res)
-                    pop_results.append({"genome": genome, "score": score, "stats": res})
+                    pop_results.append({
+                        "genome": genome,
+                        "score": score,
+                        "stats": res
+                    })
                 except Exception as e:
                     print(f"Error: {e}")
 
         ranked = sorted(pop_results, key=lambda x: x["score"], reverse=True)
+        
         print(f"Top Gen {engine.generation_count}:")
         for i, r in enumerate(ranked[:3]):
             stats = r['stats']
@@ -126,13 +147,21 @@ def run_optimization():
     print("🚀 Initializing Optimizer (S&P 1500 Universe)...")
     symbols = fetch_sp1500_symbols()
     if not symbols: return
-    data_map = fetch_data(symbols, days=1260)
+    
+    data_map = fetch_data(symbols, days=1260) # 5 YEARS
     if not data_map: return
+
     print("Fetching Global Data (SPY, VIX)...")
     global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=1260)
+    
     vix_data = global_data_raw.get("$VIX")
     if vix_data is None: vix_data = global_data_raw.get("VIX")
-    global_data = {"SPY": global_data_raw.get("SPY"), "VIX": vix_data}
+
+    global_data = {
+        "SPY": global_data_raw.get("SPY"),
+        "VIX": vix_data
+    }
+    
     run_evolution(data_map, global_data)
 
 if __name__ == "__main__":
