@@ -34,12 +34,11 @@ def fetch_data(symbols: List[str], days: int = 1260) -> Dict[str, pd.DataFrame]:
     cache_hits = 0
     cache_misses = 0
     
-    # Threaded Fetching
+    # Threaded Fetching for M3 Max
     def load_symbol(sym):
         try:
             df = DataCache.get_cached_data(sym)
             if df is not None:
-                # Check if we have enough history (at least 90% of requested)
                 if len(df) >= days * 0.9:
                     df = df[(df.index >= start) & (df.index <= end)]
                     return sym, df, "hit"
@@ -68,9 +67,7 @@ def fetch_data(symbols: List[str], days: int = 1260) -> Dict[str, pd.DataFrame]:
     return data
 
 def calculate_fitness(result):
-    """
-    SNIPER MODE: 5-Year Calibration (Updated)
-    """
+    """SNIPER MODE: Prioritize Avg Profit & Stability."""
     trades = result.get("trades", 0)
     sharpe = result.get("sharpe", 0) or 0
     cagr = result.get("cagr", 0) or 0
@@ -78,15 +75,13 @@ def calculate_fitness(result):
     max_dd = abs(result.get("max_drawdown_pct", 0) or 0)
     avg_profit_pct = result.get("avg_profit_pct", 0) or 0
 
-    # 1. Gatekeepers
-    if trades < 20: return -1000.0  # Need statistical significance
+    # Gatekeepers
+    if trades < 20: return -1000.0 
     if trades > 3000: return -1000.0 # Kill Scalpers (>12 trades/week)
-    
-    if avg_profit_pct < 1.5: return -1000.0 # Target > 1.5% avg profit
-    if max_dd > 55.0: return -1000.0 # Allow deep swings, but not total ruin
+    if avg_profit_pct < 2.0: return -1000.0 # MUST make >2% per trade
+    if max_dd > 55.0: return -1000.0 
 
-    # 2. Scoring
-    # Prioritize Avg Profit heavily now that we have patience
+    # Scoring
     profit_score = avg_profit_pct * 50.0 
     sharpe_score = min(sharpe, 3.0) * 30.0 
     win_score = 0
@@ -98,7 +93,6 @@ def run_evolution(data_map, global_data):
     print("\n--- Starting Sniper Evolution (5-Year Horizon) ---")
     engine = EvolutionEngine()
     
-    # Force load from file
     try:
         with open(GEN_CONFIG_PATH, "r") as f:
             engine.population = json.load(f)
@@ -121,11 +115,7 @@ def run_evolution(data_map, global_data):
                 try:
                     res = future.result()
                     score = calculate_fitness(res)
-                    pop_results.append({
-                        "genome": genome,
-                        "score": score,
-                        "stats": res
-                    })
+                    pop_results.append({"genome": genome, "score": score, "stats": res})
                 except Exception as e:
                     print(f"Error: {e}")
 
@@ -149,19 +139,14 @@ def run_optimization():
     symbols = fetch_sp1500_symbols()
     if not symbols: return
     
-    data_map = fetch_data(symbols, days=1260) # 5 YEARS (Fixed)
+    data_map = fetch_data(symbols, days=1260)
     if not data_map: return
 
     print("Fetching Global Data (SPY, VIX)...")
     global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=1260)
     
-    vix_data = global_data_raw.get("$VIX")
-    if vix_data is None: vix_data = global_data_raw.get("VIX")
-
-    global_data = {
-        "SPY": global_data_raw.get("SPY"),
-        "VIX": vix_data
-    }
+    vix_data = global_data_raw.get("$VIX") or global_data_raw.get("VIX")
+    global_data = {"SPY": global_data_raw.get("SPY"), "VIX": vix_data}
     
     run_evolution(data_map, global_data)
 

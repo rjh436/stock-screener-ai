@@ -3,12 +3,28 @@
         "name": "Double_Seven_Sniper",
         "type": "mean_reversion",
         "entry_rules": [
-            { "col": "close", "op": ">", "ref": "sma200" },
-            { "col": "close", "op": "==", "ref": "lowest5" },
-            { "col": "vix", "op": "<", "val": 35.0 }
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "close",
+                "op": "==",
+                "ref": "lowest5"
+            },
+            {
+                "col": "vix",
+                "op": "<",
+                "val": 35.0
+            }
         ],
         "exit_rules": [
-            { "col": "close", "op": "==", "ref": "highest5" }
+            {
+                "col": "close",
+                "op": "==",
+                "ref": "highest5"
+            }
         ],
         "stop_loss_atr": 3.0,
         "time_stop": 40
@@ -17,12 +33,28 @@
         "name": "RSI_Power_Swing",
         "type": "hybrid",
         "entry_rules": [
-            { "col": "rsi2", "op": "<", "val": 10.0 },
-            { "col": "close", "op": ">", "ref": "sma200" },
-            { "col": "adx", "op": ">", "val": 20.0 }
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 10.0
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 20.0
+            }
         ],
         "exit_rules": [
-            { "col": "rsi2", "op": ">", "val": 75.0 }
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 75.0
+            }
         ],
         "stop_loss_atr": 2.5,
         "time_stop": 60
@@ -31,12 +63,28 @@
         "name": "Vol_Breakout_Squeeze",
         "type": "breakout",
         "entry_rules": [
-            { "col": "atr14", "op": "<", "ref": "atr14_ma20" },
-            { "col": "close", "op": ">", "ref": "highest20" },
-            { "col": "volume", "op": ">", "ref": "vol_ma20" }
+            {
+                "col": "atr14",
+                "op": "<",
+                "ref": "atr14_ma20"
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "highest20"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
         ],
         "exit_rules": [
-            { "col": "close", "op": "<", "ref": "ema20" }
+            {
+                "col": "close",
+                "op": "<",
+                "ref": "ema20"
+            }
         ],
         "stop_loss_atr": 2.0,
         "time_stop": 50
