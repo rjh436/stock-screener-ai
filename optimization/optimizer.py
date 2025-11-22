@@ -3,7 +3,7 @@ import os
 import json
 import itertools
 import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor # Explicit import
+from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
@@ -34,41 +34,41 @@ def fetch_data(symbols: List[str], days: int = 400) -> Dict[str, pd.DataFrame]:
     cache_hits = 0
     cache_misses = 0
     
-    # Use ThreadPool for faster I/O during fetch
-    def load_symbol(sym):
+    for sym in symbols:
         try:
             # Check cache first
             df = DataCache.get_cached_data(sym)
+            
             if df is not None:
+                # Filter to requested date range
                 df = df[(df.index >= start) & (df.index <= end)]
                 if len(df) >= days * 0.7:
-                    return sym, df, "hit"
+                    data[sym] = df
+                    cache_hits += 1
+                    continue
             
-            # Cache miss
+            # Cache miss or stale - fetch from API
+            cache_misses += 1
             candles = sd.price_daily(sym, start_datetime=start, end_datetime=end)
             if candles:
                 df = pd.DataFrame(candles)
                 df["datetime"] = pd.to_datetime(df["datetime"], unit="ms", utc=True)
                 df = df.set_index("datetime").sort_index()
+                
+                # Save to cache for future runs
                 DataCache.save_to_cache(sym, df)
-                return sym, df, "miss"
-        except Exception as e:
-            print(f"Error {sym}: {e}")
-        return sym, None, "error"
-
-    with ThreadPoolExecutor(max_workers=20) as executor:
-        futures = {executor.submit(load_symbol, sym): sym for sym in symbols}
-        for future in concurrent.futures.as_completed(futures):
-            sym, df, status = future.result()
-            if df is not None:
                 data[sym] = df
-                if status == "hit": cache_hits += 1
-                else: cache_misses += 1
-
+        except Exception as e:
+            print(f"Error fetching {sym}: {e}")
+    
     print(f"Cache: {cache_hits} hits, {cache_misses} misses")
     return data
 
 def calculate_fitness(result):
+    """
+    SNIPER MODE: 5-Year Calibration
+    Target: High Win Rate, High Profit, Moderate Frequency.
+    """
     trades = result.get("trades", 0)
     sharpe = result.get("sharpe", 0) or 0
     cagr = result.get("cagr", 0) or 0
@@ -76,37 +76,42 @@ def calculate_fitness(result):
     max_dd = abs(result.get("max_drawdown_pct", 0) or 0)
     avg_profit_pct = result.get("avg_profit_pct", 0) or 0
 
-    # Gatekeepers (Swing Mode: Anti-Scalping)
-    if trades < 10: return -1000.0  # Min trades to be statistically significant
-    if trades > 3000: return -1000.0 # Max trades penalty (Kill scalping behavior)
-    if max_dd > 50.0: return -1000.0 
+    # 1. Gatekeepers (Strict Filters)
+    if trades < 10: return -1000.0  # Statistical significance
+    
+    # Trade Limit: 3000 trades / 5 years = ~11 trades/week. 
+    # Anything higher is overtrading/scalping.
+    if trades > 3000: return -1000.0 
+    
+    # Profit Gate: Must average > 2.0% per trade to be a "Swing" strategy
     if avg_profit_pct < 2.0: return -1000.0
+    
+    # Drawdown: Relaxed to 50% to allow the AI to find volatile winners first
+    if max_dd > 50.0: return -1000.0 
 
-    # Scoring
-    sharpe_score = min(sharpe, 3.0) * 40.0 
+    # 2. Scoring (Sharpe Dominant)
+    sharpe_score = min(sharpe, 3.0) * 50.0 
+    
     win_score = 0
     if win_rate > 50:
-        win_score = (win_rate - 50) * 1.5 
-    cagr_score = min(cagr * 100, 50) * 0.6
+        win_score = (win_rate - 50) * 2.0 
+        
+    cagr_score = min(cagr * 100, 50) * 0.5
     
+    # Penalty for "Boring" strategies (under 50 trades in 5 years)
     penalty = 0
     if trades < 50: penalty = 20
-    if trades > 500: penalty = (trades - 500) * 0.1
 
-    return sharpe_score + win_score + cagr_score - penalty
+    final_score = sharpe_score + win_score + cagr_score - penalty
+    return final_score
 
 def run_evolution(data_map, global_data):
     print("\n--- Starting System Repair Evolutionary Cycle ---")
     engine = EvolutionEngine()
     
-    # Force reload from file to pick up "Sniper" seeds
-    try:
-        with open(GEN_CONFIG_PATH, "r") as f:
-            engine.population = json.load(f)
-            print(f"Loaded {len(engine.population)} strategies from config.")
-    except:
-        print("Config missing, generating random.")
-        engine.generate_initial_population()
+    # Load if exists, otherwise gen new
+    if not engine.population:
+         engine.generate_initial_population()
 
     generations = 3
     
@@ -114,7 +119,7 @@ def run_evolution(data_map, global_data):
         print(f"\nEvaluating Generation {engine.generation_count} ({len(engine.population)} strategies)...")
         
         pop_results = []
-        # CRITICAL FIX: ThreadPoolExecutor ensures shared memory
+        # ThreadPoolExecutor for Shared Memory (M3 Max Optimization)
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = {executor.submit(run_backtest, GenericStrategy(genome), data_map, None, 100000.0, None, global_data): genome for genome in engine.population}
             
@@ -142,6 +147,7 @@ def run_evolution(data_map, global_data):
             engine.evolve(ranked)
     
     with open(GEN_CONFIG_PATH, "w") as f:
+        # Save top 10 only
         top_genomes = [r["genome"] for r in ranked[:10]]
         json.dump(top_genomes, f, indent=4)
     print("\nEvolution complete. Clean population saved.")
@@ -151,9 +157,10 @@ def run_optimization():
     symbols = fetch_sp1500_symbols()
     if not symbols: return
     
-    data_map = fetch_data(symbols, days=1260) # 5 Years
+    data_map = fetch_data(symbols, days=1260) # 5 Years History
     if not data_map: return
 
+    # Global Data
     print("Fetching Global Data (SPY, VIX)...")
     global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=1260)
     
