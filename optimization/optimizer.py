@@ -9,7 +9,9 @@ import numpy as np
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict
 
+# Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from data.schwab_client import sd
 from data.cache_manager import DataCache
 from execution.engine import run_backtest
@@ -17,6 +19,7 @@ from data.indices import get_index_symbols
 from strategies.generic import GenericStrategy
 from optimization.evolution import EvolutionEngine
 
+# Config Path
 GEN_CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config/generated_strategies.json'))
 
 def fetch_sp1500_symbols():
@@ -58,31 +61,48 @@ def fetch_data(symbols: List[str], days: int = 1260) -> Dict[str, pd.DataFrame]:
                 data[sym] = df
                 if status == "hit": cache_hits += 1
                 else: cache_misses += 1
+    
     print(f"Cache: {cache_hits} hits, {cache_misses} misses")
     return data
 
 def calculate_fitness(result):
-    trades = result.get("trades", 0)
+    """
+    UNCONSTRAINED MAXIMIZATION
+    Goal: Highest possible combination of Profit and Win Rate.
+    """
+    trades = result.get("total_trades", 0) # Fixed key name
+    if trades == 0: return -1000.0
+    
     sharpe = result.get("sharpe", 0) or 0
-    cagr = result.get("cagr", 0) or 0
     win_rate = result.get("hit_rate", 0) or 0
-    max_dd = abs(result.get("max_drawdown_pct", 0) or 0)
     avg_profit_pct = result.get("avg_profit_pct", 0) or 0
+    max_dd = abs(result.get("max_drawdown_pct", 0) or 0)
 
-    if trades < 10: return -1000.0 
-    if trades > 3000: return -1000.0 # Kill Scalpers
-    if avg_profit_pct < 1.5: return -1000.0 # RELAXED: Allow >1.5% to survive
-    if max_dd > 55.0: return -1000.0 
+    # 1. The Only Hard Gate: Statistical Significance
+    # We need at least 30 trades over 5 years (6 trades/year) to prove it's not luck.
+    if trades < 30: return -1000.0 
+    
+    # 2. The Score Formula
+    # A. Profit Weight (High): 1% avg profit = 20 points. 5% = 100 points.
+    score_profit = avg_profit_pct * 20.0
+    
+    # B. Win Rate Weight (Moderate): Reward being above 50%.
+    # 50% WR = 0 pts. 60% WR = 20 pts. 70% WR = 40 pts.
+    score_wr = (win_rate - 50.0) * 2.0
+    
+    # C. Stability Bonus: Sharpe Ratio
+    # Sharpe 1.0 = 10 pts. Sharpe 2.0 = 20 pts.
+    score_sharpe = min(sharpe, 3.0) * 10.0
+    
+    # D. Risk Penalty: Drawdown
+    # 20% DD = -10 pts. 50% DD = -25 pts.
+    score_dd = max_dd * -0.5
 
-    profit_score = avg_profit_pct * 50.0 
-    sharpe_score = min(sharpe, 3.0) * 30.0 
-    win_score = 0
-    if win_rate > 60: win_score = (win_rate - 60) * 2.0 
-
-    return profit_score + sharpe_score + win_score
+    final_score = score_profit + score_wr + score_sharpe + score_dd
+    return final_score
 
 def run_evolution(data_map, global_data):
-    print("\n--- Starting Sniper Evolution (5-Year Horizon) ---")
+    print("\n--- Starting Unconstrained Evolution (5-Year Horizon) ---")
     engine = EvolutionEngine()
     
     try:
@@ -94,21 +114,29 @@ def run_evolution(data_map, global_data):
         engine.generate_initial_population()
 
     generations = 3
+    
     for gen in range(generations):
         print(f"\nEvaluating Generation {engine.generation_count} ({len(engine.population)} strategies)...")
+        
         pop_results = []
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = {executor.submit(run_backtest, GenericStrategy(genome), data_map, None, 100000.0, None, global_data): genome for genome in engine.population}
+            
             for future in concurrent.futures.as_completed(futures):
                 genome = futures[future]
                 try:
                     res = future.result()
                     score = calculate_fitness(res)
-                    pop_results.append({"genome": genome, "score": score, "stats": res})
+                    pop_results.append({
+                        "genome": genome,
+                        "score": score,
+                        "stats": res
+                    })
                 except Exception as e:
                     print(f"Error: {e}")
 
         ranked = sorted(pop_results, key=lambda x: x["score"], reverse=True)
+        
         print(f"Top Gen {engine.generation_count}:")
         for i, r in enumerate(ranked[:3]):
             stats = r['stats']
@@ -120,32 +148,27 @@ def run_evolution(data_map, global_data):
     with open(GEN_CONFIG_PATH, "w") as f:
         top_genomes = [r["genome"] for r in ranked[:10]]
         json.dump(top_genomes, f, indent=4)
-    
-    # [TELEMETRY] Save metrics for Auto-Evolver
-    if ranked:
-        best_strat = ranked[0]
-        metrics = {
-            "sharpe": best_strat['stats'].get('sharpe', 0),
-            "avg_profit": best_strat['stats'].get('avg_profit_pct', 0),
-            "win_rate": best_strat['stats'].get('hit_rate', 0),
-            "trades": best_strat['stats'].get('total_trades', 0)
-        }
-        with open("latest_metrics.json", "w") as f:
-            json.dump(metrics, f)
     print("\nEvolution complete. Clean population saved.")
 
 def run_optimization():
     print("🚀 Initializing Optimizer (S&P 1500 Universe)...")
     symbols = fetch_sp1500_symbols()
     if not symbols: return
+    
     data_map = fetch_data(symbols, days=1260)
     if not data_map: return
+
     print("Fetching Global Data (SPY, VIX)...")
     global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=1260)
-    # FIXED: Explicit check to avoid DataFrame boolean error
+    
     vix_data = global_data_raw.get("$VIX")
     if vix_data is None: vix_data = global_data_raw.get("VIX")
-    global_data = {"SPY": global_data_raw.get("SPY"), "VIX": vix_data}
+
+    global_data = {
+        "SPY": global_data_raw.get("SPY"),
+        "VIX": vix_data
+    }
+    
     run_evolution(data_map, global_data)
 
 if __name__ == "__main__":
