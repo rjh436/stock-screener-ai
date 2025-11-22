@@ -135,7 +135,7 @@ def _backtest_strategy(strategy_name: str, data_dict: Dict[str, pd.DataFrame], s
                 
                 row = df.loc[dt]
                 if row['buy_signal']:
-                     alloc = start_cash * 0.10
+                     alloc = start_cash * 0.20
                      if cash < alloc: alloc = cash
                      px = row['open']
                      shares = int(alloc / px)

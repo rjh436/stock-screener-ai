@@ -254,8 +254,8 @@ def run_backtest(
     trade_returns: List[float] = [] # New list for % returns
     winning_trade_durations: List[int] = [] # New: Track duration of winners
 
-    max_positions = 10
-    pos_fraction = 0.10
+    max_positions = 5
+    pos_fraction = 0.20
 
     def get_row_index(df: pd.DataFrame, dt: pd.Timestamp) -> Optional[int]:
         try:

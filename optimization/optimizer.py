@@ -113,7 +113,7 @@ def run_evolution(data_map, global_data):
         print("Config missing, generating random.")
         engine.generate_initial_population()
 
-    generations = 3
+    generations = 10
     
     for gen in range(generations):
         print(f"\nEvaluating Generation {engine.generation_count} ({len(engine.population)} strategies)...")
