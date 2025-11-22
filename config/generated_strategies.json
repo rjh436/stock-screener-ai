@@ -1,44 +1,292 @@
 [
     {
-        "name": "Double_Seven_Sniper",
-        "type": "mean_reversion",
-        "entry_rules": [
-            { "col": "close", "op": ">", "ref": "sma200" },
-            { "col": "close", "op": "==", "ref": "lowest5" },
-            { "col": "vix", "op": "<", "val": 35.0 }
-        ],
-        "exit_rules": [
-            { "col": "close", "op": "==", "ref": "highest5" }
-        ],
-        "stop_loss_atr": 3.0,
-        "time_stop": 15
-    },
-    {
-        "name": "RSI_Power_Swing",
+        "name": "Cross_Cross_RSI_Power_Swing_gen2_RSI_Power_Swing_gen2",
         "type": "hybrid",
         "entry_rules": [
-            { "col": "rsi2", "op": "<", "val": 10.0 },
-            { "col": "close", "op": ">", "ref": "sma200" },
-            { "col": "adx", "op": ">", "val": 20.0 }
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 10.0
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 20.0
+            }
         ],
         "exit_rules": [
-            { "col": "rsi2", "op": ">", "val": 75.0 }
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 75.0
+            }
+        ],
+        "stop_loss_atr": 2.6,
+        "time_stop": 18
+    },
+    {
+        "name": "Cross_RSI_Power_Swing_gen2_Cross_RSI_Power_Swing_gen2",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 10.0
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 20.0
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": "==",
+                "ref": "highest5"
+            }
+        ],
+        "stop_loss_atr": 2.6,
+        "time_stop": 18
+    },
+    {
+        "name": "Cross_RSI_Power_Swing_gen2",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 10.0
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 20.0
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": "==",
+                "ref": "highest5"
+            }
+        ],
+        "stop_loss_atr": 2.8,
+        "time_stop": 17
+    },
+    {
+        "name": "Cross_RSI_Power_Swing_gen2",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 10.0
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 20.0
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": "==",
+                "ref": "highest5"
+            }
+        ],
+        "stop_loss_atr": 2.8,
+        "time_stop": 17
+    },
+    {
+        "name": "Cross_Cross_RSI_Power_Swing_gen2_RSI_Power_Swing_gen2",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 10.0
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 20.0
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 75.0
+            }
+        ],
+        "stop_loss_atr": 2.6,
+        "time_stop": 18
+    },
+    {
+        "name": "RSI_Power_Swing_gen2",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 10.0
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 20.0
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 75.0
+            }
         ],
         "stop_loss_atr": 2.5,
         "time_stop": 20
     },
     {
-        "name": "Vol_Breakout_Squeeze",
-        "type": "breakout",
+        "name": "Gen2_Fresh_4007",
+        "type": "random",
         "entry_rules": [
-            { "col": "atr14", "op": "<", "ref": "atr14_ma20" },
-            { "col": "close", "op": ">", "ref": "highest20" },
-            { "col": "volume", "op": ">", "ref": "vol_ma20" }
+            {
+                "col": "vol_ma20",
+                "op": ">",
+                "ref": "volume"
+            }
         ],
         "exit_rules": [
-            { "col": "close", "op": "<", "ref": "ema20" }
+            {
+                "col": "rs_ratio",
+                "op": "<",
+                "val": 1.0
+            }
         ],
-        "stop_loss_atr": 2.0,
-        "time_stop": 30
+        "stop_loss_atr": 2.7,
+        "time_stop": 15
+    },
+    {
+        "name": "Cross_Cross_RSI_Power_Swing_gen2_RSI_Power_Swing_gen2",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 10.0
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 20.0
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 75.0
+            }
+        ],
+        "stop_loss_atr": 2.6,
+        "time_stop": 18
+    },
+    {
+        "name": "Gen2_Fresh_4084",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "volume"
+            },
+            {
+                "col": "atr14_ma20",
+                "op": "<",
+                "val": 0.7317407351843828
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "rs_ratio",
+                "op": ">",
+                "val": 1.0
+            },
+            {
+                "col": "stoch_k",
+                "op": ">",
+                "val": 21
+            }
+        ],
+        "stop_loss_atr": 3.1,
+        "time_stop": 10
+    },
+    {
+        "name": "Gen2_Fresh_1150",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 16
+            },
+            {
+                "col": "avgvol50",
+                "op": ">",
+                "ref": "vol_ma20"
+            },
+            {
+                "col": "roc",
+                "op": "<",
+                "ref": "stoch_d"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "atr_pct20",
+                "op": "<",
+                "ref": "atr10"
+            }
+        ],
+        "stop_loss_atr": 3.5,
+        "time_stop": 15
     }
 ]

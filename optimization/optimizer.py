@@ -78,9 +78,9 @@ def calculate_fitness(result):
 
     # Gatekeepers (Swing Mode: Anti-Scalping)
     if trades < 10: return -1000.0  # Min trades to be statistically significant
-    if trades > 500: return -1000.0 # Max trades penalty (Kill scalping behavior)
+    if trades > 3000: return -1000.0 # Max trades penalty (Kill scalping behavior)
     if max_dd > 50.0: return -1000.0 
-    if avg_profit_pct < 1.0: return -500.0
+    if avg_profit_pct < 2.0: return -1000.0
 
     # Scoring
     sharpe_score = min(sharpe, 3.0) * 40.0 
