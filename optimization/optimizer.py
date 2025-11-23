@@ -53,24 +53,29 @@ def fetch_data(symbols: List[str], days: int = 1260) -> Dict[str, pd.DataFrame]:
     return data
 
 def calculate_fitness(result):
-    trades = result.get("total_trades", 0)
+    trades = result.get("trades", 0)
     sharpe = result.get("sharpe", 0) or 0
+    cagr = result.get("cagr", 0) or 0
     win_rate = result.get("hit_rate", 0) or 0
-    avg_profit_pct = result.get("avg_profit_pct", 0) or 0
     max_dd = abs(result.get("max_drawdown_pct", 0) or 0)
+    avg_profit_pct = result.get("avg_profit_pct", 0) or 0
 
+    # --- GATEKEEPERS ---
     if trades < 20: return -1000.0 
+    # KILL SCALPERS: Strict 1.5% Profit Floor
+    if avg_profit_pct < 1.5: return -1000.0
     
-    # Unconstrained Maximization Score
-    score_profit = avg_profit_pct * 30.0
-    score_wr = (win_rate - 50.0) * 2.0
-    score_sharpe = min(sharpe, 3.0) * 15.0
-    score_dd = max_dd * -0.5
-    
-    return score_profit + score_wr + score_sharpe + score_dd
+    # --- SCORING ---
+    # Reward Profit Depth & Growth
+    profit_score = avg_profit_pct * 40.0  
+    cagr_score = min(cagr * 100, 50) * 2.0
+    win_score = 0
+    if win_rate > 60: win_score = (win_rate - 60) * 2.0
+
+    return profit_score + cagr_score + win_score
 
 def run_evolution(data_map, global_data):
-    print("\n--- Starting Unconstrained Evolution (5-Year Horizon) ---")
+    print("\n--- Starting Hyper-Growth Sniper Evolution ---")
     engine = EvolutionEngine()
     try:
         with open(GEN_CONFIG_PATH, "r") as f: engine.population = json.load(f)
@@ -78,7 +83,7 @@ def run_evolution(data_map, global_data):
 
     generations = 10
     for gen in range(generations):
-        print(f"\nEvaluating Generation {engine.generation_count} ({len(engine.population)} strategies)...")
+        print(f"\nEvaluating Gen {engine.generation_count}...")
         pop_results = []
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = {executor.submit(run_backtest, GenericStrategy(genome), data_map, None, 100000.0, None, global_data): genome for genome in engine.population}
@@ -101,26 +106,13 @@ def run_evolution(data_map, global_data):
     
     with open(GEN_CONFIG_PATH, "w") as f:
         json.dump([r["genome"] for r in ranked[:10]], f, indent=4)
-    
-    # Save metrics for Autonomous Manager
-    if ranked:
-        top = ranked[0]["stats"]
-        metrics = {
-            "avg_profit": top.get("avg_profit_pct", 0),
-            "win_rate": top.get("hit_rate", 0),
-            "trades": top.get("total_trades", 0)
-        }
-        with open("latest_metrics.json", "w") as f:
-            json.dump(metrics, f)
-            
-    print("\nEvolution complete. Clean population saved.")
+    print("\nEvolution complete.")
 
 def run_optimization():
-    print("🚀 Initializing Optimizer (S&P 1500 Universe)...")
+    print("🚀 Initializing...")
     symbols = fetch_sp1500_symbols()
     if not symbols: return
     data_map = fetch_data(symbols, days=1260)
-    if not data_map: return
     global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=1260)
     vix_data = global_data_raw.get("$VIX")
     if vix_data is None:
