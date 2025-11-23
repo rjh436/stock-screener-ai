@@ -310,6 +310,11 @@ class EvolutionEngine:
         
         # 1. Elitism: Keep top 3
         survivors = [r["genome"] for r in ranked_results[:3]]
+        
+        if not survivors:
+            print("⚠️ No survivors found! Regenerating population...")
+            return self.generate_initial_population()
+
         for s in survivors:
             s["name"] = s["name"].split("_gen")[0] + f"_gen{self.generation_count}" # Update gen tag
 

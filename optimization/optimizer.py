@@ -101,6 +101,18 @@ def run_evolution(data_map, global_data):
     
     with open(GEN_CONFIG_PATH, "w") as f:
         json.dump([r["genome"] for r in ranked[:10]], f, indent=4)
+    
+    # Save metrics for Autonomous Manager
+    if ranked:
+        top = ranked[0]["stats"]
+        metrics = {
+            "avg_profit": top.get("avg_profit_pct", 0),
+            "win_rate": top.get("hit_rate", 0),
+            "trades": top.get("total_trades", 0)
+        }
+        with open("latest_metrics.json", "w") as f:
+            json.dump(metrics, f)
+            
     print("\nEvolution complete. Clean population saved.")
 
 def run_optimization():
