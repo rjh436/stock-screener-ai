@@ -1,12 +1,43 @@
 [
     {
-        "name": "RSI_Power_Swing_gen9",
+        "name": "Double_Seven_Sniper",
+        "type": "mean_reversion",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "close",
+                "op": "==",
+                "ref": "lowest5"
+            },
+            {
+                "col": "vix",
+                "op": "<",
+                "val": 35.0
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 1.10,
+                "type": "profit_target"
+            }
+        ],
+        "stop_loss_atr": 3.0,
+        "time_stop": 40
+    },
+    {
+        "name": "RSI_Power_Swing",
         "type": "hybrid",
         "entry_rules": [
             {
                 "col": "rsi2",
                 "op": "<",
-                "val": 4.6
+                "val": 5.0
             },
             {
                 "col": "close",
@@ -23,290 +54,72 @@
             {
                 "col": "close",
                 "op": ">",
-                "val": 1.1,
+                "val": 1.10,
                 "type": "profit_target"
             }
         ],
-        "stop_loss_atr": 5.4,
-        "time_stop": 70
-    },
-    {
-        "name": "RSI_Power_Swing_gen9",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "rsi2",
-                "op": "<",
-                "val": 4.6
-            },
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 25.0
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.4,
-        "time_stop": 70
-    },
-    {
-        "name": "Cross_RSI_Power_Swing_gen9_RSI_Power_Swing_gen9",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "rsi2",
-                "op": "<",
-                "val": 4.6
-            },
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 25.0
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.4,
-        "time_stop": 70
-    },
-    {
-        "name": "Cross_RSI_Power_Swing_gen9_RSI_Power_Swing_gen9",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "rsi2",
-                "op": "<",
-                "val": 4.6
-            },
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 25.1
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.4,
-        "time_stop": 70
-    },
-    {
-        "name": "Cross_RSI_Power_Swing_gen9_RSI_Power_Swing_gen9",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "rsi2",
-                "op": "<",
-                "val": 4.6
-            },
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 25.0
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.4,
-        "time_stop": 70
-    },
-    {
-        "name": "RSI_Power_Swing_gen9",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "rsi2",
-                "op": "<",
-                "val": 4.6
-            },
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 25.1
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.4,
-        "time_stop": 70
-    },
-    {
-        "name": "Cross_RSI_Power_Swing_gen9_RSI_Power_Swing_gen9",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "rsi2",
-                "op": "<",
-                "val": 4.6
-            },
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 25.1
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.4,
-        "time_stop": 70
-    },
-    {
-        "name": "RSI_Power_Swing_gen9_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "rsi2",
-                "op": "<",
-                "val": 4.6
-            },
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 25.0
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.4,
-        "time_stop": 70
-    },
-    {
-        "name": "RSI_Power_Swing_gen9_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "rsi2",
-                "op": "<",
-                "val": 4.3
-            },
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 25.1
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.4,
-        "time_stop": 70
-    },
-    {
-        "name": "RSI_Power_Swing_gen9_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "rsi2",
-                "op": "<",
-                "val": 4.6
-            },
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 25.0
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.4,
+        "stop_loss_atr": 3.0,
         "time_stop": 60
+    },
+    {
+        "name": "Vol_Breakout_Squeeze",
+        "type": "breakout",
+        "entry_rules": [
+            {
+                "col": "atr14",
+                "op": "<",
+                "ref": "atr14_ma20"
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "highest20"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 1.10,
+                "type": "profit_target"
+            }
+        ],
+        "stop_loss_atr": 2.5,
+        "time_stop": 50
+    },
+    {
+        "name": "Trend_Ignition_Rocket",
+        "type": "trend",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "highest55"
+            },
+            {
+                "col": "ema20",
+                "op": ">",
+                "ref": "sma50"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 30.0
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": "<",
+                "ref": "ema20"
+            }
+        ],
+        "stop_loss_atr": 3.0,
+        "time_stop": 80
     }
 ]
