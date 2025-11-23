@@ -218,7 +218,7 @@ class EvolutionEngine:
             "type": "random",
             "entry_rules": [self._random_rule() for _ in range(random.randint(1, 3))],
             "exit_rules": [self._random_rule() for _ in range(random.randint(1, 2))],
-            "stop_loss_atr": round(random.uniform(4.0, 6.0), 1),  # SURVIVAL MODE: Wide stops
+            "stop_loss_atr": round(random.uniform(3.0, 6.0), 1),  # SURVIVAL MODE: Wide stops
             "time_stop": random.choice([30, 45, 60, 80])  # SWING MODE: Patience!
         }
         return genome
@@ -232,7 +232,7 @@ class EvolutionEngine:
             genome["name"] = f"Gen0_Strat{i}"
             
             # Randomize parameters slightly (SURVIVAL MODE: Wide stops)
-            genome["stop_loss_atr"] = round(random.uniform(4.0, 6.0), 1)
+            genome["stop_loss_atr"] = round(random.uniform(3.0, 6.0), 1)
             genome["time_stop"] = random.choice([30, 45, 60, 80])
             
             # Tweak values in rules
@@ -256,7 +256,7 @@ class EvolutionEngine:
         
         # Mutation Type 1: Change Stop Loss (30% chance) - SURVIVAL MODE
         if r < 0.3:
-            mutant["stop_loss_atr"] = round(random.uniform(4.0, 6.0), 1)
+            mutant["stop_loss_atr"] = round(random.uniform(3.0, 6.0), 1)
             
         # Mutation Type 2: Change Time Stop (30% chance) - SWING MODE
         elif r < 0.6:

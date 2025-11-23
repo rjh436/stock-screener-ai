@@ -1,7 +1,6 @@
 import sys
 import os
 import json
-import itertools
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
@@ -53,35 +52,39 @@ def fetch_data(symbols: List[str], days: int = 1260) -> Dict[str, pd.DataFrame]:
     return data
 
 def calculate_fitness(result):
-    trades = result.get("trades", 0)
+    trades = result.get("total_trades", 0)
     sharpe = result.get("sharpe", 0) or 0
     cagr = result.get("cagr", 0) or 0
     win_rate = result.get("hit_rate", 0) or 0
     max_dd = abs(result.get("max_drawdown_pct", 0) or 0)
     avg_profit_pct = result.get("avg_profit_pct", 0) or 0
 
-    # --- GATEKEEPERS ---
+    # Minimal Statistical Floor
     if trades < 20: return -1000.0 
-    # KILL SCALPERS: Strict 1.5% Profit Floor
-    if avg_profit_pct < 1.5: return -1000.0
     
-    # --- SCORING ---
-    # Reward Profit Depth & Growth
-    profit_score = avg_profit_pct * 40.0  
-    cagr_score = min(cagr * 100, 50) * 2.0
-    win_score = 0
-    if win_rate > 60: win_score = (win_rate - 60) * 2.0
+    # --- THE "UNLEASHED" SCORE ---
+    # 1. Growth Driver: CAGR (20% = 40 pts)
+    score_cagr = cagr * 200.0 
+    
+    # 2. Profit Driver: Avg Profit (2% = 200 pts) -> Massive weight!
+    score_profit = avg_profit_pct * 100.0
+    
+    # 3. Stability Bonus: Sharpe (1.5 = 30 pts)
+    score_sharpe = min(sharpe, 3.0) * 20.0
+    
+    # 4. Risk Penalty (Soft): Drawdown (-50% = -25 pts)
+    score_dd = max_dd * -0.5
 
-    return profit_score + cagr_score + win_score
+    return score_cagr + score_profit + score_sharpe + score_dd
 
 def run_evolution(data_map, global_data):
-    print("\n--- Starting Hyper-Growth Sniper Evolution ---")
+    print("\n--- Starting Incentive-Based Evolution (5-Year Horizon) ---")
     engine = EvolutionEngine()
     try:
         with open(GEN_CONFIG_PATH, "r") as f: engine.population = json.load(f)
     except: engine.generate_initial_population()
 
-    generations = 10
+    generations = 10 # Run deep to let the AI climb
     for gen in range(generations):
         print(f"\nEvaluating Gen {engine.generation_count}...")
         pop_results = []
@@ -106,7 +109,19 @@ def run_evolution(data_map, global_data):
     
     with open(GEN_CONFIG_PATH, "w") as f:
         json.dump([r["genome"] for r in ranked[:10]], f, indent=4)
-    print("\nEvolution complete.")
+    
+    # Save metrics for Autonomous Manager
+    if ranked:
+        top = ranked[0]["stats"]
+        metrics = {
+            "avg_profit": top.get("avg_profit_pct", 0),
+            "win_rate": top.get("hit_rate", 0),
+            "trades": top.get("total_trades", 0)
+        }
+        with open("latest_metrics.json", "w") as f:
+            json.dump(metrics, f)
+
+    print("\nEvolution complete. Clean population saved.")
 
 def run_optimization():
     print("🚀 Initializing...")
