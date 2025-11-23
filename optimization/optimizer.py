@@ -17,6 +17,7 @@ from strategies.generic import GenericStrategy
 from optimization.evolution import EvolutionEngine
 
 GEN_CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config/generated_strategies.json'))
+METRICS_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../latest_metrics.json'))
 
 def fetch_sp1500_symbols():
     return get_index_symbols("S&P 1500")
@@ -54,37 +55,30 @@ def fetch_data(symbols: List[str], days: int = 1260) -> Dict[str, pd.DataFrame]:
 def calculate_fitness(result):
     trades = result.get("total_trades", 0)
     sharpe = result.get("sharpe", 0) or 0
-    cagr = result.get("cagr", 0) or 0
     win_rate = result.get("hit_rate", 0) or 0
-    max_dd = abs(result.get("max_drawdown_pct", 0) or 0)
     avg_profit_pct = result.get("avg_profit_pct", 0) or 0
+    max_dd = abs(result.get("max_drawdown_pct", 0) or 0)
+    cagr = result.get("cagr", 0) or 0
 
-    # Minimal Statistical Floor
+    # Minimal Floor
     if trades < 20: return -1000.0 
     
-    # --- THE "UNLEASHED" SCORE ---
-    # 1. Growth Driver: CAGR (20% = 40 pts)
-    score_cagr = cagr * 200.0 
+    # Unconstrained Score (Growth & Profit Heavy)
+    score = (cagr * 300.0) + (avg_profit_pct * 100.0) + (min(sharpe, 3.0) * 50.0)
+    if max_dd > 50.0: score -= (max_dd - 50.0) * 10.0
     
-    # 2. Profit Driver: Avg Profit (2% = 200 pts) -> Massive weight!
-    score_profit = avg_profit_pct * 100.0
-    
-    # 3. Stability Bonus: Sharpe (1.5 = 30 pts)
-    score_sharpe = min(sharpe, 3.0) * 20.0
-    
-    # 4. Risk Penalty (Soft): Drawdown (-50% = -25 pts)
-    score_dd = max_dd * -0.5
-
-    return score_cagr + score_profit + score_sharpe + score_dd
+    return score
 
 def run_evolution(data_map, global_data):
-    print("\n--- Starting Incentive-Based Evolution (5-Year Horizon) ---")
+    print("\n--- Starting Autopilot Evolution ---")
     engine = EvolutionEngine()
     try:
         with open(GEN_CONFIG_PATH, "r") as f: engine.population = json.load(f)
     except: engine.generate_initial_population()
 
-    generations = 10 # Run deep to let the AI climb
+    generations = 5 # Short bursts for the Autopilot loop
+    best_stats = {}
+
     for gen in range(generations):
         print(f"\nEvaluating Gen {engine.generation_count}...")
         pop_results = []
@@ -99,32 +93,27 @@ def run_evolution(data_map, global_data):
                 except: pass
 
         ranked = sorted(pop_results, key=lambda x: x["score"], reverse=True)
-        print(f"Top Gen {engine.generation_count}:")
-        for i, r in enumerate(ranked[:3]):
-            stats = r['stats']
-            print(f"#{i+1} Score: {r['score']:.1f} | Sharpe: {stats.get('sharpe',0):.2f} | CAGR: {stats.get('cagr',0)*100:.1f}% | AvgProfit: {stats.get('avg_profit_pct',0):.2f}% | WR: {stats.get('hit_rate',0):.1f}% | Trades: {stats.get('total_trades',0)} | Hold: {stats.get('avg_days_held',0):.1f}d")
+        best_stats = ranked[0]['stats']
+        print(f"Top Gen {engine.generation_count}: CAGR {best_stats.get('cagr',0)*100:.1f}% | Profit {best_stats.get('avg_profit_pct',0):.2f}% | WR {best_stats.get('hit_rate',0):.1f}% | Hold {best_stats.get('avg_days_held',0):.1f}d")
 
-        if gen < generations - 1:
-            engine.evolve(ranked)
+        if gen < generations - 1: engine.evolve(ranked)
     
+    # Save Top Genome & Telemetry
     with open(GEN_CONFIG_PATH, "w") as f:
         json.dump([r["genome"] for r in ranked[:10]], f, indent=4)
     
-    # Save metrics for Autonomous Manager
-    if ranked:
-        top = ranked[0]["stats"]
-        metrics = {
-            "avg_profit": top.get("avg_profit_pct", 0),
-            "win_rate": top.get("hit_rate", 0),
-            "trades": top.get("total_trades", 0)
-        }
-        with open("latest_metrics.json", "w") as f:
-            json.dump(metrics, f)
-
-    print("\nEvolution complete. Clean population saved.")
+    telemetry = {
+        "cagr": best_stats.get("cagr", 0),
+        "avg_profit": best_stats.get("avg_profit_pct", 0),
+        "win_rate": best_stats.get("hit_rate", 0),
+        "hold_days": best_stats.get("avg_days_held", 0),
+        "trades": best_stats.get("total_trades", 0)
+    }
+    with open(METRICS_PATH, "w") as f:
+        json.dump(telemetry, f)
+    print("\nCycle complete. Telemetry saved.")
 
 def run_optimization():
-    print("🚀 Initializing...")
     symbols = fetch_sp1500_symbols()
     if not symbols: return
     data_map = fetch_data(symbols, days=1260)
