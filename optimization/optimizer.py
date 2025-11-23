@@ -110,7 +110,9 @@ def run_optimization():
     data_map = fetch_data(symbols, days=1260)
     if not data_map: return
     global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=1260)
-    vix_data = global_data_raw.get("$VIX") or global_data_raw.get("VIX")
+    vix_data = global_data_raw.get("$VIX")
+    if vix_data is None:
+        vix_data = global_data_raw.get("VIX")
     run_evolution(data_map, {"SPY": global_data_raw.get("SPY"), "VIX": vix_data})
 
 if __name__ == "__main__":
