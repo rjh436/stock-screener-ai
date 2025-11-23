@@ -1,42 +1,12 @@
 [
     {
-        "name": "Trend_Ignition_Rocket",
-        "type": "trend",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "highest55"
-            },
-            {
-                "col": "ema20",
-                "op": ">",
-                "ref": "sma50"
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 30.0
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": "<",
-                "ref": "ema20"
-            }
-        ],
-        "stop_loss_atr": 3.0,
-        "time_stop": 80
-    },
-    {
-        "name": "RSI_Power_Swing_gen2",
+        "name": "RSI_Power_Swing_gen9",
         "type": "hybrid",
         "entry_rules": [
             {
                 "col": "rsi2",
                 "op": "<",
-                "val": 5.0
+                "val": 4.6
             },
             {
                 "col": "close",
@@ -57,17 +27,17 @@
                 "type": "profit_target"
             }
         ],
-        "stop_loss_atr": 5.8,
+        "stop_loss_atr": 5.4,
         "time_stop": 70
     },
     {
-        "name": "RSI_Power_Swing_gen2_mut",
+        "name": "RSI_Power_Swing_gen9",
         "type": "hybrid",
         "entry_rules": [
             {
                 "col": "rsi2",
                 "op": "<",
-                "val": 4.8
+                "val": 4.6
             },
             {
                 "col": "close",
@@ -88,141 +58,17 @@
                 "type": "profit_target"
             }
         ],
-        "stop_loss_atr": 5.8,
+        "stop_loss_atr": 5.4,
         "time_stop": 70
     },
     {
-        "name": "Double_Seven_Sniper_gen2",
-        "type": "mean_reversion",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "close",
-                "op": "==",
-                "ref": "lowest5"
-            },
-            {
-                "col": "vix",
-                "op": "<",
-                "val": 35.0
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.7,
-        "time_stop": 50
-    },
-    {
-        "name": "Double_Seven_Sniper_gen2",
-        "type": "mean_reversion",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "close",
-                "op": "==",
-                "ref": "lowest5"
-            },
-            {
-                "col": "vix",
-                "op": "<",
-                "val": 35.0
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.7,
-        "time_stop": 50
-    },
-    {
-        "name": "Double_Seven_Sniper_gen2_mut",
-        "type": "mean_reversion",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "close",
-                "op": "==",
-                "ref": "lowest5"
-            },
-            {
-                "col": "vix",
-                "op": "<",
-                "val": 32.2
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.7,
-        "time_stop": 50
-    },
-    {
-        "name": "Double_Seven_Sniper_gen2_mut",
-        "type": "mean_reversion",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "close",
-                "op": "==",
-                "ref": "lowest5"
-            },
-            {
-                "col": "vix",
-                "op": "<",
-                "val": 35.0
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.7,
-        "time_stop": 50
-    },
-    {
-        "name": "RSI_Power_Swing_gen2_mut",
+        "name": "Cross_RSI_Power_Swing_gen9_RSI_Power_Swing_gen9",
         "type": "hybrid",
         "entry_rules": [
             {
                 "col": "rsi2",
                 "op": "<",
-                "val": 5.0
+                "val": 4.6
             },
             {
                 "col": "close",
@@ -243,58 +89,27 @@
                 "type": "profit_target"
             }
         ],
-        "stop_loss_atr": 5.8,
-        "time_stop": 80
-    },
-    {
-        "name": "RSI_Power_Swing_gen2_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "rsi2",
-                "op": "<",
-                "val": 5.0
-            },
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 25.0
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.1,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 5.5,
+        "stop_loss_atr": 5.4,
         "time_stop": 70
     },
     {
-        "name": "Double_Seven_Sniper_gen2_mut",
-        "type": "mean_reversion",
+        "name": "Cross_RSI_Power_Swing_gen9_RSI_Power_Swing_gen9",
+        "type": "hybrid",
         "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 4.6
+            },
             {
                 "col": "close",
                 "op": ">",
                 "ref": "sma200"
             },
             {
-                "col": "close",
-                "op": "==",
-                "ref": "lowest5"
-            },
-            {
-                "col": "vix",
-                "op": "<",
-                "val": 35.0
+                "col": "adx",
+                "op": ">",
+                "val": 25.1
             }
         ],
         "exit_rules": [
@@ -305,27 +120,27 @@
                 "type": "profit_target"
             }
         ],
-        "stop_loss_atr": 5.8,
-        "time_stop": 50
+        "stop_loss_atr": 5.4,
+        "time_stop": 70
     },
     {
-        "name": "Double_Seven_Sniper_gen2_mut",
-        "type": "mean_reversion",
+        "name": "Cross_RSI_Power_Swing_gen9_RSI_Power_Swing_gen9",
+        "type": "hybrid",
         "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 4.6
+            },
             {
                 "col": "close",
                 "op": ">",
                 "ref": "sma200"
             },
             {
-                "col": "close",
-                "op": "==",
-                "ref": "lowest5"
-            },
-            {
-                "col": "vix",
-                "op": "<",
-                "val": 35.0
+                "col": "adx",
+                "op": ">",
+                "val": 25.0
             }
         ],
         "exit_rules": [
@@ -336,7 +151,162 @@
                 "type": "profit_target"
             }
         ],
-        "stop_loss_atr": 5.3,
-        "time_stop": 50
+        "stop_loss_atr": 5.4,
+        "time_stop": 70
+    },
+    {
+        "name": "RSI_Power_Swing_gen9",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 4.6
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.1
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 1.1,
+                "type": "profit_target"
+            }
+        ],
+        "stop_loss_atr": 5.4,
+        "time_stop": 70
+    },
+    {
+        "name": "Cross_RSI_Power_Swing_gen9_RSI_Power_Swing_gen9",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 4.6
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.1
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 1.1,
+                "type": "profit_target"
+            }
+        ],
+        "stop_loss_atr": 5.4,
+        "time_stop": 70
+    },
+    {
+        "name": "RSI_Power_Swing_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 4.6
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.0
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 1.1,
+                "type": "profit_target"
+            }
+        ],
+        "stop_loss_atr": 5.4,
+        "time_stop": 70
+    },
+    {
+        "name": "RSI_Power_Swing_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 4.3
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.1
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 1.1,
+                "type": "profit_target"
+            }
+        ],
+        "stop_loss_atr": 5.4,
+        "time_stop": 70
+    },
+    {
+        "name": "RSI_Power_Swing_gen9_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 4.6
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.0
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 1.1,
+                "type": "profit_target"
+            }
+        ],
+        "stop_loss_atr": 5.4,
+        "time_stop": 60
     }
 ]
