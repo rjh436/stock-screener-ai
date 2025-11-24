@@ -15,7 +15,7 @@ from strategies.generic import GenericStrategy
 
 st.set_page_config(page_title="Apex Sniper Screener", layout="wide", page_icon="🎯")
 st.sidebar.title("🎯 Apex Sniper")
-mode = st.sidebar.radio("Mode", ["Live Screener", "Strategy Lab"])
+mode = st.sidebar.radio("Mode", ["Live Screener", "Backtest"])
 
 # --- Helper: Robust Data Fetching ---
 @st.cache_data(ttl=3600)
@@ -46,7 +46,6 @@ if mode == "Live Screener":
     with col1:
         universe = st.selectbox("1. Select Universe", ["S&P 500", "S&P 1500", "S&P 100", "Nasdaq 100"])
     with col2:
-        # Load Strategies
         strategies = {}
         try:
             with open("config/generated_strategies.json", "r") as f:
@@ -68,13 +67,11 @@ if mode == "Live Screener":
         for i, sym in enumerate(symbols):
             if i % 10 == 0: progress.progress(i / len(symbols))
             
-            # Optimized Cache Fetch
             df = DataCache.get_cached_data(sym)
-            if df is None or len(df) < 200: continue # Skip uncached in UI to be fast
+            if df is None or len(df) < 200: continue 
             
             try:
                 df = _compute_indicators(df)
-                # Inject Context
                 if global_data["SPY"] is not None:
                     spy_re = global_data["SPY"]["close"].reindex(df.index, method="ffill")
                     df["rs_ratio"] = df["close"] / spy_re
@@ -88,7 +85,6 @@ if mode == "Live Screener":
 
                 last_idx = len(df) - 1
                 
-                # Check ALL selected strategies
                 for strat_name in selected_names:
                     strat_config = strategies[strat_name]
                     strat_obj = GenericStrategy(strat_config)
@@ -107,47 +103,57 @@ if mode == "Live Screener":
             except: pass
 
         progress.progress(100)
-        
         if all_hits:
             st.success(f"Found {len(all_hits)} Trade Setups!")
             st.dataframe(pd.DataFrame(all_hits))
         else:
             st.warning("No setups found.")
 
-# --- 2. Strategy Lab (Backtester) ---
-elif mode == "Strategy Lab":
-    st.header("🧪 Strategy Lab")
+# --- 2. Backtest (Renamed from Strategy Lab) ---
+elif mode == "Backtest":
+    st.header("🧪 Backtest Engine")
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        # FIXED: Universe Selector for Backtest
-        bt_universe = st.selectbox("1. Backtest Universe", ["S&P 100", "S&P 500", "S&P 1500"])
+        bt_universe = st.selectbox("1. Universe", ["S&P 100", "S&P 500", "S&P 1500"])
     with col2:
         gen_strategies = []
         try:
             with open("config/generated_strategies.json", "r") as f:
                 gen_strategies = [s["name"] for s in json.load(f)]
         except: pass
-        bt_strategies = st.multiselect("2. Select Strategies", gen_strategies, default=gen_strategies[:3] if gen_strategies else None)
+        bt_strategies = st.multiselect("2. Strategies", gen_strategies, default=gen_strategies[:3] if gen_strategies else None)
+    with col3:
+        timeframe = st.selectbox("3. Timeframe", ["1 Year", "5 Years", "10 Years", "20 Years", "Max"])
 
     if st.button("Run Backtest"):
+        # Calculate Start Date based on Timeframe
+        days_map = {"1 Year": 365, "5 Years": 1260, "10 Years": 2520, "20 Years": 5040, "Max": 10000}
+        days = days_map.get(timeframe, 1260)
+        
+        if timeframe == "Max":
+            start_date = None
+        else:
+            start_date = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+
         symbols = get_index_symbols(bt_universe)
         data_map = {}
-        global_data = get_global_data(days=1260)
+        global_data = get_global_data(days=days)
         
-        with st.status("Loading Data from Cache...") as status:
+        with st.status(f"Loading Data ({timeframe})...") as status:
             for sym in symbols:
                 df = DataCache.get_cached_data(sym)
+                # Only add if we have enough data for the requested timeframe (or it's Max)
                 if df is not None and len(df) > 200:
                     data_map[sym] = df
-            status.update(label=f"Running Backtest on {len(data_map)} symbols...", state="running")
+                    
+            status.update(label=f"Backtesting {len(data_map)} symbols...", state="running")
             
-            # RUN ENGINE
-            results_df = run_compare(bt_strategies, data_map, symbols, start_cash=100000.0, global_data=global_data)
+            # RUN ENGINE with start_date
+            results_df = run_compare(bt_strategies, data_map, symbols, start_cash=100000.0, start_date=start_date, global_data=global_data)
             status.update(label="Complete!", state="complete")
         
         if not results_df.empty:
-            # Format for readability
             st.dataframe(results_df.style.format({
                 "hit_rate": "{:.1f}%",
                 "avg_profit_pct": "{:.2f}%",
