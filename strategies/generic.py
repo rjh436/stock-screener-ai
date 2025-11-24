@@ -31,11 +31,9 @@ class GenericStrategy(BaseStrategy):
         if i < 200: return None
         row = df.iloc[i]
         
-        # Check Entry Rules
         for rule in self.genome.get("entry_rules", []):
             if not self._check_condition(row, rule): return None
             
-        # Stop Loss
         atr = row.get("atr14", row["close"] * 0.02)
         mult = self.genome.get("stop_loss_atr", 2.0)
         return {"entry_price": row["close"], "stop_price": row["close"] - (atr * mult)}
@@ -51,16 +49,16 @@ class GenericStrategy(BaseStrategy):
         time_stop = self.genome.get("time_stop", 40)
         if days >= time_stop: return True
         
-        # 3. Exit Rules (Profit Targets & Logic)
+        # 3. Exit Rules (Including Profit Targets)
         exit_rules = self.genome.get("exit_rules", [])
         if exit_rules:
             for rule in exit_rules:
-                # Special logic for Profit Target (e.g. Close > 1.10 * Entry)
+                # Special Logic: Profit Target
                 if rule.get("type") == "profit_target":
                     target_price = entry_price * rule["val"]
-                    # Check High to see if we hit target intraday
+                    # Check if High hit the target
                     if row["high"] > target_price: return True
-                # Standard indicator logic
+                # Standard Indicator Logic
                 elif self._check_condition(row, rule): 
                     return True
                 
