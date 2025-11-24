@@ -47,6 +47,11 @@ if mode == "Live Screener":
                 for s in json.load(f): strategies[s["name"]] = s
         except: st.error("No Strategies Found!")
         selected_names = st.multiselect("Strategies", list(strategies.keys()), default=list(strategies.keys())[:1])
+        
+        # Debug Info
+        st.write(f"Loaded {len(strategies)} strategies.")
+        if st.checkbox("Show Debug Info"):
+            st.write("Strategies:", strategies)
 
     if st.button("Run Scan"):
         symbols = get_index_symbols(universe)
@@ -59,15 +64,18 @@ if mode == "Live Screener":
             df = DataCache.get_cached_data(sym)
             if df is None or len(df) < 200: continue 
             
-            try:
-                df = _compute_indicators(df)
-                if global_data["VIX"] is not None:
-                    df["vix"] = global_data["VIX"]["close"].reindex(df.index, method="ffill").fillna(20.0)
-                else: df["vix"] = 20.0
+            # try:
+            df = _compute_indicators(df)
+            if global_data["VIX"] is not None:
+                df["vix"] = global_data["VIX"]["close"].reindex(df.index, method="ffill").fillna(20.0)
+            else: 
+                df["vix"] = 20.0
+                if i < 5: st.write(f"⚠️ No VIX data for {sym}, using default 20.0")
 
-                last_idx = len(df) - 1
-                for strat_name in selected_names:
-                    strat = GenericStrategy(strategies[strat_name])
+            last_idx = len(df) - 1
+            for strat_name in selected_names:
+                strat = GenericStrategy(strategies[strat_name])
+                try:
                     signal = strat.entry(df, last_idx)
                     if signal:
                         row = df.iloc[-1]
@@ -84,7 +92,11 @@ if mode == "Live Screener":
                             "Target": f"${target:.2f}",
                             "Risk": f"{(1 - signal['stop_price']/row['close'])*100:.1f}%"
                         })
-            except: pass
+                    # else:
+                    #     if i < 3: st.write(f"No signal for {sym} with {strat_name}")
+                except Exception as e:
+                    st.error(f"Strategy Error {sym}: {e}")
+            # except Exception as e: st.error(f"Error processing {sym}: {e}")
 
         progress.progress(100)
         if all_hits: st.dataframe(pd.DataFrame(all_hits))

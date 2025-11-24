@@ -103,11 +103,15 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
             else: df["vix"] = 20.0
             
             if start_date: 
-                start_dt = pd.to_datetime(start_date).replace(tzinfo=None)
+                start_dt = pd.to_datetime(start_date)
+                if start_dt.tz is None:
+                    start_dt = start_dt.tz_localize("UTC")
                 df = df[df.index >= start_dt]
             
             if len(df) > MIN_BARS_FOR_WARMUP: enriched[sym] = df
-        except: continue
+        except Exception as e:
+            print(f"Error processing {sym}: {e}")
+            continue
 
     if not enriched: return _empty_result(strategy.name, start_cash, strategy.params)
 
