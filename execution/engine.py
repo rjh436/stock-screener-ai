@@ -6,87 +6,78 @@ from datetime import datetime, date
 from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
-import concurrent.futures
 from strategies.base import BaseStrategy
 
 MIN_BARS_FOR_WARMUP = 200
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    # 1. Data Normalization
-    df.columns = df.columns.str.lower() # Force lowercase (Open -> open)
-    if not isinstance(df.index, pd.DatetimeIndex):
-        # Try to find a date column if index isn't one
-        if 'date' in df.columns:
-            df['date'] = pd.to_datetime(df['date'])
-            df.set_index('date', inplace=True)
-        else:
-            # Try converting the index itself
-            df.index = pd.to_datetime(df.index)
-            
-    df = df.sort_index().copy()
-    
-    # 2. Basic Moving Averages
-    for p in [5, 10, 20, 50, 100, 200]:
-        df[f'sma{p}'] = df['close'].rolling(p).mean()
-        df[f'ema{p}'] = df['close'].ewm(span=p, adjust=False).mean()
+    try:
+        df = df.sort_index().copy()
+        df.columns = df.columns.str.lower() # Force lowercase
+        
+        # Averages
+        for p in [5, 10, 20, 50, 100, 200]:
+            df[f'sma{p}'] = df['close'].rolling(p).mean()
+            df[f'ema{p}'] = df['close'].ewm(span=p, adjust=False).mean()
 
-    # 3. Volatility
-    df['bb_upper'] = df['close'].rolling(20).mean() + (df['close'].rolling(20).std() * 2)
-    df['bb_lower'] = df['close'].rolling(20).mean() - (df['close'].rolling(20).std() * 2)
-    df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['close'].rolling(20).mean()
-    
-    high_low = df['high'] - df['low']
-    tr = pd.concat([
-        df['high'] - df['low'],
-        (df['high'] - df['close'].shift()).abs(),
-        (df['low'] - df['close'].shift()).abs()
-    ], axis=1).max(axis=1)
-    df['atr14'] = tr.rolling(14).mean()
-    df['atr14_ma20'] = df['atr14'].rolling(20).mean()
+        # Volatility
+        rolling_mean = df['close'].rolling(window=20).mean()
+        rolling_std = df['close'].rolling(window=20).std()
+        df['bb_upper'] = rolling_mean + (rolling_std * 2)
+        df['bb_lower'] = rolling_mean - (rolling_std * 2)
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_mid']
+        
+        tr = pd.concat([
+            df['high'] - df['low'],
+            (df['high'] - df['close'].shift()).abs(),
+            (df['low'] - df['close'].shift()).abs()
+        ], axis=1).max(axis=1)
+        df['atr14'] = tr.rolling(14).mean()
+        df['atr14_ma20'] = df['atr14'].rolling(20).mean()
 
-    # 4. Extremes (Standard & Shifted)
-    df['highest20'] = df['high'].rolling(20).max()
-    df['highest55'] = df['high'].rolling(55).max()
-    df['lowest5'] = df['low'].rolling(5).min()
-    
-    # SHIFTED (Previous Day) - Crucial for Breakout Logic
-    df['highest20_1'] = df['highest20'].shift(1)
-    df['highest55_1'] = df['highest55'].shift(1)
-    df['lowest5_1'] = df['lowest5'].shift(1)
+        # Extremes (Standard)
+        df['highest20'] = df['high'].rolling(20).max()
+        df['highest55'] = df['high'].rolling(55).max()
+        df['lowest5'] = df['low'].rolling(5).min()
+        
+        # Extremes (SHIFTED - Required for valid breakout checks)
+        df['highest20_1'] = df['highest20'].shift(1)
+        df['highest55_1'] = df['highest55'].shift(1)
+        df['lowest5_1'] = df['lowest5'].shift(1)
 
-    # 5. Oscillators
-    def calc_rsi(series, period):
-        delta = series.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-        rs = gain / loss.replace(0, np.nan)
-        return 100 - (100 / (1 + rs))
+        # Oscillators
+        def calc_rsi(series, period):
+            delta = series.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+            rs = gain / loss.replace(0, np.nan)
+            return 100 - (100 / (1 + rs))
 
-    df['rsi2'] = calc_rsi(df['close'], 2)
-    df['rsi3'] = calc_rsi(df['close'], 3)
-    df['rsi14'] = calc_rsi(df['close'], 14)
-    df['crsi'] = (df['rsi3'] + df['rsi2'] + (100 - df['rsi14'])) / 3 
+        df['rsi2'] = calc_rsi(df['close'], 2)
+        df['rsi3'] = calc_rsi(df['close'], 3)
+        df['rsi14'] = calc_rsi(df['close'], 14)
+        df['crsi'] = (df['rsi3'] + df['rsi2'] + (100 - df['rsi14'])) / 3 
 
-    stoch = StochasticOscillator(df['high'], df['low'], df['close'])
-    df['stoch_k'] = stoch.stoch()
-    df['stoch_d'] = stoch.stoch_signal()
-    
-    adx = ADXIndicator(df['high'], df['low'], df['close'])
-    df['adx'] = adx.adx()
-    df['plus_di'] = adx.adx_pos()
-    df['minus_di'] = adx.adx_neg()
-    
-    macd = MACD(df['close'])
-    df['macd'] = macd.macd()
-    df['macd_hist'] = macd.macd_diff()
+        # Trend & Volume
+        adx = ADXIndicator(df['high'], df['low'], df['close'])
+        df['adx'] = adx.adx()
+        df['plus_di'] = adx.adx_pos()
+        df['minus_di'] = adx.adx_neg()
+        
+        macd = MACD(df['close'])
+        df['macd'] = macd.macd()
+        df['macd_hist'] = macd.macd_diff()
+        
+        df['cci'] = CCIIndicator(df['high'], df['low'], df['close']).cci()
+        df['roc'] = ROCIndicator(df['close'], window=12).roc()
+        df['stoch_k'] = StochasticOscillator(df['high'], df['low'], df['close']).stoch()
+        
+        df['vol_ma20'] = df['volume'].rolling(20).mean()
 
-    df['cci'] = CCIIndicator(df['high'], df['low'], df['close']).cci()
-    df['roc'] = ROCIndicator(df['close'], window=12).roc()
-    df['mom'] = df['close'].diff(10)
-
-    df['vol_ma20'] = df['volume'].rolling(20).mean()
-
-    return df
+        return df
+    except Exception as e:
+        print(f"❌ Ind Calc Error: {e}")
+        return df
 
 def _empty_result(name, start_cash, params=None):
     return {
@@ -99,42 +90,26 @@ def _empty_result(name, start_cash, params=None):
 def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None):
     symbols = list(data_dict.keys())
     if symbol_universe: symbols = [s for s in symbols if s in symbol_universe]
-    if not symbols: return _empty_result(strategy.name, start_cash, strategy.params)
-
+    
     enriched = {}
     vix_df = global_data.get("VIX") if global_data else None
-    
-    # Pre-process VIX to match expected format
-    if vix_df is not None:
-        vix_df.columns = vix_df.columns.str.lower()
-        if not isinstance(vix_df.index, pd.DatetimeIndex):
-             vix_df.index = pd.to_datetime(vix_df.index)
 
     for sym in symbols:
         if data_dict[sym] is None or data_dict[sym].empty: continue
         try:
             df = _compute_indicators(data_dict[sym].copy())
-            
-            # Inject Context
             if vix_df is not None:
                 df["vix"] = vix_df["close"].reindex(df.index, method="ffill").fillna(20.0)
             else: df["vix"] = 20.0
             
             if start_date: 
-                # Ensure type match for comparison
-                start_dt = pd.Timestamp(start_date)
-                if start_dt.tzinfo is None and df.index.tz is not None:
-                    df.index = df.index.tz_localize(None)
+                start_dt = pd.to_datetime(start_date).replace(tzinfo=None)
                 df = df[df.index >= start_dt]
             
             if len(df) > MIN_BARS_FOR_WARMUP: enriched[sym] = df
-        except Exception as e:
-            print(f"⚠️ Failed to process {sym}: {e}") # LOG THE ERROR
-            continue
+        except: continue
 
-    if not enriched: 
-        print("❌ No symbols survived data enrichment. Check data format.")
-        return _empty_result(strategy.name, start_cash, strategy.params)
+    if not enriched: return _empty_result(strategy.name, start_cash, strategy.params)
 
     all_dates = sorted(set().union(*[df.index for df in enriched.values()]))
     cash = start_cash
@@ -158,8 +133,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                 exit_px = pos["stop_price"] if row["low"] < pos["stop_price"] else row["close"]
                 if row["low"] < pos["stop_price"] and row["open"] < pos["stop_price"]: exit_px = row["open"]
                 
-                # Circuit Breaker
-                if exit_px > (pos["entry_price"] * 4.0): exit_px = pos["entry_price"]
+                if exit_px > (pos["entry_price"] * 5.0): exit_px = pos["entry_price"] # Circuit Breaker
 
                 pnl = (exit_px - pos["entry_price"]) * pos["shares"]
                 pct = ((exit_px - pos["entry_price"]) / pos["entry_price"]) * 100
@@ -205,14 +179,14 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     
     gross_profit = sum(t for t in trade_pnls if t > 0)
     gross_loss = abs(sum(t for t in trade_pnls if t < 0))
-    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 99.0
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0.0
     
     avg_win = np.mean([t for t in trade_returns if t > 0]) if any(t > 0 for t in trade_returns) else 0
     avg_loss = abs(np.mean([t for t in trade_returns if t < 0])) if any(t < 0 for t in trade_returns) else 1.0
     payoff_ratio = avg_win / avg_loss if avg_loss > 0 else 0
     
-    days_run = (all_dates[-1] - all_dates[0]).days if len(all_dates) > 0 else 1
-    cagr = (final_val / start_cash) ** (365.0/days_run) - 1 if final_val > 0 else 0.0
+    days = (all_dates[-1] - all_dates[0]).days if len(all_dates) > 0 else 1
+    cagr = (final_val / start_cash) ** (365.0/days) - 1 if final_val > 0 else 0.0
     
     eq = pd.Series(equity_curve)
     sharpe = (eq.pct_change().dropna().mean() / eq.pct_change().dropna().std() * math.sqrt(252)) if len(eq) > 1 and eq.std() > 0 else 0.0
@@ -242,7 +216,7 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
             strategies.append(GenericStrategy(gen_strategies[name]))
 
     results = []
-    # Use ThreadPool for Shared Memory
+    # Use ThreadPool for M3 Max
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(run_backtest, strat, data_dict, symbol_universe, start_cash, start_date, global_data): strat for strat in strategies}
         for future in concurrent.futures.as_completed(futures):

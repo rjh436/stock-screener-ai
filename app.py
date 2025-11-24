@@ -6,7 +6,6 @@ import json
 from datetime import datetime, timedelta, timezone
 
 sys.path.append(os.path.dirname(__file__))
-
 from data.schwab_client import sd
 from data.cache_manager import DataCache
 from data.indices import get_index_symbols
@@ -37,142 +36,91 @@ def get_global_data(days=400):
     vix = g_data.get("$VIX") if "$VIX" in g_data else g_data.get("VIX")
     return {"SPY": g_data.get("SPY"), "VIX": vix}
 
-# --- 1. Live Screener ---
 if mode == "Live Screener":
     st.header("🚀 Live Market Screener")
-    
     col1, col2 = st.columns(2)
-    with col1:
-        universe = st.selectbox("1. Select Universe", ["S&P 500", "S&P 1500", "S&P 100", "Nasdaq 100"])
+    with col1: universe = st.selectbox("Select Universe", ["S&P 500", "S&P 1500", "S&P 100"])
     with col2:
         strategies = {}
         try:
             with open("config/generated_strategies.json", "r") as f:
-                gen_strats = json.load(f)
-                for s in gen_strats: strategies[s["name"]] = s
+                for s in json.load(f): strategies[s["name"]] = s
         except: st.error("No Strategies Found!")
-        
-        selected_names = st.multiselect("2. Select Strategies (or leave empty for ALL)", list(strategies.keys()))
-        if not selected_names: selected_names = list(strategies.keys())
+        selected_names = st.multiselect("Strategies", list(strategies.keys()), default=list(strategies.keys())[:1])
 
     if st.button("Run Scan"):
-        st.info(f"Scanning {len(selected_names)} strategies against {universe}...")
         symbols = get_index_symbols(universe)
         global_data = get_global_data(days=1260)
-        
         progress = st.progress(0)
         all_hits = []
         
         for i, sym in enumerate(symbols):
             if i % 10 == 0: progress.progress(i / len(symbols))
-            
             df = DataCache.get_cached_data(sym)
             if df is None or len(df) < 200: continue 
             
             try:
                 df = _compute_indicators(df)
-                # Inject Context
-                if global_data["SPY"] is not None:
-                    spy_re = global_data["SPY"]["close"].reindex(df.index, method="ffill")
-                    df["rs_ratio"] = df["close"] / spy_re
-                    df["rs_sma20"] = df["rs_ratio"].rolling(20).mean()
-                    df["rs_trend"] = (df["rs_ratio"] > df["rs_sma20"]).astype(int)
-                else: df["rs_trend"] = 0
-                
                 if global_data["VIX"] is not None:
                     df["vix"] = global_data["VIX"]["close"].reindex(df.index, method="ffill").fillna(20.0)
                 else: df["vix"] = 20.0
 
                 last_idx = len(df) - 1
-                
                 for strat_name in selected_names:
-                    strat_config = strategies[strat_name]
-                    strat_obj = GenericStrategy(strat_config)
-                    signal = strat_obj.entry(df, last_idx)
-                    
+                    strat = GenericStrategy(strategies[strat_name])
+                    signal = strat.entry(df, last_idx)
                     if signal:
                         row = df.iloc[-1]
-                        entry_price = row["close"]
-                        stop_price = signal["stop_price"]
-                        
-                        # Calculate Target (Assume 10% if not specified, or parse from exit rules)
-                        target_price = entry_price * 1.10 
-                        for rule in strat_config.get("exit_rules", []):
-                            if rule.get("type") == "profit_target":
-                                target_price = entry_price * rule["val"]
-
-                        risk = entry_price - stop_price
-                        reward = target_price - entry_price
-                        rr_ratio = reward / risk if risk > 0 else 0
+                        target = row["close"] * 1.10
+                        # Check for dynamic target
+                        for rule in strategies[strat_name].get("exit_rules", []):
+                            if rule.get("type") == "profit_target": target = row["close"] * rule["val"]
                         
                         all_hits.append({
                             "Strategy": strat_name,
                             "Symbol": sym,
-                            "Entry Price": f"${entry_price:.2f}",
-                            "Stop Loss": f"${stop_price:.2f}",
-                            "Target (10%)": f"${target_price:.2f}",
-                            "Risk/Reward": f"1:{rr_ratio:.1f}",
-                            "ATR": f"{row['atr14']:.2f}",
-                            "VIX": f"{row['vix']:.2f}"
+                            "Price": f"${row['close']:.2f}",
+                            "Stop": f"${signal['stop_price']:.2f}",
+                            "Target": f"${target:.2f}",
+                            "Risk": f"{(1 - signal['stop_price']/row['close'])*100:.1f}%"
                         })
             except: pass
 
         progress.progress(100)
-        
-        if all_hits:
-            st.success(f"Found {len(all_hits)} Trade Setups!")
-            st.dataframe(pd.DataFrame(all_hits))
-        else:
-            st.warning("No setups found.")
+        if all_hits: st.dataframe(pd.DataFrame(all_hits))
+        else: st.warning("No setups found.")
 
-# --- 2. Backtest ---
 elif mode == "Backtest":
     st.header("🧪 Backtest Engine")
-    
     col1, col2, col3 = st.columns(3)
-    with col1:
-        bt_universe = st.selectbox("1. Universe", ["S&P 100", "S&P 500", "S&P 1500"])
+    with col1: bt_universe = st.selectbox("Universe", ["S&P 100", "S&P 500", "S&P 1500"])
     with col2:
         gen_strategies = []
         try:
             with open("config/generated_strategies.json", "r") as f:
                 gen_strategies = [s["name"] for s in json.load(f)]
         except: pass
-        bt_strategies = st.multiselect("2. Strategies", gen_strategies, default=gen_strategies[:3] if gen_strategies else None)
-    with col3:
-        timeframe = st.selectbox("3. Timeframe", ["1 Year", "5 Years", "10 Years", "20 Years", "Max"])
+        bt_strategies = st.multiselect("Strategies", gen_strategies, default=gen_strategies[:3] if gen_strategies else None)
+    with col3: timeframe = st.selectbox("Timeframe", ["1 Year", "5 Years", "Max"])
 
     if st.button("Run Backtest"):
-        days_map = {"1 Year": 365, "5 Years": 1260, "10 Years": 2520, "20 Years": 5040, "Max": 10000}
-        days = days_map.get(timeframe, 1260)
-        
-        if timeframe == "Max": start_date = None
-        else: start_date = (datetime.now(timezone.utc) - timedelta(days=days)).date()
-
+        days_map = {"1 Year": 365, "5 Years": 1260, "Max": 10000}
+        start_date = (datetime.now(timezone.utc) - timedelta(days=days_map.get(timeframe, 1260))).date()
         symbols = get_index_symbols(bt_universe)
         data_map = {}
-        global_data = get_global_data(days=days)
+        global_data = get_global_data(days=1260)
         
-        with st.status(f"Loading Data ({timeframe})...") as status:
+        with st.status("Running Backtest...") as status:
             for sym in symbols:
                 df = DataCache.get_cached_data(sym)
-                if df is not None and len(df) > 200:
-                    data_map[sym] = df
-                    
-            status.update(label=f"Backtesting {len(data_map)} symbols...", state="running")
+                if df is not None and len(df) > 200: data_map[sym] = df
             
-            results_df = run_compare(bt_strategies, data_map, symbols, start_cash=100000.0, start_date=start_date, global_data=global_data)
+            results = run_compare(bt_strategies, data_map, symbols, start_cash=100000.0, start_date=start_date, global_data=global_data)
             status.update(label="Complete!", state="complete")
         
-        if not results_df.empty:
-            st.dataframe(results_df.style.format({
-                "hit_rate": "{:.1f}%",
-                "avg_profit_pct": "{:.2f}%",
-                "cagr": "{:.1f}%",
-                "Score": "{:.1f}",
-                "profit_factor": "{:.2f}",
-                "payoff_ratio": "{:.2f}",
-                "avg_days_held": "{:.1f}d"
+        if not results.empty:
+            st.dataframe(results.style.format({
+                "hit_rate": "{:.1f}%", "avg_profit_pct": "{:.2f}%", "cagr": "{:.1f}%", 
+                "Score": "{:.1f}", "profit_factor": "{:.2f}", "payoff_ratio": "{:.2f}"
             }))
-        else:
-            st.error("Backtest returned no results.")
+        else: st.error("No trades found.")
