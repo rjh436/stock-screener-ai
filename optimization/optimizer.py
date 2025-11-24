@@ -62,17 +62,19 @@ def calculate_fitness(result: Dict) -> float:
     profit_factor = result.get("profit_factor", 0) or 0
     payoff = result.get("payoff_ratio", 0) or 0
 
-    if trades < 20:
-        return -1000.0
-
-    score = (avg_profit_pct * 40.0) + (min(sharpe, 3.0) * 30.0) + (profit_factor * 20.0)
-    if payoff > 2.0:
-        score += 50.0
+    score = (
+        avg_profit_pct * 30.0
+        + min(sharpe, 3.0) * 20.0
+        + profit_factor * 20.0
+        + payoff * 15.0
+        + win_rate * 0.5
+        + trades * 0.1
+    )
     return score
 
 
 def run_evolution(data_map: Dict, global_data: Dict):
-    print("\n--- Starting Deep Metric Evolution ---")
+    print("\\n--- Starting Deep Metric Evolution ---")
     engine = EvolutionEngine()
     try:
         with open(GEN_CONFIG_PATH, "r") as f:
@@ -82,7 +84,7 @@ def run_evolution(data_map: Dict, global_data: Dict):
 
     generations = 5
     for gen_i in range(generations):
-        print(f"\nEvaluating Gen {engine.generation_count}...")
+        print(f"\\nEvaluating Gen {engine.generation_count}...")
         pop_results = []
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = {

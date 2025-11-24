@@ -35,8 +35,8 @@ def get_global_data(days: int = 1260):
                     DataCache.save_to_cache(sym, df)
             if df is not None and not df.empty:
                 g_data[sym] = df
-        except Exception:
-            continue
+        except Exception as e:
+            st.warning(f"Failed to load {sym}: {e}")
     vix = g_data.get("$VIX") if "$VIX" in g_data else g_data.get("VIX")
     return {"SPY": g_data.get("SPY"), "VIX": vix}
 
@@ -46,7 +46,8 @@ def load_strategies():
         with open("config/generated_strategies.json", "r") as f:
             data = json.load(f)
         return {s["name"]: s for s in data}
-    except Exception:
+    except Exception as e:
+        st.error(f"Unable to load strategies: {e}")
         return {}
 
 
@@ -58,8 +59,6 @@ if mode == "Live Screener":
     with col2:
         strategies = load_strategies()
         all_names = list(strategies.keys())
-        if not all_names:
-            st.error("No strategies found. Please generate strategies.")
         use_all = st.checkbox("Select All Strategies", value=True)
         selected_names = all_names if use_all else st.multiselect("Strategies", all_names, default=all_names[:1])
         st.caption(f"Loaded {len(all_names)} strategies.")
@@ -77,7 +76,7 @@ if mode == "Live Screener":
             if df is None or len(df) < 200:
                 continue
 
-            df = _compute_indicators(df)
+            df = _compute_indicators(df, sym)
             if global_data["VIX"] is not None:
                 df["vix"] = global_data["VIX"]["close"].reindex(df.index, method="ffill").fillna(20.0)
             else:
@@ -121,7 +120,7 @@ if mode == "Live Screener":
             st.warning("No setups found.")
 
 elif mode == "Backtest":
-    st.header("🧪 Backtest Engine")
+    st.header("🧪 Backtest")
     col1, col2 = st.columns(2)
     with col1:
         bt_universe = st.selectbox("Universe", ["S&P 1500", "S&P 500", "S&P 100"], index=0)
@@ -130,10 +129,10 @@ elif mode == "Backtest":
         all_names = list(strategies.keys())
         bt_selection = st.multiselect("Strategies", all_names, default=all_names, help="Defaults to all Sniper strategies.")
 
-    timeframe = st.selectbox("Timeframe", ["5 Years", "1 Year", "10 Years"], index=0)
+    timeframe = st.selectbox("Timeframe", ["1 Year", "5 Years", "Max"], index=1)
 
     if st.button("Run Backtest", type="primary"):
-        days_map = {"1 Year": 365, "5 Years": 1260, "10 Years": 2520}
+        days_map = {"1 Year": 365, "5 Years": 1260, "Max": 3650}
         start_date = (datetime.now(timezone.utc) - timedelta(days=days_map.get(timeframe, 1260))).date()
         symbols = get_index_symbols(bt_universe)
         data_map = {}
@@ -157,6 +156,7 @@ elif mode == "Backtest":
                         "Score": "{:.1f}",
                         "profit_factor": "{:.2f}",
                         "payoff_ratio": "{:.2f}",
+                        "avg_days_held": "{:.1f}",
                     }
                 )
             )

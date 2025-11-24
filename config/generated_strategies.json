@@ -14,7 +14,7 @@
         "time_stop": 50
     },
     {
-        "name": "RSI_Power",
+        "name": "RSI_Swing",
         "type": "hybrid",
         "entry_rules": [
             { "col": "rsi2", "op": "<", "val": 5.0 },

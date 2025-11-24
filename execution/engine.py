@@ -11,46 +11,60 @@ from ta.trend import ADXIndicator, MACD
 MIN_BARS_FOR_WARMUP = 200
 
 
-def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute core indicators, including shifted extremes to avoid lookahead."""
+def _compute_indicators(df: pd.DataFrame, sym: str = "UNKNOWN") -> pd.DataFrame:
+    """Compute indicators; print errors instead of failing silently."""
+    df = df.sort_index().copy()
+    df.columns = df.columns.str.lower()
     try:
-        df = df.sort_index().copy()
-        df.columns = df.columns.str.lower()
-
         price = df["close"]
         high = df["high"]
         low = df["low"]
+    except Exception as e:
+        print(f"❌ Error calculating {sym}: missing price columns ({e})")
+        return df
 
+    try:
         for p in [5, 10, 20, 50, 100, 200]:
             df[f"sma{p}"] = price.rolling(p).mean()
+    except Exception as e:
+        print(f"❌ Error calculating {sym}: SMA ({e})")
 
+    try:
         df["vol_ma20"] = df["volume"].rolling(20).mean()
+    except Exception as e:
+        print(f"❌ Error calculating {sym}: vol_ma20 ({e})")
 
+    try:
         df["highest20"] = high.rolling(20).max()
         df["highest55"] = high.rolling(55).max()
         df["lowest5"] = low.rolling(5).min()
         df["highest20_1"] = df["highest20"].shift(1)
         df["highest55_1"] = df["highest55"].shift(1)
         df["lowest5_1"] = df["lowest5"].shift(1)
+    except Exception as e:
+        print(f"❌ Error calculating {sym}: extremes ({e})")
 
+    try:
         rolling_mean = price.rolling(20).mean()
         rolling_std = price.rolling(20).std()
         df["bb_upper"] = rolling_mean + (rolling_std * 2)
         df["bb_lower"] = rolling_mean - (rolling_std * 2)
         df["bb_mid"] = rolling_mean
         df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
+    except Exception as e:
+        print(f"❌ Error calculating {sym}: Bollinger ({e})")
 
+    try:
         tr = pd.concat(
-            [
-                high - low,
-                (high - price.shift()).abs(),
-                (low - price.shift()).abs(),
-            ],
+            [high - low, (high - price.shift()).abs(), (low - price.shift()).abs()],
             axis=1,
         ).max(axis=1)
         df["atr14"] = tr.rolling(14).mean()
         df["atr14_ma20"] = df["atr14"].rolling(20).mean()
+    except Exception as e:
+        print(f"❌ Error calculating {sym}: ATR ({e})")
 
+    try:
         def calc_rsi(series: pd.Series, period: int) -> pd.Series:
             delta = series.diff()
             gain = delta.where(delta > 0, 0).rolling(period).mean()
@@ -61,7 +75,10 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df["rsi2"] = calc_rsi(price, 2)
         df["rsi3"] = calc_rsi(price, 3)
         df["rsi14"] = calc_rsi(price, 14)
+    except Exception as e:
+        print(f"❌ Error calculating {sym}: RSI ({e})")
 
+    try:
         adx = ADXIndicator(high, low, price, fillna=True)
         df["adx"] = adx.adx()
         df["plus_di"] = adx.adx_pos()
@@ -70,10 +87,10 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         macd = MACD(price, fillna=True)
         df["macd"] = macd.macd()
         df["macd_hist"] = macd.macd_diff()
+    except Exception as e:
+        print(f"❌ Error calculating {sym}: trend ({e})")
 
-        return df
-    except Exception:
-        return df
+    return df
 
 
 def _empty_result(name: str, start_cash: float, params: Optional[Dict] = None) -> Dict:
@@ -114,7 +131,7 @@ def run_backtest(
         if src is None or src.empty:
             continue
         try:
-            df = _compute_indicators(src.copy())
+            df = _compute_indicators(src.copy(), sym)
             if vix_df is not None:
                 df["vix"] = vix_df["close"].reindex(df.index, method="ffill").fillna(20.0)
             else:
@@ -126,7 +143,8 @@ def run_backtest(
 
             if len(df) > MIN_BARS_FOR_WARMUP:
                 enriched[sym] = df
-        except Exception:
+        except Exception as e:
+            print(f"❌ Error preparing {sym}: {e}")
             continue
 
     if not enriched:
@@ -151,7 +169,8 @@ def run_backtest(
             pos = positions[sym]
             try:
                 should_exit = strategy.exit(df, i, pos["entry_i"], pos["entry_price"], pos["stop_price"])
-            except Exception:
+            except Exception as e:
+                print(f"❌ Exit error {sym}: {e}")
                 should_exit = False
 
             if should_exit:
@@ -188,7 +207,8 @@ def run_backtest(
                     continue
                 try:
                     entry = strategy.entry(df, i - 1)
-                except Exception:
+                except Exception as e:
+                    print(f"❌ Entry error {sym}: {e}")
                     continue
 
                 if entry:
@@ -263,8 +283,8 @@ def run_compare(
         with open(os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/generated_strategies.json")), "r") as f:
             for g in json.load(f):
                 gen_strategies[g["name"]] = g
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"❌ Unable to load strategies: {e}")
 
     strategies = [GenericStrategy(gen_strategies[name]) for name in strategy_names if name in gen_strategies]
     results: List[Dict] = []
