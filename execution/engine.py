@@ -106,6 +106,13 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                 start_dt = pd.to_datetime(start_date)
                 if start_dt.tz is None:
                     start_dt = start_dt.tz_localize("UTC")
+                
+                # Ensure df index is UTC
+                if df.index.tz is None:
+                    df.index = df.index.tz_localize("UTC")
+                else:
+                    df.index = df.index.tz_convert("UTC")
+                    
                 df = df[df.index >= start_dt]
             
             if len(df) > MIN_BARS_FOR_WARMUP: enriched[sym] = df

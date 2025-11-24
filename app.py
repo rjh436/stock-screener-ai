@@ -39,14 +39,20 @@ def get_global_data(days=400):
 if mode == "Live Screener":
     st.header("🚀 Live Market Screener")
     col1, col2 = st.columns(2)
-    with col1: universe = st.selectbox("Universe", ["S&P 500", "S&P 1500", "S&P 100"])
+    with col1: universe = st.selectbox("Universe", ["S&P 1500", "S&P 500", "S&P 100"], index=0)
     with col2:
         strategies = {}
         try:
             with open("config/generated_strategies.json", "r") as f:
                 for s in json.load(f): strategies[s["name"]] = s
         except: st.error("No Strategies Found!")
-        selected_names = st.multiselect("Strategies", list(strategies.keys()), default=list(strategies.keys())[:1])
+        
+        all_strat_names = list(strategies.keys())
+        use_all = st.checkbox("Select All Strategies", value=True)
+        if use_all:
+            selected_names = all_strat_names
+        else:
+            selected_names = st.multiselect("Strategies", all_strat_names, default=all_strat_names[:1])
         
         # Debug Info
         st.write(f"Loaded {len(strategies)} strategies.")
@@ -104,19 +110,36 @@ if mode == "Live Screener":
 
 elif mode == "Backtest":
     st.header("🧪 Backtest Engine")
-    col1, col2, col3 = st.columns(3)
-    with col1: bt_universe = st.selectbox("Universe", ["S&P 100", "S&P 500", "S&P 1500"])
+    
+    # Initialize session state for timeframe
+    if "bt_timeframe" not in st.session_state: st.session_state.bt_timeframe = "5 Years"
+
+    col1, col2 = st.columns(2)
+    with col1: bt_universe = st.selectbox("Universe", ["S&P 1500", "S&P 500", "S&P 100"], index=0)
     with col2:
         gen_strategies = []
         try:
             with open("config/generated_strategies.json", "r") as f:
                 gen_strategies = [s["name"] for s in json.load(f)]
         except: pass
-        bt_strategies = st.multiselect("Strategies", gen_strategies, default=gen_strategies[:3] if gen_strategies else None)
-    with col3: timeframe = st.selectbox("Timeframe", ["1 Year", "5 Years", "Max"])
+        
+        use_all_bt = st.checkbox("Select All Strategies (Backtest)", value=True)
+        if use_all_bt:
+            bt_strategies = gen_strategies
+        else:
+            bt_strategies = st.multiselect("Strategies", gen_strategies, default=gen_strategies[:3] if gen_strategies else None)
 
-    if st.button("Run Backtest"):
-        days_map = {"1 Year": 365, "5 Years": 1260, "Max": 10000}
+    st.write("Timeframe:")
+    tf_cols = st.columns(6)
+    timeframes = ["1 Year", "5 Years", "10 Years", "20 Years", "Max"]
+    for i, tf in enumerate(timeframes):
+        if tf_cols[i].button(tf, use_container_width=True, type="primary" if st.session_state.bt_timeframe == tf else "secondary"):
+            st.session_state.bt_timeframe = tf
+    
+    timeframe = st.session_state.bt_timeframe
+
+    if st.button("Run Backtest", type="primary"):
+        days_map = {"1 Year": 365, "5 Years": 1260, "10 Years": 2520, "20 Years": 5040, "Max": 10000}
         start_date = (datetime.now(timezone.utc) - timedelta(days=days_map.get(timeframe, 1260))).date()
         symbols = get_index_symbols(bt_universe)
         data_map = {}
