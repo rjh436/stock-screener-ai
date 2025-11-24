@@ -144,7 +144,7 @@ class EvolutionEngine:
         if indicator == "vix":
             return random.randint(10, 50)  # VIX typically 10-40, occasionally higher
         if indicator == "rs_trend":
-            return random.choice([0, 1])  # Binary: 0 = lagging, 1 = leading
+            return random.choice([50, 70, 90, 120])  # Binary: 0 = lagging, 1 = leading
         if indicator == "rs_ratio" or indicator == "rs_sma20":
             return round(random.uniform(0.8, 1.5), 2)  # Stock/SPY ratio
         return 0 # Fallback
@@ -219,7 +219,7 @@ class EvolutionEngine:
             "entry_rules": [self._random_rule() for _ in range(random.randint(1, 3))],
             "exit_rules": [self._random_rule() for _ in range(random.randint(1, 2))],
             "stop_loss_atr": round(random.uniform(3.0, 6.0), 1),  # SURVIVAL MODE: Wide stops
-            "time_stop": random.choice([30, 45, 60, 80])  # SWING MODE: Patience!
+            "time_stop": random.choice([50, 70, 90, 120])  # SWING MODE: Patience!
         }
         return genome
 
@@ -233,7 +233,7 @@ class EvolutionEngine:
             
             # Randomize parameters slightly (SURVIVAL MODE: Wide stops)
             genome["stop_loss_atr"] = round(random.uniform(3.0, 6.0), 1)
-            genome["time_stop"] = random.choice([30, 45, 60, 80])
+            genome["time_stop"] = random.choice([50, 70, 90, 120])
             
             # Tweak values in rules
             for rule in genome["entry_rules"]:
@@ -260,7 +260,7 @@ class EvolutionEngine:
             
         # Mutation Type 2: Change Time Stop (30% chance) - SWING MODE
         elif r < 0.6:
-            mutant["time_stop"] = random.choice([30, 45, 60, 80])
+            mutant["time_stop"] = random.choice([50, 70, 90, 120])
             
         # Mutation Type 3: Modify a Rule Value (40% chance)
         else:
