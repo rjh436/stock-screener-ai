@@ -6,7 +6,6 @@ from datetime import datetime, date
 from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
-import concurrent.futures
 from strategies.base import BaseStrategy
 
 MIN_BARS_FOR_WARMUP = 200
@@ -26,7 +25,7 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         rolling_std = df['close'].rolling(window=20).std()
         df['bb_upper'] = rolling_mean + (rolling_std * 2)
         df['bb_lower'] = rolling_mean - (rolling_std * 2)
-        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_mid']
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['close'].rolling(20).mean()
         
         tr = pd.concat([
             df['high'] - df['low'],
@@ -77,7 +76,7 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
         return df
     except Exception as e:
-        print(f"❌ Ind Calc Error: {e}")
+        # print(f"❌ Ind Calc Error: {e}")
         return df
 
 def _empty_result(name, start_cash, params=None):
@@ -197,14 +196,13 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
         "strategy": strategy.name, "final_value": final_val, "total_trades": trades,
         "hit_rate": win_rate, "sharpe": sharpe, "cagr": cagr, 
         "avg_profit_pct": avg_profit, "avg_days_held": np.mean(trade_durations) if trade_durations else 0.0,
-        "profit_factor": profit_factor, "payoff_ratio": payoff_ratio,
-        "Score": score,
-        "params": strategy.params
+        "profit_factor": profit_factor, "payoff_ratio": payoff_ratio, "Score": score
     }
 
 def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, use_parallel=True, max_workers=8, global_data=None):
     import json
     import os
+    import concurrent.futures
     from strategies.generic import GenericStrategy
 
     gen_strategies = {}
