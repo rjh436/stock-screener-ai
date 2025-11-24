@@ -1,9 +1,12 @@
-import pandas as pd
 import operator
 from typing import Dict, Optional
+
+import pandas as pd
+
 from .base import BaseStrategy
 
 OPS = {">": operator.gt, "<": operator.lt, ">=": operator.ge, "<=": operator.le, "==": operator.eq}
+
 
 class GenericStrategy(BaseStrategy):
     def __init__(self, genome: Dict):
@@ -16,37 +19,47 @@ class GenericStrategy(BaseStrategy):
         return self._name
 
     def _resolve_value(self, row: pd.Series, rule: Dict) -> float:
-        if "val" in rule: return float(rule["val"])
-        if "ref" in rule: return float(row.get(rule["ref"], 0))
+        if "val" in rule:
+            return float(rule["val"])
+        if "ref" in rule:
+            return float(row.get(rule["ref"], 0))
         return 0.0
 
     def _check_condition(self, row: pd.Series, rule: Dict) -> bool:
-        if rule["col"] not in row: return False
-        val_a = float(row[rule["col"]])
+        col = rule.get("col")
+        op = OPS.get(rule.get("op"))
+        if col not in row or op is None:
+            return False
+        val_a = float(row[col])
         val_b = self._resolve_value(row, rule)
-        op = OPS.get(rule["op"])
-        return op(val_a, val_b) if op else False
+        return op(val_a, val_b)
 
     def entry(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
-        if i < 200: return None
+        if i < 200:
+            return None
         row = df.iloc[i]
         for rule in self.genome.get("entry_rules", []):
-            if not self._check_condition(row, rule): return None
-        
-        atr = row.get("atr14", row["close"] * 0.02)
-        mult = self.genome.get("stop_loss_atr", 2.0)
-        return {"entry_price": row["close"], "stop_price": row["close"] - (atr * mult)}
+            if not self._check_condition(row, rule):
+                return None
+
+        atr = row.get("atr14", row.get("close", 0) * 0.02)
+        mult = float(self.genome.get("stop_loss_atr", 2.5))
+        stop_price = float(row.get("close", 0)) - (atr * mult)
+        return {"entry_price": float(row.get("close", 0)), "stop_price": stop_price}
 
     def exit(self, df: pd.DataFrame, i: int, entry_i: int, entry_price: float, stop_price: float) -> bool:
         row = df.iloc[i]
-        days = i - entry_i
-        if row["low"] < stop_price: return True
-        
-        time_stop = self.genome.get("time_stop", 40)
-        if days >= time_stop: return True
-        
+        if row.get("low", 0) < stop_price:
+            return True
+
+        if i - entry_i >= int(self.genome.get("time_stop", 50)):
+            return True
+
         for rule in self.genome.get("exit_rules", []):
             if rule.get("type") == "profit_target":
-                if row["high"] > (entry_price * rule["val"]): return True
-            elif self._check_condition(row, rule): return True
+                target_multiple = float(rule.get("val", 1.0))
+                if row.get("high", 0) > (entry_price * target_multiple):
+                    return True
+            elif self._check_condition(row, rule):
+                return True
         return False
