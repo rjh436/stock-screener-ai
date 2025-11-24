@@ -30,10 +30,9 @@ class GenericStrategy(BaseStrategy):
     def entry(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
         if i < 200: return None
         row = df.iloc[i]
-        
         for rule in self.genome.get("entry_rules", []):
             if not self._check_condition(row, rule): return None
-            
+        
         atr = row.get("atr14", row["close"] * 0.02)
         mult = self.genome.get("stop_loss_atr", 2.0)
         return {"entry_price": row["close"], "stop_price": row["close"] - (atr * mult)}
@@ -41,25 +40,13 @@ class GenericStrategy(BaseStrategy):
     def exit(self, df: pd.DataFrame, i: int, entry_i: int, entry_price: float, stop_price: float) -> bool:
         row = df.iloc[i]
         days = i - entry_i
-        
-        # 1. Hard Stop
         if row["low"] < stop_price: return True
         
-        # 2. Time Stop
         time_stop = self.genome.get("time_stop", 40)
         if days >= time_stop: return True
         
-        # 3. Exit Rules (Including Profit Targets)
-        exit_rules = self.genome.get("exit_rules", [])
-        if exit_rules:
-            for rule in exit_rules:
-                # Special Logic: Profit Target
-                if rule.get("type") == "profit_target":
-                    target_price = entry_price * rule["val"]
-                    # Check if High hit the target
-                    if row["high"] > target_price: return True
-                # Standard Indicator Logic
-                elif self._check_condition(row, rule): 
-                    return True
-                
+        for rule in self.genome.get("exit_rules", []):
+            if rule.get("type") == "profit_target":
+                if row["high"] > (entry_price * rule["val"]): return True
+            elif self._check_condition(row, rule): return True
         return False
