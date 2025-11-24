@@ -6,6 +6,7 @@ from datetime import datetime, date
 from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
+import concurrent.futures
 from strategies.base import BaseStrategy
 
 MIN_BARS_FOR_WARMUP = 200
@@ -110,7 +111,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     trade_durations = []
     
     max_positions = 5
-    pos_fraction = 0.250
+    pos_fraction = 0.20
 
     for current_dt in all_dates:
         # 1. Exits
@@ -201,3 +202,56 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
 
 def _empty_result(name, start_cash, params=None):
     return {"strategy": name, "final_value": start_cash, "total_trades": 0, "hit_rate": 0, "sharpe": 0, "cagr": 0, "max_drawdown_pct": 0, "avg_profit_pct": 0, "avg_days_held": 0, "profit_factor": 0, "payoff_ratio": 0}
+
+def run_compare(
+    strategy_names: List[str],
+    data_dict: Dict[str, pd.DataFrame],
+    symbol_universe: List[str],
+    start_cash: float = 100000.0,
+    start_date: Optional[date] = None,
+    use_parallel: bool = True,
+    max_workers: int = 8,
+    global_data: Optional[Dict[str, pd.DataFrame]] = None,
+) -> pd.DataFrame:
+    """
+    Run multiple strategies and return a comparison DataFrame.
+    """
+    import json
+    import os
+    from strategies.generic import GenericStrategy
+
+    # Load generated strategies
+    gen_strategies = {}
+    gen_config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config/generated_strategies.json'))
+    try:
+        with open(gen_config_path, "r") as f:
+            gen_list = json.load(f)
+            for g in gen_list:
+                gen_strategies[g["name"]] = g
+    except:
+        pass
+
+    strategies = []
+    
+    # Handle generated strategies
+    for name in strategy_names:
+        if name in gen_strategies:
+            strategies.append(GenericStrategy(gen_strategies[name]))
+
+    results = []
+    
+    # Use ThreadPoolExecutor for M3 Max Efficiency
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(run_backtest, strat, data_dict, symbol_universe, start_cash, start_date, global_data): strat for strat in strategies}
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                res = future.result()
+                results.append(res)
+            except Exception as e:
+                print(f"Comparison failed for {futures[future].name}: {e}")
+
+    if not results:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(results)
+    return df.sort_values("cagr", ascending=False)
