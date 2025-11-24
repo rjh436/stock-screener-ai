@@ -25,7 +25,8 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         rolling_std = df['close'].rolling(window=20).std()
         df['bb_upper'] = rolling_mean + (rolling_std * 2)
         df['bb_lower'] = rolling_mean - (rolling_std * 2)
-        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['close'].rolling(20).mean()
+        df['bb_mid'] = rolling_mean
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_mid']
         
         tr = pd.concat([
             df['high'] - df['low'],
@@ -40,7 +41,7 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df['highest55'] = df['high'].rolling(55).max()
         df['lowest5'] = df['low'].rolling(5).min()
         
-        # Extremes (SHIFTED - Required for valid breakout checks)
+        # Extremes (SHIFTED - Required for Backtest Breakouts)
         df['highest20_1'] = df['highest20'].shift(1)
         df['highest55_1'] = df['highest55'].shift(1)
         df['lowest5_1'] = df['lowest5'].shift(1)
@@ -76,7 +77,6 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
         return df
     except Exception as e:
-        # print(f"❌ Ind Calc Error: {e}")
         return df
 
 def _empty_result(name, start_cash, params=None):
@@ -103,22 +103,11 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
             else: df["vix"] = 20.0
             
             if start_date: 
-                start_dt = pd.to_datetime(start_date)
-                if start_dt.tz is None:
-                    start_dt = start_dt.tz_localize("UTC")
-                
-                # Ensure df index is UTC
-                if df.index.tz is None:
-                    df.index = df.index.tz_localize("UTC")
-                else:
-                    df.index = df.index.tz_convert("UTC")
-                    
+                start_dt = pd.to_datetime(start_date).replace(tzinfo=None)
                 df = df[df.index >= start_dt]
             
             if len(df) > MIN_BARS_FOR_WARMUP: enriched[sym] = df
-        except Exception as e:
-            print(f"Error processing {sym}: {e}")
-            continue
+        except: continue
 
     if not enriched: return _empty_result(strategy.name, start_cash, strategy.params)
 
@@ -145,7 +134,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                 exit_px = pos["stop_price"] if row["low"] < pos["stop_price"] else row["close"]
                 if row["low"] < pos["stop_price"] and row["open"] < pos["stop_price"]: exit_px = row["open"]
                 
-                if exit_px > (pos["entry_price"] * 5.0): exit_px = pos["entry_price"] # Circuit Breaker
+                if exit_px > (pos["entry_price"] * 5.0): exit_px = pos["entry_price"]
 
                 pnl = (exit_px - pos["entry_price"]) * pos["shares"]
                 pct = ((exit_px - pos["entry_price"]) / pos["entry_price"]) * 100
@@ -214,7 +203,6 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
 def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, use_parallel=True, max_workers=8, global_data=None):
     import json
     import os
-    import concurrent.futures
     from strategies.generic import GenericStrategy
 
     gen_strategies = {}
@@ -229,6 +217,8 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
             strategies.append(GenericStrategy(gen_strategies[name]))
 
     results = []
+    # Use ThreadPool for M3 Max
+    import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(run_backtest, strat, data_dict, symbol_universe, start_cash, start_date, global_data): strat for strat in strategies}
         for future in concurrent.futures.as_completed(futures):
