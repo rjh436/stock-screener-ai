@@ -9,14 +9,9 @@
                 "ref": "sma200"
             },
             {
-                "col": "sma50",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
                 "col": "close",
                 "op": "==",
-                "ref": "lowest5"
+                "ref": "lowest5_1"
             },
             {
                 "col": "vix",
@@ -43,11 +38,6 @@
                 "col": "rsi2",
                 "op": "<",
                 "val": 5.0
-            },
-            {
-                "col": "sma50",
-                "op": ">",
-                "ref": "sma200"
             },
             {
                 "col": "close",
@@ -81,14 +71,9 @@
                 "ref": "atr14_ma20"
             },
             {
-                "col": "sma50",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
                 "col": "close",
                 "op": ">",
-                "ref": "highest20"
+                "ref": "highest20_1"
             },
             {
                 "col": "volume",
