@@ -1,42 +1,30 @@
 [
     {
-        "name": "Double_Seven_Sniper",
-        "type": "mean_reversion",
+        "name": "Gen4_Fresh_1585",
+        "type": "random",
         "entry_rules": [
             {
-                "col": "close",
+                "col": "atr14",
                 "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "sma50",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "close",
-                "op": "==",
-                "ref": "lowest5"
+                "val": 0
             },
             {
                 "col": "vix",
-                "op": "<",
-                "val": 35.0
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
                 "op": ">",
-                "val": 1.10,
-                "type": "profit_target"
+                "val": 20
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "val": 0
             }
         ],
-        "stop_loss_atr": 3.0,
-        "time_stop": 50
+        "exit_rules": [],
+        "stop_loss_atr": 5.7,
+        "time_stop": 120
     },
     {
-        "name": "RSI_Power_Swing",
+        "name": "Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket",
         "type": "hybrid",
         "entry_rules": [
             {
@@ -60,25 +48,18 @@
                 "val": 25.0
             }
         ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.10,
-                "type": "profit_target"
-            }
-        ],
+        "exit_rules": [],
         "stop_loss_atr": 3.0,
-        "time_stop": 70
+        "time_stop": 72
     },
     {
-        "name": "Vol_Breakout_Squeeze",
-        "type": "breakout",
+        "name": "Cross_Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket_Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket",
+        "type": "hybrid",
         "entry_rules": [
             {
-                "col": "atr14",
+                "col": "rsi2",
                 "op": "<",
-                "ref": "atr14_ma20"
+                "val": 5.0
             },
             {
                 "col": "sma50",
@@ -88,58 +69,219 @@
             {
                 "col": "close",
                 "op": ">",
-                "ref": "highest20"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 1.10,
-                "type": "profit_target"
-            }
-        ],
-        "stop_loss_atr": 2.5,
-        "time_stop": 60
-    },
-    {
-        "name": "Trend_Ignition_Rocket",
-        "type": "trend",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "highest55"
-            },
-            {
-                "col": "sma50",
-                "op": ">",
                 "ref": "sma200"
-            },
-            {
-                "col": "ema20",
-                "op": ">",
-                "ref": "sma50"
             },
             {
                 "col": "adx",
                 "op": ">",
-                "val": 30.0
+                "val": 25.0
             }
         ],
-        "exit_rules": [
+        "exit_rules": [],
+        "stop_loss_atr": 3.0,
+        "time_stop": 72
+    },
+    {
+        "name": "Cross_Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket_Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 5.0
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma200"
+            },
             {
                 "col": "close",
-                "op": "<",
-                "ref": "ema20"
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.0
             }
         ],
+        "exit_rules": [],
         "stop_loss_atr": 3.0,
-        "time_stop": 80
+        "time_stop": 72
+    },
+    {
+        "name": "Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 5.0
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 3.0,
+        "time_stop": 72
+    },
+    {
+        "name": "Cross_Cross_Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket_Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket_Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 5.0
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 3.0,
+        "time_stop": 72
+    },
+    {
+        "name": "Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 5.0
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 3.0,
+        "time_stop": 72
+    },
+    {
+        "name": "Cross_Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket_Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 5.0
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 3.0,
+        "time_stop": 72
+    },
+    {
+        "name": "Cross_Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket_Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 5.0
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 3.0,
+        "time_stop": 72
+    },
+    {
+        "name": "Cross_Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket_Cross_Cross_RSI_Power_Swing_RSI_Power_Swing_Cross_RSI_Power_Swing_Trend_Ignition_Rocket",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 5.0
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 3.0,
+        "time_stop": 72
     }
 ]
