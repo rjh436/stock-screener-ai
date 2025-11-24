@@ -74,7 +74,7 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['rsi14'] = calc_rsi(df['close'], 14)
     
     # Connors RSI
-    df['crsi'] = (df['rsi3'] + df['rsi2'] + (100 - df['rsi14'])) / 3 # Simple approx or use full calc if needed
+    df['crsi'] = (df['rsi3'] + df['rsi2'] + (100 - df['rsi14'])) / 3 
 
     stoch = StochasticOscillator(df['high'], df['low'], df['close'])
     df['stoch_k'] = stoch.stoch()
@@ -121,7 +121,7 @@ def _empty_result(name, start_cash, params=None):
         "avg_days_held": 0.0,
         "profit_factor": 0.0,
         "payoff_ratio": 0.0,
-        "Score": 0.0, # FIXED: Ensure Score exists
+        "Score": 0.0, # FIXED: Ensure Score exists for UI
         "params": params if params else {}
     }
 
@@ -241,7 +241,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
         "strategy": strategy.name, "final_value": final_val, "total_trades": trades,
         "hit_rate": win_rate, "sharpe": sharpe, "cagr": cagr, 
         "avg_profit_pct": avg_profit, "avg_days_held": np.mean(trade_durations) if trade_durations else 0.0,
-        "Score": score, # FIXED
+        "Score": score, # FIXED: Ensuring Score is present
         "params": strategy.params
     }
 
