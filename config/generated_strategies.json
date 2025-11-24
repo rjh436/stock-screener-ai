@@ -1,202 +1,74 @@
 [
     {
-        "name": "Gen2_Fresh_4956_gen4_mut",
-        "type": "random",
+        "name": "Double_Seven_Sniper",
+        "type": "mean_reversion",
         "entry_rules": [
             {
-                "col": "atr14_ma20",
+                "col": "close",
                 "op": ">",
-                "val": 1.6
-            }
-        ],
-        "exit_rules": [
+                "ref": "sma200"
+            },
             {
-                "col": "plus_di",
-                "op": ">",
-                "ref": "minus_di"
+                "col": "close",
+                "op": "==",
+                "ref": "lowest5"
+            },
+            {
+                "col": "vix",
+                "op": "<",
+                "val": 35.0
             }
         ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 80
+        "exit_rules": [],
+        "stop_loss_atr": 3.0,
+        "time_stop": 50
     },
     {
-        "name": "Gen2_Fresh_4956_gen4_mut",
-        "type": "random",
+        "name": "RSI_Power_Swing",
+        "type": "hybrid",
         "entry_rules": [
             {
-                "col": "atr14_ma20",
-                "op": ">",
-                "val": 1.6
-            }
-        ],
-        "exit_rules": [
+                "col": "rsi2",
+                "op": "<",
+                "val": 5.0
+            },
             {
-                "col": "plus_di",
+                "col": "close",
                 "op": ">",
-                "ref": "minus_di"
+                "ref": "sma200"
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.0
             }
         ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 80
+        "exit_rules": [],
+        "stop_loss_atr": 3.0,
+        "time_stop": 70
     },
     {
-        "name": "Gen2_Fresh_4956_gen4",
-        "type": "random",
+        "name": "Vol_Breakout_Squeeze",
+        "type": "breakout",
         "entry_rules": [
             {
-                "col": "atr14_ma20",
-                "op": ">",
-                "val": 1.5
-            }
-        ],
-        "exit_rules": [
+                "col": "atr14",
+                "op": "<",
+                "ref": "atr14_ma20"
+            },
             {
-                "col": "plus_di",
+                "col": "close",
                 "op": ">",
-                "ref": "minus_di"
-            }
-        ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 80
-    },
-    {
-        "name": "Gen2_Fresh_4956_gen4",
-        "type": "random",
-        "entry_rules": [
+                "ref": "highest20"
+            },
             {
-                "col": "atr14_ma20",
+                "col": "volume",
                 "op": ">",
-                "val": 1.5
+                "ref": "vol_ma20"
             }
         ],
-        "exit_rules": [
-            {
-                "col": "plus_di",
-                "op": ">",
-                "ref": "minus_di"
-            }
-        ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 80
-    },
-    {
-        "name": "Gen2_Fresh_4956_gen4_mut",
-        "type": "random",
-        "entry_rules": [
-            {
-                "col": "atr14_ma20",
-                "op": ">",
-                "val": 1.5
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "plus_di",
-                "op": ">",
-                "ref": "minus_di"
-            }
-        ],
-        "stop_loss_atr": 4.4,
+        "exit_rules": [],
+        "stop_loss_atr": 2.5,
         "time_stop": 60
-    },
-    {
-        "name": "Gen2_Fresh_4956_gen4_mut",
-        "type": "random",
-        "entry_rules": [
-            {
-                "col": "atr14_ma20",
-                "op": ">",
-                "val": 1.5
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "plus_di",
-                "op": ">",
-                "ref": "minus_di"
-            }
-        ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 45
-    },
-    {
-        "name": "Gen2_Fresh_4956_gen4_mut",
-        "type": "random",
-        "entry_rules": [
-            {
-                "col": "atr14_ma20",
-                "op": ">",
-                "val": 1.5
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "plus_di",
-                "op": ">",
-                "ref": "minus_di"
-            }
-        ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 60
-    },
-    {
-        "name": "Gen2_Fresh_4956_gen4_mut",
-        "type": "random",
-        "entry_rules": [
-            {
-                "col": "atr14_ma20",
-                "op": ">",
-                "val": 1.5
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "plus_di",
-                "op": ">",
-                "ref": "minus_di"
-            }
-        ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 60
-    },
-    {
-        "name": "Gen2_Fresh_4956_gen4_mut",
-        "type": "random",
-        "entry_rules": [
-            {
-                "col": "atr14_ma20",
-                "op": ">",
-                "val": 1.5
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "plus_di",
-                "op": ">",
-                "ref": "minus_di"
-            }
-        ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 45
-    },
-    {
-        "name": "Gen2_Fresh_4956_gen4_mut",
-        "type": "random",
-        "entry_rules": [
-            {
-                "col": "atr14_ma20",
-                "op": ">",
-                "val": 1.6649129197262438
-            }
-        ],
-        "exit_rules": [
-            {
-                "col": "plus_di",
-                "op": ">",
-                "ref": "minus_di"
-            }
-        ],
-        "stop_loss_atr": 4.6,
-        "time_stop": 80
     }
 ]

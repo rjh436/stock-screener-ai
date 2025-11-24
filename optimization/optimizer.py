@@ -57,26 +57,25 @@ def calculate_fitness(result):
     sharpe = result.get("sharpe", 0) or 0
     win_rate = result.get("hit_rate", 0) or 0
     avg_profit_pct = result.get("avg_profit_pct", 0) or 0
-    max_dd = abs(result.get("max_drawdown_pct", 0) or 0)
-    cagr = result.get("cagr", 0) or 0
+    profit_factor = result.get("profit_factor", 0) or 0
+    payoff = result.get("payoff_ratio", 0) or 0
 
-    # Minimal Floor
     if trades < 20: return -1000.0 
     
-    # Unconstrained Score (Growth & Profit Heavy)
-    score = (cagr * 300.0) + (avg_profit_pct * 100.0) + (min(sharpe, 3.0) * 50.0)
-    if max_dd > 50.0: score -= (max_dd - 50.0) * 10.0
+    # Sniper Score: Heavy on Quality (Payoff/Profit Factor)
+    score = (avg_profit_pct * 40.0) + (min(sharpe, 3.0) * 30.0) + (profit_factor * 20.0)
+    if payoff > 2.0: score += 50.0 # Bonus for Sniper Payoff
     
     return score
 
 def run_evolution(data_map, global_data):
-    print("\n--- Starting Autopilot Evolution ---")
+    print("\n--- Starting Deep Metric Evolution ---")
     engine = EvolutionEngine()
     try:
         with open(GEN_CONFIG_PATH, "r") as f: engine.population = json.load(f)
     except: engine.generate_initial_population()
 
-    generations = 5 # Short bursts for the Autopilot loop
+    generations = 5
     best_stats = {}
 
     for gen in range(generations):
@@ -94,11 +93,11 @@ def run_evolution(data_map, global_data):
 
         ranked = sorted(pop_results, key=lambda x: x["score"], reverse=True)
         best_stats = ranked[0]['stats']
-        print(f"Top Gen {engine.generation_count}: CAGR {best_stats.get('cagr',0)*100:.1f}% | Profit {best_stats.get('avg_profit_pct',0):.2f}% | WR {best_stats.get('hit_rate',0):.1f}% | Hold {best_stats.get('avg_days_held',0):.1f}d")
+        
+        print(f"Top Gen {engine.generation_count}: Profit {best_stats.get('avg_profit_pct',0):.2f}% | PF {best_stats.get('profit_factor',0):.2f} | Payoff {best_stats.get('payoff_ratio',0):.2f} | WR {best_stats.get('hit_rate',0):.1f}% | Hold {best_stats.get('avg_days_held',0):.1f}d")
 
         if gen < generations - 1: engine.evolve(ranked)
     
-    # Save Top Genome & Telemetry
     with open(GEN_CONFIG_PATH, "w") as f:
         json.dump([r["genome"] for r in ranked[:10]], f, indent=4)
     
@@ -107,7 +106,9 @@ def run_evolution(data_map, global_data):
         "avg_profit": best_stats.get("avg_profit_pct", 0),
         "win_rate": best_stats.get("hit_rate", 0),
         "hold_days": best_stats.get("avg_days_held", 0),
-        "trades": best_stats.get("total_trades", 0)
+        "trades": best_stats.get("total_trades", 0),
+        "profit_factor": best_stats.get("profit_factor", 0),
+        "payoff_ratio": best_stats.get("payoff_ratio", 0)
     }
     with open(METRICS_PATH, "w") as f:
         json.dump(telemetry, f)
@@ -118,9 +119,7 @@ def run_optimization():
     if not symbols: return
     data_map = fetch_data(symbols, days=1260)
     global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=1260)
-    vix_data = global_data_raw.get("$VIX")
-    if vix_data is None:
-        vix_data = global_data_raw.get("VIX")
+    vix_data = global_data_raw.get("$VIX") or global_data_raw.get("VIX")
     run_evolution(data_map, {"SPY": global_data_raw.get("SPY"), "VIX": vix_data})
 
 if __name__ == "__main__":

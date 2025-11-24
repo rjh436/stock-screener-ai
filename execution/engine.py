@@ -3,7 +3,7 @@ from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicato
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
 from ta.volatility import BollingerBands
 from datetime import datetime, date
-from typing import Dict, List, Optional, Type
+from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 from strategies.base import BaseStrategy
@@ -12,7 +12,6 @@ MIN_BARS_FOR_WARMUP = 200
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_index().copy()
-    # Moving Averages
     df['sma5'] = df['close'].rolling(5).mean()
     df['sma20'] = df['close'].rolling(20).mean()
     df['sma50'] = df['close'].rolling(50).mean()
@@ -21,7 +20,6 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
     df['ema100'] = df['close'].ewm(span=100, adjust=False).mean()
     
-    # Volatility & Extremes
     rolling_mean = df['close'].rolling(window=20).mean()
     rolling_std = df['close'].rolling(window=20).std()
     df['bb_upper'] = rolling_mean + (rolling_std * 2)
@@ -37,7 +35,6 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['highest55'] = df['high'].rolling(55).max()
     df['lowest5'] = df['low'].rolling(5).min()
     
-    # Oscillators
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -49,7 +46,6 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     rs2 = gain2 / loss2.replace(0, np.nan)
     df['rsi2'] = 100 - (100 / (1 + rs2))
 
-    # Trend & Momentum
     adx = ADXIndicator(df['high'], df['low'], df['close'])
     df['adx'] = adx.adx()
     df['plus_di'] = adx.adx_pos()
@@ -110,6 +106,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     positions = {}
     equity_curve = []
     trade_pnls = []
+    trade_returns = []
     trade_durations = []
     
     max_positions = 5
@@ -130,14 +127,15 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                 exit_price = pos["stop_price"] if row["low"] < pos["stop_price"] else row["close"]
                 if row["low"] < pos["stop_price"] and row["open"] < pos["stop_price"]: exit_price = row["open"]
 
-                # [CIRCUIT BREAKER] Prevent Infinite Profit Bugs
-                # If trade > 300% profit, assume bad data spike and exit at breakeven
-                if exit_price > (pos["entry_price"] * 4.0): 
-                    exit_price = pos["entry_price"]
+                # [CIRCUIT BREAKER]
+                if exit_price > (pos["entry_price"] * 4.0): exit_price = pos["entry_price"]
 
                 pnl = (exit_price - pos["entry_price"]) * pos["shares"]
+                pnl_pct = ((exit_price - pos["entry_price"]) / pos["entry_price"]) * 100
+                
                 cash += pos["shares"] * exit_price
                 trade_pnls.append(pnl)
+                trade_returns.append(pnl_pct)
                 trade_durations.append(i - pos["entry_i"])
                 del positions[sym]
 
@@ -160,7 +158,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
             if entry_signal:
                 price = float(df.iloc[i]["open"])
                 stop = float(entry_signal["stop_price"])
-                if price < 5.0: continue # Skip penny stocks
+                if price < 5.0: continue 
                 
                 shares = int((equity * pos_fraction) / price)
                 if shares > 0 and cash >= (shares * price):
@@ -172,9 +170,18 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     total_trades = len(trade_pnls)
     wins = len([t for t in trade_pnls if t > 0])
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
-    avg_profit_pct = (np.mean(trade_pnls) / start_cash * 100) if trade_pnls else 0.0
+    avg_profit_pct = (np.mean(trade_returns)) if trade_returns else 0.0
     avg_days_held = np.mean(trade_durations) if trade_durations else 0.0
     
+    # Advanced Metrics
+    gross_profit = sum(t for t in trade_pnls if t > 0)
+    gross_loss = abs(sum(t for t in trade_pnls if t < 0))
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 99.0
+    
+    avg_win = np.mean([t for t in trade_returns if t > 0]) if any(t > 0 for t in trade_returns) else 0
+    avg_loss = abs(np.mean([t for t in trade_returns if t < 0])) if any(t < 0 for t in trade_returns) else 1.0
+    payoff_ratio = avg_win / avg_loss if avg_loss > 0 else 0
+
     days = (all_dates[-1] - all_dates[0]).days if len(all_dates) > 0 else 1
     cagr = (final_value / start_cash) ** (365.0/days) - 1 if final_value > 0 else 0.0
     
@@ -188,8 +195,9 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     return {
         "strategy": strategy.name, "final_value": final_value, "total_trades": total_trades,
         "hit_rate": win_rate, "sharpe": sharpe, "cagr": cagr, "max_drawdown_pct": max_dd,
-        "avg_profit_pct": avg_profit_pct, "avg_days_held": avg_days_held
+        "avg_profit_pct": avg_profit_pct, "avg_days_held": avg_days_held,
+        "profit_factor": profit_factor, "payoff_ratio": payoff_ratio
     }
 
 def _empty_result(name, start_cash, params=None):
-    return {"strategy": name, "final_value": start_cash, "total_trades": 0, "hit_rate": 0, "sharpe": 0, "cagr": 0, "max_drawdown_pct": 0, "avg_profit_pct": 0, "avg_days_held": 0}
+    return {"strategy": name, "final_value": start_cash, "total_trades": 0, "hit_rate": 0, "sharpe": 0, "cagr": 0, "max_drawdown_pct": 0, "avg_profit_pct": 0, "avg_days_held": 0, "profit_factor": 0, "payoff_ratio": 0}
