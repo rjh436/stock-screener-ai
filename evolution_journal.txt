@@ -13,3 +13,71 @@
 [2025-11-23 20:24:13.947454] ⚠️  Profit Target Missed (<2.0%). Forcing longer holds.
 [2025-11-23 20:24:13.947806] ACTION: Increasing Hold Times (Patience)
 [2025-11-23 20:24:23.953296] --- Starting Cycle 3/20 ---
+[2025-11-23 20:33:26.209412] RESULTS: CAGR 22.2% | Profit 8.89% | WR 59.1% | Hold 62.2d
+[2025-11-23 20:33:26.209557] ✅ Performance Stable. Continuing Evolution.
+[2025-11-23 20:33:36.216677] --- Starting Cycle 2/20 ---
+[2025-11-23 20:33:52.861676] RESULTS: CAGR 20.8% | Profit 9.66% | WR 58.5% | Hold 66.5d
+[2025-11-23 20:33:52.861805] ✅ Performance Stable. Continuing Evolution.
+[2025-11-23 20:34:02.872370] --- Starting Cycle 4/20 ---
+[2025-11-23 20:43:38.455671] RESULTS: CAGR 24.2% | Profit 15.55% | WR 71.4% | Hold 104.6d
+[2025-11-23 20:43:38.455810] ⚠️  CAGR Target Missed but Safety High. Increasing Leverage.
+[2025-11-23 20:43:38.456284] ACTION: Adjusting Position Size: 0.20 -> 0.25
+[2025-11-23 20:43:48.466752] --- Starting Cycle 5/20 ---
+[2025-11-23 22:00:47.398413] RESULTS: CAGR 20.5% | Profit 14.79% | WR 80.0% | Hold 111.9d
+[2025-11-23 22:00:47.398685] ⚠️  CAGR Target Missed but Safety High. Increasing Leverage.
+[2025-11-23 22:00:47.399257] ACTION: Adjusting Position Size: 0.25 -> 0.30
+[2025-11-23 22:00:57.409535] --- Starting Cycle 3/20 ---
+[2025-11-23 22:02:31.611940] RESULTS: CAGR 27.0% | Profit 19.05% | WR 85.0% | Hold 115.0d
+[2025-11-23 22:02:31.612086] ✅ Performance Stable. Continuing Evolution.
+[2025-11-23 22:02:41.622412] --- Starting Cycle 6/20 ---
+[2025-11-23 23:34:27.700831] RESULTS: CAGR 20.2% | Profit 8.58% | WR 77.8% | Hold 50.0d
+[2025-11-23 23:34:27.701122] ⚠️  CAGR Target Missed but Safety High. Increasing Leverage.
+[2025-11-23 23:34:27.701718] ACTION: Adjusting Position Size: 0.30 -> 0.35
+[2025-11-23 23:34:37.711871] --- Starting Cycle 7/20 ---
+[2025-11-23 23:40:35.547086] RESULTS: CAGR 21.7% | Profit 12.88% | WR 70.0% | Hold 79.4d
+[2025-11-23 23:40:35.547956] ⚠️  CAGR Target Missed but Safety High. Increasing Leverage.
+[2025-11-23 23:40:35.548273] ACTION: Adjusting Position Size: 0.35 -> 0.40
+[2025-11-23 23:40:45.558647] --- Starting Cycle 4/20 ---
+[2025-11-24 01:11:18.048269] RESULTS: CAGR 21.5% | Profit 7.25% | WR 65.2% | Hold 57.0d
+[2025-11-24 01:11:18.048690] ⚠️  CAGR Target Missed but Safety High. Increasing Leverage.
+[2025-11-24 01:11:18.049144] ACTION: Adjusting Position Size: 0.40 -> 0.45
+[2025-11-24 01:11:28.059538] --- Starting Cycle 5/20 ---
+[2025-11-24 01:17:47.398152] RESULTS: CAGR 12.9% | Profit 6.71% | WR 70.0% | Hold 47.2d
+[2025-11-24 01:17:47.398283] ⚠️  CAGR Target Missed but Safety High. Increasing Leverage.
+[2025-11-24 01:17:47.398670] ACTION: Adjusting Position Size: 0.45 -> 0.50
+[2025-11-24 01:17:57.409056] --- Starting Cycle 8/20 ---
+[2025-11-24 02:36:48.318016] RESULTS: CAGR 20.9% | Profit 7.49% | WR 59.1% | Hold 55.1d
+[2025-11-24 02:36:48.318466] ✅ Performance Stable. Continuing Evolution.
+[2025-11-24 02:36:58.328813] --- Starting Cycle 9/20 ---
+[2025-11-24 02:54:19.609249] RESULTS: CAGR 43.6% | Profit 17.79% | WR 66.7% | Hold 39.9d
+[2025-11-24 02:54:19.609684] ✅ Performance Stable. Continuing Evolution.
+[2025-11-24 02:54:29.619952] --- Starting Cycle 6/20 ---
+[2025-11-24 03:48:48.181771] RESULTS: CAGR 34.9% | Profit 12.86% | WR 60.0% | Hold 56.8d
+[2025-11-24 03:48:48.182124] ✅ Performance Stable. Continuing Evolution.
+[2025-11-24 03:48:58.190227] --- Starting Cycle 10/20 ---
+[2025-11-24 04:17:11.496133] RESULTS: CAGR 16.9% | Profit 7.82% | WR 47.6% | Hold 52.2d
+[2025-11-24 04:17:11.496585] ⚠️  Win Rate Critical. Reducing Leverage for safety.
+[2025-11-24 04:17:11.496936] ACTION: Adjusting Position Size: 0.50 -> 0.45
+[2025-11-24 04:17:21.503488] --- Starting Cycle 7/20 ---
+[2025-11-24 04:57:31.514775] RESULTS: CAGR 29.2% | Profit 10.23% | WR 60.0% | Hold 54.6d
+[2025-11-24 04:57:31.515669] ✅ Performance Stable. Continuing Evolution.
+[2025-11-24 04:57:41.524881] --- Starting Cycle 11/20 ---
+[2025-11-24 05:34:29.479544] RESULTS: CAGR 34.4% | Profit 13.09% | WR 56.5% | Hold 58.8d
+[2025-11-24 05:34:29.480450] ✅ Performance Stable. Continuing Evolution.
+[2025-11-24 05:34:39.486866] --- Starting Cycle 8/20 ---
+[2025-11-24 06:05:41.838868] RESULTS: CAGR 10.8% | Profit 4.31% | WR 47.8% | Hold 56.6d
+[2025-11-24 06:05:41.839774] ⚠️  Win Rate Critical. Reducing Leverage for safety.
+[2025-11-24 06:05:41.840066] ACTION: Adjusting Position Size: 0.45 -> 0.40
+[2025-11-24 06:05:51.844360] --- Starting Cycle 12/20 ---
+[2025-11-24 06:50:05.998771] RESULTS: CAGR 10.2% | Profit 4.72% | WR 50.0% | Hold 62.9d
+[2025-11-24 06:50:05.999676] ⚠️  Win Rate Critical. Reducing Leverage for safety.
+[2025-11-24 06:50:05.999980] ACTION: Adjusting Position Size: 0.40 -> 0.35
+[2025-11-24 06:50:16.010422] --- Starting Cycle 9/20 ---
+[2025-11-24 07:24:08.135725] RESULTS: CAGR 9.9% | Profit 5.32% | WR 45.0% | Hold 64.0d
+[2025-11-24 07:24:08.136671] ⚠️  Win Rate Critical. Reducing Leverage for safety.
+[2025-11-24 07:24:08.137008] ACTION: Adjusting Position Size: 0.35 -> 0.30
+[2025-11-24 07:24:18.147423] --- Starting Cycle 13/20 ---
+[2025-11-24 08:03:50.492947] RESULTS: CAGR 22.7% | Profit 12.96% | WR 50.0% | Hold 63.5d
+[2025-11-24 08:03:50.493103] ⚠️  Win Rate Critical. Reducing Leverage for safety.
+[2025-11-24 08:03:50.493490] ACTION: Adjusting Position Size: 0.30 -> 0.25
+[2025-11-24 08:04:00.503996] --- Starting Cycle 10/20 ---

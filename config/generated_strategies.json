@@ -1,74 +1,142 @@
 [
     {
-        "name": "Double_Seven_Sniper",
-        "type": "mean_reversion",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "close",
-                "op": "==",
-                "ref": "lowest5"
-            },
-            {
-                "col": "vix",
-                "op": "<",
-                "val": 35.0
-            }
-        ],
-        "exit_rules": [],
-        "stop_loss_atr": 3.0,
-        "time_stop": 50
-    },
-    {
-        "name": "RSI_Power_Swing",
+        "name": "Cross_Cross_Gen1_Fresh_1406_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut",
         "type": "hybrid",
         "entry_rules": [
             {
-                "col": "rsi2",
-                "op": "<",
-                "val": 5.0
-            },
-            {
-                "col": "close",
+                "col": "rsi14",
                 "op": ">",
-                "ref": "sma200"
-            },
-            {
-                "col": "adx",
-                "op": ">",
-                "val": 25.0
+                "val": 27
             }
         ],
         "exit_rules": [],
-        "stop_loss_atr": 3.0,
-        "time_stop": 70
+        "stop_loss_atr": 3.6,
+        "time_stop": 85
     },
     {
-        "name": "Vol_Breakout_Squeeze",
-        "type": "breakout",
+        "name": "Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_1406_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut",
+        "type": "hybrid",
         "entry_rules": [
             {
-                "col": "atr14",
-                "op": "<",
-                "ref": "atr14_ma20"
-            },
-            {
-                "col": "close",
+                "col": "rsi14",
                 "op": ">",
-                "ref": "highest20"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
+                "val": 27
             }
         ],
         "exit_rules": [],
-        "stop_loss_atr": 2.5,
-        "time_stop": 60
+        "stop_loss_atr": 3.6,
+        "time_stop": 85
+    },
+    {
+        "name": "Cross_Cross_Gen1_Fresh_1406_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 27
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 3.6,
+        "time_stop": 85
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen1_Fresh_1406_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut_Cross_Cross_Gen1_Fresh_1406_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 27
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 3.6,
+        "time_stop": 85
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_1406_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut_Cross_Cross_Gen1_Fresh_1406_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 27
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 3.6,
+        "time_stop": 85
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_1406_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_1406_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 27
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 3.6,
+        "time_stop": 85
+    },
+    {
+        "name": "Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_1406_mut_Gen1_Fresh_1406_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 27
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 4.3,
+        "time_stop": 90
+    },
+    {
+        "name": "Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_1406_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 27
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 4.3,
+        "time_stop": 90
+    },
+    {
+        "name": "Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_1406_mut_Gen1_Fresh_1406_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 27
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 4.3,
+        "time_stop": 90
+    },
+    {
+        "name": "Cross_Cross_Cross_Gen1_Fresh_1406_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Cross_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_5600_mut_mut_mut_mut_mut_Cross_Gen1_Fresh_5600_mut_mut_mut_mut_Gen1_Fresh_1406_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 27
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 3.9,
+        "time_stop": 87
     }
 ]

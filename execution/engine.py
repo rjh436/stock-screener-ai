@@ -110,7 +110,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     trade_durations = []
     
     max_positions = 5
-    pos_fraction = 0.20
+    pos_fraction = 0.250
 
     for current_dt in all_dates:
         # 1. Exits
