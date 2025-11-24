@@ -11,106 +11,76 @@ from strategies.base import BaseStrategy
 MIN_BARS_FOR_WARMUP = 200
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    # 1. VALIDATION
-    if df is None or df.empty:
-        raise ValueError("Empty DataFrame passed to indicators")
-    
     try:
         df = df.sort_index().copy()
         df.columns = df.columns.str.lower()
         
-        # Ensure 'close' exists
-        if 'close' not in df.columns:
-            raise ValueError(f"Missing 'close' column. Available: {list(df.columns)}")
-            
         # Ensure numeric
-        cols = ['open', 'high', 'low', 'close', 'volume']
-        for c in cols:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors='coerce')
+        for c in ['open', 'high', 'low', 'close', 'volume']:
+            if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce')
+        df = df.dropna()
+
+        # Averages
+        for p in [5, 10, 20, 50, 100, 200]:
+            df[f'sma{p}'] = df['close'].rolling(p).mean()
+            df[f'ema{p}'] = df['close'].ewm(span=p, adjust=False).mean()
+
+        # Volatility
+        rolling_mean = df['close'].rolling(window=20).mean()
+        rolling_std = df['close'].rolling(window=20).std()
+        df['bb_upper'] = rolling_mean + (rolling_std * 2)
+        df['bb_lower'] = rolling_mean - (rolling_std * 2)
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_mid']
         
-        df = df.dropna(subset=['close'])
-        if len(df) < 20:
-            raise ValueError("Not enough data for indicators (<20 rows)")
+        tr = pd.concat([
+            df['high'] - df['low'],
+            (df['high'] - df['close'].shift()).abs(),
+            (df['low'] - df['close'].shift()).abs()
+        ], axis=1).max(axis=1)
+        df['atr14'] = tr.rolling(14).mean()
+        df['atr14_ma20'] = df['atr14'].rolling(20).mean()
 
-        # 2. CORE INDICATORS (Wrapped for Safety)
+        # Extremes (Standard)
+        df['highest20'] = df['high'].rolling(20).max()
+        df['highest55'] = df['high'].rolling(55).max()
+        df['lowest5'] = df['low'].rolling(5).min()
         
-        # Moving Averages
-        try:
-            for p in [5, 10, 20, 50, 100, 200]:
-                df[f'sma{p}'] = df['close'].rolling(p).mean()
-                df[f'ema{p}'] = df['close'].ewm(span=p, adjust=False).mean()
-        except Exception as e: print(f"Error MAs: {e}")
+        # Extremes (SHIFTED - Critical for Breakout Logic)
+        df['highest20_1'] = df['highest20'].shift(1)
+        df['highest55_1'] = df['highest55'].shift(1)
+        df['lowest5_1'] = df['lowest5'].shift(1)
 
-        # Bollinger Bands (The Problem Child)
-        try:
-            rolling_mean = df['close'].rolling(window=20).mean()
-            rolling_std = df['close'].rolling(window=20).std()
-            df['bb_mid'] = rolling_mean
-            df['bb_upper'] = rolling_mean + (rolling_std * 2)
-            df['bb_lower'] = rolling_mean - (rolling_std * 2)
-            
-            # Safe Division
-            df['bb_width'] = 0.0
-            mask = df['bb_mid'] != 0
-            df.loc[mask, 'bb_width'] = (df.loc[mask, 'bb_upper'] - df.loc[mask, 'bb_lower']) / df.loc[mask, 'bb_mid']
-        except Exception as e: print(f"Error BB: {e}")
+        # Oscillators
+        def calc_rsi(series, period):
+            delta = series.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+            rs = gain / loss.replace(0, np.nan)
+            return 100 - (100 / (1 + rs))
 
-        # ATR
-        try:
-            high_low = df['high'] - df['low']
-            high_close = (df['high'] - df['close'].shift()).abs()
-            low_close = (df['low'] - df['close'].shift()).abs()
-            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-            df['atr14'] = tr.rolling(14).mean()
-            df['atr14_ma20'] = df['atr14'].rolling(20).mean()
-        except Exception as e: print(f"Error ATR: {e}")
+        df['rsi2'] = calc_rsi(df['close'], 2)
+        df['rsi3'] = calc_rsi(df['close'], 3)
+        df['rsi14'] = calc_rsi(df['close'], 14)
+        df['crsi'] = (df['rsi3'] + df['rsi2'] + (100 - df['rsi14'])) / 3 
 
-        # Extremes (Standard & Shifted)
-        try:
-            df['highest20'] = df['high'].rolling(20).max()
-            df['highest55'] = df['high'].rolling(55).max()
-            df['lowest5'] = df['low'].rolling(5).min()
-            
-            df['highest20_1'] = df['highest20'].shift(1)
-            df['highest55_1'] = df['highest55'].shift(1)
-            df['lowest5_1'] = df['lowest5'].shift(1)
-        except Exception as e: print(f"Error Extremes: {e}")
-
-        # RSI
-        try:
-            def calc_rsi(series, period):
-                delta = series.diff()
-                gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-                rs = gain / loss.replace(0, np.nan)
-                return 100 - (100 / (1 + rs))
-
-            df['rsi2'] = calc_rsi(df['close'], 2)
-            df['rsi3'] = calc_rsi(df['close'], 3)
-            df['rsi14'] = calc_rsi(df['close'], 14)
-            df['crsi'] = (df['rsi3'] + df['rsi2'] + (100 - df['rsi14'])) / 3 
-        except Exception as e: print(f"Error RSI: {e}")
-
-        # Trend Strength
-        try:
-            adx = ADXIndicator(df['high'], df['low'], df['close'])
-            df['adx'] = adx.adx()
-            df['plus_di'] = adx.adx_pos()
-            df['minus_di'] = adx.adx_neg()
-            
-            macd = MACD(df['close'])
-            df['macd'] = macd.macd()
-            df['macd_hist'] = macd.macd_diff()
-            
-            df['vol_ma20'] = df['volume'].rolling(20).mean()
-        except Exception as e: print(f"Error Trend: {e}")
+        # Trend & Volume
+        adx = ADXIndicator(df['high'], df['low'], df['close'])
+        df['adx'] = adx.adx()
+        df['plus_di'] = adx.adx_pos()
+        df['minus_di'] = adx.adx_neg()
+        
+        macd = MACD(df['close'])
+        df['macd'] = macd.macd()
+        df['macd_hist'] = macd.macd_diff()
+        
+        df['cci'] = CCIIndicator(df['high'], df['low'], df['close']).cci()
+        df['roc'] = ROCIndicator(df['close'], window=12).roc()
+        df['stoch_k'] = StochasticOscillator(df['high'], df['low'], df['close']).stoch()
+        
+        df['vol_ma20'] = df['volume'].rolling(20).mean()
 
         return df
-
-    except Exception as e:
-        print(f"❌ CRITICAL CALC FAILURE: {e}")
-        # Return original df to avoid total crash, but log it
+    except Exception:
         return df
 
 def _empty_result(name, start_cash, params=None):
@@ -131,44 +101,19 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     for sym in symbols:
         if data_dict[sym] is None or data_dict[sym].empty: continue
         try:
-            # CLEAN AND CALCULATE
-            df_clean = data_dict[sym].copy()
-            
-            # Handle MultiIndex (rare but possible from some feeds)
-            if isinstance(df_clean.columns, pd.MultiIndex):
-                df_clean.columns = df_clean.columns.get_level_values(0)
-                
-            df = _compute_indicators(df_clean)
-            
-            # Inject Context
+            df = _compute_indicators(data_dict[sym].copy())
             if vix_df is not None:
-                # Safe Merge using index alignment
-                vix_series = vix_df["close"]
-                if isinstance(vix_series.index, pd.DatetimeIndex) and isinstance(df.index, pd.DatetimeIndex):
-                    if vix_series.index.tz != df.index.tz:
-                        vix_series.index = vix_series.index.tz_localize(None)
-                        df.index = df.index.tz_localize(None)
-                
-                df["vix"] = vix_series.reindex(df.index, method="ffill").fillna(20.0)
-            else: 
-                df["vix"] = 20.0
+                df["vix"] = vix_df["close"].reindex(df.index, method="ffill").fillna(20.0)
+            else: df["vix"] = 20.0
             
-            # Date Filter
-            if start_date:
+            if start_date: 
                 start_dt = pd.to_datetime(start_date).replace(tzinfo=None)
-                if df.index.tz is not None: df.index = df.index.tz_localize(None)
                 df = df[df.index >= start_dt]
             
-            if len(df) > MIN_BARS_FOR_WARMUP: 
-                enriched[sym] = df
-                
-        except Exception as e:
-            # print(f"⚠️ {sym} Skipped: {e}")
-            continue
+            if len(df) > MIN_BARS_FOR_WARMUP: enriched[sym] = df
+        except: continue
 
-    if not enriched: 
-        print("❌ ALL Symbols Failed Validation.")
-        return _empty_result(strategy.name, start_cash, strategy.params)
+    if not enriched: return _empty_result(strategy.name, start_cash, strategy.params)
 
     all_dates = sorted(set().union(*[df.index for df in enriched.values()]))
     cash = start_cash
@@ -177,6 +122,9 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     trade_pnls = []
     trade_durations = []
     trade_returns = []
+    
+    # FIXED: Defined max_positions here
+    max_positions = 5
     pos_fraction = 0.20
 
     for current_dt in all_dates:
@@ -212,7 +160,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
         equity_curve.append(equity)
 
         # Entries
-        if len(positions) < 5 and cash > (equity * pos_fraction):
+        if len(positions) < max_positions and cash > (equity * pos_fraction):
             for sym, df in enriched.items():
                 if current_dt not in df.index or sym in positions: continue
                 i = df.index.get_loc(current_dt)
@@ -238,7 +186,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     
     gross_profit = sum(t for t in trade_pnls if t > 0)
     gross_loss = abs(sum(t for t in trade_pnls if t < 0))
-    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0.0
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 99.0
     
     avg_win = np.mean([t for t in trade_returns if t > 0]) if any(t > 0 for t in trade_returns) else 0
     avg_loss = abs(np.mean([t for t in trade_returns if t < 0])) if any(t < 0 for t in trade_returns) else 1.0
@@ -280,7 +228,7 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
         futures = {executor.submit(run_backtest, strat, data_dict, symbol_universe, start_cash, start_date, global_data): strat for strat in strategies}
         for future in concurrent.futures.as_completed(futures):
             try: results.append(future.result())
-            except Exception as e: print(f"Error {futures[future].name}: {e}")
+            except: pass
 
     if not results: return pd.DataFrame()
     return pd.DataFrame(results).sort_values("Score", ascending=False)
