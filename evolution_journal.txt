@@ -81,3 +81,4 @@
 [2025-11-24 08:03:50.493103] ⚠️  Win Rate Critical. Reducing Leverage for safety.
 [2025-11-24 08:03:50.493490] ACTION: Adjusting Position Size: 0.30 -> 0.25
 [2025-11-24 08:04:00.503996] --- Starting Cycle 10/20 ---
+[2025-11-24 08:30:35.547325] --- Starting Cycle 1/20 ---
