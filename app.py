@@ -39,7 +39,7 @@ def get_global_data(days=400):
 if mode == "Live Screener":
     st.header("🚀 Live Market Screener")
     col1, col2 = st.columns(2)
-    with col1: universe = st.selectbox("Select Universe", ["S&P 500", "S&P 1500", "S&P 100"])
+    with col1: universe = st.selectbox("Universe", ["S&P 500", "S&P 1500", "S&P 100"])
     with col2:
         strategies = {}
         try:

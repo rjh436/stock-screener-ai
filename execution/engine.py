@@ -6,7 +6,7 @@ from datetime import datetime, date
 from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor, as_completed # FIXED IMPORT
+import concurrent.futures
 from strategies.base import BaseStrategy
 
 MIN_BARS_FOR_WARMUP = 200
@@ -14,12 +14,14 @@ MIN_BARS_FOR_WARMUP = 200
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     try:
         df = df.sort_index().copy()
-        df.columns = df.columns.str.lower() 
+        df.columns = df.columns.str.lower() # Force lowercase
         
+        # Averages
         for p in [5, 10, 20, 50, 100, 200]:
             df[f'sma{p}'] = df['close'].rolling(p).mean()
             df[f'ema{p}'] = df['close'].ewm(span=p, adjust=False).mean()
 
+        # Volatility
         rolling_mean = df['close'].rolling(window=20).mean()
         rolling_std = df['close'].rolling(window=20).std()
         df['bb_upper'] = rolling_mean + (rolling_std * 2)
@@ -34,14 +36,17 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df['atr14'] = tr.rolling(14).mean()
         df['atr14_ma20'] = df['atr14'].rolling(20).mean()
 
+        # Extremes (Standard)
         df['highest20'] = df['high'].rolling(20).max()
         df['highest55'] = df['high'].rolling(55).max()
         df['lowest5'] = df['low'].rolling(5).min()
         
+        # Extremes (SHIFTED - Required for valid breakout checks)
         df['highest20_1'] = df['highest20'].shift(1)
         df['highest55_1'] = df['highest55'].shift(1)
         df['lowest5_1'] = df['lowest5'].shift(1)
 
+        # Oscillators
         def calc_rsi(series, period):
             delta = series.diff()
             gain = (delta.where(delta > 0, 0)).rolling(period).mean()
@@ -54,6 +59,7 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df['rsi14'] = calc_rsi(df['close'], 14)
         df['crsi'] = (df['rsi3'] + df['rsi2'] + (100 - df['rsi14'])) / 3 
 
+        # Trend & Volume
         adx = ADXIndicator(df['high'], df['low'], df['close'])
         df['adx'] = adx.adx()
         df['plus_di'] = adx.adx_pos()
@@ -70,7 +76,9 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df['vol_ma20'] = df['volume'].rolling(20).mean()
 
         return df
-    except: return df
+    except Exception as e:
+        print(f"❌ Ind Calc Error: {e}")
+        return df
 
 def _empty_result(name, start_cash, params=None):
     return {
@@ -126,7 +134,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                 exit_px = pos["stop_price"] if row["low"] < pos["stop_price"] else row["close"]
                 if row["low"] < pos["stop_price"] and row["open"] < pos["stop_price"]: exit_px = row["open"]
                 
-                if exit_px > (pos["entry_price"] * 4.0): exit_px = pos["entry_price"]
+                if exit_px > (pos["entry_price"] * 5.0): exit_px = pos["entry_price"] # Circuit Breaker
 
                 pnl = (exit_px - pos["entry_price"]) * pos["shares"]
                 pct = ((exit_px - pos["entry_price"]) / pos["entry_price"]) * 100
@@ -172,7 +180,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     
     gross_profit = sum(t for t in trade_pnls if t > 0)
     gross_loss = abs(sum(t for t in trade_pnls if t < 0))
-    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 99.0
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0.0
     
     avg_win = np.mean([t for t in trade_returns if t > 0]) if any(t > 0 for t in trade_returns) else 0
     avg_loss = abs(np.mean([t for t in trade_returns if t < 0])) if any(t < 0 for t in trade_returns) else 1.0
@@ -189,7 +197,9 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
         "strategy": strategy.name, "final_value": final_val, "total_trades": trades,
         "hit_rate": win_rate, "sharpe": sharpe, "cagr": cagr, 
         "avg_profit_pct": avg_profit, "avg_days_held": np.mean(trade_durations) if trade_durations else 0.0,
-        "profit_factor": profit_factor, "payoff_ratio": payoff_ratio, "Score": score
+        "profit_factor": profit_factor, "payoff_ratio": payoff_ratio,
+        "Score": score,
+        "params": strategy.params
     }
 
 def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, use_parallel=True, max_workers=8, global_data=None):
@@ -209,10 +219,9 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
             strategies.append(GenericStrategy(gen_strategies[name]))
 
     results = []
-    # FIXED: Using the directly imported ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(run_backtest, strat, data_dict, symbol_universe, start_cash, start_date, global_data): strat for strat in strategies}
-        for future in as_completed(futures):
+        for future in concurrent.futures.as_completed(futures):
             try: results.append(future.result())
             except Exception as e: print(f"Error {futures[future].name}: {e}")
 

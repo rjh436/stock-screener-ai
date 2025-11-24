@@ -17,7 +17,6 @@ from strategies.generic import GenericStrategy
 from optimization.evolution import EvolutionEngine
 
 GEN_CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config/generated_strategies.json'))
-METRICS_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../latest_metrics.json'))
 
 def fetch_sp1500_symbols():
     return get_index_symbols("S&P 1500")
@@ -76,8 +75,6 @@ def run_evolution(data_map, global_data):
     except: engine.generate_initial_population()
 
     generations = 5
-    best_stats = {}
-
     for gen in range(generations):
         print(f"\nEvaluating Gen {engine.generation_count}...")
         pop_results = []
@@ -92,36 +89,23 @@ def run_evolution(data_map, global_data):
                 except: pass
 
         ranked = sorted(pop_results, key=lambda x: x["score"], reverse=True)
-        best_stats = ranked[0]['stats']
         
-        print(f"Top Gen {engine.generation_count}: Profit {best_stats.get('avg_profit_pct',0):.2f}% | PF {best_stats.get('profit_factor',0):.2f} | Payoff {best_stats.get('payoff_ratio',0):.2f} | WR {best_stats.get('hit_rate',0):.1f}% | Hold {best_stats.get('avg_days_held',0):.1f}d")
+        print(f"Top Gen {engine.generation_count}:")
+        for i, r in enumerate(ranked[:3]):
+            stats = r['stats']
+            print(f"#{i+1} Score: {r['score']:.1f} | Sharpe: {stats.get('sharpe',0):.2f} | Profit: {stats.get('avg_profit_pct',0):.2f}% | WR: {stats.get('hit_rate',0):.1f}% | Hold: {stats.get('avg_days_held',0):.1f}d")
 
         if gen < generations - 1: engine.evolve(ranked)
     
     with open(GEN_CONFIG_PATH, "w") as f:
         json.dump([r["genome"] for r in ranked[:10]], f, indent=4)
-    
-    telemetry = {
-        "cagr": best_stats.get("cagr", 0),
-        "avg_profit": best_stats.get("avg_profit_pct", 0),
-        "win_rate": best_stats.get("hit_rate", 0),
-        "hold_days": best_stats.get("avg_days_held", 0),
-        "trades": best_stats.get("total_trades", 0),
-        "profit_factor": best_stats.get("profit_factor", 0),
-        "payoff_ratio": best_stats.get("payoff_ratio", 0)
-    }
-    with open(METRICS_PATH, "w") as f:
-        json.dump(telemetry, f)
-    print("\nCycle complete. Telemetry saved.")
 
 def run_optimization():
     symbols = fetch_sp1500_symbols()
     if not symbols: return
     data_map = fetch_data(symbols, days=1260)
     global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=1260)
-    vix_data = global_data_raw.get("$VIX")
-    if vix_data is None:
-        vix_data = global_data_raw.get("VIX")
+    vix_data = global_data_raw.get("$VIX") or global_data_raw.get("VIX")
     run_evolution(data_map, {"SPY": global_data_raw.get("SPY"), "VIX": vix_data})
 
 if __name__ == "__main__":
