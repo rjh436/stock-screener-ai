@@ -1,0 +1,162 @@
+[
+    {
+        "name": "Gen2_Fresh_3476",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 40
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.2,
+        "time_stop": 50
+    },
+    {
+        "name": "Gen1_Fresh_1387_mut",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 20
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.9,
+        "time_stop": 120
+    },
+    {
+        "name": "Gen1_Fresh_1387_mut",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.5,
+        "time_stop": 120
+    },
+    {
+        "name": "Gen1_Fresh_1387",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.9,
+        "time_stop": 120
+    },
+    {
+        "name": "Cross_Gen1_Fresh_1387_Gen1_Fresh_1387",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.9,
+        "time_stop": 120
+    },
+    {
+        "name": "Gen2_Fresh_1482",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 16
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.3,
+        "time_stop": 120
+    },
+    {
+        "name": "Cross_RSI_Power_Swing_mut_Gen1_Fresh_3671",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 5.0
+            },
+            {
+                "col": "vol_ma20",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 3.2,
+        "time_stop": 80
+    },
+    {
+        "name": "Gen1_Fresh_1387_mut",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.9,
+        "time_stop": 70
+    },
+    {
+        "name": "Cross_Gen1_Fresh_1387_RSI_Power_Swing_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 4.5,
+        "time_stop": 95
+    },
+    {
+        "name": "Cross_RSI_Power_Swing_mut_Gen1_Fresh_1387",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 4.5,
+        "time_stop": 95
+    }
+]
