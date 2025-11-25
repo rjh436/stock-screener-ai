@@ -121,7 +121,12 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     
     max_positions = 5
     # Use dynamic position sizing from strategy, default to 20%
-    pos_fraction = strategy.params.get('pos_size', 0.20) 
+    raw_pos = strategy.params.get('pos_size', strategy.params.get('position_size', strategy.params.get('pos_fraction', 0.20)))
+    try:
+        pos_fraction = float(raw_pos)
+    except (TypeError, ValueError):
+        pos_fraction = 0.20
+    pos_fraction = max(0.01, min(pos_fraction, 1.0))  # Clamp between 1% and 100% of equity
 
     for current_dt in all_dates:
         # 1. Exits
@@ -182,7 +187,8 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                     if shares > 0 and cash >= cost:
                         cash -= cost
                         positions[sym] = {"shares": shares, "entry_price": px, "stop_price": stop, "entry_i": i}
-            if len(positions) >= max_positions: break
+                if len(positions) >= max_positions:
+                    break  # Only break out of symbol loop for this date
 
     final_val = equity_curve[-1] if equity_curve else start_cash
     trades = len(trade_pnls)
@@ -198,22 +204,30 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     avg_loss = abs(np.mean([t for t in trade_returns if t < 0])) if any(t < 0 for t in trade_returns) else 1.0
     payoff_ratio = avg_win / avg_loss if avg_loss > 0 else 0
     
-    # FIX: Accurate CAGR based on total simulation time
+    # FIX: Accurate CAGR based on total simulation time (returned as decimal fraction, e.g., 0.15 == 15%)
     sim_days = (all_dates[-1] - all_dates[0]).days if len(all_dates) > 1 else 1
-    years = sim_days / 365.25
+    years = sim_days / 365.25 if sim_days > 0 else 0
     cagr = ((final_val / start_cash) ** (1.0 / years)) - 1.0 if (final_val > 0 and years > 0) else 0.0
     
-    eq = pd.Series(equity_curve)
-    sharpe = (eq.pct_change().dropna().mean() / eq.pct_change().dropna().std() * math.sqrt(252)) if len(eq) > 1 and eq.std() > 0 else 0.0
+    eq = pd.Series(equity_curve if equity_curve else [start_cash])
+    returns = eq.pct_change().dropna()
+    sharpe = (returns.mean() / returns.std() * math.sqrt(252)) if not returns.empty and returns.std() > 0 else 0.0
+    if not eq.empty and eq.max() > 0:
+        rolling_max = eq.cummax()
+        drawdowns = (eq - rolling_max) / rolling_max
+        max_drawdown_pct = drawdowns.min() * 100.0
+    else:
+        max_drawdown_pct = 0.0
+    avg_days_held = float(np.mean(trade_durations)) if trade_durations else 0.0
     
     score = (cagr * 200) + (win_rate * 2) + (sharpe * 20) + (avg_profit * 50)
 
     return {
         "strategy": strategy.name, "final_value": final_val, "total_trades": trades,
         "hit_rate": win_rate, "sharpe": sharpe, "cagr": cagr, 
-        "avg_profit_pct": avg_profit, "avg_days_held": np.mean(trade_durations) if trade_durations else 0.0,
-        "profit_factor": profit_factor, "payoff_ratio": payoff_ratio, "Score": score,
-        "trades_list": trades_list, "params": strategy.params
+        "avg_profit_pct": avg_profit, "avg_days_held": avg_days_held,
+        "profit_factor": profit_factor, "payoff_ratio": payoff_ratio, "max_drawdown_pct": max_drawdown_pct,
+        "Score": score, "trades_list": trades_list, "params": strategy.params
     }
 
 def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, use_parallel=True, max_workers=8, global_data=None):
@@ -241,3 +255,35 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     df = pd.DataFrame(results)
     df.trade_logs = {r['strategy']: r.get('trades_list', []) for r in results}
     return df.sort_values("Score", ascending=False)
+
+
+if __name__ == "__main__":
+    # Lightweight sanity harness to verify metrics stay positive on a trending series.
+    class _SanityStrategy:
+        def __init__(self):
+            self.name = "SanityLong"
+            self.params = {"pos_size": 0.25}
+
+        def entry(self, df, i):
+            if i == MIN_BARS:
+                return {"stop_price": float(df.iloc[i]["close"] * 0.95)}
+            return None
+
+        def exit(self, df, i, entry_i, entry_price, stop_price):
+            return i >= (len(df) - 1)
+
+    days = MIN_BARS + 30
+    idx = pd.date_range(end=pd.Timestamp.today(), periods=days, freq="D")
+    close = pd.Series(np.linspace(100, 120, days), index=idx)
+    demo_df = pd.DataFrame({
+        "open": close,
+        "high": close * 1.01,
+        "low": close * 0.99,
+        "close": close,
+        "volume": 1_000_000
+    })
+
+    sanity_result = run_backtest(_SanityStrategy(), {"DEMO": demo_df})
+    print("Sanity check result:", {k: sanity_result[k] for k in ["final_value", "cagr", "hit_rate", "avg_profit_pct", "Score", "total_trades"]})
+    if sanity_result["final_value"] > 100000:
+        assert sanity_result["cagr"] > 0, "Expected positive CAGR on rising series"

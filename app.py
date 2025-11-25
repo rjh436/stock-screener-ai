@@ -138,7 +138,7 @@ elif mode == "Backtest":
         
         if not results.empty:
             st.dataframe(results.style.format({
-                "hit_rate": "{:.1f}%", "avg_profit_pct": "{:.2f}%", "cagr": "{:.1f}%", 
+                "hit_rate": "{:.1f}%", "avg_profit_pct": "{:.2f}%", "cagr": "{:.2%}", 
                 "Score": "{:.1f}", "profit_factor": "{:.2f}", "payoff_ratio": "{:.2f}",
                 "avg_days_held": "{:.1f}d"
             }))
