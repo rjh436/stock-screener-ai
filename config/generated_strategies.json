@@ -1,38 +1,162 @@
 [
     {
-        "name": "Double_Seven_Sniper",
-        "type": "mean_reversion",
+        "name": "Gen2_Fresh_3476",
+        "type": "random",
         "entry_rules": [
-            { "col": "close", "op": ">", "ref": "sma200" },
-            { "col": "close", "op": "<=", "ref": "lowest5_1" }, 
-            { "col": "vix", "op": "<", "val": 35.0 }
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 40
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "val": 0
+            }
         ],
-        "exit_rules": [{ "col": "close", "op": ">", "val": 1.10, "type": "profit_target" }],
-        "stop_loss_atr": 3.0,
+        "exit_rules": [],
+        "stop_loss_atr": 5.2,
         "time_stop": 50
     },
     {
-        "name": "RSI_Power_Swing",
+        "name": "Gen1_Fresh_1387_mut",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 20
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.9,
+        "time_stop": 120
+    },
+    {
+        "name": "Gen1_Fresh_1387_mut",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.5,
+        "time_stop": 120
+    },
+    {
+        "name": "Gen1_Fresh_1387",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.9,
+        "time_stop": 120
+    },
+    {
+        "name": "Cross_Gen1_Fresh_1387_Gen1_Fresh_1387",
         "type": "hybrid",
         "entry_rules": [
-            { "col": "rsi2", "op": "<", "val": 5.0 },
-            { "col": "close", "op": ">", "ref": "sma200" },
-            { "col": "adx", "op": ">", "val": 25.0 }
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            }
         ],
-        "exit_rules": [{ "col": "close", "op": ">", "val": 1.10, "type": "profit_target" }],
-        "stop_loss_atr": 3.0,
+        "exit_rules": [],
+        "stop_loss_atr": 5.9,
+        "time_stop": 120
+    },
+    {
+        "name": "Gen2_Fresh_1482",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 16
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.3,
+        "time_stop": 120
+    },
+    {
+        "name": "Cross_RSI_Power_Swing_mut_Gen1_Fresh_3671",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 5.0
+            },
+            {
+                "col": "vol_ma20",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "adx",
+                "op": ">",
+                "val": 25.0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 3.2,
+        "time_stop": 80
+    },
+    {
+        "name": "Gen1_Fresh_1387_mut",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.9,
         "time_stop": 70
     },
     {
-        "name": "Vol_Breakout_Squeeze",
-        "type": "breakout",
+        "name": "Cross_Gen1_Fresh_1387_RSI_Power_Swing_mut",
+        "type": "hybrid",
         "entry_rules": [
-            { "col": "atr14", "op": "<", "ref": "atr14_ma20" },
-            { "col": "close", "op": ">", "ref": "highest20_1" },
-            { "col": "volume", "op": ">", "ref": "vol_ma20" }
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            }
         ],
-        "exit_rules": [{ "col": "close", "op": ">", "val": 1.10, "type": "profit_target" }],
-        "stop_loss_atr": 2.5,
-        "time_stop": 60
+        "exit_rules": [],
+        "stop_loss_atr": 4.5,
+        "time_stop": 95
+    },
+    {
+        "name": "Cross_RSI_Power_Swing_mut_Gen1_Fresh_1387",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 4.5,
+        "time_stop": 95
     }
 ]
