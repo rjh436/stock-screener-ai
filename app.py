@@ -30,9 +30,7 @@ mode = st.sidebar.radio("Mode", ["Live Screener", "Backtest"])
 @st.cache_data(ttl=3600)
 def get_global_data(days=400):
     g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days)
-    vix = g_data.get("$VIX")
-    if vix is None:
-        vix = g_data.get("VIX")
+    vix = g_data.get("$VIX") or g_data.get("VIX")
     return {"SPY": g_data.get("SPY"), "VIX": vix}
 
 
@@ -56,9 +54,15 @@ if mode == "Live Screener":
         selected_names = st.multiselect("Strategies", all_names, default=all_names)
 
     if st.button("Run Scan"):
-        symbols = get_index_symbols(universe)
-        global_data = get_global_data(days=1260)
+        with st.status("Fetching Symbol List...") as status:
+            symbols = get_index_symbols(universe)
+            if not symbols:
+                status.update(label="Failed to load symbols!", state="error")
+                st.error("Could not load symbol list from Wikipedia. Check internet or try again later.")
+                st.stop()
+            status.update(label=f"Loaded {len(symbols)} Symbols.", state="complete")
 
+        global_data = get_global_data(days=1260)
         progress = st.progress(0, text="Starting Scan...")
         status_text = st.empty()
         all_hits = []
@@ -74,7 +78,6 @@ if mode == "Live Screener":
 
             try:
                 df = _compute_indicators(df)
-
                 if global_data["VIX"] is not None:
                     df["vix"] = global_data["VIX"]["close"].reindex(df.index, method="ffill").fillna(20.0)
                 else:
@@ -136,6 +139,11 @@ elif mode == "Backtest":
 
         with st.status("Loading Data...") as status:
             symbols = get_index_symbols(bt_universe)
+            if not symbols:
+                status.update(label="Symbol Load Failed!", state="error")
+                st.error("Failed to load symbols.")
+                st.stop()
+
             data_map = fetch_data_pack(symbols, days=days_map.get(timeframe, 1260))
             global_data = get_global_data(days=1260)
 
