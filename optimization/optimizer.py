@@ -62,9 +62,19 @@ def run_evolution():
         print(f"Top: {ranked[0]['stats']['avg_profit_pct']:.2f}% Profit")
         engine.evolve(ranked)
 
+    # Auto-Label the Champion
     if ranked:
-        with open(GEN_CONFIG, "w") as f:
-            json.dump([r["genome"] for r in ranked[:10]], f, indent=4)
+        champion = ranked[0]["genome"]
+        score = ranked[0]["score"]
+        # Rename it so it pops in the UI
+        champion["name"] = f"** CHAMPION (Score {int(score)}) **"
+
+    # Save Top 10
+    with open(GEN_CONFIG, "w") as f:
+        top_genomes = [r["genome"] for r in ranked[:10]]
+        json.dump(top_genomes, f, indent=4)
+
+    print("\nEvolution complete. Champion identified and saved.")
 
 
 if __name__ == "__main__":
