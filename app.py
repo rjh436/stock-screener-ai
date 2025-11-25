@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
-import sys, os, json
+import sys
+import os
+import json
 from datetime import datetime, timedelta, timezone
 
 sys.path.append(os.path.dirname(__file__))
@@ -28,7 +30,9 @@ mode = st.sidebar.radio("Mode", ["Live Screener", "Backtest"])
 @st.cache_data(ttl=3600)
 def get_global_data(days=400):
     g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days)
-    vix = g_data.get("$VIX") or g_data.get("VIX")
+    vix = g_data.get("$VIX")
+    if vix is None:
+        vix = g_data.get("VIX")
     return {"SPY": g_data.get("SPY"), "VIX": vix}
 
 
