@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
-import sys
-import os
-import json
+import sys, os, json
 from datetime import datetime, timedelta, timezone
 
 sys.path.append(os.path.dirname(__file__))
@@ -15,15 +13,14 @@ from strategies.generic import GenericStrategy
 st.set_page_config(page_title="Apex Sniper", layout="wide", page_icon="🎯")
 st.sidebar.title("🎯 Apex Sniper")
 
-# --- API Health Check ---
-with st.sidebar.expander("🔌 API Status", expanded=True):
-    if st.button("Test Connection (VOO)"):
-        with st.spinner("Pinging Schwab..."):
-            res = sd.health_check("VOO")
+# --- API Status ---
+with st.sidebar.expander("🔌 API Status", expanded=False):
+    if st.button("Test Connection"):
+        res = sd.health_check("VOO")
         if res.get("ok"):
-            st.success("Online ✅")
+            st.success("Online")
         else:
-            st.error("Offline ❌")
+            st.error("Offline")
 
 mode = st.sidebar.radio("Mode", ["Live Screener", "Backtest"])
 
@@ -51,8 +48,8 @@ if mode == "Live Screener":
         except:
             st.error("No Strategies Found!")
 
-        all_strat_names = list(strategies.keys())
-        selected_names = st.multiselect("Strategies", all_strat_names, default=all_strat_names)
+        all_names = list(strategies.keys())
+        selected_names = st.multiselect("Strategies", all_names, default=all_names)
 
     if st.button("Run Scan"):
         symbols = get_index_symbols(universe)
@@ -65,14 +62,15 @@ if mode == "Live Screener":
         for i, sym in enumerate(symbols):
             if i % 5 == 0:
                 progress.progress(i / len(symbols))
-                status_text.text(f"Scanning {sym} ({i}/{len(symbols)})...")
+                status_text.text(f"Scanning {sym}...")
 
-            df = fetch_single_symbol(sym, days=1260, require_fresh=True)
+            df = fetch_single_symbol(sym, days=1260, force_fresh=True)
             if df is None:
                 continue
 
             try:
                 df = _compute_indicators(df)
+
                 if global_data["VIX"] is not None:
                     df["vix"] = global_data["VIX"]["close"].reindex(df.index, method="ffill").fillna(20.0)
                 else:
@@ -103,7 +101,7 @@ if mode == "Live Screener":
                 continue
 
         progress.progress(100)
-        status_text.text("Scan Complete!")
+        status_text.text("Complete!")
 
         if all_hits:
             st.success(f"Found {len(all_hits)} Trade Setups!")
@@ -114,7 +112,6 @@ if mode == "Live Screener":
 # --- 2. Backtest ---
 elif mode == "Backtest":
     st.header("🧪 Backtest Engine")
-
     col1, col2, col3 = st.columns(3)
     with col1:
         bt_universe = st.selectbox("Universe", ["S&P 100", "S&P 500", "S&P 1500"], index=2)
@@ -133,7 +130,7 @@ elif mode == "Backtest":
         days_map = {"1 Year": 365, "5 Years": 1260, "Max": 10000}
         start_date = (datetime.now(timezone.utc) - timedelta(days=days_map.get(timeframe, 1260))).date()
 
-        with st.status("Loading Data (this may take a moment)...") as status:
+        with st.status("Loading Data...") as status:
             symbols = get_index_symbols(bt_universe)
             data_map = fetch_data_pack(symbols, days=days_map.get(timeframe, 1260))
             global_data = get_global_data(days=1260)
