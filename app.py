@@ -26,10 +26,9 @@ mode = st.sidebar.radio("Mode", ["Live Screener", "Backtest"])
 
 @st.cache_data(ttl=3600)
 def get_global_data(days=400):
-    # Load Global Context (SPY/VIX)
     g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days)
     
-    # FIXED: Explicit check to avoid DataFrame Ambiguity Error
+    # FIXED: Safe VIX Check (Prevents Crash)
     vix = g_data.get("$VIX")
     if vix is None:
         vix = g_data.get("VIX")
@@ -39,11 +38,8 @@ def get_global_data(days=400):
 # --- 1. Live Screener ---
 if mode == "Live Screener":
     st.header("🚀 Live Market Screener")
-    
     col1, col2 = st.columns(2)
-    with col1:
-        # Default: S&P 1500
-        universe = st.selectbox("Universe", ["S&P 500", "S&P 1500", "S&P 100"], index=1)
+    with col1: universe = st.selectbox("Universe", ["S&P 500", "S&P 1500", "S&P 100"], index=1)
     with col2:
         strategies = {}
         try:
@@ -51,13 +47,11 @@ if mode == "Live Screener":
                 for s in json.load(f): strategies[s["name"]] = s
         except: st.error("No Strategies Found!")
         
-        # Default: ALL Strategies
         all_names = list(strategies.keys())
         selected_names = st.multiselect("Strategies", all_names, default=all_names)
 
     if st.button("Run Scan"):
         symbols = get_index_symbols(universe)
-        # Fetch Global Data First
         global_data = get_global_data(days=1260)
         
         progress = st.progress(0, text="Starting Scan...")
@@ -69,14 +63,13 @@ if mode == "Live Screener":
                 progress.progress(i / len(symbols))
                 status_text.text(f"Scanning {sym}...")
             
-            # FORCE FRESH: Ensures we get today's latest bar
+            # FORCE FRESH for Live Scan
             df = fetch_single_symbol(sym, days=1260, force_fresh=True)
             if df is None: continue 
             
             try:
                 df = _compute_indicators(df)
-                
-                # Inject Context
+                # Context
                 if global_data["VIX"] is not None:
                     df["vix"] = global_data["VIX"]["close"].reindex(df.index, method="ffill").fillna(20.0)
                 else: df["vix"] = 20.0
@@ -103,7 +96,6 @@ if mode == "Live Screener":
 
         progress.progress(100)
         status_text.text("Complete!")
-        
         if all_hits:
             st.success(f"Found {len(all_hits)} Trade Setups!")
             st.dataframe(pd.DataFrame(all_hits))
@@ -113,7 +105,6 @@ if mode == "Live Screener":
 # --- 2. Backtest ---
 elif mode == "Backtest":
     st.header("🧪 Backtest Engine")
-    
     col1, col2, col3 = st.columns(3)
     with col1: bt_universe = st.selectbox("Universe", ["S&P 100", "S&P 500", "S&P 1500"], index=2)
     with col2:
@@ -131,7 +122,6 @@ elif mode == "Backtest":
         
         with st.status("Loading Data...") as status:
             symbols = get_index_symbols(bt_universe)
-            # Backtest = Cached Data (Fast)
             data_map = fetch_data_pack(symbols, days=days_map.get(timeframe, 1260))
             global_data = get_global_data(days=1260)
             

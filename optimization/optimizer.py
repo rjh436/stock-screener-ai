@@ -2,9 +2,6 @@ import sys
 import os
 import json
 from concurrent.futures import ThreadPoolExecutor
-import pandas as pd
-import numpy as np
-
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from data.loader import fetch_data_pack
 from execution.engine import run_backtest
@@ -17,12 +14,8 @@ def calculate_fitness(result):
     trades = result.get("total_trades", 0)
     sharpe = result.get("sharpe", 0)
     avg_prof = result.get("avg_profit_pct", 0)
-    
-    # Gatekeepers
     if trades < 20: return -1000.0
-    
-    # Score
-    return (avg_prof * 50) + (min(sharpe, 3.0) * 20)
+    return (avg_prof * 50) + (sharpe * 20)
 
 def run_evolution():
     print("🚀 Initializing Optimizer...")
@@ -32,8 +25,10 @@ def run_evolution():
     data_map = fetch_data_pack(symbols, days=1260)
     g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=1260)
     
+    # FIXED: Safe VIX Check
     vix = g_data.get("$VIX")
     if vix is None: vix = g_data.get("VIX")
+        
     global_context = {"SPY": g_data.get("SPY"), "VIX": vix}
 
     engine = EvolutionEngine()
@@ -54,7 +49,7 @@ def run_evolution():
                 except: pass
         
         if not pop_res:
-            print("⚠️ No valid strategies. Checking data...")
+            print("⚠️ No valid strategies. Check data.")
             continue
 
         ranked = sorted(pop_res, key=lambda x: x["score"], reverse=True)
