@@ -35,6 +35,14 @@ def get_global_data(days=400):
         
     return {"SPY": g_data.get("SPY"), "VIX": vix}
 
+def _safe_vix(vix_df, target_index):
+    if vix_df is None or "close" not in vix_df:
+        return pd.Series(20.0, index=target_index)
+    cleaned = vix_df.copy()
+    if isinstance(cleaned.index, pd.DatetimeIndex) and cleaned.index.tz is not None:
+        cleaned.index = cleaned.index.tz_localize(None)
+    return cleaned["close"].reindex(target_index, method="ffill").fillna(20.0)
+
 # --- 1. Live Screener ---
 if mode == "Live Screener":
     st.header("🚀 Live Market Screener")
@@ -70,27 +78,26 @@ if mode == "Live Screener":
             try:
                 df = _compute_indicators(df)
                 # Context
-                if global_data["VIX"] is not None:
-                    df["vix"] = global_data["VIX"]["close"].reindex(df.index, method="ffill").fillna(20.0)
-                else: df["vix"] = 20.0
-                
-                last_idx = len(df) - 1
+                df["vix"] = _safe_vix(global_data.get("VIX"), df.index)
+                if len(df) < 2: 
+                    continue
+                signal_idx = len(df) - 2  # use prior bar to avoid look-ahead
+                price_row = df.iloc[-1]
                 for strat_name in selected_names:
                     strat = GenericStrategy(strategies[strat_name])
-                    signal = strat.entry(df, last_idx)
+                    signal = strat.entry(df, signal_idx)
                     if signal:
-                        row = df.iloc[-1]
-                        target = row["close"] * 1.10
+                        target = price_row["close"] * 1.10
                         for r in strategies[strat_name].get("exit_rules", []):
-                            if r.get("type") == "profit_target": target = row["close"] * r["val"]
+                            if r.get("type") == "profit_target": target = price_row["close"] * r["val"]
                         
                         all_hits.append({
                             "Strategy": strat_name,
                             "Symbol": sym,
-                            "Price": f"${row['close']:.2f}",
+                            "Price": f"${price_row['close']:.2f}",
                             "Stop": f"${signal['stop_price']:.2f}",
                             "Target": f"${target:.2f}",
-                            "Risk": f"{(1 - signal['stop_price']/row['close'])*100:.1f}%"
+                            "Risk": f"{(1 - signal['stop_price']/price_row['close'])*100:.1f}%"
                         })
             except: pass
 

@@ -1,11 +1,14 @@
+import math
 import operator
 from typing import Dict, Optional
 
+import numpy as np
 import pandas as pd
 
 from .base import BaseStrategy
 
 OPS = {">": operator.gt, "<": operator.lt, ">=": operator.ge, "<=": operator.le, "==": operator.eq}
+MIN_BARS = 200
 
 
 class GenericStrategy(BaseStrategy):
@@ -30,12 +33,15 @@ class GenericStrategy(BaseStrategy):
         op = OPS.get(rule.get("op"))
         if col not in row or op is None:
             return False
-        val_a = float(row[col])
+        val_a = row.get(col, np.nan)
         val_b = self._resolve_value(row, rule)
-        return op(val_a, val_b)
+        if val_a is None or np.isnan(val_a) or val_b is None or np.isnan(val_b):
+            return False
+        return bool(op(float(val_a), float(val_b)))
 
     def entry(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
-        if i < 200:
+        warmup = int(self.genome.get("warmup_bars", MIN_BARS))
+        if i < warmup:
             return None
         row = df.iloc[i]
         for rule in self.genome.get("entry_rules", []):
@@ -49,7 +55,7 @@ class GenericStrategy(BaseStrategy):
 
     def exit(self, df: pd.DataFrame, i: int, entry_i: int, entry_price: float, stop_price: float) -> bool:
         row = df.iloc[i]
-        if row.get("low", 0) < stop_price:
+        if row.get("low", np.inf) <= stop_price:
             return True
 
         if i - entry_i >= int(self.genome.get("time_stop", 50)):
@@ -58,7 +64,7 @@ class GenericStrategy(BaseStrategy):
         for rule in self.genome.get("exit_rules", []):
             if rule.get("type") == "profit_target":
                 target_multiple = float(rule.get("val", 1.0))
-                if row.get("high", 0) > (entry_price * target_multiple):
+                if row.get("high", 0) >= (entry_price * target_multiple):
                     return True
             elif self._check_condition(row, rule):
                 return True
