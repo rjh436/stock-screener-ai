@@ -44,38 +44,69 @@ def clean_dataframe(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         return None
 
 
-def fetch_single_symbol(sym: str, days: int = 1260) -> Optional[pd.DataFrame]:
-    """Fetch/Cache a single symbol (UI Helper)."""
+def fetch_single_symbol(sym: str, days: int = 1260, require_fresh: bool = False) -> Optional[pd.DataFrame]:
+    """
+    Fetch/Cache a single symbol.
+    args:
+        require_fresh: If True, ensures the data includes today (or latest trading day).
+    """
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days + 100)
 
     df = DataCache.get_cached_data(sym)
+    is_stale = True
     if df is not None:
         df = clean_dataframe(df)
+        if df is not None:
+            last_date = df.index.max().date()
+            today = datetime.now(timezone.utc).date()
+            if require_fresh and last_date < today:
+                is_stale = True
+            else:
+                is_stale = False
+
+    if df is not None and not is_stale:
         start_naive = start.replace(tzinfo=None)
-        if df is not None and df.index.min() <= start_naive:
+        if df.index.min() <= start_naive:
             return df[df.index >= start_naive]
 
     try:
-        candles = sd.price_daily(sym, start_datetime=start, end_datetime=end)
+        fetch_start = start
+        if df is not None and not df.empty:
+            fetch_start = df.index.max().replace(tzinfo=timezone.utc)
+
+        candles = sd.price_daily(sym, start_datetime=fetch_start, end_datetime=end)
         if candles:
             df_new = pd.DataFrame(candles)
             if "datetime" in df_new.columns:
                 df_new["datetime"] = pd.to_datetime(df_new["datetime"], unit="ms", utc=True)
                 df_new = df_new.set_index("datetime")
-            DataCache.save_to_cache(sym, df_new)
-            return clean_dataframe(df_new)
+
+            if df is not None:
+                df_new_clean = clean_dataframe(df_new)
+                if df_new_clean is not None:
+                    df = pd.concat([df, df_new_clean])
+                    df = df[~df.index.duplicated(keep="last")]
+            else:
+                df = df_new
+
+            DataCache.save_to_cache(sym, df)
+            return clean_dataframe(df)
+
     except Exception:
         pass
+
+    if df is not None:
+        return clean_dataframe(df)
     return None
 
 
 def fetch_data_pack(symbols: List[str], days: int = 1260) -> Dict[str, pd.DataFrame]:
-    """Bulk fetch for Backtests/Optimizer."""
+    """Bulk fetch for Backtests/Optimizer (Uses Cache by Default)."""
     print(f"Loader: Fetching {len(symbols)} symbols...")
     data: Dict[str, pd.DataFrame] = {}
     for sym in symbols:
-        df = fetch_single_symbol(sym, days)
+        df = fetch_single_symbol(sym, days, require_fresh=False)
         if df is not None:
             data[sym] = df
     return data

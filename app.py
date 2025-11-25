@@ -67,7 +67,7 @@ if mode == "Live Screener":
                 progress.progress(i / len(symbols))
                 status_text.text(f"Scanning {sym} ({i}/{len(symbols)})...")
 
-            df = fetch_single_symbol(sym, days=1260)
+            df = fetch_single_symbol(sym, days=1260, require_fresh=True)
             if df is None:
                 continue
 
