@@ -76,7 +76,7 @@ if mode == "Live Screener":
             if df is None or len(df) < 200:
                 continue
 
-            df = _compute_indicators(df, sym)
+            df = _compute_indicators(df)
             if global_data["VIX"] is not None:
                 df["vix"] = global_data["VIX"]["close"].reindex(df.index, method="ffill").fillna(20.0)
             else:
@@ -133,18 +133,27 @@ elif mode == "Backtest":
 
     if st.button("Run Backtest", type="primary"):
         days_map = {"1 Year": 365, "5 Years": 1260, "Max": 3650}
-        start_date = (datetime.now(timezone.utc) - timedelta(days=days_map.get(timeframe, 1260))).date()
+        days = days_map.get(timeframe, 1260)
         symbols = get_index_symbols(bt_universe)
         data_map = {}
-        global_data = get_global_data(days=1260)
+        global_data = get_global_data(days=days)
+
+        def trim_df(df: pd.DataFrame, lookback_days: int) -> pd.DataFrame:
+            if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+                df = df.copy()
+                df.index = df.index.tz_localize(None)
+            start_dt = (datetime.now() - timedelta(days=lookback_days)).date()
+            return df[df.index >= pd.to_datetime(start_dt)]
 
         with st.status("Running Backtest..."):
             for sym in symbols:
                 df = DataCache.get_cached_data(sym)
                 if df is not None and len(df) > 200:
-                    data_map[sym] = df
+                    df = trim_df(df, days)
+                    if len(df) > 200:
+                        data_map[sym] = df
 
-            results = run_compare(bt_selection, data_map, symbols, start_cash=100000.0, start_date=start_date, global_data=global_data)
+            results = run_compare(bt_selection, data_map, symbols, start_cash=100000.0, start_date=None, global_data=global_data)
 
         if not results.empty:
             st.dataframe(

@@ -30,6 +30,7 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         rolling_std = df['close'].rolling(window=20).std()
         df['bb_upper'] = rolling_mean + (rolling_std * 2)
         df['bb_lower'] = rolling_mean - (rolling_std * 2)
+        df['bb_mid'] = rolling_mean
         df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_mid']
         
         tr = pd.concat([
