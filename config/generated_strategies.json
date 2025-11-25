@@ -1,12 +1,53 @@
 [
     {
+        "name": "Apex_Sniper_PRIME_v1",
+        "type": "breakout",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "highest20_1"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 1.1,
+                "type": "profit_target"
+            }
+        ],
+        "stop_loss_atr": 2.5,
+        "time_stop": 60
+    },
+    {
         "name": "Vol_Breakout_Squeeze",
         "type": "breakout",
         "entry_rules": [
-            { "col": "close", "op": ">", "ref": "highest20_1" },
-            { "col": "volume", "op": ">", "ref": "vol_ma20" }
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "highest20_1"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
         ],
-        "exit_rules": [{ "col": "close", "op": ">", "val": 1.10, "type": "profit_target" }],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 1.1,
+                "type": "profit_target"
+            }
+        ],
         "stop_loss_atr": 2.5,
         "time_stop": 60
     },
@@ -14,10 +55,25 @@
         "name": "Double_Seven_Sniper",
         "type": "mean_reversion",
         "entry_rules": [
-            { "col": "close", "op": ">", "ref": "sma200" },
-            { "col": "close", "op": "<=", "ref": "lowest5_1" }
+            {
+                "col": "close",
+                "op": ">",
+                "ref": "sma200"
+            },
+            {
+                "col": "close",
+                "op": "<=",
+                "ref": "lowest5_1"
+            }
         ],
-        "exit_rules": [{ "col": "close", "op": ">", "val": 1.10, "type": "profit_target" }],
+        "exit_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 1.1,
+                "type": "profit_target"
+            }
+        ],
         "stop_loss_atr": 3.0,
         "time_stop": 50
     }
