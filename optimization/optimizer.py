@@ -2,80 +2,47 @@ import sys
 import os
 import json
 from concurrent.futures import ThreadPoolExecutor
-
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from data.loader import fetch_data_pack
+from execution.engine import run_backtest
 from strategies.generic import GenericStrategy
 from optimization.evolution import EvolutionEngine
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from data.loader import fetch_data_pack  # USE SHARED LOADER
-from data.indices import get_index_symbols
-from execution.engine import run_backtest
-
-GEN_CONFIG = os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/generated_strategies.json"))
-
-
-def calculate_fitness(result):
-    trades = result.get("total_trades", 0)
-    sharpe = result.get("sharpe", 0)
-    avg_prof = result.get("avg_profit_pct", 0)
-    if trades < 20:
-        return -1000.0
-    return (avg_prof * 50) + (sharpe * 20)
-
+GEN_CONFIG = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config/generated_strategies.json'))
 
 def run_evolution():
     print("🚀 Initializing...")
-    sym_list = get_index_symbols("S&P 1500")
-
-    data_map = fetch_data_pack(sym_list, days=1260)
+    from data.indices import get_index_symbols
+    symbols = get_index_symbols("S&P 1500")
+    data_map = fetch_data_pack(symbols, days=1260)
     g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=1260)
     vix = g_data.get("$VIX") or g_data.get("VIX")
     global_context = {"SPY": g_data.get("SPY"), "VIX": vix}
 
     engine = EvolutionEngine()
-    try:
-        with open(GEN_CONFIG, "r") as f:
-            engine.population = json.load(f)
-    except Exception:
-        engine.generate_initial_population()
+    try: 
+        with open(GEN_CONFIG, "r") as f: engine.population = json.load(f)
+    except: engine.generate_initial_population()
 
-    ranked = []
     for gen in range(3):
         print(f"Gen {gen}...")
         pop_res = []
         with ThreadPoolExecutor(max_workers=10) as ex:
-            futures = {
-                ex.submit(run_backtest, GenericStrategy(g), data_map, None, 100000.0, None, global_context): g
-                for g in engine.population
-            }
+            futures = {ex.submit(run_backtest, GenericStrategy(g), data_map, None, 100000.0, None, global_context): g for g in engine.population}
             for f in futures:
                 try:
                     res = f.result()
-                    score = calculate_fitness(res)
+                    # USE ENGINE SCORE DIRECTLY - NO DRIFT
+                    score = res["Score"]
                     pop_res.append({"genome": futures[f], "score": score, "stats": res})
-                except Exception:
-                    continue
-
-        if not pop_res:
-            break
+                except: pass
+        
         ranked = sorted(pop_res, key=lambda x: x["score"], reverse=True)
-        print(f"Top: {ranked[0]['stats']['avg_profit_pct']:.2f}% Profit")
+        best = ranked[0]['stats']
+        print(f"Top: {best['avg_profit_pct']:.2f}% Profit | {best['total_trades']} Trades | Score {best['Score']:.1f}")
         engine.evolve(ranked)
 
-    # Auto-Label the Champion
-    if ranked:
-        champion = ranked[0]["genome"]
-        score = ranked[0]["score"]
-        # Rename it so it pops in the UI
-        champion["name"] = f"** CHAMPION (Score {int(score)}) **"
-
-    # Save Top 10
-    with open(GEN_CONFIG, "w") as f:
-        top_genomes = [r["genome"] for r in ranked[:10]]
-        json.dump(top_genomes, f, indent=4)
-
-    print("\nEvolution complete. Champion identified and saved.")
-
+    with open(GEN_CONFIG, "w") as f: json.dump([r["genome"] for r in ranked[:10]], f, indent=4)
 
 if __name__ == "__main__":
     run_evolution()

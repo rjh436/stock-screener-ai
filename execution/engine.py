@@ -6,27 +6,35 @@ from datetime import datetime, date
 from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
+import concurrent.futures
 from strategies.base import BaseStrategy
 
-MIN_BARS_FOR_WARMUP = 200
+MIN_BARS = 200
+
+# --- SHARED SCORING LOGIC ---
+def _calculate_score(cagr, win_rate, sharpe, avg_profit, max_dd):
+    """The Single Source of Truth for Strategy Scoring."""
+    # Sniper Formula: High Profit + Consistency
+    score = (cagr * 200) + (win_rate * 5) + (min(sharpe, 3.0) * 50) + (avg_profit * 100)
+    
+    # Penalties
+    if max_dd > 50: score -= (max_dd - 50) * 10
+    
+    return score
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     try:
         df = df.sort_index().copy()
         df.columns = df.columns.str.lower()
         
-        # Averages
-        for p in [5, 10, 20, 50, 100, 200]:
+        # Standard MAs
+        for p in [10, 20, 50, 200]:
             df[f'sma{p}'] = df['close'].rolling(p).mean()
             df[f'ema{p}'] = df['close'].ewm(span=p, adjust=False).mean()
 
         # Volatility
-        rolling_mean = df['close'].rolling(window=20).mean()
-        rolling_std = df['close'].rolling(window=20).std()
-        df['bb_upper'] = rolling_mean + (rolling_std * 2)
-        df['bb_lower'] = rolling_mean - (rolling_std * 2)
-        df['bb_mid'] = rolling_mean
-        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_mid']
+        df['bb_upper'] = df['close'].rolling(20).mean() + (df['close'].rolling(20).std() * 2)
+        df['bb_lower'] = df['close'].rolling(20).mean() - (df['close'].rolling(20).std() * 2)
         
         tr = pd.concat([
             df['high'] - df['low'],
@@ -36,55 +44,41 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df['atr14'] = tr.rolling(14).mean()
         df['atr14_ma20'] = df['atr14'].rolling(20).mean()
 
-        # Extremes
+        # Extremes (Shifted for Backtest Validity)
         df['highest20'] = df['high'].rolling(20).max()
-        df['highest55'] = df['high'].rolling(55).max()
-        df['lowest5'] = df['low'].rolling(5).min()
-        
-        # SHIFTED (Fixes Breakout Logic)
         df['highest20_1'] = df['highest20'].shift(1)
+        df['highest55'] = df['high'].rolling(55).max()
         df['highest55_1'] = df['highest55'].shift(1)
+        df['lowest5'] = df['low'].rolling(5).min()
         df['lowest5_1'] = df['lowest5'].shift(1)
 
         # Oscillators
-        def calc_rsi(series, period):
-            delta = series.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-            rs = gain / loss.replace(0, np.nan)
-            return 100 - (100 / (1 + rs))
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss.replace(0, np.nan)
+        df['rsi14'] = 100 - (100 / (1 + rs))
+        
+        # Quick RSI
+        g2 = (delta.where(delta > 0, 0)).rolling(2).mean()
+        l2 = (-delta.where(delta < 0, 0)).rolling(2).mean()
+        rs2 = g2 / l2.replace(0, np.nan)
+        df['rsi2'] = 100 - (100 / (1 + rs2))
 
-        df['rsi2'] = calc_rsi(df['close'], 2)
-        df['rsi3'] = calc_rsi(df['close'], 3)
-        df['rsi14'] = calc_rsi(df['close'], 14)
-        df['crsi'] = (df['rsi3'] + df['rsi2'] + (100 - df['rsi14'])) / 3 
-
+        # Trend
         adx = ADXIndicator(df['high'], df['low'], df['close'])
         df['adx'] = adx.adx()
-        df['plus_di'] = adx.adx_pos()
-        df['minus_di'] = adx.adx_neg()
-        
-        macd = MACD(df['close'])
-        df['macd'] = macd.macd()
-        df['macd_hist'] = macd.macd_diff()
-        
-        df['cci'] = CCIIndicator(df['high'], df['low'], df['close']).cci()
-        df['roc'] = ROCIndicator(df['close'], window=12).roc()
-        df['stoch_k'] = StochasticOscillator(df['high'], df['low'], df['close']).stoch()
-        
         df['vol_ma20'] = df['volume'].rolling(20).mean()
 
         return df
-    except Exception as e:
-        return df
+    except: return df
 
-def _empty_result(name, start_cash, params=None):
+def _empty_result(name, start_cash):
     return {
         "strategy": name, "final_value": start_cash, "total_trades": 0,
         "hit_rate": 0.0, "sharpe": 0.0, "cagr": 0.0, "max_drawdown_pct": 0.0,
         "avg_profit_pct": 0.0, "avg_days_held": 0.0, "profit_factor": 0.0,
-        "payoff_ratio": 0.0, "Score": 0.0, "params": params or {},
-        "trades_list": []
+        "payoff_ratio": 0.0, "Score": 0.0, "params": {}
     }
 
 def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None):
@@ -98,31 +92,38 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
         if data_dict[sym] is None or data_dict[sym].empty: continue
         try:
             df = _compute_indicators(data_dict[sym].copy())
+            # Safe VIX Merge
             if vix_df is not None:
                 df["vix"] = vix_df["close"].reindex(df.index, method="ffill").fillna(20.0)
             else: df["vix"] = 20.0
             
-            if start_date: 
+            if start_date:
                 start_dt = pd.to_datetime(start_date).replace(tzinfo=None)
+                if df.index.tz is not None: df.index = df.index.tz_localize(None)
                 df = df[df.index >= start_dt]
             
-            if len(df) > MIN_BARS_FOR_WARMUP: enriched[sym] = df
+            if len(df) > MIN_BARS: enriched[sym] = df
         except: continue
 
-    if not enriched: return _empty_result(strategy.name, start_cash, strategy.params)
+    if not enriched: return _empty_result(strategy.name, start_cash)
 
+    # SIMULATION
     all_dates = sorted(set().union(*[df.index for df in enriched.values()]))
     cash = start_cash
     positions = {}
     equity_curve = []
     trade_pnls = []
-    trade_durations = []
     trade_returns = []
-    trades_list = [] # NEW: Detailed Trade Log
-    pos_fraction = 0.20
+    trade_durations = []
+    trades_list = []
+    
+    # --- DYNAMIC CONFIGURATION ---
+    # Reads from Strategy Genome. Defaults to "Sniper" settings.
+    pos_fraction = strategy.params.get('pos_size', 0.20) # Default 20%
+    max_positions = int(1.0 / pos_fraction) # Auto-calc max positions (e.g. 5)
 
     for current_dt in all_dates:
-        # Exits
+        # 1. Exits
         for sym in list(positions.keys()):
             if sym not in enriched or current_dt not in enriched[sym].index: continue
             df = enriched[sym]
@@ -134,7 +135,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                 exit_px = pos["stop_price"] if row["low"] < pos["stop_price"] else row["close"]
                 if row["low"] < pos["stop_price"] and row["open"] < pos["stop_price"]: exit_px = row["open"]
                 
-                # Circuit Breaker
+                # Circuit Breaker (>400% gain)
                 if exit_px > (pos["entry_price"] * 5.0): exit_px = pos["entry_price"]
 
                 pnl = (exit_px - pos["entry_price"]) * pos["shares"]
@@ -145,20 +146,13 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                 trade_returns.append(pct)
                 trade_durations.append(i - pos["entry_i"])
                 
-                # Log Trade
                 trades_list.append({
-                    "Symbol": sym,
-                    "Entry Date": str(all_dates[pos["entry_i"]].date()),
-                    "Exit Date": str(current_dt.date()),
-                    "Entry": round(pos["entry_price"], 2),
-                    "Exit": round(exit_px, 2),
-                    "PnL": round(pnl, 2),
-                    "Return %": round(pct, 2)
+                    "Symbol": sym, "Entry": pos["entry_price"], "Exit": exit_px, 
+                    "PnL": pnl, "Return%": pct, "Date": str(current_dt.date())
                 })
-                
                 del positions[sym]
 
-        # Equity
+        # 2. Equity
         equity = cash
         for sym, pos in positions.items():
             if sym in enriched and current_dt in enriched[sym].index:
@@ -166,12 +160,14 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
             else: equity += pos["shares"] * pos["entry_price"]
         equity_curve.append(equity)
 
-        # Entries
-        if len(positions) < 5 and cash > (equity * pos_fraction):
+        # 3. Entries
+        if len(positions) < max_positions and cash > 0:
+            target_size = equity * pos_fraction
+            
             for sym, df in enriched.items():
                 if current_dt not in df.index or sym in positions: continue
                 i = df.index.get_loc(current_dt)
-                if i < MIN_BARS_FOR_WARMUP: continue
+                if i < MIN_BARS: continue
                 
                 entry = strategy.entry(df, i)
                 if entry:
@@ -179,12 +175,13 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                     stop = float(entry["stop_price"])
                     if px < 5.0: continue
                     
-                    shares = int((equity * pos_fraction) / px)
+                    shares = int(target_size / px)
                     if shares > 0 and cash >= (shares * px):
                         cash -= (shares * px)
                         positions[sym] = {"shares": shares, "entry_price": px, "stop_price": stop, "entry_i": i}
-            if len(positions) >= 5: break # Max Pos check
+            if len(positions) >= max_positions: break
 
+    # METRICS
     final_val = equity_curve[-1] if equity_curve else start_cash
     trades = len(trade_pnls)
     wins = len([t for t in trade_pnls if t > 0])
@@ -204,21 +201,26 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     
     eq = pd.Series(equity_curve)
     sharpe = (eq.pct_change().dropna().mean() / eq.pct_change().dropna().std() * math.sqrt(252)) if len(eq) > 1 and eq.std() > 0 else 0.0
-    score = (cagr * 200) + (win_rate * 2) + (sharpe * 20)
+    
+    # Drawdown
+    roll_max = eq.cummax()
+    dd = (eq - roll_max) / roll_max
+    max_dd = dd.min() * 100
+
+    # UNIFIED SCORE
+    score = _calculate_score(cagr, win_rate, sharpe, avg_profit, abs(max_dd))
 
     return {
         "strategy": strategy.name, "final_value": final_val, "total_trades": trades,
-        "hit_rate": win_rate, "sharpe": sharpe, "cagr": cagr, 
+        "hit_rate": win_rate, "sharpe": sharpe, "cagr": cagr, "max_drawdown_pct": max_dd,
         "avg_profit_pct": avg_profit, "avg_days_held": np.mean(trade_durations) if trade_durations else 0.0,
         "profit_factor": profit_factor, "payoff_ratio": payoff_ratio, "Score": score,
-        "trades_list": trades_list # NEW
+        "trades_list": trades_list, "params": strategy.params
     }
 
 def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, use_parallel=True, max_workers=8, global_data=None):
-    import json
-    import os
+    import json, os, concurrent.futures
     from strategies.generic import GenericStrategy
-    import concurrent.futures
 
     gen_strategies = {}
     try:
@@ -239,7 +241,6 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
             except: pass
 
     if not results: return pd.DataFrame()
-    # Attach trade logs to dataframe object for UI access (a bit hacky but works)
     df = pd.DataFrame(results)
-    df.trade_logs = {r['strategy']: r['trades_list'] for r in results}
+    df.trade_logs = {r['strategy']: r.get('trades_list', []) for r in results}
     return df.sort_values("Score", ascending=False)
