@@ -1,33 +1,47 @@
 import streamlit as st
 import pandas as pd
-import sys, os, json
+import sys
+import os
+import json
 from datetime import datetime, timedelta, timezone
 
 sys.path.append(os.path.dirname(__file__))
+from data.schwab_client import sd
 from data.indices import get_index_symbols
-from data.loader import fetch_data_pack  # NEW LOADER
-from execution.engine import run_compare, _compute_indicators
+from data.loader import fetch_single_symbol, fetch_data_pack
+from execution.engine import run_backtest, run_compare, _compute_indicators
 from strategies.generic import GenericStrategy
 
-st.set_page_config(page_title="Apex Sniper", layout="wide")
+st.set_page_config(page_title="Apex Sniper", layout="wide", page_icon="🎯")
 st.sidebar.title("🎯 Apex Sniper")
+
+# --- API Health Check ---
+with st.sidebar.expander("🔌 API Status", expanded=True):
+    if st.button("Test Connection (VOO)"):
+        with st.spinner("Pinging Schwab..."):
+            res = sd.health_check("VOO")
+        if res.get("ok"):
+            st.success("Online ✅")
+        else:
+            st.error("Offline ❌")
+
 mode = st.sidebar.radio("Mode", ["Live Screener", "Backtest"])
 
 
 @st.cache_data(ttl=3600)
-def load_ui_data(universe, days=400):
-    symbols = get_index_symbols(universe)
-    data_map = fetch_data_pack(symbols, days=days)
-    global_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days)
-    vix = global_data.get("$VIX") or global_data.get("VIX")
-    return symbols, data_map, {"SPY": global_data.get("SPY"), "VIX": vix}
+def get_global_data(days=400):
+    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days)
+    vix = g_data.get("$VIX") or g_data.get("VIX")
+    return {"SPY": g_data.get("SPY"), "VIX": vix}
 
 
+# --- 1. Live Screener ---
 if mode == "Live Screener":
     st.header("🚀 Live Market Screener")
+
     col1, col2 = st.columns(2)
     with col1:
-        universe = st.selectbox("Universe", ["S&P 500", "S&P 1500", "S&P 100"])
+        universe = st.selectbox("Universe", ["S&P 500", "S&P 1500", "S&P 100"], index=1)
     with col2:
         strategies = {}
         try:
@@ -36,17 +50,24 @@ if mode == "Live Screener":
                     strategies[s["name"]] = s
         except:
             st.error("No Strategies Found!")
-        selected = st.multiselect("Strategies", list(strategies.keys()), default=list(strategies.keys())[:1])
+
+        all_strat_names = list(strategies.keys())
+        selected_names = st.multiselect("Strategies", all_strat_names, default=all_strat_names)
 
     if st.button("Run Scan"):
-        symbols, data_map, global_data = load_ui_data(universe, days=1260)
-        progress = st.progress(0)
-        hits = []
+        symbols = get_index_symbols(universe)
+        global_data = get_global_data(days=1260)
+
+        progress = st.progress(0, text="Starting Scan...")
+        status_text = st.empty()
+        all_hits = []
 
         for i, sym in enumerate(symbols):
-            if i % 10 == 0:
+            if i % 5 == 0:
                 progress.progress(i / len(symbols))
-            df = data_map.get(sym)
+                status_text.text(f"Scanning {sym} ({i}/{len(symbols)})...")
+
+            df = fetch_single_symbol(sym, days=1260)
             if df is None:
                 continue
 
@@ -58,63 +79,72 @@ if mode == "Live Screener":
                     df["vix"] = 20.0
 
                 last_idx = len(df) - 1
-                for s_name in selected:
-                    strat = GenericStrategy(strategies[s_name])
+                for strat_name in selected_names:
+                    strat = GenericStrategy(strategies[strat_name])
                     signal = strat.entry(df, last_idx)
                     if signal:
                         row = df.iloc[-1]
-                        tgt = row["close"] * 1.10
-                        for r in strategies[s_name].get("exit_rules", []):
+                        target = row["close"] * 1.10
+                        for r in strategies[strat_name].get("exit_rules", []):
                             if r.get("type") == "profit_target":
-                                tgt = row["close"] * r["val"]
+                                target = row["close"] * r["val"]
 
-                        hits.append(
+                        all_hits.append(
                             {
-                                "Strategy": s_name,
+                                "Strategy": strat_name,
                                 "Symbol": sym,
                                 "Price": f"${row['close']:.2f}",
                                 "Stop": f"${signal['stop_price']:.2f}",
-                                "Target": f"${tgt:.2f}",
+                                "Target": f"${target:.2f}",
+                                "Risk": f"{(1 - signal['stop_price']/row['close'])*100:.1f}%",
                             }
                         )
             except Exception:
                 continue
 
         progress.progress(100)
-        if hits:
-            st.dataframe(pd.DataFrame(hits))
+        status_text.text("Scan Complete!")
+
+        if all_hits:
+            st.success(f"Found {len(all_hits)} Trade Setups!")
+            st.dataframe(pd.DataFrame(all_hits))
         else:
             st.warning("No setups found.")
 
+# --- 2. Backtest ---
 elif mode == "Backtest":
     st.header("🧪 Backtest Engine")
+
     col1, col2, col3 = st.columns(3)
     with col1:
-        bt_univ = st.selectbox("Universe", ["S&P 100", "S&P 500", "S&P 1500"])
+        bt_universe = st.selectbox("Universe", ["S&P 100", "S&P 500", "S&P 1500"], index=2)
     with col2:
-        gen_strats = []
+        gen_strategies = []
         try:
             with open("config/generated_strategies.json", "r") as f:
-                gen_strats = [s["name"] for s in json.load(f)]
+                gen_strategies = [s["name"] for s in json.load(f)]
         except:
             pass
-        bt_strats = st.multiselect("Strategies", gen_strats, default=gen_strats[:3] if gen_strats else None)
+        bt_strategies = st.multiselect("Strategies", gen_strategies, default=gen_strategies)
     with col3:
-        tf = st.selectbox("Timeframe", ["1 Year", "5 Years", "Max"])
+        timeframe = st.selectbox("Timeframe", ["1 Year", "5 Years", "Max"], index=1)
 
     if st.button("Run Backtest"):
-        d_map = {"1 Year": 365, "5 Years": 1260, "Max": 5000}
-        days = d_map.get(tf, 1260)
+        days_map = {"1 Year": 365, "5 Years": 1260, "Max": 10000}
+        start_date = (datetime.now(timezone.utc) - timedelta(days=days_map.get(timeframe, 1260))).date()
 
-        with st.status("Loading Data...") as status:
-            symbols, data_map, global_data = load_ui_data(bt_univ, days=days)
+        with st.status("Loading Data (this may take a moment)...") as status:
+            symbols = get_index_symbols(bt_universe)
+            data_map = fetch_data_pack(symbols, days=days_map.get(timeframe, 1260))
+            global_data = get_global_data(days=1260)
+
             status.update(label=f"Backtesting {len(data_map)} symbols...", state="running")
-            res = run_compare(bt_strats, data_map, symbols, start_cash=100000.0, start_date=None, global_data=global_data)
+            results = run_compare(bt_strategies, data_map, symbols, start_cash=100000.0, start_date=start_date, global_data=global_data)
             status.update(label="Complete!", state="complete")
 
-        if not res.empty:
+        if not results.empty:
             st.dataframe(
-                res.style.format(
+                results.style.format(
                     {
                         "hit_rate": "{:.1f}%",
                         "avg_profit_pct": "{:.2f}%",
@@ -122,6 +152,7 @@ elif mode == "Backtest":
                         "Score": "{:.1f}",
                         "profit_factor": "{:.2f}",
                         "payoff_ratio": "{:.2f}",
+                        "avg_days_held": "{:.1f}d",
                     }
                 )
             )
