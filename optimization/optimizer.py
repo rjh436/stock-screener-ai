@@ -1,135 +1,71 @@
-import json
-import os
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone
-from typing import Dict, List
+import os
+import json
+from concurrent.futures import ThreadPoolExecutor
 
-import pandas as pd
+from strategies.generic import GenericStrategy
+from optimization.evolution import EvolutionEngine
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from data.cache_manager import DataCache
+from data.loader import fetch_data_pack  # USE SHARED LOADER
 from data.indices import get_index_symbols
-from data.schwab_client import sd
 from execution.engine import run_backtest
-from optimization.evolution import EvolutionEngine
-from strategies.generic import GenericStrategy
 
-GEN_CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/generated_strategies.json"))
-HISTORY_DAYS = 1260  # 5 years
+GEN_CONFIG = os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/generated_strategies.json"))
 
 
-def fetch_sp1500_symbols() -> List[str]:
-    return get_index_symbols("S&P 1500")
+def calculate_fitness(result):
+    trades = result.get("total_trades", 0)
+    sharpe = result.get("sharpe", 0)
+    avg_prof = result.get("avg_profit_pct", 0)
+    if trades < 20:
+        return -1000.0
+    return (avg_prof * 50) + (sharpe * 20)
 
 
-def fetch_data(symbols: List[str], days: int = HISTORY_DAYS) -> Dict[str, pd.DataFrame]:
-    print(f"Fetching data for {len(symbols)} symbols over last {days} days...")
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days + 50)
-    data: Dict[str, pd.DataFrame] = {}
+def run_evolution():
+    print("🚀 Initializing...")
+    sym_list = get_index_symbols("S&P 1500")
 
-    def load_symbol(sym: str):
-        try:
-            df = DataCache.get_cached_data(sym)
-            if df is not None and len(df) >= days * 0.9:
-                return sym, df[(df.index >= start) & (df.index <= end)]
-            candles = sd.price_daily(sym, start_datetime=start, end_datetime=end)
-            if candles:
-                df = pd.DataFrame(candles)
-                df["datetime"] = pd.to_datetime(df["datetime"], unit="ms", utc=True)
-                df = df.set_index("datetime").sort_index()
-                DataCache.save_to_cache(sym, df)
-                return sym, df
-        except Exception:
-            pass
-        return sym, None
+    data_map = fetch_data_pack(sym_list, days=1260)
+    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=1260)
+    vix = g_data.get("$VIX") or g_data.get("VIX")
+    global_context = {"SPY": g_data.get("SPY"), "VIX": vix}
 
-    with ThreadPoolExecutor(max_workers=20) as executor:
-        futures = {executor.submit(load_symbol, sym): sym for sym in symbols}
-        for future in as_completed(futures):
-            sym, df = future.result()
-            if df is not None:
-                data[sym] = df
-    return data
-
-
-def calculate_fitness(result: Dict) -> float:
-    trades = result.get("total_trades", 0) or 0
-    sharpe = result.get("sharpe", 0) or 0
-    win_rate = result.get("hit_rate", 0) or 0
-    avg_profit_pct = result.get("avg_profit_pct", 0) or 0
-    profit_factor = result.get("profit_factor", 0) or 0
-    payoff = result.get("payoff_ratio", 0) or 0
-
-    score = (
-        avg_profit_pct * 30.0
-        + min(sharpe, 3.0) * 20.0
-        + profit_factor * 20.0
-        + payoff * 15.0
-        + win_rate * 0.5
-        + trades * 0.1
-    )
-    return score
-
-
-def run_evolution(data_map: Dict, global_data: Dict):
-    print("\\n--- Starting Deep Metric Evolution ---")
     engine = EvolutionEngine()
     try:
-        with open(GEN_CONFIG_PATH, "r") as f:
+        with open(GEN_CONFIG, "r") as f:
             engine.population = json.load(f)
     except Exception:
         engine.generate_initial_population()
 
-    generations = 5
-    for gen_i in range(generations):
-        print(f"\\nEvaluating Gen {engine.generation_count}...")
-        pop_results = []
-        with ThreadPoolExecutor(max_workers=10) as executor:
+    ranked = []
+    for gen in range(3):
+        print(f"Gen {gen}...")
+        pop_res = []
+        with ThreadPoolExecutor(max_workers=10) as ex:
             futures = {
-                executor.submit(run_backtest, GenericStrategy(genome), data_map, None, 100000.0, None, global_data): genome
-                for genome in engine.population
+                ex.submit(run_backtest, GenericStrategy(g), data_map, None, 100000.0, None, global_context): g
+                for g in engine.population
             }
-            for future in as_completed(futures):
-                genome = futures[future]
+            for f in futures:
                 try:
-                    res = future.result()
+                    res = f.result()
                     score = calculate_fitness(res)
-                    pop_results.append({"genome": genome, "score": score, "stats": res})
+                    pop_res.append({"genome": futures[f], "score": score, "stats": res})
                 except Exception:
                     continue
 
-        if not pop_results:
+        if not pop_res:
             break
+        ranked = sorted(pop_res, key=lambda x: x["score"], reverse=True)
+        print(f"Top: {ranked[0]['stats']['avg_profit_pct']:.2f}% Profit")
+        engine.evolve(ranked)
 
-        ranked = sorted(pop_results, key=lambda x: x["score"], reverse=True)
-
-        print(f"Top Gen {engine.generation_count}:")
-        for i, r in enumerate(ranked[:3]):
-            stats = r["stats"]
-            print(
-                f"#{i+1} Score: {r['score']:.1f} | Sharpe: {stats.get('sharpe',0):.2f} | Profit: {stats.get('avg_profit_pct',0):.2f}% "
-                f"| WR: {stats.get('hit_rate',0):.1f}% | Hold: {stats.get('avg_days_held',0):.1f}d"
-            )
-
-        if gen_i < generations - 1:
-            engine.evolve(ranked)
-
-    if pop_results:
-        with open(GEN_CONFIG_PATH, "w") as f:
+    if ranked:
+        with open(GEN_CONFIG, "w") as f:
             json.dump([r["genome"] for r in ranked[:10]], f, indent=4)
 
 
-def run_optimization():
-    symbols = fetch_sp1500_symbols()
-    if not symbols:
-        return
-    data_map = fetch_data(symbols, days=HISTORY_DAYS)
-    global_data_raw = fetch_data(["SPY", "$VIX", "VIX"], days=HISTORY_DAYS)
-    vix_data = global_data_raw.get("$VIX") or global_data_raw.get("VIX")
-    run_evolution(data_map, {"SPY": global_data_raw.get("SPY"), "VIX": vix_data})
-
-
 if __name__ == "__main__":
-    run_optimization()
+    run_evolution()

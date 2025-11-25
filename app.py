@@ -1,163 +1,120 @@
-import json
-import os
-import sys
+import streamlit as st
+import pandas as pd
+import sys, os, json
 from datetime import datetime, timedelta, timezone
 
-import pandas as pd
-import streamlit as st
-
 sys.path.append(os.path.dirname(__file__))
-from data.cache_manager import DataCache
 from data.indices import get_index_symbols
-from data.schwab_client import sd
-from execution.engine import _compute_indicators, run_compare
+from data.loader import fetch_data_pack  # NEW LOADER
+from execution.engine import run_compare, _compute_indicators
 from strategies.generic import GenericStrategy
 
-st.set_page_config(page_title="Apex Sniper Screener", layout="wide", page_icon="🎯")
+st.set_page_config(page_title="Apex Sniper", layout="wide")
 st.sidebar.title("🎯 Apex Sniper")
 mode = st.sidebar.radio("Mode", ["Live Screener", "Backtest"])
 
 
 @st.cache_data(ttl=3600)
-def get_global_data(days: int = 1260):
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days + 50)
-    g_data = {}
-    for sym in ["SPY", "$VIX", "VIX"]:
-        try:
-            df = DataCache.get_cached_data(sym)
-            if df is None:
-                candles = sd.price_daily(sym, start_datetime=start, end_datetime=end)
-                if candles:
-                    df = pd.DataFrame(candles)
-                    df["datetime"] = pd.to_datetime(df["datetime"], unit="ms", utc=True)
-                    df = df.set_index("datetime").sort_index()
-                    DataCache.save_to_cache(sym, df)
-            if df is not None and not df.empty:
-                g_data[sym] = df
-        except Exception as e:
-            st.warning(f"Failed to load {sym}: {e}")
-    vix = g_data.get("$VIX") if "$VIX" in g_data else g_data.get("VIX")
-    return {"SPY": g_data.get("SPY"), "VIX": vix}
-
-
-def load_strategies():
-    try:
-        with open("config/generated_strategies.json", "r") as f:
-            data = json.load(f)
-        return {s["name"]: s for s in data}
-    except Exception as e:
-        st.error(f"Unable to load strategies: {e}")
-        return {}
+def load_ui_data(universe, days=400):
+    symbols = get_index_symbols(universe)
+    data_map = fetch_data_pack(symbols, days=days)
+    global_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days)
+    vix = global_data.get("$VIX") or global_data.get("VIX")
+    return symbols, data_map, {"SPY": global_data.get("SPY"), "VIX": vix}
 
 
 if mode == "Live Screener":
     st.header("🚀 Live Market Screener")
     col1, col2 = st.columns(2)
     with col1:
-        universe = st.selectbox("Universe", ["S&P 1500", "S&P 500", "S&P 100"], index=0)
+        universe = st.selectbox("Universe", ["S&P 500", "S&P 1500", "S&P 100"])
     with col2:
-        strategies = load_strategies()
-        all_names = list(strategies.keys())
-        use_all = st.checkbox("Select All Strategies", value=True)
-        selected_names = all_names if use_all else st.multiselect("Strategies", all_names, default=all_names[:1])
-        st.caption(f"Loaded {len(all_names)} strategies.")
+        strategies = {}
+        try:
+            with open("config/generated_strategies.json", "r") as f:
+                for s in json.load(f):
+                    strategies[s["name"]] = s
+        except:
+            st.error("No Strategies Found!")
+        selected = st.multiselect("Strategies", list(strategies.keys()), default=list(strategies.keys())[:1])
 
     if st.button("Run Scan"):
-        symbols = get_index_symbols(universe)
-        global_data = get_global_data(days=1260)
-        all_hits = []
+        symbols, data_map, global_data = load_ui_data(universe, days=1260)
         progress = st.progress(0)
+        hits = []
 
         for i, sym in enumerate(symbols):
             if i % 10 == 0:
                 progress.progress(i / len(symbols))
-            df = DataCache.get_cached_data(sym)
-            if df is None or len(df) < 200:
+            df = data_map.get(sym)
+            if df is None:
                 continue
 
-            df = _compute_indicators(df)
-            if global_data["VIX"] is not None:
-                df["vix"] = global_data["VIX"]["close"].reindex(df.index, method="ffill").fillna(20.0)
-            else:
-                df["vix"] = 20.0
+            try:
+                df = _compute_indicators(df)
+                if global_data["VIX"] is not None:
+                    df["vix"] = global_data["VIX"]["close"].reindex(df.index, method="ffill").fillna(20.0)
+                else:
+                    df["vix"] = 20.0
 
-            last_idx = len(df) - 1
-            for strat_name in selected_names:
-                genome = strategies.get(strat_name)
-                if not genome:
-                    continue
-                strat = GenericStrategy(genome)
-                try:
+                last_idx = len(df) - 1
+                for s_name in selected:
+                    strat = GenericStrategy(strategies[s_name])
                     signal = strat.entry(df, last_idx)
-                    if not signal:
-                        continue
-                    row = df.iloc[last_idx]
-                    target = row["close"] * 1.10
-                    for rule in genome.get("exit_rules", []):
-                        if rule.get("type") == "profit_target":
-                            target = row["close"] * rule.get("val", 1.10)
-                    rr_denom = row["close"] - signal["stop_price"]
-                    rr = (target - row["close"]) / rr_denom if rr_denom > 0 else 0.0
-                    all_hits.append(
-                        {
-                            "Strategy": strat_name,
-                            "Symbol": sym,
-                            "Price": f"${row['close']:.2f}",
-                            "Stop": f"${signal['stop_price']:.2f}",
-                            "Target": f"${target:.2f}",
-                            "Risk": f"{(1 - signal['stop_price'] / row['close']) * 100:.1f}%",
-                            "Risk/Reward": f"{rr:.2f}x",
-                        }
-                    )
-                except Exception as e:
-                    st.error(f"Strategy Error {sym}: {e}")
+                    if signal:
+                        row = df.iloc[-1]
+                        tgt = row["close"] * 1.10
+                        for r in strategies[s_name].get("exit_rules", []):
+                            if r.get("type") == "profit_target":
+                                tgt = row["close"] * r["val"]
 
-        progress.progress(1.0)
-        if all_hits:
-            st.dataframe(pd.DataFrame(all_hits))
+                        hits.append(
+                            {
+                                "Strategy": s_name,
+                                "Symbol": sym,
+                                "Price": f"${row['close']:.2f}",
+                                "Stop": f"${signal['stop_price']:.2f}",
+                                "Target": f"${tgt:.2f}",
+                            }
+                        )
+            except Exception:
+                continue
+
+        progress.progress(100)
+        if hits:
+            st.dataframe(pd.DataFrame(hits))
         else:
             st.warning("No setups found.")
 
 elif mode == "Backtest":
-    st.header("🧪 Backtest")
-    col1, col2 = st.columns(2)
+    st.header("🧪 Backtest Engine")
+    col1, col2, col3 = st.columns(3)
     with col1:
-        bt_universe = st.selectbox("Universe", ["S&P 1500", "S&P 500", "S&P 100"], index=0)
+        bt_univ = st.selectbox("Universe", ["S&P 100", "S&P 500", "S&P 1500"])
     with col2:
-        strategies = load_strategies()
-        all_names = list(strategies.keys())
-        bt_selection = st.multiselect("Strategies", all_names, default=all_names, help="Defaults to all Sniper strategies.")
+        gen_strats = []
+        try:
+            with open("config/generated_strategies.json", "r") as f:
+                gen_strats = [s["name"] for s in json.load(f)]
+        except:
+            pass
+        bt_strats = st.multiselect("Strategies", gen_strats, default=gen_strats[:3] if gen_strats else None)
+    with col3:
+        tf = st.selectbox("Timeframe", ["1 Year", "5 Years", "Max"])
 
-    timeframe = st.selectbox("Timeframe", ["1 Year", "5 Years", "Max"], index=1)
+    if st.button("Run Backtest"):
+        d_map = {"1 Year": 365, "5 Years": 1260, "Max": 5000}
+        days = d_map.get(tf, 1260)
 
-    if st.button("Run Backtest", type="primary"):
-        days_map = {"1 Year": 365, "5 Years": 1260, "Max": 3650}
-        days = days_map.get(timeframe, 1260)
-        symbols = get_index_symbols(bt_universe)
-        data_map = {}
-        global_data = get_global_data(days=days)
+        with st.status("Loading Data...") as status:
+            symbols, data_map, global_data = load_ui_data(bt_univ, days=days)
+            status.update(label=f"Backtesting {len(data_map)} symbols...", state="running")
+            res = run_compare(bt_strats, data_map, symbols, start_cash=100000.0, start_date=None, global_data=global_data)
+            status.update(label="Complete!", state="complete")
 
-        def trim_df(df: pd.DataFrame, lookback_days: int) -> pd.DataFrame:
-            if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
-                df = df.copy()
-                df.index = df.index.tz_localize(None)
-            start_dt = (datetime.now() - timedelta(days=lookback_days)).date()
-            return df[df.index >= pd.to_datetime(start_dt)]
-
-        with st.status("Running Backtest..."):
-            for sym in symbols:
-                df = DataCache.get_cached_data(sym)
-                if df is not None and len(df) > 200:
-                    df = trim_df(df, days)
-                    if len(df) > 200:
-                        data_map[sym] = df
-
-            results = run_compare(bt_selection, data_map, symbols, start_cash=100000.0, start_date=None, global_data=global_data)
-
-        if not results.empty:
+        if not res.empty:
             st.dataframe(
-                results.style.format(
+                res.style.format(
                     {
                         "hit_rate": "{:.1f}%",
                         "avg_profit_pct": "{:.2f}%",
@@ -165,9 +122,8 @@ elif mode == "Backtest":
                         "Score": "{:.1f}",
                         "profit_factor": "{:.2f}",
                         "payoff_ratio": "{:.2f}",
-                        "avg_days_held": "{:.1f}",
                     }
                 )
             )
         else:
-            st.error("No trades found. Check data availability and strategy rules.")
+            st.error("No trades found.")
