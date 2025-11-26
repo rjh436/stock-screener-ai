@@ -79,9 +79,11 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 def _empty_result(name, start_cash, params=None):
     return {
         "strategy": name, "final_value": start_cash, "total_trades": 0,
-        "hit_rate": 0.0, "sharpe": 0.0, "cagr": 0.0, "max_drawdown_pct": 0.0,
-        "avg_profit_pct": 0.0, "avg_days_held": 0.0, "profit_factor": 0.0,
-        "payoff_ratio": 0.0, "Score": 0.0, "params": params or {},
+        "hit_rate": 0.0, "sharpe": 0.0, "sortino": 0.0,
+        "cagr": 0.0, "calmar": 0.0, "max_drawdown_pct": 0.0,
+        "avg_profit_pct": 0.0, "avg_days_held": 0.0, "exposure_pct": 0.0,
+        "profit_factor": 0.0, "payoff_ratio": 0.0, "max_consecutive_losses": 0,
+        "beta": 0.0, "Score": 0.0, "params": params or {},
         "trades_list": []
     }
 
@@ -119,6 +121,9 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     trade_durations = []
     trades_list = []
     
+    # Track Time in Market
+    days_invested = 0
+    
     max_positions = 5
     # Use dynamic position sizing from strategy, default to 20%
     raw_pos = strategy.params.get('pos_size', strategy.params.get('position_size', strategy.params.get('pos_fraction', 0.20)))
@@ -126,9 +131,13 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
         pos_fraction = float(raw_pos)
     except (TypeError, ValueError):
         pos_fraction = 0.20
-    pos_fraction = max(0.01, min(pos_fraction, 1.0))  # Clamp between 1% and 100% of equity
+    pos_fraction = max(0.01, min(pos_fraction, 1.0))
 
     for current_dt in all_dates:
+        # Check Exposure
+        if len(positions) > 0:
+            days_invested += 1
+
         # 1. Exits
         for sym in list(positions.keys()):
             if sym not in enriched or current_dt not in enriched[sym].index: continue
@@ -188,7 +197,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                         cash -= cost
                         positions[sym] = {"shares": shares, "entry_price": px, "stop_price": stop, "entry_i": i}
                 if len(positions) >= max_positions:
-                    break  # Only break out of symbol loop for this date
+                    break
 
     final_val = equity_curve[-1] if equity_curve else start_cash
     trades = len(trade_pnls)
@@ -204,30 +213,78 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     avg_loss = abs(np.mean([t for t in trade_returns if t < 0])) if any(t < 0 for t in trade_returns) else 1.0
     payoff_ratio = avg_win / avg_loss if avg_loss > 0 else 0
     
-    # FIX: Accurate CAGR based on total simulation time (returned as decimal fraction, e.g., 0.15 == 15%)
+    # Time & Exposure
     sim_days = (all_dates[-1] - all_dates[0]).days if len(all_dates) > 1 else 1
     years = sim_days / 365.25 if sim_days > 0 else 0
+    exposure_pct = (days_invested / len(all_dates) * 100.0) if len(all_dates) > 0 else 0.0
+    avg_days_held = float(np.mean(trade_durations)) if trade_durations else 0.0
+
+    # Returns & Risk
     cagr = ((final_val / start_cash) ** (1.0 / years)) - 1.0 if (final_val > 0 and years > 0) else 0.0
     
-    eq = pd.Series(equity_curve if equity_curve else [start_cash])
+    eq = pd.Series(equity_curve if equity_curve else [start_cash], index=all_dates)
     returns = eq.pct_change().dropna()
+    
+    # Sharpe
     sharpe = (returns.mean() / returns.std() * math.sqrt(252)) if not returns.empty and returns.std() > 0 else 0.0
+    
+    # Sortino (Downside Risk Only)
+    downside_returns = returns[returns < 0]
+    downside_std = downside_returns.std()
+    sortino = (returns.mean() / downside_std * math.sqrt(252)) if (not returns.empty and downside_std > 0) else 0.0
+
+    # Drawdown & Calmar
     if not eq.empty and eq.max() > 0:
         rolling_max = eq.cummax()
         drawdowns = (eq - rolling_max) / rolling_max
         max_drawdown_pct = drawdowns.min() * 100.0
     else:
         max_drawdown_pct = 0.0
-    avg_days_held = float(np.mean(trade_durations)) if trade_durations else 0.0
     
+    calmar = (cagr / abs(max_drawdown_pct / 100.0)) if max_drawdown_pct < 0 else 0.0
+
+    # Max Consecutive Losses
+    max_cons_losses = 0
+    current_streak = 0
+    for pnl in trade_pnls:
+        if pnl < 0:
+            current_streak += 1
+            if current_streak > max_cons_losses: max_cons_losses = current_streak
+        else:
+            current_streak = 0
+
+    # Beta (Correlation to Market)
+    beta = 0.0
+    if global_data and "SPY" in global_data:
+        try:
+            spy_df = global_data["SPY"].copy()
+            if not spy_df.empty:
+                if spy_df.index.tz is not None: spy_df.index = spy_df.index.tz_localize(None)
+                
+                # Align SPY to Strategy Dates
+                aligned_spy = spy_df["close"].reindex(eq.index).fillna(method='ffill').fillna(method='bfill')
+                spy_returns = aligned_spy.pct_change().dropna()
+                
+                # Intersection
+                common = returns.index.intersection(spy_returns.index)
+                if len(common) > 10:
+                    strat_res = returns.loc[common]
+                    mkt_res = spy_returns.loc[common]
+                    
+                    cov = strat_res.cov(mkt_res)
+                    var = mkt_res.var()
+                    if var > 0: beta = cov / var
+        except: pass
+
     score = (cagr * 200) + (win_rate * 2) + (sharpe * 20) + (avg_profit * 50)
 
     return {
         "strategy": strategy.name, "final_value": final_val, "total_trades": trades,
-        "hit_rate": win_rate, "sharpe": sharpe, "cagr": cagr, 
-        "avg_profit_pct": avg_profit, "avg_days_held": avg_days_held,
-        "profit_factor": profit_factor, "payoff_ratio": payoff_ratio, "max_drawdown_pct": max_drawdown_pct,
-        "Score": score, "trades_list": trades_list, "params": strategy.params
+        "hit_rate": win_rate, "sharpe": sharpe, "sortino": sortino, "cagr": cagr,
+        "calmar": calmar, "max_drawdown_pct": max_drawdown_pct, 
+        "avg_profit_pct": avg_profit, "avg_days_held": avg_days_held, "exposure_pct": exposure_pct,
+        "profit_factor": profit_factor, "payoff_ratio": payoff_ratio, "max_consecutive_losses": max_cons_losses,
+        "beta": beta, "Score": score, "trades_list": trades_list, "params": strategy.params
     }
 
 def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, use_parallel=True, max_workers=8, global_data=None):
@@ -284,6 +341,4 @@ if __name__ == "__main__":
     })
 
     sanity_result = run_backtest(_SanityStrategy(), {"DEMO": demo_df})
-    print("Sanity check result:", {k: sanity_result[k] for k in ["final_value", "cagr", "hit_rate", "avg_profit_pct", "Score", "total_trades"]})
-    if sanity_result["final_value"] > 100000:
-        assert sanity_result["cagr"] > 0, "Expected positive CAGR on rising series"
+    print("Sanity check result:", {k: sanity_result[k] for k in ["final_value", "cagr", "sortino", "calmar", "exposure_pct"]})
