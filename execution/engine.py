@@ -75,13 +75,14 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.Dat
 
         # --- RELATIVE STRENGTH (RS) ---
         if spy_df is not None and not spy_df.empty:
-            # Align SPY to Stock Index
-            spy_aligned = spy_df['close'].reindex(df.index, method='ffill')
+            # Align SPY to Stock Index (using ffill directly on reindex if supported, or separate ffill)
+            # Note: reindex(method='ffill') is still valid in many versions, but we use ffill() for safety
+            spy_aligned = spy_df['close'].reindex(df.index).ffill()
             
             # RS Ratio = Stock / SPY
             df['rs_ratio'] = df['close'] / spy_aligned
             
-            # Normalize RS Ratio (SMA50 of RS)
+            # Normalize RS Ratio (SMA20 of RS)
             df['rs_sma20'] = df['rs_ratio'].rolling(20).mean()
             
             # Trend of RS (Is RS Rising?)
@@ -120,7 +121,8 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
             df = _compute_indicators(data_dict[sym].copy(), spy_df=spy_df)
             
             if vix_df is not None:
-                df["vix"] = vix_df["close"].reindex(df.index, method="ffill").fillna(20.0)
+                # Use ffill() instead of method='ffill'
+                df["vix"] = vix_df["close"].reindex(df.index).ffill().fillna(20.0)
             else: df["vix"] = 20.0
             
             if start_date:
@@ -265,7 +267,9 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
             spy_df = global_data["SPY"].copy()
             if not spy_df.empty:
                 if spy_df.index.tz is not None: spy_df.index = spy_df.index.tz_localize(None)
-                aligned_spy = spy_df["close"].reindex(eq.index).fillna(method='ffill').fillna(method='bfill')
+                # MODERN FIX for deprecated fillna(method=...)
+                aligned_spy = spy_df["close"].reindex(eq.index).ffill().bfill()
+                
                 spy_returns = aligned_spy.pct_change().dropna()
                 common = returns.index.intersection(spy_returns.index)
                 if len(common) > 10:
