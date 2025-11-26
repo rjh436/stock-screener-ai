@@ -1,162 +1,377 @@
 [
     {
-        "name": "Gen2_Fresh_3476",
+        "name": "Gen7_Fresh_9928_mut_mut",
         "type": "random",
         "entry_rules": [
             {
+                "col": "cci",
+                "op": "<",
+                "val": 0
+            },
+            {
                 "col": "vix",
                 "op": ">",
-                "val": 40
+                "val": 33
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
             },
             {
                 "col": "volume",
                 "op": ">",
-                "val": 0
+                "ref": "vol_ma20"
             }
         ],
         "exit_rules": [],
-        "stop_loss_atr": 5.2,
-        "time_stop": 50
+        "stop_loss_atr": 5.3,
+        "time_stop": 90
     },
     {
-        "name": "Gen1_Fresh_1387_mut",
-        "type": "random",
-        "entry_rules": [
-            {
-                "col": "rsi2",
-                "op": "<",
-                "val": 20
-            }
-        ],
-        "exit_rules": [],
-        "stop_loss_atr": 5.9,
-        "time_stop": 120
-    },
-    {
-        "name": "Gen1_Fresh_1387_mut",
-        "type": "random",
-        "entry_rules": [
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0
-            }
-        ],
-        "exit_rules": [],
-        "stop_loss_atr": 5.5,
-        "time_stop": 120
-    },
-    {
-        "name": "Gen1_Fresh_1387",
-        "type": "random",
-        "entry_rules": [
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0
-            }
-        ],
-        "exit_rules": [],
-        "stop_loss_atr": 5.9,
-        "time_stop": 120
-    },
-    {
-        "name": "Cross_Gen1_Fresh_1387_Gen1_Fresh_1387",
+        "name": "Cross_Gen7_Gen7",
         "type": "hybrid",
         "entry_rules": [
             {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0
-            }
-        ],
-        "exit_rules": [],
-        "stop_loss_atr": 5.9,
-        "time_stop": 120
-    },
-    {
-        "name": "Gen2_Fresh_1482",
-        "type": "random",
-        "entry_rules": [
-            {
-                "col": "bb_width",
-                "op": ">",
+                "col": "cci",
+                "op": "<",
                 "val": 0
             },
             {
                 "col": "vix",
                 "op": ">",
-                "val": 16
+                "val": 33
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
             }
         ],
         "exit_rules": [],
         "stop_loss_atr": 5.3,
-        "time_stop": 120
+        "time_stop": 90
     },
     {
-        "name": "Cross_RSI_Power_Swing_mut_Gen1_Fresh_3671",
+        "name": "Cross_Gen7_Gen7",
         "type": "hybrid",
         "entry_rules": [
             {
-                "col": "rsi2",
+                "col": "cci",
                 "op": "<",
-                "val": 5.0
-            },
-            {
-                "col": "vol_ma20",
-                "op": ">",
                 "val": 0
             },
             {
-                "col": "adx",
+                "col": "vix",
                 "op": ">",
-                "val": 25.0
+                "val": 33
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
             }
         ],
         "exit_rules": [],
-        "stop_loss_atr": 3.2,
-        "time_stop": 80
+        "stop_loss_atr": 5.3,
+        "time_stop": 90
     },
     {
-        "name": "Gen1_Fresh_1387_mut",
+        "name": "Gen7_Fresh_9928_mut",
         "type": "random",
         "entry_rules": [
             {
-                "col": "bb_width",
+                "col": "stoch_k",
                 "op": ">",
-                "val": 0
+                "ref": "rsi14"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 33
+            },
+            {
+                "col": "sma20",
+                "op": ">",
+                "ref": "lowest5_1"
             }
         ],
         "exit_rules": [],
-        "stop_loss_atr": 5.9,
-        "time_stop": 70
+        "stop_loss_atr": 5.3,
+        "time_stop": 90
     },
     {
-        "name": "Cross_Gen1_Fresh_1387_RSI_Power_Swing_mut",
+        "name": "Cross_Gen7_Gen7",
         "type": "hybrid",
         "entry_rules": [
             {
-                "col": "bb_width",
+                "col": "stoch_k",
                 "op": ">",
-                "val": 0
+                "ref": "rsi14"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 33
+            },
+            {
+                "col": "sma20",
+                "op": ">",
+                "ref": "lowest5_1"
             }
         ],
         "exit_rules": [],
-        "stop_loss_atr": 4.5,
-        "time_stop": 95
+        "stop_loss_atr": 5.3,
+        "time_stop": 90
     },
     {
-        "name": "Cross_RSI_Power_Swing_mut_Gen1_Fresh_1387",
+        "name": "Cross_Gen7_Cross",
         "type": "hybrid",
         "entry_rules": [
             {
-                "col": "bb_width",
+                "col": "stoch_k",
                 "op": ">",
-                "val": 0
+                "ref": "rsi14"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 33
+            },
+            {
+                "col": "sma20",
+                "op": ">",
+                "ref": "lowest5_1"
             }
         ],
         "exit_rules": [],
-        "stop_loss_atr": 4.5,
-        "time_stop": 95
+        "stop_loss_atr": 5.3,
+        "time_stop": 90
+    },
+    {
+        "name": "Cross_Cross_Gen7",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "stoch_k",
+                "op": ">",
+                "ref": "rsi14"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 33
+            },
+            {
+                "col": "sma20",
+                "op": ">",
+                "ref": "lowest5_1"
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 4.3,
+        "time_stop": 90
+    },
+    {
+        "name": "Cross_Gen7_Cross",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "stoch_k",
+                "op": ">",
+                "ref": "rsi14"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 33
+            },
+            {
+                "col": "sma20",
+                "op": ">",
+                "ref": "lowest5_1"
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.3,
+        "time_stop": 90
+    },
+    {
+        "name": "Cross_Gen7_Gen7",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "stoch_k",
+                "op": ">",
+                "ref": "rsi14"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 33
+            },
+            {
+                "col": "sma20",
+                "op": ">",
+                "ref": "lowest5_1"
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 4.3,
+        "time_stop": 90
+    },
+    {
+        "name": "Cross_Gen7_Cross",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "stoch_k",
+                "op": ">",
+                "ref": "rsi14"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 33
+            },
+            {
+                "col": "sma20",
+                "op": ">",
+                "ref": "lowest5_1"
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.3,
+        "time_stop": 87
+    },
+    {
+        "name": "Cross_Cross_Gen7",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "stoch_k",
+                "op": ">",
+                "ref": "rsi14"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 33
+            },
+            {
+                "col": "sma20",
+                "op": ">",
+                "ref": "lowest5_1"
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.3,
+        "time_stop": 87
+    },
+    {
+        "name": "Cross_Gen7_Cross",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "stoch_k",
+                "op": ">",
+                "ref": "rsi14"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 33
+            },
+            {
+                "col": "sma20",
+                "op": ">",
+                "ref": "lowest5_1"
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 4.3,
+        "time_stop": 87
+    },
+    {
+        "name": "Cross_Cross_Gen7",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "stoch_k",
+                "op": ">",
+                "ref": "rsi14"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 33
+            },
+            {
+                "col": "sma20",
+                "op": ">",
+                "ref": "lowest5_1"
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 4.3,
+        "time_stop": 87
+    },
+    {
+        "name": "Cross_Gen7_Cross",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "stoch_k",
+                "op": ">",
+                "ref": "rsi14"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 33
+            },
+            {
+                "col": "sma20",
+                "op": ">",
+                "ref": "lowest5_1"
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 4.3,
+        "time_stop": 87
+    },
+    {
+        "name": "Cross_Cross_Cross",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "stoch_k",
+                "op": ">",
+                "ref": "rsi14"
+            },
+            {
+                "col": "vix",
+                "op": ">",
+                "val": 33
+            },
+            {
+                "col": "sma20",
+                "op": ">",
+                "ref": "lowest5_1"
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.3,
+        "time_stop": 87
     }
 ]
