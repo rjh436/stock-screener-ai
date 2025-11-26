@@ -14,8 +14,9 @@ class EvolutionEngine:
         self.population = []
         
         self.INDICATORS = {
-            "price": ["close", "sma20", "sma50", "sma200", "bb_lower", "bb_upper", "highest20_1", "highest55_1", "lowest5_1", "lowest20"],
-            "oscillator": ["rsi2", "rsi14", "adx", "cci", "stoch_k"],
+            "price": ["close", "sma20", "sma50", "sma200", "bb_lower", "highest55", "lowest20"],
+            "momentum": ["rs_trend", "rs_ratio"], # <--- NEW CATEGORY
+            "oscillator": ["rsi2", "rsi14", "adx"],
             "volatility": ["atr14", "bb_width"],
             "volume": ["volume", "vol_ma20"],
             "market_regime": ["vix"]

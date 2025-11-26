@@ -11,16 +11,17 @@ from strategies.base import BaseStrategy
 
 MIN_BARS = 200
 
-def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
+def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.DataFrame:
     try:
         df = df.sort_index().copy()
         df.columns = df.columns.str.lower()
         
+        # --- BASIC INDICATORS ---
         for p in [10, 20, 50, 200]:
             df[f'sma{p}'] = df['close'].rolling(p).mean()
             df[f'ema{p}'] = df['close'].ewm(span=p, adjust=False).mean()
 
-        # Volatility
+        # --- VOLATILITY ---
         df['bb_upper'] = df['close'].rolling(20).mean() + (df['close'].rolling(20).std() * 2)
         df['bb_lower'] = df['close'].rolling(20).mean() - (df['close'].rolling(20).std() * 2)
         df['bb_mid'] = df['close'].rolling(20).mean()
@@ -37,7 +38,7 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df['atr14'] = tr.rolling(14).mean()
         df['atr14_ma20'] = df['atr14'].rolling(20).mean()
 
-        # Extremes (Shifted)
+        # --- EXTREMES (SHIFTED) ---
         df['highest20'] = df['high'].rolling(20).max()
         df['highest20_1'] = df['highest20'].shift(1)
         df['highest55'] = df['high'].rolling(55).max()
@@ -45,20 +46,19 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df['lowest5'] = df['low'].rolling(5).min()
         df['lowest5_1'] = df['lowest5'].shift(1)
 
-        # RSI
+        # --- RSI ---
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / loss.replace(0, np.nan)
         df['rsi14'] = 100 - (100 / (1 + rs))
         
-        # Quick RSI
         g2 = (delta.where(delta > 0, 0)).rolling(2).mean()
         l2 = (-delta.where(delta < 0, 0)).rolling(2).mean()
         rs2 = g2 / l2.replace(0, np.nan)
         df['rsi2'] = 100 - (100 / (1 + rs2))
 
-        # Trend
+        # --- TREND & MOMENTUM ---
         adx = ADXIndicator(df['high'], df['low'], df['close'])
         df['adx'] = adx.adx()
         df['plus_di'] = adx.adx_pos()
@@ -72,6 +72,24 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df['roc'] = ROCIndicator(df['close'], window=12).roc()
         df['stoch_k'] = StochasticOscillator(df['high'], df['low'], df['close']).stoch()
         df['vol_ma20'] = df['volume'].rolling(20).mean()
+
+        # --- RELATIVE STRENGTH (RS) ---
+        if spy_df is not None and not spy_df.empty:
+            # Align SPY to Stock Index
+            spy_aligned = spy_df['close'].reindex(df.index, method='ffill')
+            
+            # RS Ratio = Stock / SPY
+            df['rs_ratio'] = df['close'] / spy_aligned
+            
+            # Normalize RS Ratio (SMA50 of RS)
+            df['rs_sma20'] = df['rs_ratio'].rolling(20).mean()
+            
+            # Trend of RS (Is RS Rising?)
+            # Value > 0 means Outperforming, < 0 means Underperforming trend
+            df['rs_trend'] = df['rs_ratio'] - df['rs_sma20'] 
+        else:
+            df['rs_ratio'] = 1.0
+            df['rs_trend'] = 0.0
 
         return df
     except: return df
@@ -93,11 +111,14 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     
     enriched = {}
     vix_df = global_data.get("VIX") if global_data else None
+    spy_df = global_data.get("SPY") if global_data else None # Pass SPY
 
     for sym in symbols:
         if data_dict[sym] is None or data_dict[sym].empty: continue
         try:
-            df = _compute_indicators(data_dict[sym].copy())
+            # Pass SPY for RS calculation
+            df = _compute_indicators(data_dict[sym].copy(), spy_df=spy_df)
+            
             if vix_df is not None:
                 df["vix"] = vix_df["close"].reindex(df.index, method="ffill").fillna(20.0)
             else: df["vix"] = 20.0
@@ -121,11 +142,9 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     trade_durations = []
     trades_list = []
     
-    # Track Time in Market
     days_invested = 0
     
     max_positions = 5
-    # Use dynamic position sizing from strategy, default to 20%
     raw_pos = strategy.params.get('pos_size', strategy.params.get('position_size', strategy.params.get('pos_fraction', 0.20)))
     try:
         pos_fraction = float(raw_pos)
@@ -134,9 +153,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     pos_fraction = max(0.01, min(pos_fraction, 1.0))
 
     for current_dt in all_dates:
-        # Check Exposure
-        if len(positions) > 0:
-            days_invested += 1
+        if len(positions) > 0: days_invested += 1
 
         # 1. Exits
         for sym in list(positions.keys()):
@@ -145,15 +162,13 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
             i = df.index.get_loc(current_dt)
             pos = positions[sym]
             
-            # FIX: Prevent same-day exit
             if i <= pos["entry_i"]: continue
             
             if strategy.exit(df, i, pos["entry_i"], pos["entry_price"], pos["stop_price"]):
                 row = df.iloc[i]
                 exit_px = pos["stop_price"] if row["low"] < pos["stop_price"] else row["close"]
                 if row["low"] < pos["stop_price"] and row["open"] < pos["stop_price"]: exit_px = row["open"]
-                
-                if exit_px > (pos["entry_price"] * 5.0): exit_px = pos["entry_price"] # Breaker
+                if exit_px > (pos["entry_price"] * 5.0): exit_px = pos["entry_price"]
 
                 pnl = (exit_px - pos["entry_price"]) * pos["shares"]
                 pct = ((exit_px - pos["entry_price"]) / pos["entry_price"]) * 100
@@ -213,64 +228,49 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     avg_loss = abs(np.mean([t for t in trade_returns if t < 0])) if any(t < 0 for t in trade_returns) else 1.0
     payoff_ratio = avg_win / avg_loss if avg_loss > 0 else 0
     
-    # Time & Exposure
     sim_days = (all_dates[-1] - all_dates[0]).days if len(all_dates) > 1 else 1
     years = sim_days / 365.25 if sim_days > 0 else 0
     exposure_pct = (days_invested / len(all_dates) * 100.0) if len(all_dates) > 0 else 0.0
     avg_days_held = float(np.mean(trade_durations)) if trade_durations else 0.0
 
-    # Returns & Risk
     cagr = ((final_val / start_cash) ** (1.0 / years)) - 1.0 if (final_val > 0 and years > 0) else 0.0
     
     eq = pd.Series(equity_curve if equity_curve else [start_cash], index=all_dates)
     returns = eq.pct_change().dropna()
-    
-    # Sharpe
     sharpe = (returns.mean() / returns.std() * math.sqrt(252)) if not returns.empty and returns.std() > 0 else 0.0
     
-    # Sortino (Downside Risk Only)
     downside_returns = returns[returns < 0]
     downside_std = downside_returns.std()
     sortino = (returns.mean() / downside_std * math.sqrt(252)) if (not returns.empty and downside_std > 0) else 0.0
 
-    # Drawdown & Calmar
     if not eq.empty and eq.max() > 0:
         rolling_max = eq.cummax()
         drawdowns = (eq - rolling_max) / rolling_max
         max_drawdown_pct = drawdowns.min() * 100.0
-    else:
-        max_drawdown_pct = 0.0
+    else: max_drawdown_pct = 0.0
     
     calmar = (cagr / abs(max_drawdown_pct / 100.0)) if max_drawdown_pct < 0 else 0.0
 
-    # Max Consecutive Losses
     max_cons_losses = 0
     current_streak = 0
     for pnl in trade_pnls:
         if pnl < 0:
             current_streak += 1
             if current_streak > max_cons_losses: max_cons_losses = current_streak
-        else:
-            current_streak = 0
+        else: current_streak = 0
 
-    # Beta (Correlation to Market)
     beta = 0.0
     if global_data and "SPY" in global_data:
         try:
             spy_df = global_data["SPY"].copy()
             if not spy_df.empty:
                 if spy_df.index.tz is not None: spy_df.index = spy_df.index.tz_localize(None)
-                
-                # Align SPY to Strategy Dates
                 aligned_spy = spy_df["close"].reindex(eq.index).fillna(method='ffill').fillna(method='bfill')
                 spy_returns = aligned_spy.pct_change().dropna()
-                
-                # Intersection
                 common = returns.index.intersection(spy_returns.index)
                 if len(common) > 10:
                     strat_res = returns.loc[common]
                     mkt_res = spy_returns.loc[common]
-                    
                     cov = strat_res.cov(mkt_res)
                     var = mkt_res.var()
                     if var > 0: beta = cov / var
@@ -312,33 +312,3 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     df = pd.DataFrame(results)
     df.trade_logs = {r['strategy']: r.get('trades_list', []) for r in results}
     return df.sort_values("Score", ascending=False)
-
-
-if __name__ == "__main__":
-    # Lightweight sanity harness to verify metrics stay positive on a trending series.
-    class _SanityStrategy:
-        def __init__(self):
-            self.name = "SanityLong"
-            self.params = {"pos_size": 0.25}
-
-        def entry(self, df, i):
-            if i == MIN_BARS:
-                return {"stop_price": float(df.iloc[i]["close"] * 0.95)}
-            return None
-
-        def exit(self, df, i, entry_i, entry_price, stop_price):
-            return i >= (len(df) - 1)
-
-    days = MIN_BARS + 30
-    idx = pd.date_range(end=pd.Timestamp.today(), periods=days, freq="D")
-    close = pd.Series(np.linspace(100, 120, days), index=idx)
-    demo_df = pd.DataFrame({
-        "open": close,
-        "high": close * 1.01,
-        "low": close * 0.99,
-        "close": close,
-        "volume": 1_000_000
-    })
-
-    sanity_result = run_backtest(_SanityStrategy(), {"DEMO": demo_df})
-    print("Sanity check result:", {k: sanity_result[k] for k in ["final_value", "cagr", "sortino", "calmar", "exposure_pct"]})
