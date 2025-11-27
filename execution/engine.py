@@ -136,6 +136,14 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     if not enriched: return _empty_result(strategy.name, start_cash, strategy.params)
 
     all_dates = sorted(set().union(*[df.index for df in enriched.values()]))
+    
+    # Filter for realistic date range (e.g., last 10 years max)
+    now = pd.Timestamp.now()
+    min_date = now - pd.Timedelta(days=365 * 10)
+    all_dates = [d for d in all_dates if min_date <= d <= now]
+    if not all_dates:
+        return _empty_result(strategy.name, start_cash, strategy.params)
+
     cash = start_cash
     positions = {}
     equity_curve = []

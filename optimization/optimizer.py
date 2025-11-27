@@ -23,8 +23,8 @@ def calculate_fitness(result):
     score = result.get("Score", -1_000_000.0)
     trades = result.get("total_trades", 0)
     
-    # Gatekeeper: If it doesn't trade enough, kill it.
-    if trades < 10:
+    # FORCE HIGH FREQUENCY: Kill anything with < 40 trades
+    if trades < 40:
         return -1_000_000.0
         
     return float(score)
