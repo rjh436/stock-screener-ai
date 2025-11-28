@@ -12,7 +12,8 @@ sys.path.append(os.path.dirname(__file__))
 from data.schwab_client import sd
 from data.indices import get_index_symbols
 from data.loader import fetch_single_symbol, fetch_data_pack
-from execution.engine import _compute_indicators
+# GRAND UNIFICATION: Import everything from the shared engine
+from execution.engine import _compute_indicators, run_compare
 from strategies.generic import GenericStrategy
 
 st.set_page_config(page_title="Apex Sniper", layout="wide", page_icon="🎯")
@@ -125,7 +126,7 @@ if mode == "Live Screener":
                 # Attach VIX
                 if vix_df is not None:
                     # Quick reindex for just this symbol's dates
-                    current_vix = vix_df["close"].reindex(df.index, method='ffill').fillna(20.0)
+                    current_vix = vix_df["close"].reindex(df.index).ffill().fillna(20.0)
                     df["vix"] = current_vix
                 else:
                     df["vix"] = 20.0
@@ -197,10 +198,6 @@ if mode == "Live Screener":
 
 # --- 2. Backtest ---
 elif mode == "Backtest":
-    # (Keep existing backtest UI logic simpler for now to save space,
-    # relying on the shared engine for the heavy lifting)
-    from backtest_runner import run_compare
-
     st.header("🧪 Backtest Engine")
     col1, col2, col3 = st.columns(3)
     with col1: bt_universe = st.selectbox("Universe", ["S&P 100", "S&P 500"], index=1)
@@ -227,14 +224,16 @@ elif mode == "Backtest":
 
             status.update(label=f"Backtesting {len(data_map)} symbols...", state="running")
 
-            # Run
+            # Run using SHARED ENGINE
             results = run_compare(bt_strategies, data_map, symbols, start_cash=100000.0, global_data=global_context)
             status.update(label="Complete!", state="complete")
 
         if not results.empty:
+            # Display metrics including the new Risk Metrics
             st.dataframe(results.style.format({
                 "hit_rate": "{:.1f}%", "avg_profit_pct": "{:.2f}%", "cagr": "{:.1%}",
-                "Score": "{:.1f}", "beta": "{:.2f}", "sortino": "{:.2f}"
+                "Score": "{:.1f}", "beta": "{:.2f}", "sortino": "{:.2f}",
+                "exposure_pct": "{:.1f}%", "calmar": "{:.2f}"
             }))
         else:
             st.error("No trades generated.")
