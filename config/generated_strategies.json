@@ -1,5 +1,24 @@
 [
     {
+        "name": "Strategy_Apex_Alpha_MachineGun",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": "<",
+                "val": 61
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 5.9,
+        "time_stop": 80
+    },
+    {
         "name": "Strategy_Apex_VIX_Sniper",
         "type": "random",
         "entry_rules": [
@@ -27,24 +46,5 @@
         "exit_rules": [],
         "stop_loss_atr": 5.3,
         "time_stop": 90
-    },
-    {
-        "name": "Strategy_Apex_Alpha_MachineGun",
-        "type": "random",
-        "entry_rules": [
-            {
-                "col": "rsi2",
-                "op": "<",
-                "val": 61
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "val": 0
-            }
-        ],
-        "exit_rules": [],
-        "stop_loss_atr": 5.9,
-        "time_stop": 80
     }
 ]
