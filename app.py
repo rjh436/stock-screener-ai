@@ -12,7 +12,6 @@ sys.path.append(os.path.dirname(__file__))
 from data.schwab_client import sd
 from data.indices import get_index_symbols
 from data.loader import fetch_single_symbol, fetch_data_pack
-# GRAND UNIFICATION: Import everything from the shared engine
 from execution.engine import _compute_indicators, run_compare
 from strategies.generic import GenericStrategy
 
@@ -200,7 +199,7 @@ if mode == "Live Screener":
 elif mode == "Backtest":
     st.header("🧪 Backtest Engine")
     col1, col2, col3 = st.columns(3)
-    with col1: bt_universe = st.selectbox("Universe", ["S&P 100", "S&P 500"], index=1)
+    with col1: bt_universe = st.selectbox("Universe", ["S&P 100", "S&P 500", "S&P 1500"], index=1)
     with col2:
         gen_strategies = []
         try:
@@ -213,19 +212,27 @@ elif mode == "Backtest":
     if st.button("Run Backtest"):
         days_map = {"1 Year": 365, "5 Years": 1260}
 
+        # Calculate Start Date for Filter
+        start_date = (datetime.now(timezone.utc) - timedelta(days=days_map.get(timeframe, 1260))).date()
+
         with st.status("Loading Data...") as status:
             symbols = get_index_symbols(bt_universe)
             data_map = fetch_data_pack(symbols, days=days_map.get(timeframe, 1260))
 
             # Fetch Globals
             g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days_map.get(timeframe, 1260))
-            vix = g_data.get("$VIX") or g_data.get("VIX")
+
+            # FIXED: Handle DataFrame truth value ambiguity
+            vix = g_data.get("$VIX")
+            if vix is None:
+                vix = g_data.get("VIX")
+
             global_context = {"SPY": g_data.get("SPY"), "VIX": vix}
 
             status.update(label=f"Backtesting {len(data_map)} symbols...", state="running")
 
             # Run using SHARED ENGINE
-            results = run_compare(bt_strategies, data_map, symbols, start_cash=100000.0, global_data=global_context)
+            results = run_compare(bt_strategies, data_map, symbols, start_cash=100000.0, start_date=start_date, global_data=global_context)
             status.update(label="Complete!", state="complete")
 
         if not results.empty:
