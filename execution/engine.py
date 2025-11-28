@@ -11,12 +11,11 @@ from strategies.base import BaseStrategy
 
 MIN_BARS = 200
 
-
 def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.DataFrame:
     try:
         df = df.sort_index().copy()
         df.columns = df.columns.str.lower()
-
+        
         for p in [10, 20, 50, 200]:
             df[f'sma{p}'] = df['close'].rolling(p).mean()
             df[f'ema{p}'] = df['close'].ewm(span=p, adjust=False).mean()
@@ -24,11 +23,11 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.Dat
         df['bb_upper'] = df['close'].rolling(20).mean() + (df['close'].rolling(20).std() * 2)
         df['bb_lower'] = df['close'].rolling(20).mean() - (df['close'].rolling(20).std() * 2)
         df['bb_mid'] = df['close'].rolling(20).mean()
-
+        
         mask = df['bb_mid'] != 0
         df['bb_width'] = 0.0
         df.loc[mask, 'bb_width'] = (df.loc[mask, 'bb_upper'] - df.loc[mask, 'bb_lower']) / df.loc[mask, 'bb_mid']
-
+        
         tr = pd.concat([
             df['high'] - df['low'],
             (df['high'] - df['close'].shift()).abs(),
@@ -49,7 +48,7 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.Dat
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / loss.replace(0, np.nan)
         df['rsi14'] = 100 - (100 / (1 + rs))
-
+        
         g2 = (delta.where(delta > 0, 0)).rolling(2).mean()
         l2 = (-delta.where(delta < 0, 0)).rolling(2).mean()
         rs2 = g2 / l2.replace(0, np.nan)
@@ -59,11 +58,11 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.Dat
         df['adx'] = adx.adx()
         df['plus_di'] = adx.adx_pos()
         df['minus_di'] = adx.adx_neg()
-
+        
         macd = MACD(df['close'])
         df['macd'] = macd.macd()
         df['macd_hist'] = macd.macd_diff()
-
+        
         df['cci'] = CCIIndicator(df['high'], df['low'], df['close']).cci()
         df['roc'] = ROCIndicator(df['close'], window=12).roc()
         df['stoch_k'] = StochasticOscillator(df['high'], df['low'], df['close']).stoch()
@@ -73,15 +72,13 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.Dat
             spy_aligned = spy_df['close'].reindex(df.index).ffill()
             df['rs_ratio'] = df['close'] / spy_aligned
             df['rs_sma20'] = df['rs_ratio'].rolling(20).mean()
-            df['rs_trend'] = df['rs_ratio'] - df['rs_sma20']
+            df['rs_trend'] = df['rs_ratio'] - df['rs_sma20'] 
         else:
             df['rs_ratio'] = 1.0
             df['rs_trend'] = 0.0
 
         return df
-    except:
-        return df
-
+    except: return df
 
 def _empty_result(name, start_cash, params=None):
     return {
@@ -90,10 +87,9 @@ def _empty_result(name, start_cash, params=None):
         "cagr": 0.0, "calmar": 0.0, "max_drawdown_pct": 0.0,
         "avg_profit_pct": 0.0, "avg_days_held": 0.0, "exposure_pct": 0.0,
         "profit_factor": 0.0, "payoff_ratio": 0.0, "max_consecutive_losses": 0,
-        "beta": 0.0, "Score": 0.0, "params": params or {},
-        "trades_list": []
+        "beta": 0.0, "avg_signals_per_day": 0.0, "Score": 0.0, 
+        "params": params or {}, "trades_list": []
     }
-
 
 def calculate_backtest_quality_score(row, strategy_name):
     score = 50.0
@@ -105,7 +101,6 @@ def calculate_backtest_quality_score(row, strategy_name):
     # 2. Strategy Specific Scoring
     if "Sniper" in strategy_name or "VIX" in strategy_name:
         # SNIPER MODE: Wants Fear + Strength
-        # We want stocks that are holding up well (RS) despite the panic
         rs_trend = row.get("rs_trend", 0)
         score += (rs_trend * 100.0) 
         
@@ -115,24 +110,18 @@ def calculate_backtest_quality_score(row, strategy_name):
         
     else: 
         # MACHINE GUN MODE: Wants Deep Dips (Mean Reversion)
-        # Prioritize the "most oversold" signal over Relative Strength
         rsi2 = row.get("rsi2", 50)
+        score += (100 - rsi2) * 2.0 # Heavy weight on oversold depth
         
-        # Heavy weight on depth of pullback:
-        # RSI 10 -> +180 pts | RSI 50 -> +100 pts | RSI 90 -> +20 pts
-        score += (100 - rsi2) * 2.0
-        
-        # Minor bonus for volume ignition, but RSI is king here
         vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
         if vol_rel > 1.5: score += 10
         
     return score
 
-
 def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None):
     symbols = list(data_dict.keys())
     if symbol_universe: symbols = [s for s in symbols if s in symbol_universe]
-
+    
     enriched = {}
     vix_df = global_data.get("VIX") if global_data else None
     spy_df = global_data.get("SPY") if global_data else None
@@ -144,12 +133,12 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
             if vix_df is not None:
                 df["vix"] = vix_df["close"].reindex(df.index).ffill().fillna(20.0)
             else: df["vix"] = 20.0
-
+            
             if start_date:
                 start_dt = pd.to_datetime(start_date).replace(tzinfo=None)
                 if df.index.tz is not None: df.index = df.index.tz_localize(None)
                 df = df[df.index >= start_dt]
-
+            
             if len(df) > MIN_BARS: enriched[sym] = df
         except: continue
 
@@ -167,7 +156,8 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     trade_returns = []
     trade_durations = []
     trades_list = []
-
+    daily_signal_counts = [] # New: Track potential setups per day
+    
     days_invested = 0
     max_positions = 5
     raw_pos = strategy.params.get('pos_size', strategy.params.get('position_size', strategy.params.get('pos_fraction', 0.20)))
@@ -184,9 +174,9 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
             df = enriched[sym]
             i = df.index.get_loc(current_dt)
             pos = positions[sym]
-
+            
             if i <= pos["entry_i"]: continue
-
+            
             if strategy.exit(df, i, pos["entry_i"], pos["entry_price"], pos["stop_price"]):
                 row = df.iloc[i]
                 exit_px = pos["stop_price"] if row["low"] < pos["stop_price"] else row["close"]
@@ -195,14 +185,14 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
 
                 pnl = (exit_px - pos["entry_price"]) * pos["shares"]
                 pct = ((exit_px - pos["entry_price"]) / pos["entry_price"]) * 100
-
+                
                 cash += pos["shares"] * exit_px
                 trade_pnls.append(pnl)
                 trade_returns.append(pct)
                 trade_durations.append(i - pos["entry_i"])
-
+                
                 trades_list.append({
-                    "Symbol": sym, "Entry": pos["entry_price"], "Exit": exit_px,
+                    "Symbol": sym, "Entry": pos["entry_price"], "Exit": exit_px, 
                     "PnL": pnl, "Return%": pct, "Date": str(current_dt.date())
                 })
                 del positions[sym]
@@ -216,14 +206,15 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
         equity_curve.append(equity)
 
         # 3. Entries (RANKED)
-        if len(positions) < max_positions and cash > 0:
+        if cash > 0:
             daily_candidates = []
-
+            
+            # Find ALL valid signals first
             for sym, df in enriched.items():
                 if current_dt not in df.index or sym in positions: continue
                 i = df.index.get_loc(current_dt)
                 if i < MIN_BARS: continue
-
+                
                 entry = strategy.entry(df, i)
                 if entry:
                     row = df.iloc[i]
@@ -231,52 +222,56 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                     daily_candidates.append({
                         "sym": sym, "entry": entry, "score": quality, "px": float(row["open"])
                     })
-
-            daily_candidates.sort(key=lambda x: x["score"], reverse=True)
-
-            target_size = equity * pos_fraction
-            for cand in daily_candidates:
-                if len(positions) >= max_positions or cash < 500: break
-
-                px = cand["px"]
-                if px < 5.0: continue
-
-                shares = int(target_size / px)
-                cost = shares * px
-                if shares > 0 and cash >= cost:
-                    cash -= cost
-                    positions[cand["sym"]] = {
-                        "shares": shares,
-                        "entry_price": px,
-                        "stop_price": float(cand["entry"]["stop_price"]),
-                        "entry_i": df.index.get_loc(current_dt)
-                    }
+            
+            # Track Signal Density
+            daily_signal_counts.append(len(daily_candidates))
+            
+            # Execute only if slots open
+            if len(positions) < max_positions:
+                daily_candidates.sort(key=lambda x: x["score"], reverse=True)
+                target_size = equity * pos_fraction
+                for cand in daily_candidates:
+                    if len(positions) >= max_positions or cash < 500: break
+                    px = cand["px"]
+                    if px < 5.0: continue
+                    shares = int(target_size / px)
+                    cost = shares * px
+                    if shares > 0 and cash >= cost:
+                        cash -= cost
+                        positions[cand["sym"]] = {
+                            "shares": shares, "entry_price": px, 
+                            "stop_price": float(cand["entry"]["stop_price"]), 
+                            "entry_i": enriched[cand["sym"]].index.get_loc(current_dt)
+                        }
 
     final_val = equity_curve[-1] if equity_curve else start_cash
     trades = len(trade_pnls)
     wins = len([t for t in trade_pnls if t > 0])
     win_rate = (wins/trades*100) if trades > 0 else 0.0
     avg_profit = np.mean(trade_returns) if trade_returns else 0.0
-
+    
     gross_profit = sum(t for t in trade_pnls if t > 0)
     gross_loss = abs(sum(t for t in trade_pnls if t < 0))
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0.0
-
+    
     avg_win = np.mean([t for t in trade_returns if t > 0]) if any(t > 0 for t in trade_returns) else 0
     avg_loss = abs(np.mean([t for t in trade_returns if t < 0])) if any(t < 0 for t in trade_returns) else 1.0
     payoff_ratio = avg_win / avg_loss if avg_loss > 0 else 0
-
+    
     sim_days = (all_dates[-1] - all_dates[0]).days if len(all_dates) > 1 else 1
     years = sim_days / 365.25 if sim_days > 0 else 0
     exposure_pct = (days_invested / len(all_dates) * 100.0) if len(all_dates) > 0 else 0.0
     avg_days_held = float(np.mean(trade_durations)) if trade_durations else 0.0
+    
+    # Signal Density Metric
+    avg_signals_per_day = float(np.mean(daily_signal_counts)) if daily_signal_counts else 0.0
 
     cagr = ((final_val / start_cash) ** (1.0 / years)) - 1.0 if (final_val > 0 and years > 0) else 0.0
-
+    
     eq = pd.Series(equity_curve if equity_curve else [start_cash], index=all_dates)
     returns = eq.pct_change().dropna()
     sharpe = (returns.mean() / returns.std() * math.sqrt(252)) if not returns.empty and returns.std() > 0 else 0.0
-
+    
     downside_returns = returns[returns < 0]
     downside_std = downside_returns.std()
     sortino = (returns.mean() / downside_std * math.sqrt(252)) if (not returns.empty and downside_std > 0) else 0.0
@@ -286,7 +281,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
         drawdowns = (eq - rolling_max) / rolling_max
         max_drawdown_pct = drawdowns.min() * 100.0
     else: max_drawdown_pct = 0.0
-
+    
     calmar = (cagr / abs(max_drawdown_pct / 100.0)) if max_drawdown_pct < 0 else 0.0
 
     max_cons_losses = 0
@@ -319,12 +314,12 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     return {
         "strategy": strategy.name, "final_value": final_val, "total_trades": trades,
         "hit_rate": win_rate, "sharpe": sharpe, "sortino": sortino, "cagr": cagr,
-        "calmar": calmar, "max_drawdown_pct": max_drawdown_pct,
+        "calmar": calmar, "max_drawdown_pct": max_drawdown_pct, 
         "avg_profit_pct": avg_profit, "avg_days_held": avg_days_held, "exposure_pct": exposure_pct,
         "profit_factor": profit_factor, "payoff_ratio": payoff_ratio, "max_consecutive_losses": max_cons_losses,
-        "beta": beta, "Score": score, "trades_list": trades_list, "params": strategy.params
+        "beta": beta, "avg_signals_per_day": avg_signals_per_day, # NEW METRIC
+        "Score": score, "trades_list": trades_list, "params": strategy.params
     }
-
 
 def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, use_parallel=True, max_workers=8, global_data=None):
     import json, os, concurrent.futures
