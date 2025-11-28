@@ -39,40 +39,35 @@ def get_global_data(days=400):
 
 def calculate_quality_score(row, strategy_name):
     """
-    Quantifies the 'Strength' of a setup on a 0-100 scale.
-    Prioritizes Relative Strength (Leaders) and Deep Pullbacks.
+    Quantifies the 'Strength' of a setup.
+    Sniper = Relative Strength (Buy the strongest in a crash).
+    Machine Gun = Mean Reversion (Buy the deepest dip).
     """
-    score = 50.0  # Base Score
-
-    # 1. Relative Strength (The most important filter)
-    # Reward stocks outperforming SPY (rs_trend > 0)
-    rs_trend = row.get("rs_trend", 0)
-    score += (rs_trend * 100.0)  # Boost score for leaders
-
-    # 2. Market Cap / Volatility Weighting
-    # Slight preference for smoother trends (ADX)
+    score = 50.0 
+    
+    # 1. Base Components
     adx = row.get("adx", 20)
     if adx > 25: score += 5
-    if adx > 40: score += 5
-
-    # 3. Strategy Specific Boosts
-    if "Sniper" in strategy_name:
-        # For Sniper: We want EXTREME fear. Higher VIX is better (handled in filter),
-        # but locally, we want deep oversold.
+    
+    # 2. Strategy Specifics
+    if "Sniper" in strategy_name or "VIX" in strategy_name:
+        # SNIPER: Prioritize RS Trend (Leaders)
+        rs_trend = row.get("rs_trend", 0)
+        score += (rs_trend * 100.0) 
+        
         rsi2 = row.get("rsi2", 50)
         if rsi2 < 5: score += 20
         elif rsi2 < 10: score += 10
-
-    elif "MachineGun" in strategy_name:
-        # For Machine Gun: We want "Buy the Dip in a Leader"
-        # Reward lower RSI2 (better entry price)
+        
+    else: 
+        # MACHINE GUN: Prioritize Oversold Depth
         rsi2 = row.get("rsi2", 50)
-        score += (50 - rsi2) * 0.5  # Add points for being more oversold
-
-        # Reward Volume Surges (Ignition)
+        # RSI 10 adds 180 points. RSI 60 adds 80 points.
+        score += (100 - rsi2) * 2.0
+        
         vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
         if vol_rel > 1.5: score += 10
-
+        
     return max(0.0, min(100.0, score))
 
 

@@ -97,23 +97,35 @@ def _empty_result(name, start_cash, params=None):
 
 def calculate_backtest_quality_score(row, strategy_name):
     score = 50.0
-    rs_trend = row.get("rs_trend", 0)
-    score += (rs_trend * 100.0)
-
+    
+    # 1. Base Score Components
     adx = row.get("adx", 20)
     if adx > 25: score += 5
-    if adx > 40: score += 5
-
+    
+    # 2. Strategy Specific Scoring
     if "Sniper" in strategy_name or "VIX" in strategy_name:
+        # SNIPER MODE: Wants Fear + Strength
+        # We want stocks that are holding up well (RS) despite the panic
+        rs_trend = row.get("rs_trend", 0)
+        score += (rs_trend * 100.0) 
+        
         rsi2 = row.get("rsi2", 50)
         if rsi2 < 5: score += 20
         elif rsi2 < 10: score += 10
-    else:
+        
+    else: 
+        # MACHINE GUN MODE: Wants Deep Dips (Mean Reversion)
+        # Prioritize the "most oversold" signal over Relative Strength
         rsi2 = row.get("rsi2", 50)
-        score += (50 - rsi2) * 0.5
+        
+        # Heavy weight on depth of pullback:
+        # RSI 10 -> +180 pts | RSI 50 -> +100 pts | RSI 90 -> +20 pts
+        score += (100 - rsi2) * 2.0
+        
+        # Minor bonus for volume ignition, but RSI is king here
         vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
         if vol_rel > 1.5: score += 10
-
+        
     return score
 
 
