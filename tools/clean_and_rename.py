@@ -14,46 +14,65 @@ def clean_and_rename():
 
     print(f"🔍 Analyzing {len(strategies)} strategies...")
 
-    # Define the targets we want to keep and their new names
-    # Based on Backtest Analysis:
-    # 1. Gen7_Fresh_9928_mut_mut -> The "Sniper" (VIX > 33, CCI < 0)
-    # 2. Cross_Gen7_Gen7       -> The "Momentum" (Stoch > RSI, VIX > 33)
-    targets = {
+    # Define the Portfolio Targets
+    # We map multiple potential names to the final destination to catch the exact variant present
+    target_map = {
+        # The Sniper (Already renamed or finding the original mutant)
+        "Strategy_Apex_VIX_Sniper": "Strategy_Apex_VIX_Sniper",
         "Gen7_Fresh_9928_mut_mut": "Strategy_Apex_VIX_Sniper",
-        "Cross_Gen7_Gen7": "Strategy_Apex_Stoch_RSI",
+
+        # The Machine Gun (The Gen2 / Cross_Gen2 lineage)
+        "Cross_Gen2_Gen2": "Strategy_Apex_Alpha_MachineGun",
+        "Gen2_Fresh_3401_mut_mut_mut_mut": "Strategy_Apex_Alpha_MachineGun",
+        "Gen2_Fresh_3401_mut_mut_mut": "Strategy_Apex_Alpha_MachineGun"
     }
 
     kept_strategies = []
     seen_names = set()
 
     for strat in strategies:
-        old_name = strat.get("name")
+        name = strat.get("name")
 
-        if old_name in targets:
-            new_name = targets[old_name]
+        # Check for exact match or substring match
+        new_name = None
+        for key, target in target_map.items():
+            if key == name:  # Exact match preferred
+                new_name = target
+                break
 
-            # Deduplication check
+        if not new_name:
+            for key, target in target_map.items():
+                if key in name and "Fresh" in key:  # Substring match for lengthy mutation names
+                    new_name = target
+                    break
+
+        if new_name:
+            # Deduplication: Only keep the FIRST instance (highest score) of each type
             if new_name in seen_names:
                 continue
 
-            print(f"✅ Keeping & Renaming: {old_name} -> {new_name}")
+            print(f"✅ Keeping & Renaming: {name} -> {new_name}")
             strat["name"] = new_name
             kept_strategies.append(strat)
             seen_names.add(new_name)
 
     if not kept_strategies:
-        print("⚠️  Warning: No target strategies found in the file. Check exact names.")
+        print("⚠️  Warning: No target strategies found. Check the names in generated_strategies.json")
+        # List available names to help debug
+        print("Available strategies:", [s["name"] for s in strategies[:5]])
         return
 
-    # Backup original
-    os.rename(CONFIG_PATH, CONFIG_PATH + ".bak_full")
-    print(f"📂 Backed up original to {CONFIG_PATH}.bak_full")
+    # Backup
+    os.rename(CONFIG_PATH, CONFIG_PATH + ".bak_portfolio_final")
+    print(f"📂 Backed up to {CONFIG_PATH}.bak_portfolio_final")
 
-    # Save cleaned version
+    # Save Portfolio
     with open(CONFIG_PATH, "w") as f:
         json.dump(kept_strategies, f, indent=4)
 
-    print(f"💾 Saved {len(kept_strategies)} clean strategies to {CONFIG_PATH}")
+    print(f"💾 Portfolio Saved: {len(kept_strategies)} Strategies Locked.")
+    print("   1. Strategy_Apex_VIX_Sniper (The Shield)")
+    print("   2. Strategy_Apex_Alpha_MachineGun (The Sword)")
 
 
 if __name__ == "__main__":
