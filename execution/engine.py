@@ -17,12 +17,10 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.Dat
         df = df.sort_index().copy()
         df.columns = df.columns.str.lower()
 
-        # --- BASIC INDICATORS ---
         for p in [10, 20, 50, 200]:
             df[f'sma{p}'] = df['close'].rolling(p).mean()
             df[f'ema{p}'] = df['close'].ewm(span=p, adjust=False).mean()
 
-        # --- VOLATILITY ---
         df['bb_upper'] = df['close'].rolling(20).mean() + (df['close'].rolling(20).std() * 2)
         df['bb_lower'] = df['close'].rolling(20).mean() - (df['close'].rolling(20).std() * 2)
         df['bb_mid'] = df['close'].rolling(20).mean()
@@ -39,7 +37,6 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.Dat
         df['atr14'] = tr.rolling(14).mean()
         df['atr14_ma20'] = df['atr14'].rolling(20).mean()
 
-        # --- EXTREMES (SHIFTED) ---
         df['highest20'] = df['high'].rolling(20).max()
         df['highest20_1'] = df['highest20'].shift(1)
         df['highest55'] = df['high'].rolling(55).max()
@@ -47,7 +44,6 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.Dat
         df['lowest5'] = df['low'].rolling(5).min()
         df['lowest5_1'] = df['lowest5'].shift(1)
 
-        # --- RSI ---
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -59,7 +55,6 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.Dat
         rs2 = g2 / l2.replace(0, np.nan)
         df['rsi2'] = 100 - (100 / (1 + rs2))
 
-        # --- TREND & MOMENTUM ---
         adx = ADXIndicator(df['high'], df['low'], df['close'])
         df['adx'] = adx.adx()
         df['plus_di'] = adx.adx_pos()
@@ -74,7 +69,6 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.Dat
         df['stoch_k'] = StochasticOscillator(df['high'], df['low'], df['close']).stoch()
         df['vol_ma20'] = df['volume'].rolling(20).mean()
 
-        # --- RELATIVE STRENGTH (RS) ---
         if spy_df is not None and not spy_df.empty:
             spy_aligned = spy_df['close'].reindex(df.index).ffill()
             df['rs_ratio'] = df['close'] / spy_aligned
@@ -102,24 +96,19 @@ def _empty_result(name, start_cash, params=None):
 
 
 def calculate_backtest_quality_score(row, strategy_name):
-    """Replicates the App's Quality Score logic for the Backtester."""
     score = 50.0
-
-    # 1. Relative Strength
     rs_trend = row.get("rs_trend", 0)
     score += (rs_trend * 100.0)
 
-    # 2. Market Cap / Volatility
     adx = row.get("adx", 20)
     if adx > 25: score += 5
     if adx > 40: score += 5
 
-    # 3. Strategy Specifics
     if "Sniper" in strategy_name or "VIX" in strategy_name:
         rsi2 = row.get("rsi2", 50)
         if rsi2 < 5: score += 20
         elif rsi2 < 10: score += 10
-    else:  # Machine Gun / Momentum
+    else:
         rsi2 = row.get("rsi2", 50)
         score += (50 - rsi2) * 0.5
         vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
@@ -130,43 +119,34 @@ def calculate_backtest_quality_score(row, strategy_name):
 
 def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None):
     symbols = list(data_dict.keys())
-    if symbol_universe:
-        symbols = [s for s in symbols if s in symbol_universe]
+    if symbol_universe: symbols = [s for s in symbols if s in symbol_universe]
 
     enriched = {}
     vix_df = global_data.get("VIX") if global_data else None
     spy_df = global_data.get("SPY") if global_data else None
 
     for sym in symbols:
-        if data_dict[sym] is None or data_dict[sym].empty:
-            continue
+        if data_dict[sym] is None or data_dict[sym].empty: continue
         try:
             df = _compute_indicators(data_dict[sym].copy(), spy_df=spy_df)
             if vix_df is not None:
                 df["vix"] = vix_df["close"].reindex(df.index).ffill().fillna(20.0)
-            else:
-                df["vix"] = 20.0
+            else: df["vix"] = 20.0
 
             if start_date:
                 start_dt = pd.to_datetime(start_date).replace(tzinfo=None)
-                if df.index.tz is not None:
-                    df.index = df.index.tz_localize(None)
+                if df.index.tz is not None: df.index = df.index.tz_localize(None)
                 df = df[df.index >= start_dt]
 
-            if len(df) > MIN_BARS:
-                enriched[sym] = df
-        except:
-            continue
+            if len(df) > MIN_BARS: enriched[sym] = df
+        except: continue
 
-    if not enriched:
-        return _empty_result(strategy.name, start_cash, strategy.params)
+    if not enriched: return _empty_result(strategy.name, start_cash, strategy.params)
 
-    # Filter outlier dates
     all_dates = sorted(set().union(*[df.index for df in enriched.values()]))
-    min_date = pd.Timestamp.now() - pd.Timedelta(days=365*20)  # Max 20 years
+    min_date = pd.Timestamp.now() - pd.Timedelta(days=365*20)
     all_dates = [d for d in all_dates if d >= min_date]
-    if not all_dates:
-        return _empty_result(strategy.name, start_cash, strategy.params)
+    if not all_dates: return _empty_result(strategy.name, start_cash, strategy.params)
 
     cash = start_cash
     positions = {}
@@ -179,34 +159,27 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     days_invested = 0
     max_positions = 5
     raw_pos = strategy.params.get('pos_size', strategy.params.get('position_size', strategy.params.get('pos_fraction', 0.20)))
-    try:
-        pos_fraction = float(raw_pos)
-    except:
-        pos_fraction = 0.20
+    try: pos_fraction = float(raw_pos)
+    except: pos_fraction = 0.20
     pos_fraction = max(0.01, min(pos_fraction, 1.0))
 
     for current_dt in all_dates:
-        if len(positions) > 0:
-            days_invested += 1
+        if len(positions) > 0: days_invested += 1
 
         # 1. Exits
         for sym in list(positions.keys()):
-            if sym not in enriched or current_dt not in enriched[sym].index:
-                continue
+            if sym not in enriched or current_dt not in enriched[sym].index: continue
             df = enriched[sym]
             i = df.index.get_loc(current_dt)
             pos = positions[sym]
 
-            if i <= pos["entry_i"]:
-                continue
+            if i <= pos["entry_i"]: continue
 
             if strategy.exit(df, i, pos["entry_i"], pos["entry_price"], pos["stop_price"]):
                 row = df.iloc[i]
                 exit_px = pos["stop_price"] if row["low"] < pos["stop_price"] else row["close"]
-                if row["low"] < pos["stop_price"] and row["open"] < pos["stop_price"]:
-                    exit_px = row["open"]
-                if exit_px > (pos["entry_price"] * 5.0):
-                    exit_px = pos["entry_price"]
+                if row["low"] < pos["stop_price"] and row["open"] < pos["stop_price"]: exit_px = row["open"]
+                if exit_px > (pos["entry_price"] * 5.0): exit_px = pos["entry_price"]
 
                 pnl = (exit_px - pos["entry_price"]) * pos["shares"]
                 pct = ((exit_px - pos["entry_price"]) / pos["entry_price"]) * 100
@@ -227,21 +200,17 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
         for sym, pos in positions.items():
             if sym in enriched and current_dt in enriched[sym].index:
                 equity += pos["shares"] * enriched[sym].loc[current_dt]["close"]
-            else:
-                equity += pos["shares"] * pos["entry_price"]
+            else: equity += pos["shares"] * pos["entry_price"]
         equity_curve.append(equity)
 
         # 3. Entries (RANKED)
         if len(positions) < max_positions and cash > 0:
             daily_candidates = []
 
-            # Gather ALL potential signals first
             for sym, df in enriched.items():
-                if current_dt not in df.index or sym in positions:
-                    continue
+                if current_dt not in df.index or sym in positions: continue
                 i = df.index.get_loc(current_dt)
-                if i < MIN_BARS:
-                    continue
+                if i < MIN_BARS: continue
 
                 entry = strategy.entry(df, i)
                 if entry:
@@ -251,18 +220,14 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                         "sym": sym, "entry": entry, "score": quality, "px": float(row["open"])
                     })
 
-            # Sort by Quality Score (Best First)
             daily_candidates.sort(key=lambda x: x["score"], reverse=True)
 
-            # Execute Top N
             target_size = equity * pos_fraction
             for cand in daily_candidates:
-                if len(positions) >= max_positions or cash < 500:
-                    break
+                if len(positions) >= max_positions or cash < 500: break
 
                 px = cand["px"]
-                if px < 5.0:
-                    continue
+                if px < 5.0: continue
 
                 shares = int(target_size / px)
                 cost = shares * px
@@ -272,7 +237,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                         "shares": shares,
                         "entry_price": px,
                         "stop_price": float(cand["entry"]["stop_price"]),
-                        "entry_i": df.index.get_loc(current_dt)  # Approx index, engine handles lookup by date mostly
+                        "entry_i": df.index.get_loc(current_dt)
                     }
 
     final_val = equity_curve[-1] if equity_curve else start_cash
@@ -308,8 +273,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
         rolling_max = eq.cummax()
         drawdowns = (eq - rolling_max) / rolling_max
         max_drawdown_pct = drawdowns.min() * 100.0
-    else:
-        max_drawdown_pct = 0.0
+    else: max_drawdown_pct = 0.0
 
     calmar = (cagr / abs(max_drawdown_pct / 100.0)) if max_drawdown_pct < 0 else 0.0
 
@@ -318,18 +282,15 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     for pnl in trade_pnls:
         if pnl < 0:
             current_streak += 1
-            if current_streak > max_cons_losses:
-                max_cons_losses = current_streak
-        else:
-            current_streak = 0
+            if current_streak > max_cons_losses: max_cons_losses = current_streak
+        else: current_streak = 0
 
     beta = 0.0
     if global_data and "SPY" in global_data:
         try:
             spy_df = global_data["SPY"].copy()
             if not spy_df.empty:
-                if spy_df.index.tz is not None:
-                    spy_df.index = spy_df.index.tz_localize(None)
+                if spy_df.index.tz is not None: spy_df.index = spy_df.index.tz_localize(None)
                 aligned_spy = spy_df["close"].reindex(eq.index).ffill().bfill()
                 spy_returns = aligned_spy.pct_change().dropna()
                 common = returns.index.intersection(spy_returns.index)
@@ -338,10 +299,8 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                     mkt_res = spy_returns.loc[common]
                     cov = strat_res.cov(mkt_res)
                     var = mkt_res.var()
-                    if var > 0:
-                        beta = cov / var
-        except:
-            pass
+                    if var > 0: beta = cov / var
+        except: pass
 
     score = (cagr * 200) + (win_rate * 2) + (sharpe * 20) + (avg_profit * 50)
 
@@ -362,10 +321,8 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     gen_strategies = {}
     try:
         with open(os.path.abspath(os.path.join(os.path.dirname(__file__), '../config/generated_strategies.json')), "r") as f:
-            for g in json.load(f):
-                gen_strategies[g["name"]] = g
-    except:
-        pass
+            for g in json.load(f): gen_strategies[g["name"]] = g
+    except: pass
 
     strategies = []
     for name in strategy_names:
@@ -376,12 +333,9 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(run_backtest, strat, data_dict, symbol_universe, start_cash, start_date, global_data): strat for strat in strategies}
         for future in concurrent.futures.as_completed(futures):
-            try:
-                results.append(future.result())
-            except:
-                pass
-    if not results:
-        return pd.DataFrame()
+            try: results.append(future.result())
+            except: pass
+    if not results: return pd.DataFrame()
     df = pd.DataFrame(results)
     df.trade_logs = {r['strategy']: r.get('trades_list', []) for r in results}
     return df.sort_values("Score", ascending=False)
