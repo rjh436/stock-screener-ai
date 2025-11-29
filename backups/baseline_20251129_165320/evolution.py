@@ -101,32 +101,9 @@ class EvolutionEngine:
         mutant["name"] = mutant["name"] + "_mut"
         r = random.random()
         
-        if r < 0.2:
+        if r < 0.3:
             # Mutate Time Stop
-            mutant["time_stop"] = random.choice([5, 8, 10, 12, 15, 20])
-        elif r < 0.4:
-            # Mutate Profit Target (NEW)
-            if "exit_rules" in mutant:
-                found_target = False
-                for rule in mutant["exit_rules"]:
-                    if rule.get("type") == "profit_target":
-                        found_target = True
-                        # Mutate between 4% and 15%
-                        current = float(rule.get("val", 1.06))
-                        # Small nudge or random reset
-                        if random.random() < 0.5:
-                            new_val = current + random.choice([-0.01, 0.01])
-                        else:
-                            new_val = 1.0 + (random.randint(4, 15) / 100.0)
-                        rule["val"] = round(max(1.04, min(1.15, new_val)), 2)
-                
-                # If no profit target exists, add one occasionally
-                if not found_target and random.random() < 0.3:
-                    mutant["exit_rules"].append({
-                        "type": "profit_target", 
-                        "val": round(1.0 + (random.randint(4, 12) / 100.0), 2)
-                    })
-
+            mutant["time_stop"] = random.choice([40, 50, 60, 80])
         elif r < 0.6: 
             # Mutate Entry Rules (Replace one)
             if mutant["entry_rules"]:
