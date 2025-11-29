@@ -69,7 +69,7 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.Dat
         df['vol_ma20'] = df['volume'].rolling(20).mean()
 
         if spy_df is not None and not spy_df.empty:
-            spy_aligned = spy_df['close'].reindex(df.index).ffill()
+            spy_aligned = spy_df['close'].reindex(df.index).ffill().bfill()
             df['rs_ratio'] = df['close'] / spy_aligned
             df['rs_sma20'] = df['rs_ratio'].rolling(20).mean()
             df['rs_trend'] = df['rs_ratio'] - df['rs_sma20'] 
@@ -94,13 +94,10 @@ def _empty_result(name, start_cash, params=None):
 def calculate_backtest_quality_score(row, strategy_name):
     score = 50.0
     
-    # 1. Base Score Components
     adx = row.get("adx", 20)
     if adx > 25: score += 5
     
-    # 2. Strategy Specific Scoring
     if "Sniper" in strategy_name or "VIX" in strategy_name:
-        # SNIPER MODE: Wants Fear + Strength
         rs_trend = row.get("rs_trend", 0)
         score += (rs_trend * 100.0) 
         
@@ -109,9 +106,8 @@ def calculate_backtest_quality_score(row, strategy_name):
         elif rsi2 < 10: score += 10
         
     else: 
-        # MACHINE GUN MODE: Wants Deep Dips (Mean Reversion)
         rsi2 = row.get("rsi2", 50)
-        score += (100 - rsi2) * 2.0 # Heavy weight on oversold depth
+        score += (100 - rsi2) * 2.0 
         
         vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
         if vol_rel > 1.5: score += 10
@@ -156,7 +152,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     trade_returns = []
     trade_durations = []
     trades_list = []
-    daily_signal_counts = [] # New: Track potential setups per day
+    daily_signal_counts = []
     
     days_invested = 0
     max_positions = 5
@@ -209,7 +205,6 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
         if cash > 0:
             daily_candidates = []
             
-            # Find ALL valid signals first
             for sym, df in enriched.items():
                 if current_dt not in df.index or sym in positions: continue
                 i = df.index.get_loc(current_dt)
@@ -219,16 +214,19 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                 if entry:
                     row = df.iloc[i]
                     quality = calculate_backtest_quality_score(row, strategy.name)
+                    # ADDED rsi2 here for sorting
                     daily_candidates.append({
-                        "sym": sym, "entry": entry, "score": quality, "px": float(row["open"])
+                        "sym": sym, "entry": entry, "score": quality, 
+                        "px": float(row["open"]), "rsi2": float(row.get("rsi2", 50))
                     })
             
-            # Track Signal Density
             daily_signal_counts.append(len(daily_candidates))
             
-            # Execute only if slots open
             if len(positions) < max_positions:
-                daily_candidates.sort(key=lambda x: x["score"], reverse=True)
+                # SORT BY SCORE DESC, THEN BY RSI2 ASC (Deepest dip breaks tie)
+                # We use -rsi2 with reverse=True to sort RSI ascending
+                daily_candidates.sort(key=lambda x: (x["score"], -x["rsi2"]), reverse=True)
+                
                 target_size = equity * pos_fraction
                 for cand in daily_candidates:
                     if len(positions) >= max_positions or cash < 500: break
@@ -262,8 +260,6 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     years = sim_days / 365.25 if sim_days > 0 else 0
     exposure_pct = (days_invested / len(all_dates) * 100.0) if len(all_dates) > 0 else 0.0
     avg_days_held = float(np.mean(trade_durations)) if trade_durations else 0.0
-    
-    # Signal Density Metric
     avg_signals_per_day = float(np.mean(daily_signal_counts)) if daily_signal_counts else 0.0
 
     cagr = ((final_val / start_cash) ** (1.0 / years)) - 1.0 if (final_val > 0 and years > 0) else 0.0
@@ -317,7 +313,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
         "calmar": calmar, "max_drawdown_pct": max_drawdown_pct, 
         "avg_profit_pct": avg_profit, "avg_days_held": avg_days_held, "exposure_pct": exposure_pct,
         "profit_factor": profit_factor, "payoff_ratio": payoff_ratio, "max_consecutive_losses": max_cons_losses,
-        "beta": beta, "avg_signals_per_day": avg_signals_per_day, # NEW METRIC
+        "beta": beta, "avg_signals_per_day": avg_signals_per_day,
         "Score": score, "trades_list": trades_list, "params": strategy.params
     }
 

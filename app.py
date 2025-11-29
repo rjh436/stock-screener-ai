@@ -3,16 +3,13 @@ import pandas as pd
 import sys
 import os
 import json
-import math
 from datetime import datetime, timedelta, timezone
 
-# Ensure project root is in path
 sys.path.append(os.path.dirname(__file__))
-
 from data.schwab_client import sd
 from data.indices import get_index_symbols
 from data.loader import fetch_single_symbol, fetch_data_pack
-from execution.engine import _compute_indicators, run_compare
+from execution.engine import run_backtest, run_compare, _compute_indicators
 from strategies.generic import GenericStrategy
 from simulation.paper_trader import PaperTrader
 
@@ -30,40 +27,34 @@ mode = st.sidebar.radio("Mode", ["Live Screener", "Backtest", "Simulator"])
 
 @st.cache_data(ttl=3600)
 def get_global_data(days=400):
-    """Fetch SPY and VIX once for context."""
     g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days)
     vix = g_data.get("$VIX")
     if vix is None:
         vix = g_data.get("VIX")
     return {"SPY": g_data.get("SPY"), "VIX": vix}
 
+def _safe_vix(vix_df, target_index):
+    if vix_df is None or "close" not in vix_df:
+        return pd.Series(20.0, index=target_index)
+    cleaned = vix_df.copy()
+    if isinstance(cleaned.index, pd.DatetimeIndex) and cleaned.index.tz is not None:
+        cleaned.index = cleaned.index.tz_localize(None)
+    return cleaned["close"].reindex(target_index, method="ffill").fillna(20.0)
 
 def calculate_quality_score(row, strategy_name):
-    """
-    Quantifies the 'Strength' of a setup on a 0-100 scale.
-    Prioritizes Relative Strength (Leaders) and Deep Pullbacks.
-    """
     score = 50.0 
-    
-    # 1. Base Components
     adx = row.get("adx", 20)
     if adx > 25: score += 5
     
-    # 2. Strategy Specifics
     if "Sniper" in strategy_name or "VIX" in strategy_name:
-        # SNIPER: Prioritize RS Trend (Leaders)
         rs_trend = row.get("rs_trend", 0)
         score += (rs_trend * 100.0) 
-        
         rsi2 = row.get("rsi2", 50)
         if rsi2 < 5: score += 20
         elif rsi2 < 10: score += 10
-        
     else: 
-        # MACHINE GUN: Prioritize Oversold Depth
         rsi2 = row.get("rsi2", 50)
         score += (100 - rsi2) * 2.0
-        
         vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
         if vol_rel > 1.5: score += 10
         
@@ -72,24 +63,20 @@ def calculate_quality_score(row, strategy_name):
 # --- 1. Live Screener ---
 if mode == "Live Screener":
     st.header("🔭 Live Market Screener")
-    
     col1, col2, col3 = st.columns(3)
-    with col1: 
-        universe = st.selectbox("Universe", ["S&P 100", "S&P 500", "S&P 1500"], index=1)
+    with col1: universe = st.selectbox("Universe", ["S&P 100", "S&P 500", "S&P 1500"], index=1)
     with col2:
         strategies = {}
         try:
             with open("config/generated_strategies.json", "r") as f:
                 for s in json.load(f): strategies[s["name"]] = s
         except: st.error("No Strategies Found!")
-        
         all_names = list(strategies.keys())
         selected_names = st.multiselect("Strategies", all_names, default=all_names)
-        
     with col3:
         top_n = st.slider("Show Top N Results", min_value=5, max_value=100, value=20)
 
-    if st.button("Run Scan", type="primary"):
+    if st.button("Run Scan"):
         symbols = get_index_symbols(universe)
         global_data = get_global_data(days=1260)
         spy_df = global_data.get("SPY")
@@ -104,18 +91,12 @@ if mode == "Live Screener":
                 progress.progress(i / len(symbols))
                 status_text.text(f"Scanning {sym}...")
             
-            # Fetch & Compute
-            df = fetch_single_symbol(sym, days=400)
+            df = fetch_single_symbol(sym, days=400, force_fresh=True)
             if df is None or len(df) < 200: continue 
             
             try:
                 df = _compute_indicators(df, spy_df=spy_df)
-                
-                if vix_df is not None:
-                    current_vix = vix_df["close"].reindex(df.index).ffill().fillna(20.0)
-                    df["vix"] = current_vix
-                else:
-                    df["vix"] = 20.0
+                df["vix"] = _safe_vix(vix_df, df.index)
                 
                 signal_idx = len(df) - 1
                 price_row = df.iloc[signal_idx]
@@ -148,8 +129,9 @@ if mode == "Live Screener":
         
         if all_hits:
             df_results = pd.DataFrame(all_hits)
-            # Sort by Score (Desc), then by RSI2 (Asc) to break ties with the "Deepest Dip"
+            # TIE BREAKER SORTING: Score DESC, then RSI2 ASC
             df_results = df_results.sort_values(by=["Score", "RSI2"], ascending=[False, True])
+            
             top_results = df_results.head(top_n)
             
             st.success(f"Found {len(all_hits)} total setups. Showing Top {len(top_results)}.")
@@ -161,7 +143,7 @@ if mode == "Live Screener":
             csv = top_results.to_csv(index=False).encode('utf-8')
             st.download_button("Download Top Setups CSV", csv, "apex_top_setups.csv", "text/csv")
         else:
-            st.warning("No setups found matching current criteria.")
+            st.warning("No setups found.")
 
 # --- 2. Backtest ---
 elif mode == "Backtest":
@@ -175,18 +157,17 @@ elif mode == "Backtest":
                 gen_strategies = [s["name"] for s in json.load(f)]
         except: pass
         bt_strategies = st.multiselect("Strategies", gen_strategies, default=gen_strategies)
-    with col3: timeframe = st.selectbox("Timeframe", ["1 Year", "5 Years"], index=1)
+    with col3: timeframe = st.selectbox("Timeframe", ["1 Year", "5 Years", "Max"], index=1)
 
     if st.button("Run Backtest"):
-        days_map = {"1 Year": 365, "5 Years": 1260}
+        days_map = {"1 Year": 365, "5 Years": 1260, "Max": 10000}
         start_date = (datetime.now(timezone.utc) - timedelta(days=days_map.get(timeframe, 1260))).date()
         
         with st.status("Loading Data...") as status:
             symbols = get_index_symbols(bt_universe)
             data_map = fetch_data_pack(symbols, days=days_map.get(timeframe, 1260))
-            g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days_map.get(timeframe, 1260))
-            vix = g_data.get("$VIX")
-            if vix is None: vix = g_data.get("VIX")
+            g_data = get_global_data(days=days_map.get(timeframe, 1260))
+            vix = g_data.get("$VIX") or g_data.get("VIX")
             global_context = {"SPY": g_data.get("SPY"), "VIX": vix}
             
             status.update(label=f"Backtesting {len(data_map)} symbols...", state="running")
@@ -223,10 +204,8 @@ elif mode == "Simulator":
         st.markdown("### Actions")
         if st.button("🔄 Run Daily Cycle", type="primary"):
             with st.spinner("Updating Market Data..."):
-                # 1. Update Prices
                 trader.update_valuations()
                 
-                # 2. Check Exits
                 strategies = {}
                 try:
                     with open("config/generated_strategies.json", "r") as f:
@@ -236,7 +215,6 @@ elif mode == "Simulator":
                 exits = trader.process_exits(strategies)
                 for e in exits: st.toast(e, icon="💰")
                 
-                # 3. Check Entries (S&P 500 Universe)
                 symbols = get_index_symbols("S&P 500")
                 g_data = get_global_data(days=400)
                 spy_df = g_data.get("SPY")
@@ -252,9 +230,7 @@ elif mode == "Simulator":
                     
                     try:
                         df = _compute_indicators(df, spy_df=spy_df)
-                        if vix_df is not None:
-                            df["vix"] = vix_df["close"].reindex(df.index).ffill().fillna(20.0)
-                        else: df["vix"] = 20.0
+                        df["vix"] = _safe_vix(vix_df, df.index)
                         
                         idx = len(df) - 1
                         price_row = df.iloc[idx]
