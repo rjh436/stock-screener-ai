@@ -46,11 +46,6 @@
                 "col": "sma50",
                 "op": ">",
                 "val": 0
-            },
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
             }
         ],
         "exit_rules": [],
