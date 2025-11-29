@@ -117,6 +117,12 @@ def calculate_backtest_quality_score(row, strategy_name):
             atr_pct = (row.get("atr14", 0) / close_px) * 100
             if atr_pct > 3.0: score += 15  # High Velocity
             elif atr_pct > 2.0: score += 5
+            
+        # NEW: Smart Trend Filter (Soft Filter)
+        # We don't ban downtrends, but we heavily favor uptrends.
+        # This pushes 'Good Stocks on Bad Days' to the top of the list.
+        if row.get("close", 0) > row.get("sma200", 999999):
+            score += 20
         
         vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
         if vol_rel > 1.5: score += 10

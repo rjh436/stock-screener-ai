@@ -48,7 +48,12 @@
                 "val": 0
             }
         ],
-        "exit_rules": [],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.06
+            }
+        ],
         "stop_loss_atr": 4.3,
         "time_stop": 10
     }
