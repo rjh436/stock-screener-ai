@@ -148,7 +148,8 @@ if mode == "Live Screener":
         
         if all_hits:
             df_results = pd.DataFrame(all_hits)
-            df_results = df_results.sort_values(by="Score", ascending=False)
+            # Sort by Score (Desc), then by RSI2 (Asc) to break ties with the "Deepest Dip"
+            df_results = df_results.sort_values(by=["Score", "RSI2"], ascending=[False, True])
             top_results = df_results.head(top_n)
             
             st.success(f"Found {len(all_hits)} total setups. Showing Top {len(top_results)}.")
