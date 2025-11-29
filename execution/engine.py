@@ -106,8 +106,17 @@ def calculate_backtest_quality_score(row, strategy_name):
         elif rsi2 < 10: score += 10
         
     else: 
+        # MACHINE GUN MODE: Deep Dips + High Volatility (Velocity)
         rsi2 = row.get("rsi2", 50)
-        score += (100 - rsi2) * 2.0 
+        score += (100 - rsi2) * 2.0  # Base: How deep is the dip?
+        
+        # NEW: Velocity Booster (Prioritize High Volatility Stocks)
+        # Higher ATR% means the stock moves fast -> hits profit targets quicker
+        close_px = row.get("close", 1.0)
+        if close_px > 0:
+            atr_pct = (row.get("atr14", 0) / close_px) * 100
+            if atr_pct > 3.0: score += 15  # High Velocity
+            elif atr_pct > 2.0: score += 5
         
         vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
         if vol_rel > 1.5: score += 10

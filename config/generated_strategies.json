@@ -46,15 +46,10 @@
                 "col": "sma50",
                 "op": ">",
                 "val": 0
-            },
-            {
-                "col": "close",
-                "op": ">",
-                "ref": "sma200"
             }
         ],
         "exit_rules": [],
         "stop_loss_atr": 4.3,
-        "time_stop": 70
+        "time_stop": 10
     }
 ]
