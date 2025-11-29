@@ -1,0 +1,5 @@
+Baseline Backup created on 20251129_091403.
+To restore this version:
+1. Copy 'generated_strategies.json' back to 'config/'
+2. Copy 'evolution.py' back to 'optimization/'
+3. Copy 'engine.py' back to 'execution/'

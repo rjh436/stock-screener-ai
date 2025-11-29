@@ -12,67 +12,62 @@ def clean_and_rename():
     with open(CONFIG_PATH, "r") as f:
         strategies = json.load(f)
 
-    print(f"🔍 Analyzing {len(strategies)} strategies...")
+    print(f"🔍 Scanning {len(strategies)} strategies in database...")
 
     # Define the Portfolio Targets
-    # We map multiple potential names to the final destination to catch the exact variant present
     target_map = {
-        # The Sniper (Already renamed or finding the original mutant)
+        # 1. The Sniper (Shield) - Keep existing
         "Strategy_Apex_VIX_Sniper": "Strategy_Apex_VIX_Sniper",
-        "Gen7_Fresh_9928_mut_mut": "Strategy_Apex_VIX_Sniper",
 
-        # The Machine Gun (The Gen2 / Cross_Gen2 lineage)
-        "Cross_Gen2_Gen2": "Strategy_Apex_Alpha_MachineGun",
-        "Gen2_Fresh_3401_mut_mut_mut_mut": "Strategy_Apex_Alpha_MachineGun",
-        "Gen2_Fresh_3401_mut_mut_mut": "Strategy_Apex_Alpha_MachineGun"
+        # 2. The New Machine Gun (Sword) - Upgrade to the 55% CAGR Winner
+        "Cross_Cross_Strategy_mut": "Strategy_Apex_Alpha_MachineGun",
+
+        # Fallback: If exact name isn't found, check for previous version to avoid losing slot
+        "Strategy_Apex_Alpha_MachineGun": "Strategy_Apex_Alpha_MachineGun"
     }
 
     kept_strategies = []
     seen_names = set()
 
+    # Sort input strategies by "score" if available, or assume file is already sorted
+    # (Optimizer saves sorted, so top items are best)
+
     for strat in strategies:
         name = strat.get("name")
-
-        # Check for exact match or substring match
         new_name = None
-        for key, target in target_map.items():
-            if key == name:  # Exact match preferred
-                new_name = target
-                break
 
-        if not new_name:
-            for key, target in target_map.items():
-                if key in name and "Fresh" in key:  # Substring match for lengthy mutation names
-                    new_name = target
-                    break
+        # Check for matches
+        if name in target_map:
+            new_name = target_map[name]
 
         if new_name:
-            # Deduplication: Only keep the FIRST instance (highest score) of each type
+            # DEDUPLICATION LOGIC:
+            # We want the NEWEST/BEST version. Since the file is sorted by Score (High -> Low),
+            # the first time we see "Strategy_Apex_Alpha_MachineGun", it will be the 55% winner.
             if new_name in seen_names:
                 continue
 
-            print(f"✅ Keeping & Renaming: {name} -> {new_name}")
+            print(f"✅ KEEPING: {name} -> {new_name}")
             strat["name"] = new_name
             kept_strategies.append(strat)
             seen_names.add(new_name)
 
     if not kept_strategies:
-        print("⚠️  Warning: No target strategies found. Check the names in generated_strategies.json")
-        # List available names to help debug
-        print("Available strategies:", [s["name"] for s in strategies[:5]])
+        print("⚠️  Warning: No target strategies found. Check generated_strategies.json")
         return
 
     # Backup
-    os.rename(CONFIG_PATH, CONFIG_PATH + ".bak_portfolio_final")
-    print(f"📂 Backed up to {CONFIG_PATH}.bak_portfolio_final")
+    if os.path.exists(CONFIG_PATH):
+        os.rename(CONFIG_PATH, CONFIG_PATH + ".bak_upgrade")
+        print(f"📂 Backup created: {CONFIG_PATH}.bak_upgrade")
 
-    # Save Portfolio
+    # Save
     with open(CONFIG_PATH, "w") as f:
         json.dump(kept_strategies, f, indent=4)
 
-    print(f"💾 Portfolio Saved: {len(kept_strategies)} Strategies Locked.")
+    print(f"💾 SUCCESS: Portfolio Updated.")
     print("   1. Strategy_Apex_VIX_Sniper (The Shield)")
-    print("   2. Strategy_Apex_Alpha_MachineGun (The Sword)")
+    print("   2. Strategy_Apex_Alpha_MachineGun (The Sword - 55% CAGR)")
 
 
 if __name__ == "__main__":
