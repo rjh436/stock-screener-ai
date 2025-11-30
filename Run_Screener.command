@@ -1,5 +1,5 @@
-#!/bin/zsh
-# RJH Custom Screener Launcher (Optimized for M3 Max + Python 3.12)
+#!/bin/bash
+# RJH Custom Screener Launcher (Universal: Mac + Linux/Codespaces)
 
 set -e
 export PYTHONUTF8=1
@@ -7,19 +7,28 @@ export PYTHONUTF8=1
 # Move to this script’s folder
 cd "$(dirname "$0")"
 
-# Path to Python 3.12 (auto-detected)
-PY312=$(which python3)
+# Detect Python (Try 3.12 first, then fallback to system default)
+if command -v python3.12 &> /dev/null; then
+    PY_EXEC="python3.12"
+elif command -v python3 &> /dev/null; then
+    PY_EXEC="python3"
+else
+    echo "❌ Error: Python 3 not found."
+    exit 1
+fi
+
+echo "✅ Using Python: $PY_EXEC"
 
 # Create venv if missing
 if [ ! -d ".venv" ]; then
-    echo "📦 Creating Python 3.12 virtual environment..."
-    $PY312 -m venv .venv
+    echo "📦 Creating virtual environment..."
+    $PY_EXEC -m venv .venv
 fi
 
 # Activate environment
 source .venv/bin/activate
 
-# Only install requirements if missing (NOT every run)
+# Install requirements if marker missing
 if [ ! -f ".venv/.deps_installed" ]; then
     echo "⬆️ Upgrading pip..."
     pip install --upgrade pip
@@ -27,7 +36,6 @@ if [ ! -f ".venv/.deps_installed" ]; then
     echo "📥 Installing requirements..."
     pip install -r requirements.txt
 
-    # Marker to avoid reinstalling every launch
     touch .venv/.deps_installed
 fi
 
