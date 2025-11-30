@@ -1,4 +1,15 @@
+import os
 
+
+def unclamp_ranking():
+    print("🔓 UNCLAMPING RANKING ENGINE (Restoring Granularity)...")
+    
+    engine_path = "execution/engine.py"
+    
+    # We rewrite the engine to ensure the 'clamping' bug is gone 
+    # and the logic is purely the one that won (Unified Velocity).
+    
+    engine_code = """
 import math
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
@@ -346,3 +357,14 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     df = pd.DataFrame(results)
     df.trade_logs = {r['strategy']: r.get('trades_list', []) for r in results}
     return df.sort_values("Score", ascending=False)
+"""
+    with open(engine_path, "w") as f:
+        f.write(engine_code)
+    
+    print("\n✅ ENGINE UNCLAMPED.")
+    print("   Granularity restored. High scores will now dominate.")
+    print("   Run Backtest now.")
+
+
+if __name__ == "__main__":
+    unclamp_ranking()
