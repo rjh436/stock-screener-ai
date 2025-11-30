@@ -103,7 +103,7 @@ class EvolutionEngine:
         
         if r < 0.3:
             # Mutate Time Stop
-            mutant["time_stop"] = random.choice([40, 50, 60, 80])
+            mutant["time_stop"] = random.choice([10, 15, 20, 25, 30, 35, 40, 45])
         elif r < 0.6: 
             # Mutate Entry Rules (Replace one)
             if mutant["entry_rules"]:
