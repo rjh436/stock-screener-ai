@@ -93,7 +93,7 @@ def _empty_result(name, start_cash, params=None):
     }
 
 def calculate_backtest_quality_score(row, strategy_name):
-    # GOLDEN STATE RANKING (Velocity + Trend + Deep Dip)
+    # GOLDEN STATE RANKING (Pure Velocity + Deep Dip)
     score = 50.0
     
     # 1. Base Oversold (Dip Buying)
@@ -101,18 +101,16 @@ def calculate_backtest_quality_score(row, strategy_name):
     score += (100 - rsi2) * 2.0 
     
     # 2. Velocity Booster (Prioritize High Volatility)
+    # This pushes the most explosive stocks to the top.
     close_px = row.get("close", 1.0)
     if close_px > 0:
         atr_pct = (row.get("atr14", 0) / close_px) * 100
-        if atr_pct > 3.0: score += 15
+        if atr_pct > 3.0: score += 15  # Rocket fuel
         elif atr_pct > 2.0: score += 5
         
-    # 3. Smart Trend Filter (The "Quality" Bias)
-    # This was the missing link. Gen 12 prefers Uptrends.
-    if row.get("close", 0) > row.get("sma200", 999999):
-        score += 20
+    # NOTE: Trend Filter removed to allow Deep Value crashes (Gen 12 logic)
     
-    # 4. Volume Support
+    # 3. Volume Support
     vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
     if vol_rel > 1.5: score += 10
     
