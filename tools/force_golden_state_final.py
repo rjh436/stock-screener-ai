@@ -1,4 +1,53 @@
+import json
+import os
 
+
+def force_golden_state_final():
+    print("💎 EXECUTING FINAL OVERWRITE: RESTORING GOLDEN STATE...")
+
+    # --- 1. OVERWRITE STRATEGY CONFIGURATION ---
+    config_path = "config/generated_strategies.json"
+    strategies = [
+        {
+            # THE SHIELD: 49% CAGR, 18% Avg Profit
+            # Source: 2025-11-30T15-21_export.csv
+            "name": "Strategy_Apex_Gen12_Sniper",
+            "type": "hybrid",
+            "entry_rules": [
+                {"col": "cci", "op": "<", "val": 0},
+                {"col": "bb_width", "op": ">", "val": 0.1},
+                {"col": "rsi14", "op": "<", "ref": "stoch_k"},
+                {"col": "volume", "op": ">", "ref": "vol_ma20"}
+            ],
+            "exit_rules": [],  # NO Target (Wealth Builder)
+            "stop_loss_atr": 4.4,
+            "time_stop": 71
+        },
+        {
+            # THE SWORD: 43% CAGR, 1.5% Avg Profit
+            # Source: 2025-11-30T16-34_export.csv
+            "name": "Strategy_Apex_Alpha_MachineGun",
+            "type": "hybrid",
+            "entry_rules": [
+                {"col": "adx", "op": "<", "ref": "rsi14"},
+                {"col": "volume", "op": ">", "val": 0},
+                {"col": "sma50", "op": ">", "val": 0}
+            ],
+            "exit_rules": [
+                {"type": "profit_target", "val": 1.06}  # 6% Bank
+            ],
+            "stop_loss_atr": 4.3,
+            "time_stop": 10
+        }
+    ]
+
+    with open(config_path, "w") as f:
+        json.dump(strategies, f, indent=4)
+    print("   ✅ Config Restored: Gen12 (CCI/BB) + Machine Gun (Target 1.06).")
+
+    # --- 2. OVERWRITE RANKING ENGINE (UNIFIED VELOCITY) ---
+    engine_path = "execution/engine.py"
+    engine_code = """
 import math
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
@@ -341,3 +390,16 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     df = pd.DataFrame(results)
     df.trade_logs = {r['strategy']: r.get('trades_list', []) for r in results}
     return df.sort_values("Score", ascending=False)
+"""
+    
+    with open(engine_path, "w") as f:
+        f.write(engine_code)
+    
+    print("\n✅ FORCE RESTORE COMPLETE.")
+    print("   Run Backtest now to verify:")
+    print("   - Gen12: ~49 Trades, ~18% Avg Profit")
+    print("   - MachineGun: ~430 Trades, ~1.5% Avg Profit")
+
+
+if __name__ == "__main__":
+    force_golden_state_final()
