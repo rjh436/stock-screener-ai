@@ -1,0 +1,14 @@
+{
+    "name": "Apex Sniper (Python 3.12)",
+    "image": "mcr.microsoft.com/devcontainers/python:3.12",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance"
+            ]
+        }
+    },
+    "forwardPorts": [8501],
+    "postCreateCommand": "pip install --upgrade pip && pip install -r requirements.txt"
+}
