@@ -215,13 +215,14 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                     row = df.iloc[i]
                     quality = calculate_backtest_quality_score(row, strategy.name)
                     daily_candidates.append({
-                        "sym": sym, "entry": entry, "score": quality, "px": float(row["open"])
+                        "sym": sym, "entry": entry, "score": quality, 
+                        "px": float(row["open"]), "rsi2": float(row.get("rsi2", 50))
                     })
             
             daily_signal_counts.append(len(daily_candidates))
             
             if len(positions) < max_positions:
-                daily_candidates.sort(key=lambda x: x["score"], reverse=True)
+                daily_candidates.sort(key=lambda x: (x["score"], -x["rsi2"]), reverse=True)
                 target_size = equity * pos_fraction
                 for cand in daily_candidates:
                     if len(positions) >= max_positions or cash < 500: break
