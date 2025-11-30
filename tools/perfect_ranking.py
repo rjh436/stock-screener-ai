@@ -1,4 +1,12 @@
+import os
 
+
+def perfect_ranking():
+    print("🧠 INSTALLING BIFURCATED INTELLIGENCE (Perfect Ranking)...")
+    
+    engine_path = "execution/engine.py"
+    
+    engine_code = """
 import math
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
@@ -354,3 +362,15 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     df = pd.DataFrame(results)
     df.trade_logs = {r['strategy']: r.get('trades_list', []) for r in results}
     return df.sort_values("Score", ascending=False)
+"""
+    
+    with open(engine_path, "w") as f:
+        f.write(engine_code)
+    print("\n✅ ENGINE BIFURCATED.")
+    print("   - Sniper: Ignores Trend, Loves 'Deep Discount'.")
+    print("   - MachineGun: Loves 'Safe Uptrends'.")
+    print("   Run Backtest now.")
+
+
+if __name__ == "__main__":
+    perfect_ranking()
