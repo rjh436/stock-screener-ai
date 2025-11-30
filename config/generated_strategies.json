@@ -1,7 +1,7 @@
 [
     {
-        "name": "Strategy_Apex_Gen12_Sniper",
-        "type": "hybrid",
+        "name": "Strategy_Apex_VIX_Sniper",
+        "type": "random",
         "entry_rules": [
             {
                 "col": "cci",
@@ -9,9 +9,9 @@
                 "val": 0
             },
             {
-                "col": "bb_width",
+                "col": "vix",
                 "op": ">",
-                "val": 0.1
+                "val": 33
             },
             {
                 "col": "rsi14",
@@ -25,8 +25,8 @@
             }
         ],
         "exit_rules": [],
-        "stop_loss_atr": 4.4,
-        "time_stop": 71
+        "stop_loss_atr": 5.3,
+        "time_stop": 90
     },
     {
         "name": "Strategy_Apex_Alpha_MachineGun",

@@ -1,4 +1,3 @@
-
 import math
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
@@ -93,39 +92,42 @@ def _empty_result(name, start_cash, params=None):
     }
 
 def calculate_backtest_quality_score(row, strategy_name):
-    # BIFURCATED RANKING LOGIC
     score = 50.0
     
-    # 1. SHARED: Base Oversold & Velocity
-    rsi2 = row.get("rsi2", 50)
-    score += (100 - rsi2) * 2.0 
+    adx = row.get("adx", 20)
+    if adx > 25: score += 5
     
-    # Velocity Booster (Explosiveness)
-    close_px = row.get("close", 1.0)
-    if close_px > 0:
-        atr_pct = (row.get("atr14", 0) / close_px) * 100
-        if atr_pct > 3.0: score += 15
-        elif atr_pct > 2.0: score += 5
+    if "Sniper" in strategy_name or "VIX" in strategy_name:
+        rs_trend = row.get("rs_trend", 0)
+        score += (rs_trend * 100.0) 
         
-    # 2. DIVERGENT LOGIC
-    if "MachineGun" in strategy_name:
-        # MACHINE GUN: Loves Safety (Uptrends)
-        # Give a massive bonus if we are in a bull trend
-        if row.get("close", 0) > row.get("sma200", 999999):
-            score += 25
-    else:
-        # GEN 12 SNIPER: Loves Value (Crashes)
-        # Do NOT penalize downtrends. 
-        # In fact, slightly favor deep pullbacks from the 50SMA
-        sma50 = row.get("sma50", 0)
-        if sma50 > 0 and row["close"] < sma50 * 0.90:
-            score += 10  # "Deep Discount" Bonus
+        rsi2 = row.get("rsi2", 50)
+        if rsi2 < 5: score += 20
+        elif rsi2 < 10: score += 10
+        
+    else: 
+        # MACHINE GUN MODE: Deep Dips + High Volatility (Velocity)
+        rsi2 = row.get("rsi2", 50)
+        score += (100 - rsi2) * 2.0  # Base: How deep is the dip?
+        
+        # NEW: Velocity Booster (Prioritize High Volatility Stocks)
+        # Higher ATR% means the stock moves fast -> hits profit targets quicker
+        close_px = row.get("close", 1.0)
+        if close_px > 0:
+            atr_pct = (row.get("atr14", 0) / close_px) * 100
+            if atr_pct > 3.0: score += 15  # High Velocity
+            elif atr_pct > 2.0: score += 5
             
-    # 3. Volume Support (Shared)
-    vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
-    if vol_rel > 1.5: score += 10
-    
-    return max(0.0, score) # Unclamped
+        # NEW: Smart Trend Filter (Soft Filter)
+        # We don't ban downtrends, but we heavily favor uptrends.
+        # This pushes 'Good Stocks on Bad Days' to the top of the list.
+        if row.get("close", 0) > row.get("sma200", 999999):
+            score += 20
+        
+        vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
+        if vol_rel > 1.5: score += 10
+        
+    return score
 
 def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None):
     symbols = list(data_dict.keys())
@@ -236,7 +238,8 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
             daily_signal_counts.append(len(daily_candidates))
             
             if len(positions) < max_positions:
-                # TIE-BREAKER: RSI2 Ascending (Deepest dip)
+                # SORT BY SCORE DESC, THEN BY RSI2 ASC (Deepest dip breaks tie)
+                # We use -rsi2 with reverse=True to sort RSI ascending
                 daily_candidates.sort(key=lambda x: (x["score"], -x["rsi2"]), reverse=True)
                 
                 target_size = equity * pos_fraction
