@@ -7,8 +7,8 @@ export PYTHONUTF8=1
 # Move to this script’s folder
 cd "$(dirname "$0")"
 
-# Path to Python 3.12 installed via Homebrew
-PY312="/opt/homebrew/bin/python3.12"
+# Path to Python 3.12 (auto-detected)
+PY312=$(which python3)
 
 # Create venv if missing
 if [ ! -d ".venv" ]; then
