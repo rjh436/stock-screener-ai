@@ -49,7 +49,9 @@ def load_optimization_data(universe="S&P 1500", days=1260):
     if not symbols: return {}, {}
     data_map = fetch_data_pack(symbols, days=days)
     g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days)
-    vix = g_data.get("$VIX") or g_data.get("VIX")
+    vix = g_data.get("$VIX")
+    if vix is None:
+        vix = g_data.get("VIX")
     return data_map, {"SPY": g_data.get("SPY"), "VIX": vix}
 
 def run_evolution_cycle(engine, data_map, global_context):
