@@ -1,4 +1,15 @@
+import os
 
+
+def restore_stable_engine():
+    print("🛡️ RESTORING STABLE ENGINE (From 16:53 Backup)...")
+    
+    engine_path = "execution/engine.py"
+    
+    # This is the logic from baseline_20251129_165320
+    # It balances Oversold (Primary) with a Moderate Volatility Boost.
+    
+    engine_code = """
 import math
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
@@ -345,3 +356,13 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     df = pd.DataFrame(results)
     df.trade_logs = {r['strategy']: r.get('trades_list', []) for r in results}
     return df.sort_values("Score", ascending=False)
+"""
+    
+    with open(engine_path, "w") as f:
+        f.write(engine_code)
+    print("\n✅ STABLE ENGINE RESTORED.")
+    print("   The system is now safe for Optimization.")
+
+
+if __name__ == "__main__":
+    restore_stable_engine()
