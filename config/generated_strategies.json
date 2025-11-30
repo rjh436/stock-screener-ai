@@ -4,19 +4,24 @@
         "type": "hybrid",
         "entry_rules": [
             {
-                "col": "adx",
+                "col": "cci",
                 "op": "<",
-                "ref": "rsi14"
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.1
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
             },
             {
                 "col": "volume",
                 "op": ">",
-                "val": 0
-            },
-            {
-                "col": "sma50",
-                "op": ">",
-                "val": 0
+                "ref": "vol_ma20"
             }
         ],
         "exit_rules": [],
