@@ -1,32 +1,27 @@
 [
     {
         "name": "Strategy_Apex_Gen12_Sniper",
-        "type": "random",
+        "type": "hybrid",
         "entry_rules": [
             {
-                "col": "cci",
+                "col": "adx",
                 "op": "<",
-                "val": 0
-            },
-            {
-                "col": "vix",
-                "op": ">",
-                "val": 33
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
+                "ref": "rsi14"
             },
             {
                 "col": "volume",
                 "op": ">",
-                "ref": "vol_ma20"
+                "val": 0
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "val": 0
             }
         ],
         "exit_rules": [],
-        "stop_loss_atr": 5.3,
-        "time_stop": 90
+        "stop_loss_atr": 4.4,
+        "time_stop": 71
     },
     {
         "name": "Strategy_Apex_Alpha_MachineGun",

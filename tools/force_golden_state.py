@@ -1,4 +1,51 @@
+import json
+import os
 
+def force_golden_state():
+    print("⚡ FORCE-RESTORING GOLDEN STATE (Manual Reconstruction)...")
+
+    # --- 1. REWRITE STRATEGY CONFIGURATION ---
+    # We hardcode the exact winning parameters from your CSV reports.
+    config_path = "config/generated_strategies.json"
+    
+    strategies = [
+        {
+            "name": "Strategy_Apex_Gen12_Sniper",
+            "type": "hybrid",
+            "entry_rules": [
+                {"col": "adx", "op": "<", "ref": "rsi14"},
+                {"col": "volume", "op": ">", "val": 0},
+                {"col": "sma50", "op": ">", "val": 0}
+            ],
+            "exit_rules": [], # NO Profit Target (Let it run for 18% gains)
+            "stop_loss_atr": 4.4,
+            "time_stop": 71 
+        },
+        {
+            "name": "Strategy_Apex_Alpha_MachineGun",
+            "type": "hybrid",
+            "entry_rules": [
+                {"col": "adx", "op": "<", "ref": "rsi14"},
+                {"col": "volume", "op": ">", "val": 0},
+                {"col": "sma50", "op": ">", "val": 0}
+            ],
+            "exit_rules": [
+                {"type": "profit_target", "val": 1.06} # 6% Bank (Velocity)
+            ],
+            "stop_loss_atr": 4.3,
+            "time_stop": 10
+        }
+    ]
+    
+    with open(config_path, "w") as f:
+        json.dump(strategies, f, indent=4)
+    print("   ✅ Config restored: Gen12 (Long) + MachineGun (Short).")
+
+    # --- 2. REWRITE RANKING ENGINE (UNIFIED VELOCITY) ---
+    # We restore the 'Soft Trend + Velocity' logic that worked for BOTH strategies.
+    engine_path = "execution/engine.py"
+    
+    engine_code = """
 import math
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
@@ -343,3 +390,16 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     df = pd.DataFrame(results)
     df.trade_logs = {r['strategy']: r.get('trades_list', []) for r in results}
     return df.sort_values("Score", ascending=False)
+"""
+    
+    with open(engine_path, "w") as f:
+        f.write(engine_code)
+    print("   ✅ Engine restored to Unified Velocity Ranking.")
+
+    print("\n🚀 GOLDEN STATE RESTORED.")
+    print("   Please Run Backtest to confirm:")
+    print("   - Gen 12 Sniper: ~49 Trades, ~18% Profit, ~49% CAGR")
+    print("   - Machine Gun: ~400 Trades, ~1.5% Profit, ~43% CAGR")
+
+if __name__ == "__main__":
+    force_golden_state()
