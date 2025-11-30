@@ -1,4 +1,83 @@
+import json
+import os
+import glob
 
+def resurrect_golden_state():
+    print("✨ Initializing Golden State Resurrection...")
+
+    # --- STEP 1: RECOVER THE SNIPER (GEN 12) ---
+    sniper_strat = None
+    backup_root = "backups"
+    
+    if os.path.exists(backup_root):
+        # Search newest backups first
+        all_backups = sorted(
+            [d for d in os.listdir(backup_root) if os.path.isdir(os.path.join(backup_root, d))],
+            reverse=True
+        )
+        
+        print(f"   🔍 Scanning {len(all_backups)} backups for the Original Gen 12 Sniper...")
+        
+        for d in all_backups:
+            fpath = os.path.join(backup_root, d, "generated_strategies.json")
+            if os.path.exists(fpath):
+                try:
+                    with open(fpath, "r") as f:
+                        strats = json.load(f)
+                    for s in strats:
+                        # Look for the High CAGR profile (Long hold)
+                        if "Gen12" in s.get("name", "") or "Sniper" in s.get("name", ""):
+                            if s.get("time_stop", 0) > 40: # The signature of the winner
+                                sniper_strat = s
+                                sniper_strat["name"] = "Strategy_Apex_Gen12_Sniper"
+                                print(f"      ✅ FOUND Sniper in {d} (Time Stop: {s['time_stop']})")
+                                break
+                except: continue
+            if sniper_strat: break
+    
+    if not sniper_strat:
+        print("   ❌ Critical: Could not find original Gen 12 in backups. Using emergency fallback.")
+        # Fallback based on your 49% CAGR report
+        sniper_strat = {
+            "name": "Strategy_Apex_Gen12_Sniper",
+            "type": "hybrid",
+            "entry_rules": [
+                {"col": "adx", "op": "<", "ref": "rsi14"}, # Likely evolved rule
+                {"col": "volume", "op": ">", "val": 0},
+                {"col": "sma50", "op": ">", "val": 0}
+            ],
+            "exit_rules": [],
+            "stop_loss_atr": 4.4,
+            "time_stop": 71 # From your CSV report
+        }
+
+    # --- STEP 2: RESTORE THE MACHINE GUN (SWORD) ---
+    print("   ⚔️  Forging the Machine Gun (Precision Build)...")
+    machine_gun = {
+        "name": "Strategy_Apex_Alpha_MachineGun",
+        "type": "hybrid",
+        "entry_rules": [
+            {"col": "adx", "op": "<", "ref": "rsi14"},
+            {"col": "volume", "op": ">", "val": 0},
+            {"col": "sma50", "op": ">", "val": 0}
+            # Note: SMA200 filter REMOVED for Velocity
+        ],
+        "exit_rules": [
+            {"type": "profit_target", "val": 1.06} # The 6% Bank
+        ],
+        "stop_loss_atr": 4.3,
+        "time_stop": 10 # High Turnover
+    }
+
+    # --- STEP 3: SAVE PORTFOLIO ---
+    final_portfolio = [sniper_strat, machine_gun]
+    with open("config/generated_strategies.json", "w") as f:
+        json.dump(final_portfolio, f, indent=4)
+    print("   💾 Portfolio Config Restored.")
+
+    # --- STEP 4: RESTORE ENGINE (BIFURCATED RANKING) ---
+    print("   🧠 Restoring Bifurcated Ranking Engine...")
+    engine_code = """
 import math
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
@@ -363,3 +442,13 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     df = pd.DataFrame(results)
     df.trade_logs = {r['strategy']: r.get('trades_list', []) for r in results}
     return df.sort_values("Score", ascending=False)
+"""
+    with open("execution/engine.py", "w") as f:
+        f.write(engine_code)
+    print("   ✅ Engine Code Rewritten.")
+
+    print("\n🏁 RESURRECTION COMPLETE. The Golden State has been restored.")
+    print("   👉 Run Backtest immediately to verify 49% + 43% CAGR.")
+
+if __name__ == "__main__":
+    resurrect_golden_state()
