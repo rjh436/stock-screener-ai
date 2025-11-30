@@ -1,4 +1,12 @@
+import os
 
+
+def force_volatility_ranking():
+    print("🧨 FORCING VOLATILITY DOMINANCE (Targeting 18% Avg Profit)...")
+    
+    engine_path = "execution/engine.py"
+    
+    engine_code = """
 import math
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
@@ -343,3 +351,14 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     df = pd.DataFrame(results)
     df.trade_logs = {r['strategy']: r.get('trades_list', []) for r in results}
     return df.sort_values("Score", ascending=False)
+"""
+    
+    with open(engine_path, "w") as f:
+        f.write(engine_code)
+    
+    print("\n✅ VOLATILITY SCORING FORCE-ENABLED.")
+    print("   Run Backtest now to verify Gen 12 Avg Profit > 15%.")
+
+
+if __name__ == "__main__":
+    force_volatility_ranking()
