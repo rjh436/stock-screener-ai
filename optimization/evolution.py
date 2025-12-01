@@ -13,12 +13,11 @@ class EvolutionEngine:
         self.population = []
         
         self.INDICATORS = {
-            "price": ["close", "sma20", "sma50", "sma200", "bb_lower", "highest55", "lowest20"],
-            "momentum": ["rs_trend", "rs_ratio"],
-            "oscillator": ["rsi2", "rsi14", "adx"],
+            "price": ["close", "sma50", "sma200", "bb_lower"],
+            "momentum": ["rs_trend", "rs_ratio", "cci"],
+            "oscillator": ["rsi2", "rsi14", "adx", "stoch_k"],
             "volatility": ["atr14", "bb_width"],
-            "volume": ["volume", "vol_ma20"],
-            "market_regime": ["vix"]
+            "volume": ["volume", "vol_ma20"]
         }
         self.OPERATORS = [">", "<"]
 
@@ -31,6 +30,7 @@ class EvolutionEngine:
         elif "vix" in col: val = random.randint(15, 40)
         elif "adx" in col: val = random.randint(20, 40)
         elif "bb_width" in col: val = round(random.uniform(0.1, 0.5), 2)
+        elif "cci" in col: val = random.choice([-100, 0, 100])
         return {"col": col, "op": op, "val": val}
 
     def generate_initial_population(self):
@@ -42,10 +42,14 @@ class EvolutionEngine:
         r = random.random()
         
         if r < 0.3:
-            # EXPANDED TIME STOP RANGE (Up to 45 days for 5% targets)
-            mutant["time_stop"] = random.choice([10, 15, 20, 25, 30, 35, 40, 45])
+            # TIME STOP EXPANSION
+            # To hit 5% profit, we need longer hold times.
+            # Shifting range from [5-20] to [20-60].
+            mutant["time_stop"] = random.choice([20, 25, 30, 35, 40, 45, 50, 60])
+            
         elif r < 0.5:
-            # PROFIT TARGET MUTATION (Up to 25%)
+            # PROFIT TARGET TUNING
+            # Focusing on the 5% - 15% range
             if "exit_rules" in mutant:
                 found = False
                 for rule in mutant["exit_rules"]:
@@ -53,36 +57,31 @@ class EvolutionEngine:
                         found = True
                         curr = float(rule.get("val", 1.06))
                         # Mutate
-                        new_val = curr + random.choice([-0.02, 0.02, 0.05])
-                        rule["val"] = round(max(1.04, min(1.25, new_val)), 2)
+                        new_val = curr + random.choice([-0.01, 0.01, 0.02, 0.05])
+                        # Keep it between 1.05 and 1.25
+                        rule["val"] = round(max(1.05, min(1.25, new_val)), 2)
                 
-                # If no target, occasionally add one
-                if not found and random.random() < 0.4:
-                    mutant["exit_rules"].append({"type": "profit_target", "val": 1.08})
-        elif r < 0.6: 
+                # If no target, add one
+                if not found and random.random() < 0.5:
+                    mutant["exit_rules"].append({"type": "profit_target", "val": 1.07})
+                    
+        elif r < 0.7:
+            # ENTRY RULE TWEAKS
             if mutant.get("entry_rules"):
                 idx = random.randint(0, len(mutant["entry_rules"])-1)
                 mutant["entry_rules"][idx] = self._random_rule()
-        elif r < 0.8:
-            if len(mutant.get("entry_rules", [])) < 5:
-                mutant.setdefault("entry_rules", []).append(self._random_rule())
+                
         else:
-            mutant["stop_loss_atr"] = round(random.uniform(2.0, 6.0), 1)
+            mutant["stop_loss_atr"] = round(random.uniform(3.0, 7.0), 1)
             
         return mutant
-
-    def crossover(self, p1, p2):
-        # Simple crossover for robustness
-        child = copy.deepcopy(p1)
-        child["name"] = f"Cross_{p1.get('name','')}_{p2.get('name','')}"[:30]
-        if random.random() < 0.5: child["stop_loss_atr"] = p2.get("stop_loss_atr", 3.0)
-        return child
 
     def evolve(self, ranked):
         self.generation_count += 1
         survivors = [r["genome"] for r in ranked[:5]]
         next_gen = survivors[:]
         while len(next_gen) < self.population_size:
+            # Prefer mutation over crossover to explore new Profit/Time parameters
             next_gen.append(self.mutate(random.choice(survivors)))
         self.population = next_gen
         return next_gen
