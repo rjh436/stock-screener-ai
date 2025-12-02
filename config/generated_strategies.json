@@ -1,6 +1,6 @@
 [
     {
-        "name": "Strategy_Apex_Sniper_Classic",
+        "name": "Strategy_Apex_Gen12_Sniper",
         "type": "hybrid",
         "entry_rules": [
             {
@@ -29,12 +29,12 @@
         "time_stop": 71
     },
     {
-        "name": "Strategy_Apex_Sniper_Evolved",
+        "name": "Strategy_Apex_Gen9_Evolved",
         "type": "hybrid",
         "entry_rules": [
             {
-                "col": "cci",
-                "op": "<",
+                "col": "close",
+                "op": ">",
                 "val": 0
             },
             {
@@ -61,34 +61,5 @@
         ],
         "stop_loss_atr": 5.1,
         "time_stop": 45
-    },
-    {
-        "name": "Strategy_Apex_MachineGun",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "adx",
-                "op": "<",
-                "ref": "rsi14"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "val": 0
-            },
-            {
-                "col": "sma50",
-                "op": ">",
-                "val": 0
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.06
-            }
-        ],
-        "stop_loss_atr": 4.3,
-        "time_stop": 10
     }
 ]
