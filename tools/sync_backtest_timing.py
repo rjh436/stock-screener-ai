@@ -1,4 +1,14 @@
+"""Synchronize backtest timing to scan at close and buy next open."""
 
+import os
+
+
+def sync_backtest_timing():
+    print("⏱️ SYNCHRONIZING BACKTEST TIMING (Signal: Close -> Exec: Next Open)...")
+    
+    engine_path = "execution/engine.py"
+    
+    engine_code = """
 import math
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
@@ -373,3 +383,11 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     df = pd.DataFrame(results)
     df.trade_logs = {r['strategy']: r.get('trades_list', []) for r in results}
     return df.sort_values("Score", ascending=False)
+"""
+    
+    with open(engine_path, "w") as f:
+        f.write(engine_code)
+    print("   ✅ Engine Updated: Backtest now simulates 'Buy Next Open' execution.")
+
+if __name__ == "__main__":
+    sync_backtest_timing()

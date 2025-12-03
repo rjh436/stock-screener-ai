@@ -1,0 +1,54 @@
+{
+    "cash": 100000.0,
+    "equity": 100000.0,
+    "positions": {},
+    "pending_orders": [
+        {
+            "symbol": "NWL",
+            "committed_cash": 20000.0,
+            "stop_price": 2.6831742857142857,
+            "strategy": "Strategy_Apex_Gen12_Sniper + Strategy_Apex_Gen9_Evolved",
+            "date": "2025-12-02",
+            "status": "PENDING_OPEN"
+        },
+        {
+            "symbol": "NX",
+            "committed_cash": 20000.0,
+            "stop_price": 9.665817142857144,
+            "strategy": "Strategy_Apex_Gen12_Sniper + Strategy_Apex_Gen9_Evolved",
+            "date": "2025-12-02",
+            "status": "PENDING_OPEN"
+        },
+        {
+            "symbol": "FIX",
+            "committed_cash": 20000.0,
+            "stop_price": 713.8252828571428,
+            "strategy": "Strategy_Apex_Gen12_Sniper",
+            "date": "2025-12-02",
+            "status": "PENDING_OPEN"
+        },
+        {
+            "symbol": "CSGP",
+            "committed_cash": 20000.0,
+            "stop_price": 60.00603142857141,
+            "strategy": "Strategy_Apex_Gen12_Sniper",
+            "date": "2025-12-02",
+            "status": "PENDING_OPEN"
+        },
+        {
+            "symbol": "NAVI",
+            "committed_cash": 20000.0,
+            "stop_price": 10.286002857142856,
+            "strategy": "Strategy_Apex_Gen12_Sniper",
+            "date": "2025-12-02",
+            "status": "PENDING_OPEN"
+        }
+    ],
+    "history": [],
+    "equity_curve": [
+        {
+            "date": "2025-12-02",
+            "equity": 100000.0
+        }
+    ]
+}
