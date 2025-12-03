@@ -1,4 +1,12 @@
+import os
 
+
+def add_download_to_super_signal():
+    print("💾 ADDING DOWNLOAD & PERSISTENCE TO SUPER SIGNAL LAB...")
+    
+    app_path = "app.py"
+    
+    app_code = """
 import streamlit as st
 import pandas as pd
 import sys
@@ -198,10 +206,10 @@ elif mode == "Backtest":
 # --- 3. SUPER SIGNAL LAB ---
 elif mode == "Super Signal Lab":
     st.header("🔥 Super Signal Backtest")
-    st.markdown("""
+    st.markdown(\"\"\"
     **Theory:** Trades that trigger BOTH *Gen 12* (Wealth) and *Gen 9* (Income) simultaneously are highest conviction.
     **Execution:** Managed as *Gen 12* (Let it Run).
-    """)
+    \"\"\")
     
     # PERSISTENCE LOGIC
     if "super_signal_res" not in st.session_state:
@@ -369,3 +377,12 @@ elif mode == "Simulator":
         st.dataframe(df_pend, use_container_width=True)
     else:
         st.caption("No orders queued.")
+"""
+    
+    with open(app_path, "w") as f:
+        f.write(app_code)
+    print("   ✅ Dashboard Updated: Super Signal Download Enabled (Persistent).")
+
+
+if __name__ == "__main__":
+    add_download_to_super_signal()
