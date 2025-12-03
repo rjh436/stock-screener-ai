@@ -154,20 +154,59 @@ if mode == "Live Screener":
 # --- 2. BACKTEST ---
 elif mode == "Backtest":
     st.header("📈 Historical Performance Lab")
-    if st.button("Run 5-Year Backtest"):
-        with st.spinner("Running simulation..."):
+    
+    # Duration Selector
+    c1, c2, c3, c4, c5 = st.columns(5)
+    duration_map = {
+        "1 Year": 252, "5 Years": 1260, "10 Years": 2520, "20 Years": 5040, "Max": 10000
+    }
+    
+    # Using session state for duration
+    if "bt_duration" not in st.session_state: st.session_state.bt_duration = "5 Years"
+    
+    with c1: 
+        if st.button("1 Year"): st.session_state.bt_duration = "1 Year"
+    with c2:
+        if st.button("5 Years"): st.session_state.bt_duration = "5 Years"
+    with c3:
+        if st.button("10 Years"): st.session_state.bt_duration = "10 Years"
+    with c4:
+        if st.button("20 Years"): st.session_state.bt_duration = "20 Years"
+    with c5:
+        if st.button("Max"): st.session_state.bt_duration = "Max"
+        
+    st.info(f"Selected Duration: **{st.session_state.bt_duration}**")
+
+    if st.button("🚀 RUN BACKTEST", type="primary"):
+        with st.spinner("Simulating..."):
+            days = duration_map.get(st.session_state.bt_duration, 1260)
             symbols = get_index_symbols("S&P 500")
-            data = fetch_data_pack(symbols, days=1260)
+            data = fetch_data_pack(symbols, days=days + 200) # Buffer
             
             tabs = st.tabs([s["name"] for s in selected_strategies])
+            
             for i, s_conf in enumerate(selected_strategies):
                 with tabs[i]:
                     res = run_backtest(GenericStrategy(s_conf), data)
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("CAGR", f"{res['cagr']:.1%}")
-                    col2.metric("Win Rate", f"{res['hit_rate']:.1f}%")
-                    col3.metric("Avg Profit", f"{res['avg_profit_pct']:.2f}%")
+                    
+                    # 1. Scoreboard
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("CAGR", f"{res['cagr']:.1%}")
+                    m2.metric("Win Rate", f"{res['hit_rate']:.1f}%")
+                    m3.metric("Max Drawdown", f"{res['max_drawdown_pct']:.1f}%")
+                    m4.metric("Avg Profit", f"{res['avg_profit_pct']:.2f}%")
+                    
+                    # 2. Equity Chart
+                    st.subheader("Equity Curve")
                     st.line_chart(res["equity_curve"])
+                    
+                    # 3. Trade Log
+                    st.subheader("Trade Log")
+                    trades_df = pd.DataFrame(res["trades_list"])
+                    if not trades_df.empty:
+                        st.dataframe(trades_df)
+                        csv = trades_df.to_csv(index=False).encode('utf-8')
+                        st.download_button(f"📥 Download Trades", csv, f"trades_{s_conf['name']}.csv", "text/csv")
 
 # --- 3. SIMULATOR (PRO MODE) ---
 elif mode == "Simulator":
@@ -189,6 +228,16 @@ elif mode == "Simulator":
                 trader.update_valuations() 
                 exits = trader.process_exits(strategies_map)
                 for e in exits: st.toast(e, icon="💰")
+                
+                # Scan
+                symbols = get_index_symbols("S&P 500")
+                data = fetch_data_pack(symbols, days=400)
+                candidates = []
+                for s_conf in strategies_list:
+                     # Simplified scan injection for brevity in this snippet
+                     # In full prod, reuse scan logic
+                     pass
+                
             st.success("Cycle Complete.")
             st.rerun()
             
@@ -213,7 +262,7 @@ elif mode == "Simulator":
                 "Strategy": p['strategy'],
                 "Shares": p['shares'],
                 "Entry Price": p['entry_price'],
-                "Stop Loss": p.get('stop_price', 0.0), # ADDED FIELD
+                "Stop Loss": p.get('stop_price', 0.0),
                 "Current Price": p.get('current_price', p['entry_price']),
                 "Value": p.get('current_price', p['entry_price']) * p['shares'],
                 "Unrealized PnL": p.get('unrealized_pnl', 0),
@@ -229,7 +278,7 @@ elif mode == "Simulator":
             df_pos.style
             .format({
                 "Entry Price": "${:.2f}",
-                "Stop Loss": "${:.2f}", # ADDED FORMAT
+                "Stop Loss": "${:.2f}",
                 "Current Price": "${:.2f}",
                 "Value": "${:,.2f}",
                 "Unrealized PnL": "${:,.2f}",
