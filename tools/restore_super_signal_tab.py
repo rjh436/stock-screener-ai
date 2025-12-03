@@ -1,4 +1,12 @@
+import os
 
+
+def restore_super_signal_tab():
+    print("🔥 RESTORING SUPER SIGNAL TAB (Keeping Pro Simulator & Backtest)...")
+    
+    app_path = "app.py"
+    
+    app_code = """
 import streamlit as st
 import pandas as pd
 import sys
@@ -202,10 +210,10 @@ elif mode == "Backtest":
 # --- 3. SUPER SIGNAL LAB (RESTORED) ---
 elif mode == "Super Signal Lab":
     st.header("🔥 Super Signal Backtest")
-    st.markdown("""
+    st.markdown(\"\"\"
     **Theory:** Trades that trigger BOTH *Gen 12* (Wealth) and *Gen 9* (Income) simultaneously.
     **Execution:** Managed as *Gen 12* (Let it Run).
-    """)
+    \"\"\")
     
     if "super_signal_res" not in st.session_state: st.session_state.super_signal_res = None
 
@@ -307,3 +315,12 @@ elif mode == "Simulator":
         st.dataframe(pd.DataFrame(state["pending_orders"]))
     else:
         st.caption("No orders queued.")
+"""
+    
+    with open(app_path, "w") as f:
+        f.write(app_code)
+    print("   ✅ Dashboard Restored: Super Signal Lab + Pro Simulator.")
+
+
+if __name__ == "__main__":
+    restore_super_signal_tab()

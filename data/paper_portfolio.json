@@ -1,6 +1,6 @@
 {
     "cash": 383.53999999999724,
-    "equity": 101783.695,
+    "equity": 101901.85429999999,
     "positions": {
         "NWL": {
             "shares": 5405,
@@ -8,9 +8,9 @@
             "stop_price": 2.6831742857142857,
             "strategy": "Strategy_Apex_Gen12_Sniper + Strategy_Apex_Gen9_Evolved",
             "date": "2025-12-03",
-            "current_price": 3.805,
-            "unrealized_pnl": 567.5249999999999,
-            "unrealized_pct": 2.8378378378378373
+            "current_price": 3.82,
+            "unrealized_pnl": 648.5999999999982,
+            "unrealized_pct": 3.2432432432432337
         },
         "NX": {
             "shares": 1498,
@@ -18,9 +18,9 @@
             "stop_price": 9.665817142857144,
             "strategy": "Strategy_Apex_Gen12_Sniper + Strategy_Apex_Gen9_Evolved",
             "date": "2025-12-03",
-            "current_price": 13.86,
-            "unrealized_pnl": 763.9799999999997,
-            "unrealized_pct": 3.8202247191011223
+            "current_price": 13.865,
+            "unrealized_pnl": 771.4700000000008,
+            "unrealized_pct": 3.857677902621727
         },
         "FIX": {
             "shares": 21,
@@ -28,9 +28,9 @@
             "stop_price": 713.8252828571428,
             "strategy": "Strategy_Apex_Gen12_Sniper",
             "date": "2025-12-03",
-            "current_price": 947.65,
-            "unrealized_pnl": 265.6499999999995,
-            "unrealized_pct": 1.3529411764705856
+            "current_price": 949.18,
+            "unrealized_pnl": 297.77999999999895,
+            "unrealized_pct": 1.5165775401069466
         },
         "CSGP": {
             "shares": 293,
@@ -38,9 +38,9 @@
             "stop_price": 60.00603142857141,
             "strategy": "Strategy_Apex_Gen12_Sniper",
             "date": "2025-12-03",
-            "current_price": 68.64,
-            "unrealized_pnl": 123.0600000000005,
-            "unrealized_pct": 0.6156552330694837
+            "current_price": 68.5501,
+            "unrealized_pnl": 96.71930000000047,
+            "unrealized_pct": 0.4838756962767541
         },
         "NAVI": {
             "shares": 1587,
@@ -48,9 +48,9 @@
             "stop_price": 10.286002857142856,
             "strategy": "Strategy_Apex_Gen12_Sniper",
             "date": "2025-12-03",
-            "current_price": 12.64,
-            "unrealized_pnl": 63.48000000000147,
-            "unrealized_pct": 0.31746031746032477
+            "current_price": 12.655,
+            "unrealized_pnl": 87.28499999999954,
+            "unrealized_pct": 0.4365079365079343
         }
     },
     "pending_orders": [],
@@ -62,7 +62,7 @@
         },
         {
             "date": "2025-12-03",
-            "equity": 101783.695
+            "equity": 101901.85429999999
         }
     ]
 }
