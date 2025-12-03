@@ -96,7 +96,7 @@ class SchwabData:
         """Fetch real-time quote for a single symbol."""
         self._ensure()
         # API expects a list of symbols
-        r = self._cli.get_quote([symbol])
+        r = self._cli.get_quote(symbol)
         return r.json()
 
     def health_check(self, symbol="VOO"):
