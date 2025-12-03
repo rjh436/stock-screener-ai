@@ -1,3 +1,4 @@
+
 import os
 import time
 import pandas as pd
@@ -10,7 +11,6 @@ load_dotenv(override=True)
 try:
     import streamlit as st
 except ImportError:
-    # Dummy st for CLI usage
     class DummySt:
         def warning(self, msg): print(f"WARNING: {msg}")
         def error(self, msg): print(f"ERROR: {msg}")
@@ -23,7 +23,7 @@ except ImportError:
 try:
     from schwab.auth import easy_client
 except ImportError:
-    pass # Handle in app.py or main entry point
+    pass 
 
 def _first_env(*keys, default=""):
     for k in keys:
@@ -61,7 +61,6 @@ class SchwabData:
                 errors.append(f"{label}: {e}")
                 return None
 
-        # Try all known schwab-py signatures
         self._cli = _try(
             lambda: easy_client(
                 api_key=self.cid, client_secret=self.ck, redirect_uri=self.redir,
@@ -75,16 +74,10 @@ class SchwabData:
                     creds_path=self.creds), "v2:classic-kw")
         if self._cli is None:
             self._cli = _try(
-                lambda: easy_client(
-                    app_key=self.cid, app_secret=self.ck, redirect_uri=self.redir,
-                    credentials_path=self.creds), "v3:classic-alt-kw")
-        if self._cli is None:
-            self._cli = _try(
                 lambda: easy_client(self.cid, self.ck, self.redir, self.creds),
                 "v4:positional")
 
         if self._cli is None:
-            # Raise error but let the caller handle it (e.g. Streamlit)
             raise RuntimeError(f"Schwab Auth Failed. Errors: {errors}")
 
     def price_daily(self, symbol, start_datetime=None, end_datetime=None):
@@ -98,6 +91,13 @@ class SchwabData:
         )
         j = r.json()
         return j["candles"] if isinstance(j, dict) and "candles" in j else j
+
+    def get_quote(self, symbol):
+        """Fetch real-time quote for a single symbol."""
+        self._ensure()
+        # API expects a list of symbols
+        r = self._cli.get_quote([symbol])
+        return r.json()
 
     def health_check(self, symbol="VOO"):
         try:
@@ -118,5 +118,4 @@ class SchwabData:
         except Exception as e:
             return {"ok": False, "error": str(e), "signature_used": self.signature_used}
 
-# Initialize one global client
 sd = SchwabData()
