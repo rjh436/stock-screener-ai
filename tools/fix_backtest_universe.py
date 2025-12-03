@@ -1,4 +1,12 @@
+import os
 
+
+def fix_backtest_universe():
+    print("🔧 FIXING BACKTEST UNIVERSE (Enabling S&P 1500)...")
+    
+    app_path = "app.py"
+    
+    app_code = """
 import streamlit as st
 import pandas as pd
 import sys
@@ -297,3 +305,12 @@ elif mode == "Simulator":
     if state.get("pending_orders"):
         st.subheader("⏳ Pending Orders")
         st.dataframe(pd.DataFrame(state["pending_orders"]))
+"""
+    
+    with open(app_path, "w") as f:
+        f.write(app_code)
+    print("   ✅ App Updated: Backtest Universe Selection Added.")
+
+
+if __name__ == "__main__":
+    fix_backtest_universe()
