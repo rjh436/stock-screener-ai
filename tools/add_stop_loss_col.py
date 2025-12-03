@@ -1,4 +1,13 @@
+import os
 
+
+def add_stop_loss_col():
+    print("🛡️ UPDATING DASHBOARD: Adding Stop Loss Column to Holdings...")
+    
+    app_path = "app.py"
+    
+    # Restoring the full app code with the requested modification
+    app_code = """
 import streamlit as st
 import pandas as pd
 import sys
@@ -249,3 +258,11 @@ elif mode == "Simulator":
         st.dataframe(df_pend, use_container_width=True)
     else:
         st.caption("No orders queued.")
+"""
+    with open(app_path, "w") as f:
+        f.write(app_code)
+    print("   ✅ Dashboard Updated: Stop Loss Column Added.")
+
+
+if __name__ == "__main__":
+    add_stop_loss_col()
