@@ -1,4 +1,12 @@
+import os
 
+
+def fix_app_universe_ui():
+    print("🔧 FIXING APP UI: Restoring Universe Selectors (Default: S&P 1500)...")
+    
+    app_path = "app.py"
+    
+    app_code = """
 import streamlit as st
 import pandas as pd
 import sys
@@ -200,10 +208,10 @@ elif mode == "Backtest":
 # --- 3. SUPER SIGNAL LAB ---
 elif mode == "Super Signal Lab":
     st.header("🔥 Super Signal Backtest")
-    st.markdown("""
+    st.markdown(\"\"\"
     **Theory:** Trades that trigger BOTH *Gen 12* (Wealth) and *Gen 9* (Income) simultaneously.
     **Execution:** Managed as *Gen 12* (Let it Run).
-    """)
+    \"\"\")
     
     if "super_signal_res" not in st.session_state: st.session_state.super_signal_res = None
 
@@ -311,3 +319,12 @@ elif mode == "Simulator":
         st.dataframe(pd.DataFrame(state["pending_orders"]))
     else:
         st.caption("No orders queued.")
+"""
+    
+    with open(app_path, "w") as f:
+        f.write(app_code)
+    print("   ✅ Dashboard Fixed: Universe Selector Restored (S&P 1500 Default).")
+
+
+if __name__ == "__main__":
+    fix_app_universe_ui()
