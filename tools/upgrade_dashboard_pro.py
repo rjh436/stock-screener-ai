@@ -1,4 +1,12 @@
+import os
 
+
+def upgrade_dashboard_pro():
+    print("💎 UPGRADING DASHBOARD TO PRO MODE (Styled Holdings + Refresh)...")
+    
+    app_path = "app.py"
+    
+    app_code = """
 import streamlit as st
 import pandas as pd
 import sys
@@ -280,3 +288,12 @@ elif mode == "Simulator":
     else:
         st.caption("No orders queued.")
 
+"""
+    
+    with open(app_path, "w") as f:
+        f.write(app_code)
+    print("   ✅ Dashboard Upgraded to Pro Mode.")
+
+
+if __name__ == "__main__":
+    upgrade_dashboard_pro()
