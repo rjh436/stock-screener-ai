@@ -1,4 +1,14 @@
+"""Fix Backtest tab persistence so results survive button re-render."""
 
+import os
+
+
+def fix_app_persistence():
+    print("💾 UPGRADING APP PERSISTENCE (Fixing Download Reset)...")
+    
+    app_path = "app.py"
+    
+    app_code = """
 import streamlit as st
 import pandas as pd
 import sys
@@ -253,3 +263,12 @@ elif mode == "Simulator":
         st.dataframe(df_pos)
     else:
         st.info("Portfolio is empty.")
+"""
+
+    with open(app_path, "w") as f:
+        f.write(app_code)
+    print("   ✅ App Fixed: Persistent Backtest Results & Downloads Enabled.")
+
+
+if __name__ == "__main__":
+    fix_app_persistence()
