@@ -1,4 +1,9 @@
-import json
+"""Upgrade app.py with a richer Streamlit dashboard focused on Apex Duo."""
+
+import os
+
+
+APP_CODE = """import json
 import os
 import sys
 from datetime import datetime
@@ -154,24 +159,24 @@ def sidebar_playbook():
 
         st.markdown("### Apex Execution Protocol")
         st.markdown(
-            "- Scan after market close (4:00 PM ET)\n"
-            "- Place Market on Open orders for next session\n"
+            "- Scan after market close (4:00 PM ET)\\n"
+            "- Place Market on Open orders for next session\\n"
             "- Priority: Super Signals > Gen 9 Income > Gen 12 Growth"
         )
 
         st.markdown("### Strategy Rules")
         st.markdown("**The Wealth Builder (Gen 12 Classic)**")
         st.markdown(
-            "- Entry: Market on Open\n"
-            "- Stop: Entry - 4.4 x ATR\n"
-            "- Target: None (let winners run)\n"
+            "- Entry: Market on Open\\n"
+            "- Stop: Entry - 4.4 x ATR\\n"
+            "- Target: None (let winners run)\\n"
             "- Time Stop: 71 days"
         )
         st.markdown("**The Income Generator (Gen 9 Evolved)**")
         st.markdown(
-            "- Entry: Market on Open\n"
-            "- Stop: Entry - 5.1 x ATR\n"
-            "- Target: Entry + 8%\n"
+            "- Entry: Market on Open\\n"
+            "- Stop: Entry - 5.1 x ATR\\n"
+            "- Target: Entry + 8%\\n"
             "- Time Stop: 45 days"
         )
 
@@ -265,3 +270,17 @@ def main():
 
 if __name__ == "__main__":
     main()
+"""
+
+
+def upgrade_dashboard_ui():
+    print("Upgrading dashboard UI (persistence + trading plans)...")
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    app_path = os.path.join(project_root, "app.py")
+    with open(app_path, "w") as fh:
+        fh.write(APP_CODE)
+    print(f"Dashboard updated at {app_path}")
+
+
+if __name__ == "__main__":
+    upgrade_dashboard_ui()
