@@ -1,4 +1,14 @@
-import streamlit as st
+"""Restore full-featured Streamlit dashboard with navigation, strategy info, and simulator."""
+
+import os
+
+
+def fix_dashboard_ui():
+    print("🛠️ RESTORING & FIXING DASHBOARD UI...")
+
+    app_path = "app.py"
+
+    app_code = """import streamlit as st
 import pandas as pd
 import sys
 import os
@@ -232,3 +242,12 @@ elif mode == "Backtest":
     if st.button("Run 5-Year Verification"):
         # Simple trigger wrapper
         st.info("Check terminal for detailed output.")
+"""
+
+    with open(app_path, "w") as f:
+        f.write(app_code)
+    print("   ✅ UI Restored: Navigation, Strategy Details, and Simulator are back.")
+
+
+if __name__ == "__main__":
+    fix_dashboard_ui()
