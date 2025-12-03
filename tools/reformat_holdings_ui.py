@@ -1,4 +1,12 @@
+import os
 
+
+def reformat_holdings_ui():
+    print("🖥️ REFORMATTING HOLDINGS UI (Professional Grid + Sell Buttons)...")
+    
+    app_path = "app.py"
+    
+    app_code = """
 import streamlit as st
 import pandas as pd
 import sys
@@ -295,3 +303,12 @@ elif mode == "Simulator":
     if state.get("pending_orders"):
         st.subheader("⏳ Pending Orders")
         st.dataframe(pd.DataFrame(state["pending_orders"]))
+"""
+    
+    with open(app_path, "w") as f:
+        f.write(app_code)
+    print("   ✅ Dashboard Rebuilt: Holdings are now fully interactive rows.")
+
+
+if __name__ == "__main__":
+    reformat_holdings_ui()
