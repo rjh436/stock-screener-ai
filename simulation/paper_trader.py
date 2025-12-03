@@ -35,6 +35,54 @@ class PaperTrader:
         if os.path.exists(PORTFOLIO_FILE): os.remove(PORTFOLIO_FILE)
         self.__init__(self.start_cash)
 
+    def get_realtime_price(self, sym):
+        # Priority: Quote -> History -> 0
+        try:
+            q = sd.get_quote(sym)
+            if q and sym in q and 'quote' in q[sym]:
+                q_d = q[sym]['quote']
+                return float(q_d.get('lastPrice') or q_d.get('mark') or q_d.get('closePrice') or 0.0)
+        except: pass
+        
+        # Fallback
+        df = fetch_single_symbol(sym, days=5, force_fresh=False)
+        if df is not None and not df.empty:
+            return float(df.iloc[-1]["close"])
+        return 0.0
+
+    def close_position(self, symbol, reason="Manual"):
+        """Manually sells a position at the current real-time price."""
+        if symbol not in self.state["positions"]: return False, "Position not found"
+        
+        pos = self.state["positions"][symbol]
+        exit_price = self.get_realtime_price(symbol)
+        
+        if exit_price <= 0: return False, "Could not fetch valid price"
+        
+        proceeds = exit_price * pos["shares"]
+        pnl = proceeds - (pos["entry_price"] * pos["shares"])
+        pnl_pct = ((exit_price - pos["entry_price"]) / pos["entry_price"]) * 100
+        
+        self.state["cash"] += proceeds
+        self.state["history"].append({
+            "symbol": symbol,
+            "strategy": pos["strategy"],
+            "type": "SELL",
+            "reason": reason,
+            "entry_date": pos["date"],
+            "exit_date": str(datetime.now().date()),
+            "entry_price": pos["entry_price"],
+            "exit_price": exit_price,
+            "shares": pos["shares"],
+            "pnl": pnl,
+            "return_pct": pnl_pct
+        })
+        
+        del self.state["positions"][symbol]
+        self.update_valuations() # Refresh equity
+        self.save_state()
+        return True, f"Sold {symbol} at ${exit_price:.2f} (PnL: ${pnl:.2f})"
+
     def process_pending_orders(self):
         filled_log = []
         remaining_orders = []
@@ -59,7 +107,6 @@ class PaperTrader:
                     q = sd.get_quote(sym)
                     if q and sym in q and 'quote' in q[sym]:
                         q_data = q[sym]['quote']
-                        # Use openPrice if available, else mark if market open
                         open_px = q_data.get('openPrice')
                         if open_px and open_px > 0:
                             fill_price = float(open_px)
@@ -91,31 +138,17 @@ class PaperTrader:
         total_value = self.state["cash"]
         
         for sym, pos in self.state["positions"].items():
-            current_price = None
-            # A. Try Quote
-            try:
-                q = sd.get_quote(sym)
-                if q and sym in q and 'quote' in q[sym]:
-                    q_d = q[sym]['quote']
-                    current_price = q_d.get('lastPrice') or q_d.get('mark')
-            except: pass
+            current_price = self.get_realtime_price(sym)
             
-            # B. Fallback History
-            if current_price is None:
-                df = fetch_single_symbol(sym, days=30)
-                if df is not None and not df.empty:
-                    current_price = float(df.iloc[-1]["close"])
-            
-            if current_price is not None:
-                pos["current_price"] = float(current_price)
-                pos["unrealized_pnl"] = (pos["current_price"] - pos["entry_price"]) * pos["shares"]
-                pos["unrealized_pct"] = (pos["current_price"] - pos["entry_price"]) / pos["entry_price"] * 100
-                total_value += (pos["current_price"] * pos["shares"])
+            if current_price > 0:
+                pos["current_price"] = current_price
+                pos["unrealized_pnl"] = (current_price - pos["entry_price"]) * pos["shares"]
+                pos["unrealized_pct"] = (current_price - pos["entry_price"]) / pos["entry_price"] * 100
+                total_value += (current_price * pos["shares"])
             else:
                 total_value += (pos["entry_price"] * pos["shares"])
 
         self.state["equity"] = total_value
-        
         today = str(datetime.now().date())
         if not self.state["equity_curve"] or self.state["equity_curve"][-1]["date"] != today:
             self.state["equity_curve"].append({"date": today, "equity": total_value})
@@ -127,8 +160,45 @@ class PaperTrader:
 
     def process_exits(self, strategies_map):
         exits = []
-        # ... (Logic mostly unchanged, omitting for brevity but ensuring get_quote could be used here too)
-        # For now, standard exit logic on history is safer for consistency
+        for sym, pos in list(self.state["positions"].items()):
+            strat_name = pos["strategy"].split(" + ")[0]
+            strat_config = strategies_map.get(strat_name)
+            if not strat_config: continue
+
+            strat_logic = GenericStrategy(strat_config)
+            df = fetch_single_symbol(sym, days=200, force_fresh=False)
+            if df is None or df.empty: continue
+
+            df = _compute_indicators(df)
+            current_idx = len(df) - 1
+            
+            try:
+                entry_dt = pd.to_datetime(pos["date"]).date()
+                today_dt = datetime.now().date()
+                days_held = (today_dt - entry_dt).days
+                entry_i = max(0, current_idx - days_held)
+            except: entry_i = current_idx
+
+            if strat_logic.exit(df, current_idx, entry_i, pos["entry_price"], pos["stop_price"]):
+                exit_price = float(df.iloc[-1]["close"])
+                if df.iloc[-1]["low"] < pos["stop_price"]: exit_price = pos["stop_price"]
+
+                proceeds = exit_price * pos["shares"]
+                pnl = proceeds - (pos["entry_price"] * pos["shares"])
+                pct = (exit_price - pos["entry_price"]) / pos["entry_price"] * 100
+
+                self.state["cash"] += proceeds
+                self.state["history"].append({
+                    "symbol": sym, "strategy": strat_name, "type": "AUTO_EXIT",
+                    "reason": "Signal/Stop", "entry_date": pos["date"], 
+                    "exit_date": str(datetime.now().date()),
+                    "entry_price": pos["entry_price"], "exit_price": exit_price,
+                    "shares": pos["shares"], "pnl": pnl, "return_pct": pct
+                })
+                del self.state["positions"][sym]
+                exits.append(f"SOLD {sym} at ${exit_price:.2f} ({pnl:.2f})")
+
+        self.save_state()
         return exits
 
     def execute_entries(self, candidates):
