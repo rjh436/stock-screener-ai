@@ -1,4 +1,14 @@
+"""Upgrade paper trader realism with pending MOO orders and super-signal handling."""
 
+import os
+
+
+def upgrade_paper_trader_realism():
+    print("🎮 UPGRADING SIMULATOR (Realism + Super Signals)...")
+
+    path = "simulation/paper_trader.py"
+
+    code = """
 import json
 import os
 import pandas as pd
@@ -41,7 +51,7 @@ class PaperTrader:
         self.__init__(self.start_cash)
 
     def process_pending_orders(self):
-        """Checks if we can fill pending 'Market On Open' orders."""
+        \"\"\"Checks if we can fill pending 'Market On Open' orders.\"\"\"
         filled_log = []
         remaining_orders = []
         
@@ -95,7 +105,7 @@ class PaperTrader:
         return filled_log
 
     def update_valuations(self):
-        """Updates prices AND checks for pending fills."""
+        \"\"\"Updates prices AND checks for pending fills.\"\"\"
         # 1. Try to fill pending orders first
         fill_logs = self.process_pending_orders()
         
@@ -182,10 +192,10 @@ class PaperTrader:
         return exits
 
     def execute_entries(self, candidates):
-        """
+        \"\"\"
         Queues 'Market On Open' orders. 
         Merges duplicates to create SUPER SIGNALS.
-        """
+        \"\"\"
         logs = []
         
         # 1. MERGE DUPLICATES (Super Signal Logic)
@@ -234,3 +244,12 @@ class PaperTrader:
 
         self.save_state()
         return logs
+"""
+    
+    with open(path, "w") as f:
+        f.write(code)
+    print("   ✅ Simulator Upgraded: Next-Day Open Execution + Super Signal Priority.")
+
+
+if __name__ == "__main__":
+    upgrade_paper_trader_realism()
