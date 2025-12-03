@@ -1,4 +1,12 @@
+import os
 
+
+def add_super_signal_mode():
+    print("🔥 ADDING SUPER SIGNAL BACKTEST MODE...")
+    
+    app_path = "app.py"
+    
+    app_code = """
 import streamlit as st
 import pandas as pd
 import sys
@@ -197,10 +205,10 @@ elif mode == "Backtest":
 # --- 3. SUPER SIGNAL LAB ---
 elif mode == "Super Signal Lab":
     st.header("🔥 Super Signal Backtest")
-    st.markdown("""
+    st.markdown(\"\"\"
     **Theory:** Trades that trigger BOTH *Gen 12* (Wealth) and *Gen 9* (Income) simultaneously are highest conviction.
     **Execution:** Managed as *Gen 12* (Let it Run).
-    """)
+    \"\"\")
     
     if st.button("🧪 Test Super Signals (5 Years)"):
         with st.spinner("Calculating Intersection..."):
@@ -313,3 +321,11 @@ elif mode == "Simulator":
         st.dataframe(df_pend, use_container_width=True)
     else:
         st.caption("No orders queued.")
+"""
+    with open(app_path, "w") as f:
+        f.write(app_code)
+    print("   ✅ Dashboard Updated: Added 'Super Signal Lab' mode.")
+
+
+if __name__ == "__main__":
+    add_super_signal_mode()
