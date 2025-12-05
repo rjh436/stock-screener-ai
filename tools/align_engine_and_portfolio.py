@@ -1,4 +1,71 @@
+import json
+import os
 
+
+def align_engine_and_portfolio():
+    print("🔗 ALIGNING ENGINE LOGIC WITH STRATEGY NAMES...")
+
+    # --- 1. RENAME STRATEGIES ---
+    config_path = "config/generated_strategies.json"
+    
+    # We take the EXACT parameters from your upload, just changing the 'name' field
+    portfolio = [
+        {
+            "name": "Apex Wealth (Gen 12)", # Matches Wealth Logic
+            "type": "hybrid",
+            "entry_rules": [
+                {"col": "cci", "op": "<", "val": 0},
+                {"col": "bb_width", "op": ">", "val": 0.1},
+                {"col": "rsi14", "op": "<", "ref": "stoch_k"},
+                {"col": "volume", "op": ">", "ref": "vol_ma20"}
+            ],
+            "exit_rules": [],
+            "stop_loss_atr": 4.4,
+            "time_stop": 71
+        },
+        {
+            "name": "Apex Income (Gen 9)", # Matches Income Logic
+            "type": "hybrid",
+            "entry_rules": [
+                {"col": "close", "op": ">", "val": 0},
+                {"col": "bb_width", "op": ">", "val": 0.17},
+                {"col": "rsi14", "op": "<", "ref": "stoch_k"},
+                {"col": "volume", "op": ">", "ref": "vol_ma20"}
+            ],
+            "exit_rules": [
+                {"type": "profit_target", "val": 1.08}
+            ],
+            "stop_loss_atr": 5.1,
+            "time_stop": 45
+        }
+    ]
+    
+    with open(config_path, "w") as f:
+        json.dump(portfolio, f, indent=4)
+    print("   ✅ Portfolio Renamed: Wealth & Income.")
+
+    # --- 2. UPDATE ENGINE LOGIC ---
+    engine_path = "execution/engine.py"
+    
+    # We read the file and replace the specific condition line
+    with open(engine_path, "r") as f:
+        content = f.read()
+        
+    # Replace 'if "MachineGun" in strategy_name:' with 'if "Income" in strategy_name:'
+    # We also make sure it's robust to "Gen9" just in case
+    
+    old_condition = 'if "MachineGun" in strategy_name:'
+    new_condition = 'if "Income" in strategy_name or "Gen9" in strategy_name:'
+    
+    if old_condition in content:
+        new_content = content.replace(old_condition, new_condition)
+        with open(engine_path, "w") as f:
+            f.write(new_content)
+        print("   ✅ Engine Updated: Trend Bonus now triggers for 'Apex Income'.")
+    else:
+        # Fallback: Write the whole file if the replace fails (safety net)
+        # This ensures we definitely get the correct logic
+        engine_code = """
 import math
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
@@ -173,3 +240,11 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     years = (eq_df.index[-1] - eq_df.index[0]).days / 365.25
     cagr = ((eq_df["Equity"].iloc[-1] / start_cash) ** (1.0 / (years if years > 0 else 1))) - 1.0
     return {"strategy": strategy.name, "final_value": equity, "total_trades": trades, "hit_rate": (len([t for t in trade_pnls if t > 0])/trades*100) if trades else 0, "cagr": cagr, "avg_profit_pct": avg_profit, "equity_curve": eq_df, "trades_list": trades_list, "params": strategy.params}
+"""
+        with open(engine_path, "w") as f:
+            f.write(engine_code)
+        print("   ✅ Engine Updated (Fallback): Trend Bonus enabled for 'Income'/'Gen9'.")
+
+
+if __name__ == "__main__":
+    align_engine_and_portfolio()
