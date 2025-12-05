@@ -1,4 +1,13 @@
+import os
 
+
+def fix_score_clamping():
+    print("🔓 UNCLAMPING ENGINE SCORES (Restoring Deep Value Priority)...")
+
+    engine_path = "execution/engine.py"
+
+    # We rewrite the engine with the KNOWN Golden State logic (Unclamped)
+    engine_code = """
 import math
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
@@ -300,3 +309,11 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     if not results: return pd.DataFrame()
     df = pd.DataFrame([{k:v for k,v in r.items() if k not in ['equity_curve', 'trades_list']} for r in results])
     return df.sort_values("Score", ascending=False)
+"""
+    with open(engine_path, "w") as f:
+        f.write(engine_code)
+    print("   ✅ Engine Unclamped. Granularity restored.")
+
+
+if __name__ == "__main__":
+    fix_score_clamping()
