@@ -1,4 +1,49 @@
+import json
+import os
 
+
+def restore_clamped_golden_state():
+    print("🏆 RESTORING CLAMPED GOLDEN STATE (The Validated Fix)...")
+
+    # --- 1. RENAME PORTFOLIO (To match Engine Logic) ---
+    config_path = "config/generated_strategies.json"
+    portfolio = [
+        {
+            "name": "Apex Wealth (Gen 12)", # Matches 'Wealth' Logic (No Trend Filter)
+            "type": "hybrid",
+            "entry_rules": [
+                {"col": "cci", "op": "<", "val": 0},
+                {"col": "bb_width", "op": ">", "val": 0.1},
+                {"col": "rsi14", "op": "<", "ref": "stoch_k"},
+                {"col": "volume", "op": ">", "ref": "vol_ma20"}
+            ],
+            "exit_rules": [], 
+            "stop_loss_atr": 4.4,
+            "time_stop": 71 
+        },
+        {
+            "name": "Apex Income (Gen 9)", # Matches 'Income' Logic (Trend Filter Active)
+            "type": "hybrid",
+            "entry_rules": [
+                {"col": "close", "op": ">", "val": 0}, 
+                {"col": "bb_width", "op": ">", "val": 0.17},
+                {"col": "rsi14", "op": "<", "ref": "stoch_k"},
+                {"col": "volume", "op": ">", "ref": "vol_ma20"}
+            ],
+            "exit_rules": [
+                {"type": "profit_target", "val": 1.08}
+            ],
+            "stop_loss_atr": 5.1,
+            "time_stop": 45
+        }
+    ]
+    with open(config_path, "w") as f:
+        json.dump(portfolio, f, indent=4)
+    print("   ✅ Portfolio Renamed: 'Apex Wealth' & 'Apex Income'.")
+
+    # --- 2. RESTORE ENGINE (Clamped) ---
+    engine_path = "execution/engine.py"
+    engine_code = """
 import math
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
@@ -299,3 +344,12 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     if not results: return pd.DataFrame()
     df = pd.DataFrame([{k:v for k,v in r.items() if k not in ['equity_curve', 'trades_list']} for r in results])
     return df.sort_values("Score", ascending=False)
+"""
+    
+    with open(engine_path, "w") as f:
+        f.write(engine_code)
+    print("   ✅ Engine Re-Clamped & Logic Synced.")
+
+
+if __name__ == "__main__":
+    restore_clamped_golden_state()
