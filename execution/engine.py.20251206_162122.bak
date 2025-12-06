@@ -88,7 +88,7 @@ def _empty_result(name, start_cash, params=None):
     }
 
 def calculate_backtest_quality_score(row, strategy_name):
-    # --- GOLDEN STATE ENGINE v3 (Audit-Verified) ---
+    # --- GOLDEN STATE ENGINE v2 (Enhanced) ---
     score = 50.0
     
     # 1. Base Oversold (Shared)
@@ -103,7 +103,7 @@ def calculate_backtest_quality_score(row, strategy_name):
         elif atr_pct > 2.0: score += 5
         
     # 3. WEALTH STRATEGY PRIORITY (Deep Value)
-    # Robust Tag Matching
+    # Includes robust tags ("Gen12" and "Gen 12")
     wealth_tags = ["Wealth", "Gen12", "Gen 12", "Sniper"]
     if any(tag in strategy_name for tag in wealth_tags):
         cci = row.get("cci", 0)
@@ -112,8 +112,8 @@ def calculate_backtest_quality_score(row, strategy_name):
             score += 50
     
     # 4. INCOME STRATEGY PRIORITY (Trend Following)
-    # Robust Tag Matching + Downtrend Penalty
-    income_tags = ["Gen9", "Gen 9", "Income", "Evolved"]
+    # Includes robust tags ("Gen9" and "Gen 9") and DOWNTREND PENALTY
+    income_tags = ["Income", "Gen9", "Gen 9", "MachineGun", "Evolved"]
     if any(tag in strategy_name for tag in income_tags):
         if row.get("close", 0) > row.get("sma200", 999999):
             score += 20  # Trend Bonus (Buy Safe Dip)
@@ -125,7 +125,7 @@ def calculate_backtest_quality_score(row, strategy_name):
     if vol_rel > 1.5: score += 10
     
     # CRITICAL: CLAMP TO 100
-    # Confirmed by audit: Prevents "Bankruptcy Bias".
+    # Forces tie-breaking via Volatility/Trend instead of raw RSI depth.
     return max(0.0, min(100.0, score))
 
 def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None):
@@ -223,6 +223,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                 i = df.index.get_loc(current_dt)
                 if i < MIN_BARS + 1: continue
                 
+                # Use i-1 for signal (Close of yesterday)
                 if strategy.entry(df, i - 1):
                     row_prev = df.iloc[i-1]
                     row_curr = df.iloc[i]
@@ -239,7 +240,9 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                     })
             
             if len(positions) < max_positions:
+                # Tie Breaker: Score -> RSI2
                 daily_candidates.sort(key=lambda x: (x["score"], -x["rsi2"]), reverse=True)
+                
                 target_size = equity * pos_fraction
                 for cand in daily_candidates:
                     if len(positions) >= max_positions or cash < 500: break
