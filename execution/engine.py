@@ -254,7 +254,11 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     trades = len(trade_pnls)
     wins = len([t for t in trade_pnls if t > 0])
     hit_rate = (wins/trades*100) if trades > 0 else 0.0
-    avg_profit = (sum(trade_pnls)/start_cash)*100 / (trades or 1)
+    # Average Trade Return (ROI per trade), not account impact
+    if trades_list:
+        avg_profit = sum(t.get("Return%", 0.0) for t in trades_list) / len(trades_list)
+    else:
+        avg_profit = 0.0
     
     eq_df = pd.DataFrame(equity_curve).set_index("Date")
     if eq_df.empty: eq_df = pd.DataFrame({"Equity": [start_cash]}, index=[pd.Timestamp.now()])
