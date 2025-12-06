@@ -88,44 +88,39 @@ def _empty_result(name, start_cash, params=None):
     }
 
 def calculate_backtest_quality_score(row, strategy_name):
-    # --- GOLDEN STATE ENGINE v2 (Enhanced) ---
+    # GOLDEN STATE LOGIC (CLAMPED)
     score = 50.0
     
-    # 1. Base Oversold (Shared)
+    # 1. Sniper Priority (The "Super Signal" Boost)
+    cci = row.get("cci", 0)
+    bb_width = row.get("bb_width", 0)
+    if cci < 0 and bb_width > 0.1:
+        score += 50
+    
+    # 2. Base Oversold (Shared)
     rsi2 = row.get("rsi2", 50)
     score += (100 - rsi2) * 2.0 
     
-    # 2. Velocity Booster (Shared)
+    # 3. Velocity Booster (Moderate)
     close_px = row.get("close", 1.0)
     if close_px > 0:
         atr_pct = (row.get("atr14", 0) / close_px) * 100
         if atr_pct > 3.0: score += 15
         elif atr_pct > 2.0: score += 5
         
-    # 3. WEALTH STRATEGY PRIORITY (Deep Value)
-    # Includes robust tags ("Gen12" and "Gen 12")
-    wealth_tags = ["Wealth", "Gen12", "Gen 12", "Sniper"]
-    if any(tag in strategy_name for tag in wealth_tags):
-        cci = row.get("cci", 0)
-        bb_width = row.get("bb_width", 0)
-        if cci < 0 and bb_width > 0.1:
-            score += 50
-    
-    # 4. INCOME STRATEGY PRIORITY (Trend Following)
-    # Includes robust tags ("Gen9" and "Gen 9") and DOWNTREND PENALTY
-    income_tags = ["Income", "Gen9", "Gen 9", "MachineGun", "Evolved"]
-    if any(tag in strategy_name for tag in income_tags):
+    # 4. TREND BONUS (Targeted)
+    # "Apex Income" (Gen 9) needs trend safety. 
+    # "Apex Wealth" (Gen 12) ignores trend to buy crashes.
+    if "Income" in strategy_name or "MachineGun" in strategy_name:
         if row.get("close", 0) > row.get("sma200", 999999):
-            score += 20  # Trend Bonus (Buy Safe Dip)
-        else:
-            score -= 15  # Downtrend Penalty (Avoid Falling Knife)
+            score += 20
             
     # 5. Volume Support
     vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
     if vol_rel > 1.5: score += 10
     
     # CRITICAL: CLAMP TO 100
-    # Forces tie-breaking via Volatility/Trend instead of raw RSI depth.
+    # This prevents 'Falling Knives' (RSI 1) from dominating 'Quality Dips' (RSI 20)
     return max(0.0, min(100.0, score))
 
 def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None):
@@ -181,7 +176,6 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
             df = enriched[sym]
             i = df.index.get_loc(current_dt)
             pos = positions[sym]
-            
             if i <= pos["entry_i"]: continue
             
             if strategy.exit(df, i, pos["entry_i"], pos["entry_price"], pos["stop_price"]):
@@ -223,7 +217,6 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                 i = df.index.get_loc(current_dt)
                 if i < MIN_BARS + 1: continue
                 
-                # Use i-1 for signal (Close of yesterday)
                 if strategy.entry(df, i - 1):
                     row_prev = df.iloc[i-1]
                     row_curr = df.iloc[i]

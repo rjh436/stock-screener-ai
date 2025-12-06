@@ -1,4 +1,27 @@
+import json
+import os
+import shutil
+from datetime import datetime
 
+
+def restore_apex_system_enhanced():
+    print("💎 INITIATING APEX SYSTEM RESTORATION (Enhanced with AI Audit)...")
+
+    # --- 0. SAFETY BACKUPS ---
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    targets = ["execution/engine.py", "config/generated_strategies.json", "app.py"]
+
+    print("   🛡️ Creating Safety Backups...")
+    for target in targets:
+        if os.path.exists(target):
+            backup_path = f"{target}.{timestamp}.bak"
+            shutil.copy(target, backup_path)
+            print(f"      -> Backed up {target} to {backup_path}")
+
+    # --- 1. THE BRAIN: ENGINE.PY (Enhanced) ---
+    # Fixes: Clamped Score, Robust Tags, Downtrend Penalty
+    engine_path = "execution/engine.py"
+    engine_code = """
 import math
 from ta.trend import EMAIndicator, SMAIndicator, MACD, ADXIndicator, CCIIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator, ROCIndicator
@@ -306,3 +329,71 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     if not results: return pd.DataFrame()
     df = pd.DataFrame([{k:v for k,v in r.items() if k not in ['equity_curve', 'trades_list']} for r in results])
     return df.sort_values("Score", ascending=False)
+"""
+
+    with open(engine_path, "w") as f:
+        f.write(engine_code)
+    print("   ✅ Engine Updated (Enhanced): Robust Tags + Downtrend Penalty.")
+
+    # --- 2. THE PORTFOLIO: GENERATED_STRATEGIES.JSON ---
+    # Renaming to match Engine logic + Human readable
+    config_path = "config/generated_strategies.json"
+    portfolio = [
+        {
+            "name": "Apex Wealth (Gen 12)",
+            "type": "hybrid",
+            "entry_rules": [
+                {"col": "cci", "op": "<", "val": 0},
+                {"col": "bb_width", "op": ">", "val": 0.1},
+                {"col": "rsi14", "op": "<", "ref": "stoch_k"},
+                {"col": "volume", "op": ">", "ref": "vol_ma20"}
+            ],
+            "exit_rules": [], 
+            "stop_loss_atr": 4.4,
+            "time_stop": 71 
+        },
+        {
+            "name": "Apex Income (Gen 9)",
+            "type": "hybrid",
+            "entry_rules": [
+                {"col": "close", "op": ">", "val": 0}, 
+                {"col": "bb_width", "op": ">", "val": 0.17},
+                {"col": "rsi14", "op": "<", "ref": "stoch_k"},
+                {"col": "volume", "op": ">", "ref": "vol_ma20"}
+            ],
+            "exit_rules": [
+                {"type": "profit_target", "val": 1.08}
+            ],
+            "stop_loss_atr": 5.1,
+            "time_stop": 45
+        }
+    ]
+    with open(config_path, "w") as f:
+        json.dump(portfolio, f, indent=4)
+    print("   ✅ Portfolio Updated: 'Apex Wealth' & 'Apex Income'.")
+
+    # --- 3. THE UI: APP.PY ---
+    # Enforcing S&P 1500 Default for Backtest
+    app_path = "app.py"
+    if os.path.exists(app_path):
+        with open(app_path, "r") as f:
+            content = f.read()
+        
+        # Force default index=2 (S&P 1500) for backtest universe
+        if 'bt_universe = st.selectbox("Universe", ["S&P 500", "S&P 100", "S&P 1500"], index=2)' not in content:
+             content = content.replace(
+                 'bt_universe = st.selectbox("Universe", ["S&P 500", "S&P 100", "S&P 1500"], index=0)',
+                 'bt_universe = st.selectbox("Universe", ["S&P 500", "S&P 100", "S&P 1500"], index=2)'
+             ).replace(
+                 'bt_universe = st.selectbox("Universe", ["S&P 500", "S&P 100", "S&P 1500"], index=1)',
+                 'bt_universe = st.selectbox("Universe", ["S&P 500", "S&P 100", "S&P 1500"], index=2)'
+             )
+             with open(app_path, "w") as f:
+                 f.write(content)
+             print("   ✅ Dashboard Updated: Backtest Universe Defaults to S&P 1500.")
+
+    print("\n🚀 PLATINUM RESTORATION COMPLETE. PLEASE RUN BACKTEST.")
+
+
+if __name__ == "__main__":
+    restore_apex_system_enhanced()
