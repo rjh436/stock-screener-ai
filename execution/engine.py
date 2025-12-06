@@ -88,45 +88,43 @@ def _empty_result(name, start_cash, params=None):
     }
 
 def calculate_backtest_quality_score(row, strategy_name):
-    # --- GOLDEN STATE ENGINE v3 (Audit-Verified) ---
-    score = 50.0
-    
-    # 1. Base Oversold (Shared)
+    # --- GOLDEN STATE ENGINE v3.1 (Post-Clamp Scoring) ---
+    # 1) Build a base score from shared signals, clamp to 100 to kill bankruptcy bias.
+    base_score = 50.0
+
     rsi2 = row.get("rsi2", 50)
-    score += (100 - rsi2) * 2.0 
-    
-    # 2. Velocity Booster (Shared)
+    base_score += (100 - rsi2) * 2.0  # Oversold depth
+
     close_px = row.get("close", 1.0)
     if close_px > 0:
         atr_pct = (row.get("atr14", 0) / close_px) * 100
-        if atr_pct > 3.0: score += 15
-        elif atr_pct > 2.0: score += 5
-        
-    # 3. WEALTH STRATEGY PRIORITY (Deep Value)
-    # Robust Tag Matching
+        if atr_pct > 3.0: base_score += 15
+        elif atr_pct > 2.0: base_score += 5
+
+    vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
+    if vol_rel > 1.5: base_score += 10
+
+    clamped_base = max(0.0, min(100.0, base_score))
+
+    # 2) Apply strategy-specific adjustments AFTER the clamp to preserve bonuses/penalties.
+    adjustment = 0.0
+
     wealth_tags = ["Wealth", "Gen12", "Gen 12", "Sniper"]
     if any(tag in strategy_name for tag in wealth_tags):
         cci = row.get("cci", 0)
         bb_width = row.get("bb_width", 0)
         if cci < 0 and bb_width > 0.1:
-            score += 50
-    
-    # 4. INCOME STRATEGY PRIORITY (Trend Following)
-    # Robust Tag Matching + Downtrend Penalty
+            adjustment += 50
+
     income_tags = ["Gen9", "Gen 9", "Income", "Evolved"]
     if any(tag in strategy_name for tag in income_tags):
         if row.get("close", 0) > row.get("sma200", 999999):
-            score += 20  # Trend Bonus (Buy Safe Dip)
+            adjustment += 20  # Trend Bonus (Buy Safe Dip)
         else:
-            score -= 15  # Downtrend Penalty (Avoid Falling Knife)
-            
-    # 5. Volume Support
-    vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
-    if vol_rel > 1.5: score += 10
-    
-    # CRITICAL: CLAMP TO 100
-    # Confirmed by audit: Prevents "Bankruptcy Bias".
-    return max(0.0, min(100.0, score))
+            adjustment -= 15  # Downtrend Penalty (Avoid Falling Knife)
+
+    final_score = clamped_base + adjustment
+    return max(0.0, final_score)
 
 def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None):
     symbols = list(data_dict.keys())
