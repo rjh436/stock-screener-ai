@@ -1,0 +1,11 @@
+GOLDEN STATE CONFIGURATION (Verified)
+Date: 2025-12-07
+Contains:
+- Silent Killer SMA fix (neutral when SMA200 missing)
+- Wealth/Sniper threshold aligned to bb_width > 0.17
+- Parallel backtesting enabled in Backtest tab
+Files:
+- execution/engine.py
+- app.py
+- config/generated_strategies.json
+- optimization/evolution.py
