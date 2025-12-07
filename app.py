@@ -65,7 +65,7 @@ with st.sidebar:
     st.title("🎯 Apex Sniper")
     st.caption("Institutional Grade Algo System")
     st.markdown("---")
-    mode = st.radio("Select Mode", ["Live Screener", "Backtest", "Super Signal Lab", "Simulator"])
+    mode = st.radio("Select Mode", ["Live Screener", "Backtest", "Simulator"])
     
     st.markdown("### 📘 Active Strategies")
     strategies_list = load_strategies()
@@ -169,9 +169,7 @@ elif mode == "Backtest":
         "type": "hybrid",
         "entry_rules": [
             {"col": "cci", "op": "<", "val": 0},
-            {"col": "bb_width", "op": ">", "val": 0.17},
-            {"col": "rsi14", "op": "<", "ref": "stoch_k"},
-            {"col": "volume", "op": ">", "ref": "vol_ma20"}
+            {"col": "bb_width", "op": ">", "val": 0.17}
         ],
         "exit_rules": [],
         "stop_loss_atr": 4.4,
@@ -237,39 +235,7 @@ elif mode == "Backtest":
                      csv_t = pd.DataFrame(res["trades_list"]).to_csv(index=False).encode('utf-8')
                      st.download_button(f"📥 Download Trades", csv_t, f"trades_{name}.csv", "text/csv", key=f"dl_{i}")
 
-# --- 3. SUPER SIGNAL LAB ---
-elif mode == "Super Signal Lab":
-    st.header("🔥 Super Signal Backtest")
-    st.markdown("""
-    **Theory:** Trades that trigger BOTH *Gen 12* (Wealth) and *Gen 9* (Income) simultaneously.
-    **Execution:** Managed as *Gen 12* (Let it Run).
-    """)
-    
-    if "super_signal_res" not in st.session_state: st.session_state.super_signal_res = None
-
-    if st.button("🧪 Test Super Signals"):
-        with st.spinner("Calculating..."):
-            super_conf = {
-                "name": "SUPER_SIGNAL_V1", "type": "hybrid",
-                "entry_rules": [{"col": "cci", "op": "<", "val": 0}, {"col": "bb_width", "op": ">", "val": 0.17}],
-                "exit_rules": [], "stop_loss_atr": 4.4, "time_stop": 71
-            }
-            symbols = get_index_symbols("S&P 500")
-            data = fetch_data_pack(symbols, days=1260 + 200)
-            st.session_state.super_signal_res = run_backtest(GenericStrategy(super_conf), data)
-            
-    if st.session_state.super_signal_res:
-        res = st.session_state.super_signal_res
-        st.success(f"CAGR: {res['cagr']:.1%} | Win Rate: {res['hit_rate']:.1f}% | Avg Profit: {res['avg_profit_pct']:.1f}%")
-        st.line_chart(res["equity_curve"])
-        
-        trades_df = pd.DataFrame(res["trades_list"])
-        if not trades_df.empty:
-            st.dataframe(trades_df)
-            csv = trades_df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Super Signal Trades", csv, "super_signals.csv", "text/csv")
-
-# --- 4. SIMULATOR (PRO MODE) ---
+# --- 3. SIMULATOR (PRO MODE) ---
 elif mode == "Simulator":
     st.header("🎮 Paper Trader (Pro)")
     trader = PaperTrader()
