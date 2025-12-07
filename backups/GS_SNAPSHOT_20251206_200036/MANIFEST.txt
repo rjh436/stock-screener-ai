@@ -1,0 +1,4 @@
+Apex System Snapshot
+Date: $(date +%Y-%m-%d)
+Notes:
+- Current working state for engine, strategies, app UI, and optimizer.
