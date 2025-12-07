@@ -165,7 +165,7 @@ elif mode == "Backtest":
     st.header("📈 Historical Performance Lab")
     # Super Signal is injected at runtime (do not touch config)
     super_signal_conf = {
-        "name": "Super Signal (Intersection)",
+        "name": "Super Signal (Gen 12 Sniper Intersection)",
         "type": "hybrid",
         "entry_rules": [
             {"col": "cci", "op": "<", "val": 0},
