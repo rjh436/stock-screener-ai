@@ -113,15 +113,18 @@ def calculate_backtest_quality_score(row, strategy_name):
     if any(tag in strategy_name for tag in wealth_tags):
         cci = row.get("cci", 0)
         bb_width = row.get("bb_width", 0)
-        if cci < 0 and bb_width > 0.1:
+        if cci < 0 and bb_width > 0.17:
             adjustment += 50
 
     income_tags = ["Gen9", "Gen 9", "Income", "Evolved"]
     if any(tag in strategy_name for tag in income_tags):
-        if row.get("close", 0) > row.get("sma200", 999999):
-            adjustment += 20  # Trend Bonus (Buy Safe Dip)
-        else:
-            adjustment -= 15  # Downtrend Penalty (Avoid Falling Knife)
+        sma200 = row.get("sma200", None)
+        close_px = row.get("close", 0)
+        if sma200 is not None and not pd.isna(sma200):
+            if close_px > sma200:
+                adjustment += 20  # Trend Bonus (Buy Safe Dip)
+            else:
+                adjustment -= 15  # Downtrend Penalty (Avoid Falling Knife)
 
     final_score = clamped_base + adjustment
     return max(0.0, final_score)

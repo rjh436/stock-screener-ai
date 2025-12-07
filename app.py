@@ -1,6 +1,7 @@
 
 import streamlit as st
 import pandas as pd
+import concurrent.futures
 import sys
 import os
 import json
@@ -203,12 +204,22 @@ elif mode == "Backtest":
                 
                 if "backtest_results" not in st.session_state: st.session_state.backtest_results = {}
                 results_map = {}
-                # Append Super Signal at runtime (keeps config untouched)
-                selected_strategies.append(super_signal_conf)
+                # Build run set without mutating sidebar selections
+                run_set = list(selected_strategies)
+                run_set.append(super_signal_conf)
 
-                for s_conf in selected_strategies:
-                    res = run_backtest(GenericStrategy(s_conf), data)
-                    results_map[s_conf["name"]] = res
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                    future_map = {
+                        executor.submit(run_backtest, GenericStrategy(cfg), data): cfg["name"]
+                        for cfg in run_set
+                    }
+                    for future in concurrent.futures.as_completed(future_map):
+                        name = future_map[future]
+                        try:
+                            res = future.result()
+                            results_map[name] = res
+                        except Exception as e:
+                            st.error(f"Backtest failed for {name}: {e}")
                     
                 st.session_state.backtest_results = results_map
             
