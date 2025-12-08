@@ -1,0 +1,70 @@
+[
+    {
+        "name": "Apex Wealth (Gen 12)",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.1
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.19
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 71
+    },
+    {
+        "name": "Apex Income (Gen 9)",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.08
+            }
+        ],
+        "stop_loss_atr": 5.1,
+        "time_stop": 45
+    }
+]
