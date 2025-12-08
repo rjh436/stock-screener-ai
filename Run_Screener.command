@@ -1,5 +1,5 @@
 #!/bin/bash
-# RJH Custom Screener Launcher (Universal: Mac + Linux/Codespaces)
+# RJH Custom Screener Launcher with Pre-Flight Auth + Port Cleanup
 
 set -e
 export PYTHONUTF8=1
@@ -39,6 +39,18 @@ if [ ! -f ".venv/.deps_installed" ]; then
     touch .venv/.deps_installed
 fi
 
-# Launch Streamlit
-echo "🚀 Launching Streamlit App..."
-streamlit run app.py
+# Clear any processes holding port 8182 to avoid startup conflicts
+PORT_PIDS=$(lsof -ti:8182 2>/dev/null || true)
+if [ -n "$PORT_PIDS" ]; then
+    echo "🧹 Clearing port 8182..."
+    echo "$PORT_PIDS" | xargs kill -9 || true
+fi
+
+echo "🛫 Running pre-flight auth check..."
+if python tools/auto_login.py; then
+    echo "🚀 Launching Streamlit App..."
+    streamlit run app.py
+else
+    echo "⚠️ Launch Aborted."
+    read -n 1 -p "Press any key to close..."
+fi
