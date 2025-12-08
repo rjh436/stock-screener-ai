@@ -1,76 +1,80 @@
 {
-  "cash": 383.53999999999724,
-  "equity": 102046.69,
-  "positions": {
-    "NWL": {
-      "shares": 5405,
-      "entry_price": 3.7,
-      "stop_price": 2.6831742857142857,
-      "strategy": "Apex Wealth (Gen 12) + Apex Income (Gen 9)",
-      "date": "2025-12-03",
-      "current_price": 3.75,
-      "unrealized_pnl": 270.24999999999903,
-      "unrealized_pct": 1.3513513513513467
+    "cash": 383.53999999999724,
+    "equity": 100086.97099999999,
+    "positions": {
+        "NWL": {
+            "shares": 5405,
+            "entry_price": 3.7,
+            "stop_price": 2.6831742857142857,
+            "strategy": "Apex Wealth (Gen 12) + Apex Income (Gen 9)",
+            "date": "2025-12-03",
+            "current_price": 3.6302,
+            "unrealized_pnl": -377.26900000000165,
+            "unrealized_pct": -1.8864864864864945
+        },
+        "NX": {
+            "shares": 1498,
+            "entry_price": 13.35,
+            "stop_price": 9.665817142857144,
+            "strategy": "Apex Wealth (Gen 12) + Apex Income (Gen 9)",
+            "date": "2025-12-03",
+            "current_price": 13.57,
+            "unrealized_pnl": 329.56000000000097,
+            "unrealized_pct": 1.647940074906372
+        },
+        "FIX": {
+            "shares": 21,
+            "entry_price": 935.0,
+            "stop_price": 713.8252828571428,
+            "strategy": "Apex Wealth (Gen 12)",
+            "date": "2025-12-03",
+            "current_price": 991.99,
+            "unrealized_pnl": 1196.7900000000002,
+            "unrealized_pct": 6.095187165775402
+        },
+        "CSGP": {
+            "shares": 293,
+            "entry_price": 68.22,
+            "stop_price": 60.00603142857141,
+            "strategy": "Apex Wealth (Gen 12)",
+            "date": "2025-12-03",
+            "current_price": 65.57,
+            "unrealized_pnl": -776.4500000000016,
+            "unrealized_pct": -3.88449135150983
+        },
+        "NAVI": {
+            "shares": 1587,
+            "entry_price": 12.6,
+            "stop_price": 10.286002857142856,
+            "strategy": "Apex Wealth (Gen 12)",
+            "date": "2025-12-03",
+            "current_price": 12.42,
+            "unrealized_pnl": -285.65999999999957,
+            "unrealized_pct": -1.4285714285714262
+        }
     },
-    "NX": {
-      "shares": 1498,
-      "entry_price": 13.35,
-      "stop_price": 9.665817142857144,
-      "strategy": "Apex Wealth (Gen 12) + Apex Income (Gen 9)",
-      "date": "2025-12-03",
-      "current_price": 13.83,
-      "unrealized_pnl": 719.0400000000006,
-      "unrealized_pct": 3.595505617977531
-    },
-    "FIX": {
-      "shares": 21,
-      "entry_price": 935.0,
-      "stop_price": 713.8252828571428,
-      "strategy": "Apex Wealth (Gen 12)",
-      "date": "2025-12-03",
-      "current_price": 1001.42,
-      "unrealized_pnl": 1394.8199999999993,
-      "unrealized_pct": 7.103743315508017
-    },
-    "CSGP": {
-      "shares": 293,
-      "entry_price": 68.22,
-      "stop_price": 60.00603142857141,
-      "strategy": "Apex Wealth (Gen 12)",
-      "date": "2025-12-03",
-      "current_price": 68.26,
-      "unrealized_pnl": 11.720000000001832,
-      "unrealized_pct": 0.05863383172091213
-    },
-    "NAVI": {
-      "shares": 1587,
-      "entry_price": 12.6,
-      "stop_price": 10.286002857142856,
-      "strategy": "Apex Wealth (Gen 12)",
-      "date": "2025-12-03",
-      "current_price": 12.38,
-      "unrealized_pnl": -349.13999999999817,
-      "unrealized_pct": -1.7460317460317372
-    }
-  },
-  "pending_orders": [],
-  "history": [],
-  "equity_curve": [
-    {
-      "date": "2025-12-02",
-      "equity": 100000.0
-    },
-    {
-      "date": "2025-12-03",
-      "equity": 101545.45
-    },
-    {
-      "date": "2025-12-04",
-      "equity": 101848.96
-    },
-    {
-      "date": "2025-12-05",
-      "equity": 102046.69
-    }
-  ]
+    "pending_orders": [],
+    "history": [],
+    "equity_curve": [
+        {
+            "date": "2025-12-02",
+            "equity": 100000.0
+        },
+        {
+            "date": "2025-12-03",
+            "equity": 101545.45
+        },
+        {
+            "date": "2025-12-04",
+            "equity": 101848.96
+        },
+        {
+            "date": "2025-12-05",
+            "equity": 102046.69
+        },
+        {
+            "date": "2025-12-08",
+            "equity": 100086.97099999999
+        }
+    ]
 }
