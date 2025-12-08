@@ -45,6 +45,12 @@ class LabEvolution(EvolutionEngine):
         exit_rules = mutant.get("exit_rules") or []
         mutant["exit_rules"] = exit_rules
 
+        scoring_weights = copy.deepcopy(mutant.get("scoring_weights") or {})
+        scoring_weights["sniper_bonus"] = round(random.uniform(40, 80), 2)
+        scoring_weights["rsi_factor"] = round(random.uniform(1.5, 3.5), 2)
+        scoring_weights["trend_bonus"] = round(random.uniform(15, 35), 2)
+        mutant["scoring_weights"] = scoring_weights
+
         roll = random.random()
         if roll < 0.4:
             # Profit target between 15%-50%
@@ -72,7 +78,16 @@ def run_generation(engine: LabEvolution, data_map, global_ctx, population):
     results = []
     with ThreadPoolExecutor(max_workers=8) as ex:
         futures = {
-            ex.submit(run_backtest, GenericStrategy(g), data_map, None, 100000.0, None, global_ctx): g
+            ex.submit(
+                run_backtest,
+                GenericStrategy(g),
+                data_map,
+                None,
+                100000.0,
+                None,
+                global_ctx,
+                g.get("scoring_weights"),
+            ): g
             for g in population
         }
         for fut in as_completed(futures):

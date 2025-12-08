@@ -10,6 +10,16 @@ import pandas as pd
 import concurrent.futures
 from strategies.base import BaseStrategy
 
+DEFAULT_SCORING_WEIGHTS = {
+    "rsi_factor": 2.0,
+    "atr_high_bonus": 15.0,
+    "atr_med_bonus": 5.0,
+    "vol_bonus": 10.0,
+    "sniper_bonus": 50.0,
+    "trend_bonus": 20.0,
+    "trend_penalty": -15.0
+}
+
 MIN_BARS = 200
 
 def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.DataFrame:
@@ -87,22 +97,23 @@ def _empty_result(name, start_cash, params=None):
         "params": params or {}, "trades_list": [], "equity_curve": []
     }
 
-def calculate_backtest_quality_score(row, strategy_name):
+def calculate_backtest_quality_score(row, strategy_name, weights=None):
+    w = DEFAULT_SCORING_WEIGHTS if weights is None else {**DEFAULT_SCORING_WEIGHTS, **weights}
     # --- GOLDEN STATE ENGINE v3.1 (Post-Clamp Scoring) ---
     # 1) Build a base score from shared signals, clamp to 100 to kill bankruptcy bias.
     base_score = 50.0
 
     rsi2 = row.get("rsi2", 50)
-    base_score += (100 - rsi2) * 2.0  # Oversold depth
+    base_score += (100 - rsi2) * w["rsi_factor"]  # Oversold depth
 
     close_px = row.get("close", 1.0)
     if close_px > 0:
         atr_pct = (row.get("atr14", 0) / close_px) * 100
-        if atr_pct > 3.0: base_score += 15
-        elif atr_pct > 2.0: base_score += 5
+        if atr_pct > 3.0: base_score += w["atr_high_bonus"]
+        elif atr_pct > 2.0: base_score += w["atr_med_bonus"]
 
     vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
-    if vol_rel > 1.5: base_score += 10
+    if vol_rel > 1.5: base_score += w["vol_bonus"]
 
     clamped_base = max(0.0, min(100.0, base_score))
 
@@ -114,7 +125,7 @@ def calculate_backtest_quality_score(row, strategy_name):
         cci = row.get("cci", 0)
         bb_width = row.get("bb_width", 0)
         if cci < 0 and bb_width > 0.17:
-            adjustment += 50
+            adjustment += w["sniper_bonus"]
 
     income_tags = ["Gen9", "Gen 9", "Income", "Evolved"]
     if any(tag in strategy_name for tag in income_tags):
@@ -122,14 +133,14 @@ def calculate_backtest_quality_score(row, strategy_name):
         close_px = row.get("close", 0)
         if sma200 is not None and not pd.isna(sma200):
             if close_px > sma200:
-                adjustment += 20  # Trend Bonus (Buy Safe Dip)
+                adjustment += w["trend_bonus"]  # Trend Bonus (Buy Safe Dip)
             else:
-                adjustment -= 15  # Downtrend Penalty (Avoid Falling Knife)
+                adjustment += w["trend_penalty"]  # Downtrend Penalty (Avoid Falling Knife)
 
     final_score = clamped_base + adjustment
     return max(0.0, final_score)
 
-def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None):
+def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None, scoring_weights=None):
     symbols = list(data_dict.keys())
     if symbol_universe: symbols = [s for s in symbols if s in symbol_universe]
     
@@ -228,7 +239,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                     row_prev = df.iloc[i-1]
                     row_curr = df.iloc[i]
                     
-                    score = calculate_backtest_quality_score(row_prev, strategy.name)
+                    score = calculate_backtest_quality_score(row_prev, strategy.name, weights=scoring_weights)
                     open_px = float(row_curr["open"])
                     
                     stop_dist = float(row_prev["close"]) - strategy.entry(df, i-1)["stop_price"]
