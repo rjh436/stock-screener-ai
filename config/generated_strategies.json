@@ -24,7 +24,12 @@
                 "ref": "vol_ma20"
             }
         ],
-        "exit_rules": [],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.19
+            }
+        ],
         "stop_loss_atr": 4.4,
         "time_stop": 71
     },
