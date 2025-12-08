@@ -1,0 +1,377 @@
+[
+    {
+        "name": "Apex Wealth (Gen 12)_lab",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.1
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.19
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 71
+    },
+    {
+        "name": "Apex Wealth (Gen 12)_lab_lab",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.1
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.19
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 71
+    },
+    {
+        "name": "Apex Wealth (Gen 12)_lab",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.1
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.19
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 71
+    },
+    {
+        "name": "Apex Wealth (Gen 12)_lab_lab",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.1
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.19
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 71
+    },
+    {
+        "name": "Apex Wealth (Gen 12)_lab_lab",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.1
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.19
+            },
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 90
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 71
+    },
+    {
+        "name": "Apex Wealth (Gen 12)_lab_lab",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.1
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.19
+            },
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 90
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 71
+    },
+    {
+        "name": "Apex Wealth (Gen 12)_lab_lab",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.1
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.19
+            },
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 90
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 71
+    },
+    {
+        "name": "Apex Wealth (Gen 12)_lab_lab_lab",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.1
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.19
+            },
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 90
+            },
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 90
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 71
+    },
+    {
+        "name": "Apex Wealth (Gen 12)_lab_lab",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.1
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.19
+            },
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 90
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 71
+    },
+    {
+        "name": "Apex Wealth (Gen 12)_lab_lab",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.1
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.19
+            },
+            {
+                "col": "rsi14",
+                "op": ">",
+                "val": 90
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 71
+    }
+]
