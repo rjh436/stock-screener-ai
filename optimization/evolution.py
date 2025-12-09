@@ -33,8 +33,73 @@ class EvolutionEngine:
         elif "cci" in col: val = random.choice([-100, 0, 100])
         return {"col": col, "op": op, "val": val}
 
+    def _random_scoring_weights(self) -> Dict:
+        """Generate scoring weights within safe, proven ranges."""
+        return {
+            "sniper_bonus": round(random.uniform(30.0, 80.0), 2),
+            "rsi_factor": round(random.uniform(1.5, 3.5), 2),
+            "trend_bonus": round(random.uniform(10.0, 40.0), 2),
+            "vol_bonus": round(random.uniform(5.0, 20.0), 2),
+            "atr_high_bonus": round(random.uniform(10.0, 25.0), 2),
+            # Keep supportive weights near proven baselines
+            "atr_med_bonus": round(random.uniform(2.0, 8.0), 2),
+            "trend_penalty": round(random.uniform(-25.0, -5.0), 2),
+        }
+
+    def _create_random_strategy(self, name_prefix="Random") -> Dict:
+        """Creates a random but viable strategy with constrained scoring weights."""
+        genome = {
+            "name": f"{name_prefix}_{random.randint(1000,9999)}",
+            "type": "random",
+            "entry_rules": [self._random_rule() for _ in range(random.randint(2, 4))],
+            "exit_rules": [{"type": "profit_target", "val": round(random.uniform(1.05, 1.25), 2)}],
+            "stop_loss_atr": round(random.uniform(3.0, 7.0), 1),
+            "time_stop": random.choice([30, 45, 60, 75, 90]),
+            "scoring_weights": self._random_scoring_weights(),
+        }
+        return genome
+
+    def create_initial_population(self, base_name: str = "Strategy") -> List[Dict]:
+        """Seed population with Golden weights, neighborhood perturbations, then exploration."""
+        pop: List[Dict] = []
+
+        golden_weights = {
+            "rsi_factor": 2.0,
+            "atr_high_bonus": 15.0,
+            "atr_med_bonus": 5.0,
+            "vol_bonus": 10.0,
+            "sniper_bonus": 50.0,
+            "trend_bonus": 20.0,
+            "trend_penalty": -15.0,
+        }
+
+        # Tier 1: Golden Seed
+        golden_seed = self._create_random_strategy(base_name)
+        golden_seed["name"] = f"{base_name}_GOLDEN"
+        golden_seed["scoring_weights"] = copy.deepcopy(golden_weights)
+        pop.append(golden_seed)
+
+        # Tier 2: Golden Neighborhood (20% of population)
+        neighborhood_count = max(1, int(self.population_size * 0.2))
+        for i in range(neighborhood_count):
+            neighbor = copy.deepcopy(golden_seed)
+            neighbor["name"] = f"{base_name}_NEIGHBOR_{i+1}"
+            perturbed = {}
+            for k, v in golden_weights.items():
+                perturbed[k] = round(v * random.uniform(0.8, 1.2), 2)
+            neighbor["scoring_weights"] = perturbed
+            pop.append(neighbor)
+
+        # Tier 3: Pure Exploration (remaining population)
+        while len(pop) < self.population_size:
+            pop.append(self._create_random_strategy(f"{base_name}_EXPLORE"))
+
+        self.population = pop
+        return pop
+
     def generate_initial_population(self):
-        pass
+        # Backward compatibility for callers expecting the old name
+        return self.create_initial_population()
 
     def mutate(self, genome: Dict) -> Dict:
         mutant = copy.deepcopy(genome)
