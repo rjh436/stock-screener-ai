@@ -36,40 +36,15 @@ def calculate_lab_fitness(result: dict) -> float:
 
 class LabEvolution(EvolutionEngine):
     def mutate(self, genome: dict) -> dict:
-        targetable = any(tag in genome.get("name", "") for tag in ["Super Signal", "Gen 12", "Gen12"])
-        if not targetable:
-            return super().mutate(genome)
-
         mutant = copy.deepcopy(genome)
         mutant["name"] = mutant.get("name", "Strategy") + "_lab"
-        exit_rules = mutant.get("exit_rules") or []
-        mutant["exit_rules"] = exit_rules
-
         scoring_weights = copy.deepcopy(mutant.get("scoring_weights") or {})
-        scoring_weights["sniper_bonus"] = round(random.uniform(40, 80), 2)
+        scoring_weights["sniper_bonus"] = round(random.uniform(30.0, 80.0), 2)
         scoring_weights["rsi_factor"] = round(random.uniform(1.5, 3.5), 2)
-        scoring_weights["trend_bonus"] = round(random.uniform(15, 35), 2)
+        scoring_weights["trend_bonus"] = round(random.uniform(10.0, 40.0), 2)
+        scoring_weights["vol_bonus"] = round(random.uniform(5.0, 20.0), 2)
+        scoring_weights["atr_high_bonus"] = round(random.uniform(10.0, 25.0), 2)
         mutant["scoring_weights"] = scoring_weights
-
-        roll = random.random()
-        if roll < 0.4:
-            # Profit target between 15%-50%
-            pt = round(random.uniform(1.15, 1.50), 2)
-            replaced = False
-            for rule in exit_rules:
-                if rule.get("type") == "profit_target":
-                    rule["val"] = pt
-                    replaced = True
-                    break
-            if not replaced:
-                exit_rules.append({"type": "profit_target", "val": pt})
-        elif roll < 0.7:
-            # RSI exit for overheated moves
-            rsi_cut = random.choice([80, 85, 90])
-            exit_rules.append({"col": "rsi14", "op": ">", "val": rsi_cut})
-        else:
-            # Tighten stop loss
-            mutant["stop_loss_atr"] = round(random.uniform(3.0, 4.4), 1)
 
         return mutant
 
