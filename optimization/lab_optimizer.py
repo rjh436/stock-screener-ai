@@ -99,7 +99,9 @@ def run_lab_optimization(generations=3):
         print(f"   Baseline CAGR: {baseline_stats.get('cagr',0):.2%} | DD: {baseline_stats.get('max_drawdown_pct',0):.1f}%")
 
     engine = LabEvolution()
-    engine.population = base_population
+    # Explicitly call the generator to inject Golden Seed + Neighborhood
+    print("🌱 Generating initial population with Golden Seed...")
+    engine.population = engine.generate_initial_population(base_strategies=base_population)
 
     ranked = []
     for g in range(generations):

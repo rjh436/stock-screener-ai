@@ -59,8 +59,8 @@ class EvolutionEngine:
         }
         return genome
 
-    def create_initial_population(self, base_name: str = "Strategy") -> List[Dict]:
-        """Seed population with Golden weights, neighborhood perturbations, then exploration."""
+    def create_initial_population(self, base_name: str = "Strategy", base_strategies: List[Dict] = None) -> List[Dict]:
+        """Seed population with Golden weights, neighborhood perturbations, then exploration (optionally seeding provided strategies)."""
         pop: List[Dict] = []
 
         golden_weights = {
@@ -90,16 +90,25 @@ class EvolutionEngine:
             neighbor["scoring_weights"] = perturbed
             pop.append(neighbor)
 
-        # Tier 3: Pure Exploration (remaining population)
+        # Tier 3a: Include provided base strategies (if any) to preserve known performers
+        if base_strategies:
+            for idx, strat in enumerate(base_strategies):
+                if len(pop) >= self.population_size:
+                    break
+                clone = copy.deepcopy(strat)
+                clone["name"] = f"{base_name}_BASE_{idx+1}"
+                pop.append(clone)
+
+        # Tier 3b: Pure Exploration (fill remaining slots)
         while len(pop) < self.population_size:
             pop.append(self._create_random_strategy(f"{base_name}_EXPLORE"))
 
         self.population = pop
         return pop
 
-    def generate_initial_population(self):
+    def generate_initial_population(self, base_strategies: List[Dict] = None, base_name: str = "Strategy"):
         # Backward compatibility for callers expecting the old name
-        return self.create_initial_population()
+        return self.create_initial_population(base_name=base_name, base_strategies=base_strategies)
 
     def mutate(self, genome: Dict) -> Dict:
         mutant = copy.deepcopy(genome)
