@@ -14,14 +14,14 @@ from data.schwab_client import sd
 from data.loader import fetch_data_pack
 from data.indices import get_index_symbols
 from execution.engine import run_backtest, _compute_indicators
-from strategies.generic import GenericStrategy
 from simulation.paper_trader import PaperTrader
+from strategies.strategy_loader import load_strategies
 
 CONFIG_PATH = "config/generated_strategies.json"
 st.set_page_config(page_title="Apex Sniper AI", layout="wide", page_icon="🎯")
 
 # --- HELPERS ---
-def load_strategies():
+def load_strategy_configs():
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "r") as f:
             return json.load(f)
@@ -69,7 +69,7 @@ with st.sidebar:
     mode = st.radio("Select Mode", ["Live Screener", "Backtest", "Simulator"])
     
     st.markdown("### 📘 Active Strategies")
-    strategies_list = load_strategies()
+    strategies_list = load_strategy_configs()
     strategies_map = {s['name']: s for s in strategies_list}
     
     selected_strategies = []
@@ -122,14 +122,15 @@ if mode == "Live Screener":
             if not selected_strategies:
                 st.warning("No strategies selected in sidebar!")
             else:
-                for s_conf in selected_strategies:
-                    strat = GenericStrategy(s_conf)
+                strat_objects = load_strategies(selected_strategies)
+                for strat in strat_objects:
+                    s_conf = strat.params
                     for sym, df in data.items():
                         if df is None or df.empty: continue
                         try:
                             df_ind = _compute_indicators(df.copy())
                             if df_ind.empty: continue
-                            if strat.entry(df_ind, len(df_ind)-1):
+                            if strat.entry(df_ind, len(df_ind) - 1):
                                 row = df_ind.iloc[-1]
                                 atr = row.get("atr14", row["close"]*0.02)
                                 stop_mult = float(s_conf.get("stop_loss_atr", 3.0))
@@ -207,11 +208,12 @@ elif mode == "Backtest":
                 # Build run set without mutating sidebar selections
                 run_set = list(selected_strategies)
                 run_set.append(super_signal_conf)
+                run_strategies = load_strategies(run_set)
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                     future_map = {
-                        executor.submit(run_backtest, GenericStrategy(cfg), data): cfg["name"]
-                        for cfg in run_set
+                        executor.submit(run_backtest, strat, data): strat.name
+                        for strat in run_strategies
                     }
                     for future in concurrent.futures.as_completed(future_map):
                         name = future_map[future]

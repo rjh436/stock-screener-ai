@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import concurrent.futures
 from strategies.base import BaseStrategy
+from strategies.strategy_loader import load_strategies
 
 DEFAULT_SCORING_WEIGHTS = {
     # --- STRATEGY LAB WINNER (Robust Version) ---
@@ -380,8 +381,6 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
 
 def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, use_parallel=True, max_workers=8, global_data=None):
     import json, os, concurrent.futures
-    from strategies.generic import GenericStrategy
-    from strategies.apex_wealth import ApexWealthStrategy
 
     gen_strategies = {}
     try:
@@ -389,15 +388,7 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
             for g in json.load(f): gen_strategies[g["name"]] = g
     except: pass
 
-    strategies = []
-    for name in strategy_names:
-        if name in gen_strategies:
-            strat_config = gen_strategies[name]
-            if strat_config.get("type") == "wealth":
-                strategies.append(ApexWealthStrategy(strat_config))
-                print(f"✅ Loaded WEALTH Strategy: {strat_config['name']}")
-            else:
-                strategies.append(GenericStrategy(strat_config))
+    strategies = load_strategies([gen_strategies[name] for name in strategy_names if name in gen_strategies])
 
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
