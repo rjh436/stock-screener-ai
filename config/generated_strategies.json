@@ -1,7 +1,7 @@
 [
     {
         "name": "Apex Wealth (Gen 12)",
-        "type": "hybrid",
+        "type": "wealth",
         "entry_rules": [
             {
                 "col": "cci",
