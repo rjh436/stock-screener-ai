@@ -25,6 +25,16 @@ DEFAULT_SCORING_WEIGHTS = {
 
 MIN_BARS = 200
 
+def get_sector(symbol: str) -> str:
+    """
+    Placeholder sector mapper. Extend with real classifications when available.
+    """
+    tech = {"AAPL", "MSFT", "NVDA", "GOOG", "GOOGL", "META", "AMZN", "TSLA", "AVGO", "AMD"}
+    symbol_upper = (symbol or "").upper()
+    if symbol_upper in tech:
+        return "Technology"
+    return "Unknown"
+
 def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.DataFrame:
     try:
         df = df.sort_index().copy()
@@ -269,10 +279,30 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                     })
             
             if len(positions) < max_positions:
+                # Calculate current sector allocation once per day
+                sector_exposure = {}
+                for s, p in positions.items():
+                    sec = get_sector(s)
+                    if s in enriched and current_dt in enriched[s].index:
+                        val = p['shares'] * enriched[s].loc[current_dt]['close']
+                    else:
+                        val = p['shares'] * p['entry_price']
+                    sector_exposure[sec] = sector_exposure.get(sec, 0.0) + val
+
+                total_equity = cash + sum(sector_exposure.values())
+
                 daily_candidates.sort(key=lambda x: (x["score"], -x["rsi2"]), reverse=True)
                 target_size = equity * pos_fraction
                 for cand in daily_candidates:
                     if len(positions) >= max_positions or cash < 500: break
+
+                    cand_sec = get_sector(cand['sym'])
+                    curr_sec_val = sector_exposure.get(cand_sec, 0.0)
+                    trade_size = total_equity * pos_fraction
+                    proj_sec_pct = (curr_sec_val + trade_size) / total_equity if total_equity > 0 else 1.0
+                    if proj_sec_pct > 0.40:
+                        continue  # SKIP: Sector full
+
                     shares = int(target_size / cand["px"])
                     cost = shares * cand["px"]
                     if shares > 0 and cash >= cost:
@@ -282,6 +312,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                             "stop_price": cand["stop"], 
                             "entry_i": enriched[cand["sym"]].index.get_loc(current_dt)
                         }
+                        sector_exposure[cand_sec] = sector_exposure.get(cand_sec, 0.0) + cost
 
     trades = len(trade_pnls)
     wins = len([t for t in trade_pnls if t > 0])

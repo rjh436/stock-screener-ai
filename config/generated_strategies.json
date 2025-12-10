@@ -66,5 +66,12 @@
         ],
         "stop_loss_atr": 5.1,
         "time_stop": 45
+    },
+    {
+        "name": "Apex Trend Elite",
+        "entry_rules": [],
+        "exit_rules": [],
+        "time_stop": 45,
+        "stop_loss_atr": 4.5
     }
 ]
