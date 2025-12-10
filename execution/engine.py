@@ -153,7 +153,32 @@ def calculate_backtest_quality_score(row, strategy_name, weights=None):
     final_score = clamped_base + adjustment
     return max(0.0, final_score)
 
-def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None, scoring_weights=None):
+def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None, scoring_weights=None):
+    import json, os
+
+    # Backward compatibility: allow single strategy input
+    if not isinstance(strategies, (list, tuple)):
+        strategies = [strategies]
+    strategies = [s for s in strategies if s is not None]
+    if not strategies:
+        return _empty_result("NoStrategy", start_cash, {})
+
+    strategy_label = strategies[0].name if len(strategies) == 1 else "MultiStrategy"
+
+    # Sector map loader
+    sector_map = {}
+    try:
+        with open(os.path.abspath(os.path.join(os.path.dirname(__file__), '../config/sectors.json')), "r") as f:
+            sector_map = json.load(f)
+    except:
+        sector_map = {}
+
+    def resolve_sector(sym: str) -> str:
+        sym_up = (sym or "").upper()
+        if sym_up in sector_map:
+            return sector_map[sym_up]
+        return get_sector(sym_up)
+
     symbols = list(data_dict.keys())
     if symbol_universe: symbols = [s for s in symbols if s in symbol_universe]
     
@@ -177,12 +202,12 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
             if len(df) > MIN_BARS: enriched[sym] = df
         except: continue
 
-    if not enriched: return _empty_result(strategy.name, start_cash, strategy.params)
+    if not enriched: return _empty_result(strategy_label, start_cash, strategies[0].params if strategies else {})
 
     all_dates = sorted(set().union(*[df.index for df in enriched.values()]))
     min_date = pd.Timestamp.now() - pd.Timedelta(days=365*20)
     all_dates = [d for d in all_dates if d >= min_date]
-    if not all_dates: return _empty_result(strategy.name, start_cash, strategy.params)
+    if not all_dates: return _empty_result(strategy_label, start_cash, strategies[0].params if strategies else {})
 
     cash = start_cash
     positions = {}
@@ -190,143 +215,134 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     trade_pnls = []
     trades_list = []
     
-    days_invested = 0
+    pos_fraction = 0.20
     max_positions = 5
-    raw_pos = strategy.params.get('pos_size', strategy.params.get('position_size', strategy.params.get('pos_fraction', 0.20)))
-    try: pos_fraction = float(raw_pos)
-    except: pos_fraction = 0.20
-    pos_fraction = max(0.01, min(pos_fraction, 1.0))
 
     for current_dt in all_dates:
-        if len(positions) > 0: days_invested += 1
-
-        # 1. Exits
-        for sym in list(positions.keys()):
-            if sym not in enriched or current_dt not in enriched[sym].index: continue
-            df = enriched[sym]
-            i = df.index.get_loc(current_dt)
-            pos = positions[sym]
-            
-            if i <= pos["entry_i"]: continue
-            
-            active_strat = pos.get("strategy_obj", strategy)
-            if active_strat and active_strat.exit(df, i, pos["entry_i"], pos["entry_price"], pos["stop_price"]):
-                row = df.iloc[i]
-                exit_px = pos["stop_price"] if row["low"] < pos["stop_price"] else row["close"]
-                if row["low"] < pos["stop_price"] and row["open"] < pos["stop_price"]: exit_px = row["open"]
-                if exit_px < pos["entry_price"] * 0.5: exit_px = pos["entry_price"] * 0.5 
-                
-                pnl = (exit_px - pos["entry_price"]) * pos["shares"]
-                pct = ((exit_px - pos["entry_price"]) / pos["entry_price"]) * 100
-                
-                cash += pos["shares"] * exit_px
-                trade_pnls.append(pnl)
-                
-                trades_list.append({
-                    "Symbol": sym, 
-                    "Entry Date": str(df.index[pos["entry_i"]].date()), 
-                    "Exit Date": str(current_dt.date()), 
-                    "Entry": pos["entry_price"], 
-                    "Exit": exit_px, 
-                    "PnL": pnl, 
-                    "Return%": pct
-                })
-                del positions[sym]
-
-        # 2. Equity
-        equity = cash
+        # Step A: Update state
+        sector_exposure = {}
         for sym, pos in positions.items():
             if sym in enriched and current_dt in enriched[sym].index:
-                equity += pos["shares"] * enriched[sym].loc[current_dt]["close"]
-            else: equity += pos["shares"] * pos["entry_price"]
-        equity_curve.append({"Date": current_dt, "Equity": equity})
+                val = pos["shares"] * enriched[sym].loc[current_dt]["close"]
+            else:
+                val = pos["shares"] * pos["entry_price"]
+            sec = resolve_sector(sym)
+            sector_exposure[sec] = sector_exposure.get(sec, 0.0) + val
 
-        # 3. Entries
-        if cash > 0:
-            daily_candidates = []
+        total_equity = cash + sum(sector_exposure.values())
+
+        # Step B: Collect candidates
+        daily_candidates = []
+        for strat in strategies:
             for sym, df in enriched.items():
                 if current_dt not in df.index or sym in positions: continue
                 i = df.index.get_loc(current_dt)
                 if i < MIN_BARS + 1: continue
                 
-                entry_signal = strategy.entry(df, i - 1)
-                if entry_signal:
-                    row_prev = df.iloc[i-1]
-                    row_curr = df.iloc[i]
-                    
-                    score = calculate_backtest_quality_score(row_prev, strategy.name, weights=scoring_weights)
-                    open_px = float(row_curr["open"])
+                entry_signal = strat.entry(df, i - 1)
+                if not entry_signal:
+                    continue
 
-                    # --- INSTITUTIONAL STOP LOSS LOGIC ---
-                    # 1. Get the signal's intended stop structure
-                    #    (already captured above as entry_signal)
-                    
-                    # 2. Calculate volatility (ATR) from Signal Day vs Entry Day
-                    # Use MAX to protect against volatility expansion (e.g., earnings gap)
-                    signal_atr = float(row_prev.get("atr14", 0))
-                    current_atr = float(row_curr.get("atr14", signal_atr))
-                    effective_atr = max(signal_atr, current_atr)
-                    
-                    # 3. Calculate Stop Width based on strategy config
-                    stop_atr_mult = float(strategy.params.get("stop_loss_atr", 3.0))
-                    stop_width = effective_atr * stop_atr_mult
-                    
-                    # 4. Apply width to ACTUAL Entry Price (Open)
-                    real_stop = open_px - stop_width
-                    
-                    daily_candidates.append({
-                        "sym": sym,
-                        "px": open_px,
-                        "stop": real_stop,
-                        "score": score,
-                        "rsi2": float(row_prev.get("rsi2", 50)),
-                        "strategy_name": strategy.name,
-                        "strategy_obj": strategy
-                    })
-            
-            if len(positions) < max_positions:
-                # Calculate current sector allocation once per day
-                sector_exposure = {}
-                for s, p in positions.items():
-                    sec = get_sector(s)
-                    if s in enriched and current_dt in enriched[s].index:
-                        val = p['shares'] * enriched[s].loc[current_dt]['close']
-                    else:
-                        val = p['shares'] * p['entry_price']
-                    sector_exposure[sec] = sector_exposure.get(sec, 0.0) + val
+                row_prev = df.iloc[i-1]
+                row_curr = df.iloc[i]
+                score = calculate_backtest_quality_score(row_prev, strat.name, weights=scoring_weights)
+                open_px = float(row_curr["open"])
 
-                total_equity = cash + sum(sector_exposure.values())
+                signal_atr = float(row_prev.get("atr14", 0))
+                current_atr = float(row_curr.get("atr14", signal_atr))
+                effective_atr = max(signal_atr, current_atr)
+                stop_atr_mult = float(getattr(strat, "params", {}).get("stop_loss_atr", 3.0))
+                stop_width = effective_atr * stop_atr_mult
+                real_stop = open_px - stop_width
 
-                daily_candidates.sort(key=lambda x: x["score"], reverse=True)
-                target_size = equity * pos_fraction
-                for cand in daily_candidates:
-                    if len(positions) >= max_positions or cash < 500: break
+                daily_candidates.append({
+                    "sym": sym,
+                    "px": open_px,
+                    "stop": real_stop,
+                    "score": score,
+                    "strategy_name": strat.name,
+                    "strategy_obj": strat
+                })
 
-                    cand_sec = get_sector(cand['sym'])
-                    curr_sec_val = sector_exposure.get(cand_sec, 0.0)
-                    trade_size = total_equity * pos_fraction
-                    proj_sec_pct = (curr_sec_val + trade_size) / total_equity if total_equity > 0 else 1.0
-                    if proj_sec_pct > 0.60:
-                        continue  # SKIP: Sector full
+        # Step C: Sort & Execute (Governor)
+        daily_candidates.sort(key=lambda x: x["score"], reverse=True)
+        for cand in daily_candidates:
+            if cand["sym"] in positions:
+                continue
+            if len(positions) >= max_positions:
+                break
 
-                    shares = int(target_size / cand["px"])
-                    cost = shares * cand["px"]
-                    if shares > 0 and cash >= cost:
-                        cash -= cost
-                        positions[cand["sym"]] = {
-                            "shares": shares,
-                            "entry_price": cand["px"],
-                            "stop_price": cand["stop"],
-                            "entry_i": enriched[cand["sym"]].index.get_loc(current_dt),
-                            "strategy_name": cand["strategy_name"],
-                            "strategy_obj": cand["strategy_obj"]
-                        }
-                        sector_exposure[cand_sec] = sector_exposure.get(cand_sec, 0.0) + cost
+            cand_sec = resolve_sector(cand["sym"])
+            trade_val = total_equity * pos_fraction
+            proj_exp = (sector_exposure.get(cand_sec, 0.0) + trade_val) / total_equity if total_equity > 0 else 1.0
+            if proj_exp > 0.60:
+                continue
+
+            shares = int(trade_val / cand["px"])
+            cost = shares * cand["px"]
+            if shares <= 0 or cash < cost:
+                continue
+
+            cash -= cost
+            positions[cand["sym"]] = {
+                "shares": shares,
+                "entry_price": cand["px"],
+                "stop_price": cand["stop"],
+                "entry_i": enriched[cand["sym"]].index.get_loc(current_dt),
+                "strategy_name": cand["strategy_name"],
+                "strategy_obj": cand["strategy_obj"]
+            }
+            sector_exposure[cand_sec] = sector_exposure.get(cand_sec, 0.0) + trade_val
+
+        # Step D: Process exits
+        for sym in list(positions.keys()):
+            if sym not in enriched or current_dt not in enriched[sym].index:
+                continue
+            df = enriched[sym]
+            i = df.index.get_loc(current_dt)
+            pos = positions[sym]
+            if i <= pos["entry_i"]:
+                continue
+
+            active_strat = pos.get("strategy_obj")
+            if active_strat and active_strat.exit(df, i, pos["entry_i"], pos["entry_price"], pos["stop_price"]):
+                row = df.iloc[i]
+                exit_px = pos["stop_price"] if row["low"] < pos["stop_price"] else row["close"]
+                if row["low"] < pos["stop_price"] and row["open"] < pos["stop_price"]:
+                    exit_px = row["open"]
+                if exit_px < pos["entry_price"] * 0.5:
+                    exit_px = pos["entry_price"] * 0.5
+
+                pnl = (exit_px - pos["entry_price"]) * pos["shares"]
+                pct = ((exit_px - pos["entry_price"]) / pos["entry_price"]) * 100
+
+                cash += pos["shares"] * exit_px
+                trade_pnls.append(pnl)
+
+                trades_list.append({
+                    "Symbol": sym,
+                    "Entry Date": str(df.index[pos["entry_i"]].date()),
+                    "Exit Date": str(current_dt.date()),
+                    "Entry": pos["entry_price"],
+                    "Exit": exit_px,
+                    "PnL": pnl,
+                    "Return%": pct,
+                    "Strategy": pos.get("strategy_name", strategy_label)
+                })
+                del positions[sym]
+
+        # Equity snapshot after exits
+        equity = cash
+        for sym, pos in positions.items():
+            if sym in enriched and current_dt in enriched[sym].index:
+                equity += pos["shares"] * enriched[sym].loc[current_dt]["close"]
+            else:
+                equity += pos["shares"] * pos["entry_price"]
+        equity_curve.append({"Date": current_dt, "Equity": equity})
 
     trades = len(trade_pnls)
     wins = len([t for t in trade_pnls if t > 0])
     hit_rate = (wins/trades*100) if trades > 0 else 0.0
-    # Average Trade Return (ROI per trade), not account impact
     if trades_list:
         avg_profit = sum(t.get("Return%", 0.0) for t in trades_list) / len(trades_list)
     else:
@@ -344,12 +360,16 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
     max_dd = drawdowns.min() * 100
 
     return {
-        "strategy": strategy.name, "final_value": equity, "total_trades": trades,
-        "hit_rate": hit_rate, "cagr": cagr, "avg_profit_pct": avg_profit,
+        "strategy": strategy_label,
+        "final_value": equity,
+        "total_trades": trades,
+        "hit_rate": hit_rate,
+        "cagr": cagr,
+        "avg_profit_pct": avg_profit,
         "max_drawdown_pct": max_dd,
-        "equity_curve": eq_df, 
+        "equity_curve": eq_df,
         "trades_list": trades_list,
-        "params": strategy.params,
+        "params": strategies[0].params if strategies else {},
         "Score": cagr * 1000
     }
 
