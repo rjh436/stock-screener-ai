@@ -1,405 +1,332 @@
 [
     {
-        "name": "Apex Wealth (Gen 12)",
-        "type": "hybrid",
+        "name": "Strategy_EXPLORE_6318_lab",
+        "type": "random",
         "entry_rules": [
-            {
-                "col": "cci",
-                "op": "<",
-                "val": 0
-            },
             {
                 "col": "bb_width",
                 "op": ">",
-                "val": 0.1
+                "val": 0.28
             },
             {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
+                "col": "atr14",
                 "op": ">",
-                "ref": "vol_ma20"
+                "val": 0
             }
         ],
         "exit_rules": [
             {
                 "type": "profit_target",
-                "val": 1.19
+                "val": 1.22
             }
         ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 71
-    },
-    {
-        "name": "Apex Wealth (Gen 12)_lab",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "cci",
-                "op": "<",
-                "val": 0
-            },
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0.1
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.19
-            }
-        ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 71,
+        "stop_loss_atr": 4.8,
+        "time_stop": 30,
         "scoring_weights": {
-            "sniper_bonus": 54.33,
-            "rsi_factor": 1.58,
-            "trend_bonus": 18.03,
-            "vol_bonus": 7.42,
-            "atr_high_bonus": 15.5
+            "sniper_bonus": 49.9,
+            "rsi_factor": 2.94,
+            "trend_bonus": 40.0,
+            "vol_bonus": 10.74,
+            "atr_high_bonus": 12.26,
+            "atr_med_bonus": 4.34,
+            "trend_penalty": -13.65
         }
     },
     {
-        "name": "Apex Wealth (Gen 12)_lab_lab",
-        "type": "hybrid",
+        "name": "Strategy_EXPLORE_6318",
+        "type": "random",
         "entry_rules": [
-            {
-                "col": "cci",
-                "op": "<",
-                "val": 0
-            },
             {
                 "col": "bb_width",
                 "op": ">",
-                "val": 0.1
+                "val": 0.28
             },
             {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
+                "col": "atr14",
                 "op": ">",
-                "ref": "vol_ma20"
+                "val": 0
             }
         ],
         "exit_rules": [
             {
                 "type": "profit_target",
-                "val": 1.19
+                "val": 1.22
             }
         ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 71,
+        "stop_loss_atr": 4.8,
+        "time_stop": 30,
         "scoring_weights": {
-            "sniper_bonus": 76.38,
-            "rsi_factor": 1.62,
-            "trend_bonus": 20.69,
-            "vol_bonus": 16.72,
-            "atr_high_bonus": 17.29
+            "sniper_bonus": 44.28,
+            "rsi_factor": 2.9,
+            "trend_bonus": 33.06,
+            "vol_bonus": 13.62,
+            "atr_high_bonus": 13.66,
+            "atr_med_bonus": 4.34,
+            "trend_penalty": -13.65
         }
     },
     {
-        "name": "Apex Wealth (Gen 12)_lab_lab",
-        "type": "hybrid",
+        "name": "Strategy_EXPLORE_6318_lab_lab",
+        "type": "random",
         "entry_rules": [
-            {
-                "col": "cci",
-                "op": "<",
-                "val": 0
-            },
             {
                 "col": "bb_width",
                 "op": ">",
-                "val": 0.1
+                "val": 0.28
             },
             {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
+                "col": "atr14",
                 "op": ">",
-                "ref": "vol_ma20"
+                "val": 0
             }
         ],
         "exit_rules": [
             {
                 "type": "profit_target",
-                "val": 1.19
+                "val": 1.22
             }
         ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 71,
+        "stop_loss_atr": 4.8,
+        "time_stop": 30,
         "scoring_weights": {
-            "sniper_bonus": 56.3,
-            "rsi_factor": 1.98,
-            "trend_bonus": 24.8,
-            "vol_bonus": 12.72,
-            "atr_high_bonus": 12.84
+            "sniper_bonus": 60.2,
+            "rsi_factor": 2.79,
+            "trend_bonus": 26.38,
+            "vol_bonus": 9.09,
+            "atr_high_bonus": 14.56,
+            "atr_med_bonus": 4.34,
+            "trend_penalty": -13.65
         }
     },
     {
-        "name": "Apex Wealth (Gen 12)_lab",
-        "type": "hybrid",
+        "name": "Strategy_EXPLORE_6318_lab_lab_lab_lab",
+        "type": "random",
         "entry_rules": [
-            {
-                "col": "cci",
-                "op": "<",
-                "val": 0
-            },
             {
                 "col": "bb_width",
                 "op": ">",
-                "val": 0.1
+                "val": 0.28
             },
             {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
+                "col": "atr14",
                 "op": ">",
-                "ref": "vol_ma20"
+                "val": 0
             }
         ],
         "exit_rules": [
             {
                 "type": "profit_target",
-                "val": 1.19
+                "val": 1.22
             }
         ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 71,
+        "stop_loss_atr": 4.8,
+        "time_stop": 30,
         "scoring_weights": {
-            "sniper_bonus": 44.54,
-            "rsi_factor": 1.69,
-            "trend_bonus": 38.89,
-            "vol_bonus": 8.81,
-            "atr_high_bonus": 20.43
+            "sniper_bonus": 58.78,
+            "rsi_factor": 2.71,
+            "trend_bonus": 28.3,
+            "vol_bonus": 6.62,
+            "atr_high_bonus": 15.96,
+            "atr_med_bonus": 4.34,
+            "trend_penalty": -13.65
         }
     },
     {
-        "name": "Apex Wealth (Gen 12)_lab",
-        "type": "hybrid",
+        "name": "Strategy_EXPLORE_6318_lab_lab_lab",
+        "type": "random",
         "entry_rules": [
-            {
-                "col": "cci",
-                "op": "<",
-                "val": 0
-            },
             {
                 "col": "bb_width",
                 "op": ">",
-                "val": 0.1
+                "val": 0.28
             },
             {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
+                "col": "atr14",
                 "op": ">",
-                "ref": "vol_ma20"
+                "val": 0
             }
         ],
         "exit_rules": [
             {
                 "type": "profit_target",
-                "val": 1.19
+                "val": 1.22
             }
         ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 71,
+        "stop_loss_atr": 4.8,
+        "time_stop": 30,
         "scoring_weights": {
-            "sniper_bonus": 67.87,
-            "rsi_factor": 1.88,
-            "trend_bonus": 25.33,
-            "vol_bonus": 7.94,
-            "atr_high_bonus": 15.39
+            "sniper_bonus": 56.94,
+            "rsi_factor": 2.68,
+            "trend_bonus": 15.79,
+            "vol_bonus": 10.29,
+            "atr_high_bonus": 15.23,
+            "atr_med_bonus": 4.34,
+            "trend_penalty": -13.65
         }
     },
     {
-        "name": "Apex Wealth (Gen 12)_lab",
-        "type": "hybrid",
+        "name": "Strategy_EXPLORE_6318_lab_lab_lab_lab",
+        "type": "random",
         "entry_rules": [
-            {
-                "col": "cci",
-                "op": "<",
-                "val": 0
-            },
             {
                 "col": "bb_width",
                 "op": ">",
-                "val": 0.1
+                "val": 0.28
             },
             {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
+                "col": "atr14",
                 "op": ">",
-                "ref": "vol_ma20"
+                "val": 0
             }
         ],
         "exit_rules": [
             {
                 "type": "profit_target",
-                "val": 1.19
+                "val": 1.22
             }
         ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 71,
+        "stop_loss_atr": 4.8,
+        "time_stop": 30,
         "scoring_weights": {
-            "sniper_bonus": 61.4,
-            "rsi_factor": 1.65,
-            "trend_bonus": 19.06,
-            "vol_bonus": 18.83,
-            "atr_high_bonus": 13.56
+            "sniper_bonus": 33.32,
+            "rsi_factor": 2.82,
+            "trend_bonus": 35.24,
+            "vol_bonus": 9.78,
+            "atr_high_bonus": 13.79,
+            "atr_med_bonus": 4.34,
+            "trend_penalty": -13.65
         }
     },
     {
-        "name": "Apex Wealth (Gen 12)_lab_lab",
-        "type": "hybrid",
+        "name": "Strategy_EXPLORE_6318_lab_lab_lab",
+        "type": "random",
         "entry_rules": [
-            {
-                "col": "cci",
-                "op": "<",
-                "val": 0
-            },
             {
                 "col": "bb_width",
                 "op": ">",
-                "val": 0.1
+                "val": 0.28
             },
             {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
+                "col": "atr14",
                 "op": ">",
-                "ref": "vol_ma20"
+                "val": 0
             }
         ],
         "exit_rules": [
             {
                 "type": "profit_target",
-                "val": 1.19
+                "val": 1.22
             }
         ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 71,
+        "stop_loss_atr": 4.8,
+        "time_stop": 30,
         "scoring_weights": {
-            "sniper_bonus": 34.56,
-            "rsi_factor": 1.83,
-            "trend_bonus": 34.14,
-            "vol_bonus": 10.85,
-            "atr_high_bonus": 16.16
+            "sniper_bonus": 38.72,
+            "rsi_factor": 3.49,
+            "trend_bonus": 28.24,
+            "vol_bonus": 12.68,
+            "atr_high_bonus": 24.26,
+            "atr_med_bonus": 4.34,
+            "trend_penalty": -13.65
         }
     },
     {
-        "name": "Apex Wealth (Gen 12)_lab",
-        "type": "hybrid",
+        "name": "Strategy_EXPLORE_6318_lab_lab_lab",
+        "type": "random",
         "entry_rules": [
-            {
-                "col": "cci",
-                "op": "<",
-                "val": 0
-            },
             {
                 "col": "bb_width",
                 "op": ">",
-                "val": 0.1
+                "val": 0.28
             },
             {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
+                "col": "atr14",
                 "op": ">",
-                "ref": "vol_ma20"
+                "val": 0
             }
         ],
         "exit_rules": [
             {
                 "type": "profit_target",
-                "val": 1.19
+                "val": 1.22
             }
         ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 71,
+        "stop_loss_atr": 4.8,
+        "time_stop": 30,
         "scoring_weights": {
-            "sniper_bonus": 78.8,
-            "rsi_factor": 1.91,
-            "trend_bonus": 36.82,
-            "vol_bonus": 14.15,
-            "atr_high_bonus": 14.96
+            "sniper_bonus": 50.2,
+            "rsi_factor": 2.05,
+            "trend_bonus": 34.45,
+            "vol_bonus": 16.18,
+            "atr_high_bonus": 23.89,
+            "atr_med_bonus": 4.34,
+            "trend_penalty": -13.65
         }
     },
     {
-        "name": "Apex Wealth (Gen 12)_lab",
-        "type": "hybrid",
+        "name": "Strategy_EXPLORE_6318_lab_lab",
+        "type": "random",
         "entry_rules": [
-            {
-                "col": "cci",
-                "op": "<",
-                "val": 0
-            },
             {
                 "col": "bb_width",
                 "op": ">",
-                "val": 0.1
+                "val": 0.28
             },
             {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
+                "col": "atr14",
                 "op": ">",
-                "ref": "vol_ma20"
+                "val": 0
             }
         ],
         "exit_rules": [
             {
                 "type": "profit_target",
-                "val": 1.19
+                "val": 1.22
             }
         ],
-        "stop_loss_atr": 4.4,
-        "time_stop": 71,
+        "stop_loss_atr": 4.8,
+        "time_stop": 30,
         "scoring_weights": {
-            "sniper_bonus": 55.86,
-            "rsi_factor": 1.8,
-            "trend_bonus": 28.19,
-            "vol_bonus": 5.53,
-            "atr_high_bonus": 17.35
+            "sniper_bonus": 30.3,
+            "rsi_factor": 2.33,
+            "trend_bonus": 12.93,
+            "vol_bonus": 19.23,
+            "atr_high_bonus": 24.04,
+            "atr_med_bonus": 4.34,
+            "trend_penalty": -13.65
+        }
+    },
+    {
+        "name": "Strategy_EXPLORE_6318_lab",
+        "type": "random",
+        "entry_rules": [
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.28
+            },
+            {
+                "col": "atr14",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.22
+            }
+        ],
+        "stop_loss_atr": 4.8,
+        "time_stop": 30,
+        "scoring_weights": {
+            "sniper_bonus": 55.36,
+            "rsi_factor": 3.21,
+            "trend_bonus": 36.05,
+            "vol_bonus": 15.47,
+            "atr_high_bonus": 16.22,
+            "atr_med_bonus": 4.34,
+            "trend_penalty": -13.65
         }
     }
 ]

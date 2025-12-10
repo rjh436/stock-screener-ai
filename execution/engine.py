@@ -11,13 +11,16 @@ import concurrent.futures
 from strategies.base import BaseStrategy
 
 DEFAULT_SCORING_WEIGHTS = {
-    "rsi_factor": 2.0,
-    "atr_high_bonus": 15.0,
-    "atr_med_bonus": 5.0,
-    "vol_bonus": 10.0,
-    "sniper_bonus": 50.0,
-    "trend_bonus": 20.0,
-    "trend_penalty": -15.0
+    # --- STRATEGY LAB WINNER (Robust Version) ---
+    # Logic: Prioritize Strong Trends + Deep Oversold Panic
+
+    "rsi_factor": 3.0,        # Was 2.0 (AI found 2.94 -> Rounded to 3.0)
+    "atr_high_bonus": 12.0,   # Was 15.0 (AI found 12.26 -> Rounded to 12.0)
+    "atr_med_bonus": 5.0,     # Unchanged (AI found 4.3 -> Kept baseline for stability)
+    "vol_bonus": 11.0,        # Was 10.0 (AI found 10.7 -> Rounded to 11.0)
+    "sniper_bonus": 50.0,     # Unchanged (AI found 49.9 -> Kept 50.0)
+    "trend_bonus": 40.0,      # Was 20.0 (DOUBLED: Aggressive Trend Filter)
+    "trend_penalty": -15.0    # Unchanged
 }
 
 MIN_BARS = 200
