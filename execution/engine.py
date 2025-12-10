@@ -209,7 +209,8 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
             
             if i <= pos["entry_i"]: continue
             
-            if strategy.exit(df, i, pos["entry_i"], pos["entry_price"], pos["stop_price"]):
+            active_strat = pos.get("strategy_obj", strategy)
+            if active_strat and active_strat.exit(df, i, pos["entry_i"], pos["entry_price"], pos["stop_price"]):
                 row = df.iloc[i]
                 exit_px = pos["stop_price"] if row["low"] < pos["stop_price"] else row["close"]
                 if row["low"] < pos["stop_price"] and row["open"] < pos["stop_price"]: exit_px = row["open"]
@@ -274,8 +275,13 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                     real_stop = open_px - stop_width
                     
                     daily_candidates.append({
-                        "sym": sym, "px": open_px, "stop": real_stop, 
-                        "score": score, "rsi2": float(row_prev.get("rsi2", 50))
+                        "sym": sym,
+                        "px": open_px,
+                        "stop": real_stop,
+                        "score": score,
+                        "rsi2": float(row_prev.get("rsi2", 50)),
+                        "strategy_name": strategy.name,
+                        "strategy_obj": strategy
                     })
             
             if len(positions) < max_positions:
@@ -291,7 +297,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
 
                 total_equity = cash + sum(sector_exposure.values())
 
-                daily_candidates.sort(key=lambda x: (x["score"], -x["rsi2"]), reverse=True)
+                daily_candidates.sort(key=lambda x: x["score"], reverse=True)
                 target_size = equity * pos_fraction
                 for cand in daily_candidates:
                     if len(positions) >= max_positions or cash < 500: break
@@ -308,9 +314,12 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                     if shares > 0 and cash >= cost:
                         cash -= cost
                         positions[cand["sym"]] = {
-                            "shares": shares, "entry_price": cand["px"], 
-                            "stop_price": cand["stop"], 
-                            "entry_i": enriched[cand["sym"]].index.get_loc(current_dt)
+                            "shares": shares,
+                            "entry_price": cand["px"],
+                            "stop_price": cand["stop"],
+                            "entry_i": enriched[cand["sym"]].index.get_loc(current_dt),
+                            "strategy_name": cand["strategy_name"],
+                            "strategy_obj": cand["strategy_obj"]
                         }
                         sector_exposure[cand_sec] = sector_exposure.get(cand_sec, 0.0) + cost
 
