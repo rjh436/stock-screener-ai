@@ -381,6 +381,7 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
 def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, use_parallel=True, max_workers=8, global_data=None):
     import json, os, concurrent.futures
     from strategies.generic import GenericStrategy
+    from strategies.apex_wealth import ApexWealthStrategy
 
     gen_strategies = {}
     try:
@@ -391,7 +392,12 @@ def run_compare(strategy_names, data_dict, symbol_universe=None, start_cash=1000
     strategies = []
     for name in strategy_names:
         if name in gen_strategies:
-            strategies.append(GenericStrategy(gen_strategies[name]))
+            strat_config = gen_strategies[name]
+            if strat_config.get("type") == "wealth":
+                strategies.append(ApexWealthStrategy(strat_config))
+                print(f"✅ Loaded WEALTH Strategy: {strat_config['name']}")
+            else:
+                strategies.append(GenericStrategy(strat_config))
 
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
