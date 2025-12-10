@@ -245,7 +245,8 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
 
                 row_prev = df.iloc[i-1]
                 row_curr = df.iloc[i]
-                score = calculate_backtest_quality_score(row_prev, strat.name, weights=scoring_weights)
+                raw_score = calculate_backtest_quality_score(row_prev, strat.name, weights=scoring_weights)
+                score = raw_score * 1.3 if "wealth" in strat.name.lower() else raw_score
                 open_px = float(row_curr["open"])
 
                 signal_atr = float(row_prev.get("atr14", 0))
@@ -272,9 +273,13 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
             if len(positions) >= max_positions:
                 break
 
+            # Recalculate equity dynamically to shrink sizing as cash is used
+            current_sector_equity = sum(sector_exposure.values())
+            current_equity = cash + current_sector_equity
+            trade_val = current_equity * pos_fraction
+
             cand_sec = resolve_sector(cand["sym"])
-            trade_val = total_equity * pos_fraction
-            proj_exp = (sector_exposure.get(cand_sec, 0.0) + trade_val) / total_equity if total_equity > 0 else 1.0
+            proj_exp = (sector_exposure.get(cand_sec, 0.0) + trade_val) / current_equity if current_equity > 0 else 1.0
             if proj_exp > 0.60:
                 continue
 
@@ -292,7 +297,7 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
                 "strategy_name": cand["strategy_name"],
                 "strategy_obj": cand["strategy_obj"]
             }
-            sector_exposure[cand_sec] = sector_exposure.get(cand_sec, 0.0) + trade_val
+            sector_exposure[cand_sec] = sector_exposure.get(cand_sec, 0.0) + cost
 
         # Step D: Process exits
         for sym in list(positions.keys()):
