@@ -24,32 +24,35 @@ class ApexTrendStrategy(BaseStrategy):
 
         row = df.iloc[i]
 
-        # Tier 1: Mandatory gates
+        # Mandatory gates
         sma200 = row.get("sma200")
         close_px = row.get("close")
         rsi14 = row.get("rsi14")
-        stoch_k = row.get("stoch_k")
+        bb_width = row.get("bb_width", 0)
         if sma200 is None or pd.isna(sma200) or close_px is None or pd.isna(close_px):
             return None
         if close_px <= sma200:
-            return None
-        if rsi14 is None or stoch_k is None or pd.isna(rsi14) or pd.isna(stoch_k) or rsi14 >= stoch_k:
-            return None
+            return None  # Trend floor
+        if rsi14 is None or pd.isna(rsi14) or rsi14 >= 40:
+            return None  # Momentum dip requirement
+        if bb_width <= 0.17:
+            return None  # Require volatility
 
-        # Tier 2: Quality scoring
+        # Quality scoring
         quality_score = 100.0
-        bb_width = row.get("bb_width", 0)
+        rsi2 = row.get("rsi2", 50)
         volume = row.get("volume", 0)
         vol_ma20 = row.get("vol_ma20", 0)
-        rsi2 = row.get("rsi2", 50)
 
-        if bb_width > 0.17:
-            quality_score += 25.0
-        if volume > vol_ma20:
+        quality_score += (100 - rsi2) * 3.0  # RSI depth bonus
+        if vol_ma20 and volume > 2 * vol_ma20:
+            quality_score += 40.0
+        elif vol_ma20 and volume > 1.5 * vol_ma20:
             quality_score += 20.0
-        quality_score += (100 - rsi2) * 3.0
+        if close_px > 1.1 * sma200:
+            quality_score += 40.0  # Trend strength bonus
 
-        if quality_score < 140.0:
+        if quality_score < 180.0:
             return None
 
         atr = row.get("atr14", 0)

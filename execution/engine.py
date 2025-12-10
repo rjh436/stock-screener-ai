@@ -300,7 +300,7 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                     curr_sec_val = sector_exposure.get(cand_sec, 0.0)
                     trade_size = total_equity * pos_fraction
                     proj_sec_pct = (curr_sec_val + trade_size) / total_equity if total_equity > 0 else 1.0
-                    if proj_sec_pct > 0.40:
+                    if proj_sec_pct > 0.60:
                         continue  # SKIP: Sector full
 
                     shares = int(target_size / cand["px"])

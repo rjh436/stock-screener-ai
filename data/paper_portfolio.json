@@ -1,6 +1,6 @@
 {
     "cash": 383.53999999999724,
-    "equity": 102303.95499999999,
+    "equity": 102729.43,
     "positions": {
         "NWL": {
             "shares": 5405,
@@ -8,9 +8,9 @@
             "stop_price": 2.6831742857142857,
             "strategy": "Apex Wealth (Gen 12) + Apex Income (Gen 9)",
             "date": "2025-12-03",
-            "current_price": 3.675,
-            "unrealized_pnl": -135.12500000000193,
-            "unrealized_pct": -0.6756756756756852
+            "current_price": 3.76,
+            "unrealized_pnl": 324.2999999999979,
+            "unrealized_pct": 1.621621621621611
         },
         "NX": {
             "shares": 1498,
@@ -18,9 +18,9 @@
             "stop_price": 9.665817142857144,
             "strategy": "Apex Wealth (Gen 12) + Apex Income (Gen 9)",
             "date": "2025-12-03",
-            "current_price": 14.14,
-            "unrealized_pnl": 1183.4200000000014,
-            "unrealized_pct": 5.917602996254689
+            "current_price": 14.22,
+            "unrealized_pnl": 1303.2600000000016,
+            "unrealized_pct": 6.516853932584277
         },
         "FIX": {
             "shares": 21,
@@ -28,9 +28,9 @@
             "stop_price": 713.8252828571428,
             "strategy": "Apex Wealth (Gen 12)",
             "date": "2025-12-03",
-            "current_price": 991.98,
-            "unrealized_pnl": 1196.5800000000004,
-            "unrealized_pct": 6.094117647058826
+            "current_price": 996.76,
+            "unrealized_pnl": 1296.9599999999998,
+            "unrealized_pct": 6.605347593582887
         },
         "CSGP": {
             "shares": 293,
@@ -38,9 +38,9 @@
             "stop_price": 60.00603142857141,
             "strategy": "Apex Wealth (Gen 12)",
             "date": "2025-12-03",
-            "current_price": 67.88,
-            "unrealized_pnl": -99.620000000001,
-            "unrealized_pct": -0.49838756962768016
+            "current_price": 67.5,
+            "unrealized_pnl": -210.95999999999967,
+            "unrealized_pct": -1.0554089709762517
         },
         "NAVI": {
             "shares": 1587,
@@ -48,9 +48,9 @@
             "stop_price": 10.286002857142856,
             "strategy": "Apex Wealth (Gen 12)",
             "date": "2025-12-03",
-            "current_price": 12.7,
-            "unrealized_pnl": 158.69999999999945,
-            "unrealized_pct": 0.7936507936507908
+            "current_price": 12.61,
+            "unrealized_pnl": 15.869999999999662,
+            "unrealized_pct": 0.07936507936507767
         }
     },
     "pending_orders": [],
@@ -82,7 +82,7 @@
         },
         {
             "date": "2025-12-10",
-            "equity": 102303.95499999999
+            "equity": 102729.43
         }
     ]
 }
