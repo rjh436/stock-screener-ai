@@ -55,11 +55,34 @@ class GenericStrategy(BaseStrategy):
 
     def exit(self, df: pd.DataFrame, i: int, entry_i: int, entry_price: float, stop_price: float) -> bool:
         row = df.iloc[i]
+        days_held = i - entry_i
+
+        # 1. Hard Stop (Keep existing)
         if row.get("low", np.inf) <= stop_price:
             return True
 
-        if i - entry_i >= int(self.genome.get("time_stop", 50)):
-            return True
+        # 2. "Stale Trade" Cleanup (Smart Time Stop)
+        # Instead of killing all trades at 45 days, only kill WEAK ones.
+        time_limit = int(self.genome.get("time_stop", 45))
+        if days_held >= time_limit:
+            # If we are barely profitable (<5%) OR below the SMA50, kill it.
+            pnl_pct = ((row.get("close", entry_price) - entry_price) / entry_price) * 100
+            sma50 = row.get("sma50")
+            
+            # Dead Money Check
+            if pnl_pct < 5.0:
+                return True
+            # Broken Trend Check (Long Term)
+            if sma50 and row.get("close", 0) < sma50:
+                return True
+
+        # 3. Winning Trade Management (Trailing Stop)
+        # Only activate if we are profitable to avoid noise stops early on.
+        if row.get("close", 0) > entry_price:
+            # Use SMA50 as the "Trend Floor" (More robust than EMA20 for small caps)
+            sma50 = row.get("sma50")
+            if sma50 and row["close"] < sma50:
+                return True
 
         for rule in self.genome.get("exit_rules", []):
             if rule.get("type") == "profit_target":

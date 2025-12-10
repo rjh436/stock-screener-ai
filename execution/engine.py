@@ -238,15 +238,30 @@ def run_backtest(strategy, data_dict, symbol_universe=None, start_cash=100000.0,
                 i = df.index.get_loc(current_dt)
                 if i < MIN_BARS + 1: continue
                 
-                if strategy.entry(df, i - 1):
+                entry_signal = strategy.entry(df, i - 1)
+                if entry_signal:
                     row_prev = df.iloc[i-1]
                     row_curr = df.iloc[i]
                     
                     score = calculate_backtest_quality_score(row_prev, strategy.name, weights=scoring_weights)
                     open_px = float(row_curr["open"])
+
+                    # --- INSTITUTIONAL STOP LOSS LOGIC ---
+                    # 1. Get the signal's intended stop structure
+                    #    (already captured above as entry_signal)
                     
-                    stop_dist = float(row_prev["close"]) - strategy.entry(df, i-1)["stop_price"]
-                    real_stop = open_px - stop_dist
+                    # 2. Calculate volatility (ATR) from Signal Day vs Entry Day
+                    # Use MAX to protect against volatility expansion (e.g., earnings gap)
+                    signal_atr = float(row_prev.get("atr14", 0))
+                    current_atr = float(row_curr.get("atr14", signal_atr))
+                    effective_atr = max(signal_atr, current_atr)
+                    
+                    # 3. Calculate Stop Width based on strategy config
+                    stop_atr_mult = float(strategy.params.get("stop_loss_atr", 3.0))
+                    stop_width = effective_atr * stop_atr_mult
+                    
+                    # 4. Apply width to ACTUAL Entry Price (Open)
+                    real_stop = open_px - stop_width
                     
                     daily_candidates.append({
                         "sym": sym, "px": open_px, "stop": real_stop, 
