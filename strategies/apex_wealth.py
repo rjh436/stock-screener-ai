@@ -3,24 +3,37 @@ from strategies.generic import GenericStrategy
 
 class ApexWealthStrategy(GenericStrategy):
     """
-    Wealth variant: keeps generic entry logic from JSON rules but uses a patient, fixed exit.
+    Wealth variant: uses patient, fixed exits derived from CONFIG (no longer hardcoded).
     """
 
     def exit(self, df, i, entry_i, entry_price, stop_price) -> bool:
         row = df.iloc[i]
         days_held = i - entry_i
 
-        # 1. Hard Stop
+        # 1. Configuration (Source of Truth)
+        # Default to old hardcoded values (60, 1.20) if missing in config
+        time_limit = int(self.genome.get("time_stop", 60))
+        
+        # Resolve profit target from exit_rules or direct param
+        profit_mult = 1.20
+        exit_rules = self.genome.get("exit_rules", [])
+        for rule in exit_rules:
+            if rule.get("type") == "profit_target":
+                profit_mult = float(rule.get("val", 1.20))
+                break
+
+        # 2. Hard Stop (Volatility Adjusted from Engine)
         if row["low"] < stop_price:
             return True
 
-        # 2. Time Stop (60 Days)
-        if days_held >= 60:
+        # 3. Time Stop (Dynamic)
+        if days_held >= time_limit:
+            # Strictly obey the time limit to free up capital.
             return True
 
-        # 3. Profit Target (+20%)
-        if row["high"] > entry_price * 1.20:
+        # 4. Profit Target (Dynamic)
+        if row["high"] > entry_price * profit_mult:
             return True
 
-        # NO TRAILING STOP.
+        # NO TRAILING STOP for Wealth strategies
         return False
