@@ -275,7 +275,7 @@ elif mode == "Simulator":
             
             # Step 2: Execution
             status.write("2️⃣ Executing Scan & Governor...")
-            symbols = get_index_symbols("S&P 500")
+            symbols = get_index_symbols("S&P 1500")
             data_pack = fetch_data_pack(symbols, days=400)
             new_trades = pt.run_daily_scan(data_pack)
             

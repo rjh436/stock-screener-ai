@@ -5,7 +5,8 @@ import pandas as pd
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from data.loader import fetch_single_symbol
+from data.loader import fetch_single_symbol, fetch_data_pack
+from data.indices import get_index_symbols
 from data.schwab_client import sd
 from execution.engine import (
     _compute_indicators,
@@ -398,10 +399,17 @@ class PaperTrader:
                 logs.append(f"✅ BOUGHT {cand['symbol']} x{shares} @ ${cand['price']:.2f}")
         return logs
 
-    def run_daily_scan(self, data_dict: Dict[str, pd.DataFrame], global_data: Optional[Dict[str, pd.DataFrame]] = None, scoring_weights: Optional[Dict] = None) -> List[str]:
+    def run_daily_scan(self, data_dict: Optional[Dict[str, pd.DataFrame]] = None, global_data: Optional[Dict[str, pd.DataFrame]] = None, scoring_weights: Optional[Dict] = None) -> List[str]:
         scoring = scoring_weights or self.scoring_weights
         vix_df = global_data.get("VIX") if global_data else None
         spy_df = global_data.get("SPY") if global_data else None
+        if data_dict is None:
+            tickers = get_index_symbols("S&P 1500")
+            print(f"Loaded {len(tickers)} tickers from S&P 1500")
+            data_dict = fetch_data_pack(tickers, days=400)
+        else:
+            tickers = list(data_dict.keys())
+            print(f"Loaded {len(tickers)} tickers from S&P 1500")
 
         candidates = []
         for strat in self.strategies:
