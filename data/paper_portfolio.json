@@ -1,41 +1,50 @@
 {
-    "cash": 100000.0,
+    "cash": 27611.149999999998,
     "equity": 100000.0,
-    "positions": {},
-    "pending_orders": [
-        {
-            "symbol": "RCL",
-            "target_value": 20000.0,
-            "est_price": 264.37,
-            "stop_price": 223.14372857142854,
-            "strategy_name": "Apex Wealth (Gen 12)",
-            "entry_i": 333,
-            "type": "MOO"
-        },
-        {
-            "symbol": "ZTS",
-            "target_value": 24000.0,
-            "est_price": 121.63,
-            "stop_price": 102.1381257142857,
-            "strategy_name": "Apex Wealth (Gen 12)",
-            "entry_i": 333,
-            "type": "MOO"
-        },
-        {
-            "symbol": "CARR",
-            "target_value": 28800.0,
-            "est_price": 52.4,
-            "stop_price": 45.351702857142854,
-            "strategy_name": "Apex Wealth (Gen 12)",
-            "entry_i": 333,
-            "type": "MOO"
-        }
-    ],
     "history": [],
     "equity_curve": [
         {
-            "date": "2025-12-10",
+            "date": "2025-12-11",
             "equity": 100000.0
         }
-    ]
+    ],
+    "positions": {
+        "RCL": {
+            "shares": 75,
+            "entry_price": 263.88,
+            "stop_price": 223.14372857142854,
+            "strategy": "Apex Wealth (Gen 12)",
+            "strategy_name": "Apex Wealth (Gen 12)",
+            "date": "2025-12-11",
+            "current_price": 263.88,
+            "unrealized_pnl": 0.0,
+            "unrealized_pct": 0.0,
+            "entry_i": 332
+        },
+        "ZTS": {
+            "shares": 197,
+            "entry_price": 118.45,
+            "stop_price": 102.1381257142857,
+            "strategy": "Apex Wealth (Gen 12)",
+            "strategy_name": "Apex Wealth (Gen 12)",
+            "date": "2025-12-11",
+            "current_price": 118.45,
+            "unrealized_pnl": 0.0,
+            "unrealized_pct": 0.0,
+            "entry_i": 332
+        },
+        "CARR": {
+            "shares": 548,
+            "entry_price": 53.4,
+            "stop_price": 45.351702857142854,
+            "strategy": "Apex Wealth (Gen 12)",
+            "strategy_name": "Apex Wealth (Gen 12)",
+            "date": "2025-12-11",
+            "current_price": 53.4,
+            "unrealized_pnl": 0.0,
+            "unrealized_pct": 0.0,
+            "entry_i": 332
+        }
+    },
+    "pending_orders": []
 }

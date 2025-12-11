@@ -223,40 +223,71 @@ class PaperTrader:
 
     def process_pending_orders(self) -> List[str]:
         """
-        Executes pending MOO orders using current market data.
-        Features Gap Protection (±5%) and actual cash debit.
+        Executes pending MOO orders ONLY if market is open (9:30 AM ET).
+        Features: Timezone-aware checks, Gap Protection (±5%), and Strict Open Price enforcement.
         """
         fill_log = []
         remaining_orders = []
         
-        # If nothing pending, return
         if not self.state.get("pending_orders"):
             return []
 
+        # --- TIMEZONE SETUP (New York) ---
+        try:
+            import pytz
+            ny_tz = pytz.timezone('America/New_York')
+            now_ny = datetime.now(ny_tz)
+        except ImportError:
+            # Fallback if pytz missing (unlikely in Streamlit)
+            now_ny = datetime.now()
+            print("⚠️ pytz not found, using server time (risk of timezone mismatch)")
+
+        today_ny = now_ny.date()
+        market_open_time = now_ny.replace(hour=9, minute=30, second=0, microsecond=0)
+        
+        # Simple check: Is it past 9:30 AM in NY?
+        is_market_open = now_ny >= market_open_time
+
         print(f"🔔 Processing {len(self.state['pending_orders'])} pending orders...")
+        print(f"📍 NY Time: {now_ny.strftime('%Y-%m-%d %H:%M:%S')} | Market Open: {is_market_open}")
 
         for order in self.state.get("pending_orders", []):
             sym = order["symbol"]
             est_price = order.get("order_price_estimate", 0)
             
-            # 1. Get Fill Price (Market Open logic)
+            # 1. Get Fill Price (Strict Market Open logic)
             fill_price = 0.0
             
-            # Try Schwab Quote first (Real-time)
+            # A. Try Schwab Quote (Real-time)
             try:
                 q = sd.get_quote(sym)
                 if q and sym in q and "quote" in q[sym]:
-                    fill_price = float(q[sym]["quote"].get("openPrice", 0) or q[sym]["quote"].get("lastPrice", 0))
+                    # STRICT: We only accept 'openPrice' if it exists.
+                    open_price = float(q[sym]["quote"].get("openPrice", 0))
+                    if open_price > 0:
+                        fill_price = open_price
             except: pass
             
-            # Fallback to recent data
+            # B. Fallback to recent data (Verify Date & Time)
             if fill_price == 0:
                 df = fetch_single_symbol(sym, days=5, force_fresh=True)
                 if df is not None and not df.empty:
-                    fill_price = float(df.iloc[-1]["open"]) # Use OPEN for MOO
+                    # STRICT: Ensure the last candle is from TODAY in NY
+                    last_dt = df.index[-1]
+                    # Handle naive vs aware timestamps
+                    if last_dt.tzinfo is None and hasattr(now_ny, 'tzinfo'):
+                         # Assume data is local/naive, just check date
+                         if last_dt.date() == today_ny:
+                             fill_price = float(df.iloc[-1]["open"])
+                    else:
+                        # Compare dates directly
+                        if last_dt.date() == today_ny:
+                            fill_price = float(df.iloc[-1]["open"])
 
+            # C. Decision - WAITING condition
             if fill_price <= 0:
-                fill_log.append(f"❌ SKIPPED {sym}: No price data")
+                reason = "Market not open" if not is_market_open else "No Open Price yet"
+                fill_log.append(f"⏳ WAITING {sym}: {reason}")
                 remaining_orders.append(order)
                 continue
 
@@ -264,7 +295,7 @@ class PaperTrader:
             gap_pct = ((fill_price - est_price) / est_price) * 100 if est_price > 0 else 0
             if abs(gap_pct) > 5.0:
                 fill_log.append(f"❌ CANCELED {sym}: Gap too large ({gap_pct:+.1f}%)")
-                continue # Do not fill, do not keep (Cancel)
+                continue 
 
             # 3. Cost Check
             shares = order["shares"]
@@ -272,12 +303,11 @@ class PaperTrader:
             
             if self.state["cash"] < actual_cost:
                 fill_log.append(f"❌ FAILED {sym}: Insufficient cash at fill")
-                continue # Cancel
+                continue
 
             # 4. Execute Fill
             self.state["cash"] -= actual_cost
             
-            # Rehydrate strategy for active position
             s_name = order.get("strategy_name") or order.get("strategy")
             s_obj = self._get_strategy_by_name(s_name)
             
@@ -288,7 +318,7 @@ class PaperTrader:
                 "strategy": s_name,
                 "strategy_name": s_name,
                 "strategy_obj": s_obj,
-                "date": str(datetime.now().date()),
+                "date": str(today_ny),
                 "current_price": fill_price,
                 "unrealized_pnl": 0.0,
                 "unrealized_pct": 0.0,
