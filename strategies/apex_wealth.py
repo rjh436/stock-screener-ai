@@ -15,7 +15,7 @@ class ApexWealthStrategy(GenericStrategy):
         time_limit = int(self.genome.get("time_stop", 60))
         
         # Resolve profit target from exit_rules or direct param
-        profit_mult = 1.20
+        profit_mult = 1.15  # More conservative 15% target (was 20%)
         exit_rules = self.genome.get("exit_rules", [])
         for rule in exit_rules:
             if rule.get("type") == "profit_target":

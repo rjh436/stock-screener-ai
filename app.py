@@ -134,37 +134,44 @@ if mode == "Live Screener":
                 for strat in strat_objects:
                     s_conf = strat.params
                     for sym, df in data.items():
-                        if df is None or df.empty: continue
+                        if df is None or df.empty: 
+                            continue
                         try:
                             df_ind = _compute_indicators(df.copy())
-                            if df_ind.empty: continue
-                            if strat.entry(df_ind, len(df_ind) - 1):
-                                row = df_ind.iloc[-1]
-                                atr = row.get("atr14", row["close"]*0.02)
+                            if df_ind.empty or len(df_ind) < 2:
+                                continue
+
+                            # Check entry signal on YESTERDAY's bar (avoid lookahead)
+                            if strat.entry(df_ind, len(df_ind) - 2):
+                                row_signal = df_ind.iloc[-2]   # Yesterday's bar
+                                row_current = df_ind.iloc[-1]  # Today's close (proxy for next open)
+
+                                atr = row_signal.get("atr14", row_signal["close"]*0.02)
                                 stop_mult = float(s_conf.get("stop_loss_atr", 3.0))
-                                
-                                # --- PHASE 3: UNIFIED SCORING ENGINE ---
-                                # 1. Calculate Base Score
-                                raw_score = calculate_backtest_quality_score(row, s_conf["name"], DEFAULT_SCORING_WEIGHTS)
-                                # 2. Apply Wealth Boost (Match Simulator Logic)
+
+                                # --- PHASE 3: UNIFIED SCORING ENGINE (NO LOOKAHEAD) ---
+                                raw_score = calculate_backtest_quality_score(row_signal, s_conf["name"], DEFAULT_SCORING_WEIGHTS)
                                 score = raw_score * 1.3 if "wealth" in s_conf["name"].lower() else raw_score
-                                
+
                                 exits = s_conf.get("exit_rules", [])
                                 if exits and exits[0].get("type") == "profit_target":
-                                    target_txt = f"${row['close'] * float(exits[0].get('val')):.2f}"
+                                    target_txt = f"${row_signal['close'] * float(exits[0].get('val')):.2f}"
                                 else:
                                     target_txt = "OPEN (Run)"
+
+                                estimated_entry = row_current["close"]
 
                                 results.append({
                                     "Symbol": sym, 
                                     "Strategy": s_conf["name"],
-                                    "Price": row["close"], 
-                                    "Stop Loss": row["close"] - (atr * stop_mult),
+                                    "Price": row_current["close"],  # Today's close (tomorrow's expected open)
+                                    "Stop Loss": estimated_entry - (atr * stop_mult),
                                     "Target": target_txt,
                                     "Score": score,
                                     "Rating": score_to_rating(score)
                                 })
-                        except: continue
+                        except: 
+                            continue
                 
                 # Sort by Score Descending (Best setups first)
                 if results:

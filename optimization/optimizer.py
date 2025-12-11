@@ -18,34 +18,40 @@ GEN_CONFIG = os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/
 def calculate_fitness(result):
     name = result.get("strategy", "")
     cagr = result.get("cagr", 0)
-    avg_prof = result.get("avg_profit_pct", 0)
+    avgprof = result.get("avg_profit_pct", 0)
     hit = result.get("hit_rate", 0)
     trades = result.get("total_trades", 0)
+    max_dd = abs(result.get("max_drawdown_pct", 0.01))  # Prevent division by zero
     
-    # 1. Global Activity Floor (Must trade to be valid)
-    if trades < 20: return -1e6
+    # 1. Activity Floor
+    if trades < 20:
+        return -1e6
     
-    # 2. MACHINE GUN MANDATE: "The Heavy Gun"
-    # Goal: > 5% Profit per trade.
-    if "MachineGun" in name:
-        if avg_prof < 5.0: 
-            # Extreme Penalty: The AI must fix this first.
-            return -10000 + avg_prof 
+    # 2. Calculate Risk-Adjusted Metrics
+    win_expectancy = (avgprof * hit / 100)
+    loss_expectancy = abs(avgprof * 0.5) * (100 - hit) / 100  # Assume losses = 50% of wins
+    edge = win_expectancy - loss_expectancy
+    
+    calmar = cagr / max_dd if max_dd > 0 else 0
+    
+    # 3. REVISED MANDATE: Prioritize Sharpe-like edge + CAGR
+    if "Sniper" in name or "Gen12" in name or "Wealth" in name:
+        # Lower win rate threshold from 60% to 55%
+        if hit < 55.0:
+            return -5000 + (hit * 50)  # Gentler penalty
         
-        # If Profit > 5%, maximize CAGR
-        return (cagr * 5000)
-
-    # 3. SNIPER MANDATE: "Precision"
-    # Goal: > 60% Win Rate (currently ~57%)
-    if "Sniper" in name or "Gen12" in name or "Evolved" in name:
+        # Reward: CAGR + Profit Depth + Risk-Adjusted Return
+        fitness = (cagr * 1000) + (avgprof * 300) + (calmar * 200) + (edge * 500)
+        return fitness
+    
+    # 4. Income/Trend strategies: Prioritize consistency
+    if "Income" in name or "Gen9" in name:
         if hit < 60.0:
-            # Penalty for low accuracy
-            return -5000 + hit
-            
-        # If Hit Rate > 60%, maximize CAGR
-        return (cagr * 5000) + (hit * 100)
-        
-    return (cagr * 1000)
+            return -3000 + (hit * 30)
+        return (cagr * 1000) + (hit * 100) + (calmar * 150)
+    
+    # Default: CAGR-focused
+    return cagr * 1000 + (edge * 200)
 
 def load_optimization_data(universe="S&P 1500", days=1260):
     print(f"📥 Loading Data for {universe}...")

@@ -23,6 +23,8 @@ DEFAULT_CONFIG_PATH = "config/generated_strategies.json"
 POSITION_FRACTION = 0.20
 MAX_POSITIONS = 5
 SECTOR_CAP = 0.60
+MAX_RISK_PER_TRADE = 0.02  # NEW: 2% equity risk per trade
+MIN_REWARD_TO_RISK = 2.0   # NEW: Minimum 2:1 reward/risk ratio
 
 
 class PaperTrader:
@@ -39,6 +41,22 @@ class PaperTrader:
         self.state = self._load_state()
         
         self._rehydrate_strategies()
+        # Validate strategy params to avoid missing config values
+        self._validate_configs()
+
+    def _validate_configs(self):
+        """Validate that all strategies have required parameters."""
+        for strat in self.strategies:
+            params = getattr(strat, "params", {})
+            if not params.get("stop_loss_atr"):
+                print(f"⚠️ WARNING: {strat.name} missing stop_loss_atr, using default 3.0")
+                params["stop_loss_atr"] = 3.0
+            if not params.get("time_stop"):
+                print(f"⚠️ WARNING: {strat.name} missing time_stop, using default 60")
+                params["time_stop"] = 60
+            stop_atr = float(params.get("stop_loss_atr", 3.0))
+            if stop_atr < 1.0 or stop_atr > 10.0:
+                print(f"❌ ERROR: {strat.name} stop_loss_atr={stop_atr} out of range [1.0, 10.0]")
 
     # --- INITIALIZATION HELPERS ---
     def _init_strategies(self, configs: Optional[List[Dict]]) -> List[GenericStrategy]:
@@ -250,11 +268,23 @@ class PaperTrader:
                 remaining_orders.append(order)
                 continue
 
-            # 2. Gap Protection (±5%)
+            # 2. Dynamic Gap Protection (Based on Strategy Risk)
             gap_pct = ((fill_price - est_price) / est_price) * 100 if est_price > 0 else 0
-            if abs(gap_pct) > 5.0:
-                fill_log.append(f"❌ CANCELED {sym}: Gap too large ({gap_pct:+.1f}%)")
-                continue 
+
+            # Calculate strategy's ATR-based risk tolerance
+            try:
+                s_name_gap = order.get("strategy_name") or order.get("strategy")
+                s_obj_gap = self._get_strategy_by_name(s_name_gap)
+                stop_mult_gap = float(s_obj_gap.params.get("stop_loss_atr", 3.0))
+                max_gap_threshold = 2.5  # Default
+                if s_name_gap and "wealth" in s_name_gap.lower():
+                    max_gap_threshold = 2.0
+            except:  # noqa: E722
+                max_gap_threshold = 2.5
+
+            if abs(gap_pct) > max_gap_threshold:
+                fill_log.append(f"❌ CANCELED {sym}: Gap {gap_pct:+.1f}% exceeds {max_gap_threshold}% limit")
+                continue
 
             # 3. Cost Check
             shares = order["shares"]
@@ -273,16 +303,31 @@ class PaperTrader:
             # Don't use the 'stop_price' from the order (based on est_price).
             # Recalculate using the ACTUAL fill price and the strategy's multiplier.
             try:
-                # We need fresh ATR for this. If unavailable, fallback to percentage.
-                # Since we already fetched df for fallback, we might have it, or fetch purely for ATR.
-                df_atr = fetch_single_symbol(sym, days=60, force_fresh=False)
+                # 1. Get FRESH ATR data for today
+                df_atr = fetch_single_symbol(sym, days=60, force_fresh=True)
                 df_ind = _compute_indicators(df_atr)
                 current_atr = float(df_ind.iloc[-1].get("atr14", fill_price * 0.02))
                 
+                # 2. Calculate PERCENTAGE risk from original signal
+                est_price = order.get("order_price_estimate", fill_price)
                 stop_mult = float(s_obj.params.get("stop_loss_atr", 3.0))
-                real_stop_price = fill_price - (current_atr * stop_mult)
-            except:
-                real_stop_price = fill_price * 0.90 # Safe fallback
+                
+                # Original intended stop distance as percentage
+                original_stop_distance = (current_atr * stop_mult) / est_price
+                
+                # 3. Apply SAME percentage risk to actual fill price
+                real_stop_price = fill_price * (1 - original_stop_distance)
+                
+                # 4. Safety check: If gap is unfavorable, tighten stop
+                gap_pct_local = abs((fill_price - est_price) / est_price)
+                if gap_pct_local > 0.03 and fill_price < est_price:  # Gapped down > 3%
+                    max_loss_pct = original_stop_distance * 1.2  # Allow 20% buffer
+                    real_stop_price = max(real_stop_price, fill_price * (1 - max_loss_pct))
+                    
+            except Exception as e:  # noqa: E722
+                # Fallback: Conservative 8% stop
+                real_stop_price = fill_price * 0.92
+                print(f"⚠️ Stop calculation failed for {sym}: {e}")
             
             self.portfolio[sym] = {
                 "shares": shares,
@@ -405,14 +450,31 @@ class PaperTrader:
 
             current_equity = self.state["cash"] + sum(sector_exposure.values())
             trade_val = current_equity * POSITION_FRACTION
-            if trade_val <= 0 or available_cash < trade_val: continue
+            if trade_val <= 0 or available_cash < trade_val:
+                continue
 
             sec = self._resolve_sector(cand["symbol"])
-            projected_exp = (sector_exposure.get(sec, 0.0) + trade_val) / current_equity if current_equity > 0 else 1.0
+            position_val = shares * price
+            projected_exp = (sector_exposure.get(sec, 0.0) + position_val) / current_equity if current_equity > 0 else 1.0
             if projected_exp > SECTOR_CAP: continue
 
-            shares = int(trade_val / cand["price"])
-            if shares <= 0: continue
+            # Calculate shares based on RISK, not position size
+            risk_per_trade = current_equity * MAX_RISK_PER_TRADE
+            price = cand["price"]
+            stop_price = cand["stop"]
+            risk_per_share = price - stop_price
+
+            if risk_per_share <= 0:
+                continue  # Invalid stop
+
+            shares = int(risk_per_trade / risk_per_share)
+
+            # Cap total position value at 20% equity (prevents over-leverage on tight stops)
+            max_shares_by_value = int((current_equity * POSITION_FRACTION) / price)
+            shares = min(shares, max_shares_by_value)
+
+            if shares <= 0:
+                continue
 
             success = self.buy(
                 cand["symbol"], cand["price"], shares, stop_price=cand["stop"],
@@ -420,8 +482,8 @@ class PaperTrader:
                 entry_index=cand.get("entry_i"),
             )
             if success:
-                sector_exposure[sec] = sector_exposure.get(sec, 0.0) + (shares * cand["price"])
-                available_cash -= (shares * cand["price"])
+                sector_exposure[sec] = sector_exposure.get(sec, 0.0) + position_val
+                available_cash -= position_val
                 logs.append(f"⏳ QUEUED {cand['symbol']} x{shares} (Est. ${cand['price']:.2f})")
         return logs
 

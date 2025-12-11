@@ -253,8 +253,20 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
                 signal_atr = float(row_prev.get("atr14", 0))
                 current_atr = float(row_curr.get("atr14", signal_atr))
                 effective_atr = max(signal_atr, current_atr)
-                stop_atr_mult = float(getattr(strat, "params", {}).get("stop_loss_atr", 3.0))
-                stop_width = effective_atr * stop_atr_mult
+                # Base stop multiplier from strategy
+                base_stop_mult = float(getattr(strat, "params", {}).get("stop_loss_atr", 3.0))
+
+                # Adjust for volatility regime
+                atr_pct = (effective_atr / open_px) * 100 if open_px > 0 else 2.0
+
+                if atr_pct > 5.0:  # High volatility environment
+                    adjusted_mult = base_stop_mult * 1.2  # Widen stops 20%
+                elif atr_pct < 1.5:  # Low volatility
+                    adjusted_mult = base_stop_mult * 0.9  # Tighten stops 10%
+                else:
+                    adjusted_mult = base_stop_mult
+
+                stop_width = effective_atr * adjusted_mult
                 real_stop = open_px - stop_width
 
                 daily_candidates.append({
