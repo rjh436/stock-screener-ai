@@ -44,6 +44,7 @@ def calibrate():
         return
 
     # 5. Run Calibration Loop
+    results = []  # Collect metrics for optional downstream use
     for config in configs:
         base_name = config['name']
         print(f"\n🔬 Calibrating: {base_name}")

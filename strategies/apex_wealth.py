@@ -11,16 +11,20 @@ class ApexWealthStrategy(GenericStrategy):
         days_held = i - entry_i
 
         # 1. Configuration (Source of Truth)
-        # Default to old hardcoded values (60, 1.20) if missing in config
+        # Default to old hardcoded values (60, 1.20) to preserve legacy behavior if config missing
         time_limit = int(self.genome.get("time_stop", 60))
         
-        # Resolve profit target from exit_rules or direct param
+        # Resolve profit target
         profit_mult = 1.20
+        # Check exit_rules list first
         exit_rules = self.genome.get("exit_rules", [])
         for rule in exit_rules:
             if rule.get("type") == "profit_target":
                 profit_mult = float(rule.get("val", 1.20))
                 break
+        # Allow direct override (for optimizer)
+        if "profit_target" in self.genome:
+            profit_mult = float(self.genome["profit_target"])
 
         # 2. Hard Stop (Volatility Adjusted from Engine)
         if row["low"] < stop_price:
