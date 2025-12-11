@@ -512,8 +512,10 @@ class PaperTrader:
                     
                     if len(enriched) <= MIN_BARS: continue
 
-                    # FIX: SCAN LATEST BAR (TODAY: -1)
-                    signal_idx = len(enriched) - 1
+                    # FIX: SCAN YESTERDAY BAR (matching app.py lookahead fix)
+                    signal_idx = len(enriched) - 2
+                    if signal_idx < MIN_BARS:
+                        continue
                     
                     if not strat.entry(enriched, signal_idx): continue
 
