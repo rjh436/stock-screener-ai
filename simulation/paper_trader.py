@@ -1,4 +1,3 @@
-
 import json
 import os
 import pandas as pd
@@ -29,22 +28,24 @@ class PaperTrader:
     def __init__(self, configs: Optional[List[Dict]] = None, start_cash: float = 100000.0):
         self.start_cash = start_cash
         self.scoring_weights = DEFAULT_SCORING_WEIGHTS
+        
+        # --- PHASE 3: FLYWEIGHT PATTERN (Shared Strategy Objects) ---
         self.strategy_configs = configs if configs is not None else self._load_default_configs()
         self.strategies = self._init_strategies(self.strategy_configs)
-        self.strategy_map = {s.name: s for s in self.strategies}
+        # Create a lookup cache: Name -> Strategy Object
+        self._strategy_cache = {s.name: s for s in self.strategies}
+        
         self.sector_map = self._load_sector_map()
         self.state = self._load_state()
-        self._rehydrate_positions()
-        self.state.setdefault("pending_orders", [])
+        
+        # Rehydrate runtime references (attach strategy objects to positions)
+        self._rehydrate_strategies()
 
-    @property
-    def portfolio(self) -> Dict:
-        return self.state.setdefault("positions", {})
-
+    # --- INITIALIZATION HELPERS ---
     def _init_strategies(self, configs: Optional[List[Dict]]) -> List[GenericStrategy]:
         strategies = load_strategies(configs or [])
         if not strategies:
-            strategies = [GenericStrategy({"name": "Generic", "type": "generic", "entry_rules": [], "exit_rules": [], "stop_loss_atr": 3.0, "time_stop": 70})]
+            strategies = [GenericStrategy({"name": "Generic", "type": "generic"})]
         return strategies
 
     def _load_default_configs(self) -> List[Dict]:
@@ -52,7 +53,7 @@ class PaperTrader:
             try:
                 with open(DEFAULT_CONFIG_PATH, "r") as f:
                     return json.load(f)
-            except:  # noqa: E722 - best effort fallback
+            except: 
                 return []
         return []
 
@@ -62,50 +63,64 @@ class PaperTrader:
             try:
                 with open(path, "r") as f:
                     return json.load(f)
-            except:  # noqa: E722
+            except:
                 return {}
         return {}
-
+    
     def _resolve_sector(self, sym: str) -> str:
         sym_up = (sym or "").upper()
         if sym_up in self.sector_map:
             return self.sector_map[sym_up]
         return get_sector(sym_up)
 
-    def _default_strategy(self) -> GenericStrategy:
-        return self.strategies[0] if self.strategies else GenericStrategy({"name": "Generic"})
+    def _get_strategy_by_name(self, strategy_name: str) -> GenericStrategy:
+        """
+        Robust lookup that survives renames or missing configs.
+        """
+        if not strategy_name:
+            return self.strategies[0]
+            
+        # 1. Exact Match
+        if strategy_name in self._strategy_cache:
+            return self._strategy_cache[strategy_name]
+            
+        # 2. Fuzzy/Partial Match (e.g. "Apex Wealth" -> "Apex Wealth (Gen 12)")
+        for name, strat in self._strategy_cache.items():
+            if strategy_name in name or name in strategy_name:
+                return strat
+                
+        # 3. Fallback to default
+        return self.strategies[0]
 
-    def _match_strategy(self, name: str) -> GenericStrategy:
-        if name in self.strategy_map:
-            return self.strategy_map[name]
-        return self._default_strategy()
-
-    def _rehydrate_positions(self):
-        fallback = self._default_strategy()
+    def _rehydrate_strategies(self):
+        """Re-attaches strategy objects to portfolio/pending after loading from JSON."""
+        # 1. Portfolio
         for sym, pos in self.portfolio.items():
-            strat_name = pos.get("strategy_name") or pos.get("strategy") or fallback.name
-            strat_obj = self.strategy_map.get(strat_name, fallback)
-            pos["strategy_name"] = strat_name
-            pos["strategy"] = strat_name
-            pos["strategy_obj"] = strat_obj
-
+            s_name = pos.get("strategy_name") or pos.get("strategy")
+            pos["strategy_obj"] = self._get_strategy_by_name(s_name)
+            
+        # 2. Pending Orders
         for order in self.state.get("pending_orders", []):
-            strat_name = order.get("strategy_name") or order.get("strategy")
-            if strat_name:
-                order["strategy_obj"] = self.strategy_map.get(strat_name, fallback)
-                order.setdefault("strategy_name", strat_name)
+            s_name = order.get("strategy_name") or order.get("strategy")
+            order["strategy_obj"] = self._get_strategy_by_name(s_name)
+
+    # --- STATE MANAGEMENT ---
+    @property
+    def portfolio(self) -> Dict:
+        return self.state.setdefault("positions", {})
 
     def _load_state(self):
         if os.path.exists(PORTFOLIO_FILE):
-            with open(PORTFOLIO_FILE, "r") as f:
-                state = json.load(f)
-                if "pending_orders" not in state:
-                    state["pending_orders"] = []
-                if "history" not in state:
-                    state["history"] = []
-                if "equity_curve" not in state:
-                    state["equity_curve"] = [{"date": str(datetime.now().date()), "equity": self.start_cash}]
-                return state
+            try:
+                with open(PORTFOLIO_FILE, "r") as f:
+                    state = json.load(f)
+                    if "pending_orders" not in state: state["pending_orders"] = []
+                    if "history" not in state: state["history"] = []
+                    if "equity_curve" not in state: 
+                        state["equity_curve"] = [{"date": str(datetime.now().date()), "equity": self.start_cash}]
+                    return state
+            except: pass
+            
         return {
             "cash": self.start_cash,
             "equity": self.start_cash,
@@ -116,179 +131,201 @@ class PaperTrader:
         }
 
     def save_state(self):
-        positions = {}
+        """
+        Persists state to JSON. CRITICAL: Removes non-serializable objects (strategy_obj) before saving.
+        """
+        # Create a deep-ish copy to sanitize
+        clean_state = {
+            "cash": self.state["cash"],
+            "equity": self.state["equity"],
+            "history": self.state["history"],
+            "equity_curve": self.state["equity_curve"],
+            "positions": {},
+            "pending_orders": []
+        }
+
+        # Sanitize Portfolio
         for sym, pos in self.portfolio.items():
-            sanitized = {k: v for k, v in pos.items() if k != "strategy_obj"}
-            positions[sym] = sanitized
+            clean_pos = pos.copy()
+            if "strategy_obj" in clean_pos: del clean_pos["strategy_obj"]
+            clean_state["positions"][sym] = clean_pos
 
-        pending_orders = []
+        # Sanitize Pending Orders
         for order in self.state.get("pending_orders", []):
-            clean_order = dict(order)
-            clean_order.pop("strategy_obj", None)
-            if "strategy_name" not in clean_order and "strategy" in clean_order:
-                clean_order["strategy_name"] = clean_order["strategy"]
-            pending_orders.append(clean_order)
-
-        state_copy = dict(self.state)
-        state_copy["positions"] = positions
-        state_copy["pending_orders"] = pending_orders
+            clean_order = order.copy()
+            if "strategy_obj" in clean_order: del clean_order["strategy_obj"]
+            clean_state["pending_orders"].append(clean_order)
 
         with open(PORTFOLIO_FILE, "w") as f:
-            json.dump(state_copy, f, indent=4)
+            json.dump(clean_state, f, indent=4)
 
     def reset_account(self):
         if os.path.exists(PORTFOLIO_FILE):
             os.remove(PORTFOLIO_FILE)
         self.__init__(configs=self.strategy_configs, start_cash=self.start_cash)
 
+    # --- CORE TRADING LOGIC ---
     def get_realtime_price(self, sym):
-        # Priority: Quote -> History -> 0
         try:
             q = sd.get_quote(sym)
             if q and sym in q and "quote" in q[sym]:
                 q_d = q[sym]["quote"]
                 return float(q_d.get("lastPrice") or q_d.get("mark") or q_d.get("closePrice") or 0.0)
-        except:  # noqa: E722
-            pass
+        except: pass
 
-        # Fallback
         df = fetch_single_symbol(sym, days=5, force_fresh=False)
         if df is not None and not df.empty:
             return float(df.iloc[-1]["close"])
         return 0.0
 
-    def close_position(self, symbol, reason="Manual"):
-        """Manually sells a position at the current real-time price."""
-        if symbol not in self.portfolio:
-            return False, "Position not found"
+    def buy(self, symbol: str, price: float, shares: int, stop_price: Optional[float] = None, strategy_obj=None, strategy_name: Optional[str] = None, entry_index: Optional[int] = None):
+        """
+        PHASE 3: Queues a Market-On-Open (MOO) order.
+        Checks 'Reserved Cash' to prevent overdrafts.
+        """
+        if shares <= 0 or price <= 0: return False
+        
+        # 1. Calculate Reserved Cash
+        reserved_cash = sum(o.get('committed_cash', 0) for o in self.state.get('pending_orders', []))
+        available_cash = self.state["cash"] - reserved_cash
+        
+        estimated_cost = shares * price
+        
+        # 2. Strict Funds Check
+        if available_cash < estimated_cost:
+            print(f"❌ REJECTED {symbol}: Insufficient funds (Need ${estimated_cost:,.0f}, Avail ${available_cash:,.0f})")
+            return False
 
-        pos = self.portfolio[symbol]
-        exit_price = self.get_realtime_price(symbol)
+        strat_obj = strategy_obj or self._get_strategy_by_name(strategy_name or "")
+        strat_name = strategy_name or getattr(strat_obj, "name", "Unknown")
+        stop_val = stop_price if stop_price is not None else price * 0.9
 
-        if exit_price <= 0:
-            return False, "Could not fetch valid price"
-
-        proceeds = exit_price * pos["shares"]
-        pnl = proceeds - (pos["entry_price"] * pos["shares"])
-        pnl_pct = ((exit_price - pos["entry_price"]) / pos["entry_price"]) * 100
-
-        self.state["cash"] += proceeds
-        self.state["history"].append(
-            {
-                "symbol": symbol,
-                "strategy": pos.get("strategy_name", ""),
-                "type": "SELL",
-                "reason": reason,
-                "entry_date": pos["date"],
-                "exit_date": str(datetime.now().date()),
-                "entry_price": pos["entry_price"],
-                "exit_price": exit_price,
-                "shares": pos["shares"],
-                "pnl": pnl,
-                "return_pct": pnl_pct,
-            }
-        )
-
-        del self.portfolio[symbol]
-        self.update_valuations()  # Refresh equity
+        # 3. Create Queue Order (MOO)
+        # Note: We do NOT store strategy_obj here to keep JSON clean. It's rehydrated by name later.
+        order = {
+            "symbol": symbol,
+            "shares": shares,
+            "committed_cash": estimated_cost,
+            "order_price_estimate": price,
+            "stop_price": stop_val,
+            "strategy": strat_name,
+            "strategy_name": strat_name,
+            "date": str(datetime.now().date()),
+            "type": "BUY_MOO",
+            "status": "PENDING",
+            "entry_i": entry_index,
+            "queued_at": datetime.now().isoformat()
+        }
+        
+        self.state.setdefault("pending_orders", []).append(order)
         self.save_state()
-        return True, f"Sold {symbol} at ${exit_price:.2f} (PnL: ${pnl:.2f})"
+        return True
 
-    def process_pending_orders(self, market_data: Optional[Dict[str, pd.DataFrame]] = None) -> List[str]:
+    def process_pending_orders(self) -> List[str]:
         """
-        Fill queued Market-On-Open orders using provided market_data or live fetch.
+        Executes pending MOO orders using current market data.
+        Features Gap Protection (±5%) and actual cash debit.
         """
-        filled_log: List[str] = []
-        remaining_orders: List[Dict] = []
+        fill_log = []
+        remaining_orders = []
+        
+        # If nothing pending, return
+        if not self.state.get("pending_orders"):
+            return []
+
+        print(f"🔔 Processing {len(self.state['pending_orders'])} pending orders...")
 
         for order in self.state.get("pending_orders", []):
-            sym = order.get("symbol")
-            if not sym:
+            sym = order["symbol"]
+            est_price = order.get("order_price_estimate", 0)
+            
+            # 1. Get Fill Price (Market Open logic)
+            fill_price = 0.0
+            
+            # Try Schwab Quote first (Real-time)
+            try:
+                q = sd.get_quote(sym)
+                if q and sym in q and "quote" in q[sym]:
+                    fill_price = float(q[sym]["quote"].get("openPrice", 0) or q[sym]["quote"].get("lastPrice", 0))
+            except: pass
+            
+            # Fallback to recent data
+            if fill_price == 0:
+                df = fetch_single_symbol(sym, days=5, force_fresh=True)
+                if df is not None and not df.empty:
+                    fill_price = float(df.iloc[-1]["open"]) # Use OPEN for MOO
+
+            if fill_price <= 0:
+                fill_log.append(f"❌ SKIPPED {sym}: No price data")
+                remaining_orders.append(order)
                 continue
 
-            open_price = self._resolve_open_price(sym, market_data)
-            if open_price <= 0:
-                filled_log.append(f"❌ {sym}: No valid open price")
-                continue
+            # 2. Gap Protection (±5%)
+            gap_pct = ((fill_price - est_price) / est_price) * 100 if est_price > 0 else 0
+            if abs(gap_pct) > 5.0:
+                fill_log.append(f"❌ CANCELED {sym}: Gap too large ({gap_pct:+.1f}%)")
+                continue # Do not fill, do not keep (Cancel)
 
-            target_value = float(order.get("target_value", 0) or 0)
-            if target_value <= 0:
-                target_value = float(order.get("est_price", open_price)) * float(order.get("shares", 0) or 0)
+            # 3. Cost Check
+            shares = order["shares"]
+            actual_cost = shares * fill_price
+            
+            if self.state["cash"] < actual_cost:
+                fill_log.append(f"❌ FAILED {sym}: Insufficient cash at fill")
+                continue # Cancel
 
-            shares = int(target_value / open_price)
-            if shares <= 0:
-                filled_log.append(f"❌ {sym}: Target value too low for open price")
-                continue
+            # 4. Execute Fill
+            self.state["cash"] -= actual_cost
+            
+            # Rehydrate strategy for active position
+            s_name = order.get("strategy_name") or order.get("strategy")
+            s_obj = self._get_strategy_by_name(s_name)
+            
+            self.portfolio[sym] = {
+                "shares": shares,
+                "entry_price": fill_price,
+                "stop_price": order["stop_price"],
+                "strategy": s_name,
+                "strategy_name": s_name,
+                "strategy_obj": s_obj,
+                "date": str(datetime.now().date()),
+                "current_price": fill_price,
+                "unrealized_pnl": 0.0,
+                "unrealized_pct": 0.0,
+                "entry_i": order.get("entry_i"),
+            }
+            
+            fill_log.append(f"✅ FILLED {sym} @ ${fill_price:.2f} (Gap: {gap_pct:+.1f}%)")
 
-            cost = shares * open_price
-            if self.state["cash"] < cost:
-                filled_log.append(f"⚠️ {sym}: Skipped, insufficient cash for ${cost:.2f}")
-                continue
-
-            success = self.buy(
-                sym,
-                open_price,
-                shares,
-                stop_price=order.get("stop_price"),
-                strategy_name=order.get("strategy_name"),
-                entry_index=order.get("entry_i"),
-            )
-            if success:
-                filled_log.append(f"✅ FILLED {sym} x{shares} @ ${open_price:.2f}")
-
-        # Clear queue after processing
         self.state["pending_orders"] = remaining_orders
         self.save_state()
-        return filled_log
+        return fill_log
 
-    def _resolve_open_price(self, symbol: str, market_data: Optional[Dict[str, pd.DataFrame]] = None) -> float:
-        """Derive open price from provided market data or fallbacks."""
-        try:
-            if market_data and symbol in market_data:
-                df = market_data[symbol]
-                if df is not None and not df.empty:
-                    row = df.iloc[-1]
-                    return float(row.get("open") or row.get("close"))
-        except Exception:
-            pass
-
-        df_live = fetch_single_symbol(symbol, days=3, force_fresh=True)
-        if df_live is not None and not df_live.empty:
-            try:
-                return float(df_live.iloc[-1].get("open"))
-            except Exception:
-                pass
-
-        return self.get_realtime_price(symbol)
-
-    def _current_sector_exposure(self, include_pending: bool = False) -> Dict[str, float]:
-        exposure: Dict[str, float] = {}
+    def _current_sector_exposure(self) -> Dict[str, float]:
+        exposure = {}
+        # Count Active Positions
         for sym, pos in self.portfolio.items():
             price = pos.get("current_price", pos.get("entry_price", 0))
             val = pos.get("shares", 0) * price
             sec = self._resolve_sector(sym)
             exposure[sec] = exposure.get(sec, 0.0) + val
-
-        if include_pending:
-            for order in self.state.get("pending_orders", []):
-                sym = order.get("symbol")
-                if not sym:
-                    continue
-                sec = self._resolve_sector(sym)
-                target_val = float(order.get("target_value", 0) or 0)
-                if target_val <= 0:
-                    shares = float(order.get("shares", 0) or 0)
-                    est_price = float(order.get("est_price", 0) or 0)
-                    target_val = shares * est_price
-                exposure[sec] = exposure.get(sec, 0.0) + target_val
+            
+        # Count Pending Orders (Reserved Capital)
+        for order in self.state.get("pending_orders", []):
+            val = order.get("committed_cash", 0)
+            sec = self._resolve_sector(order["symbol"])
+            exposure[sec] = exposure.get(sec, 0.0) + val
+            
         return exposure
 
     def update_valuations(self):
+        # We process orders explicitly via button now, but we can check if any are leftover
+        # fill_logs = self.process_pending_orders() 
+        fill_logs = [] 
+        
         total_value = self.state["cash"]
-
         for sym, pos in self.portfolio.items():
             current_price = self.get_realtime_price(sym)
-
             if current_price > 0:
                 pos["current_price"] = current_price
                 pos["unrealized_pnl"] = (current_price - pos["entry_price"]) * pos["shares"]
@@ -305,99 +342,54 @@ class PaperTrader:
             self.state["equity_curve"][-1]["equity"] = total_value
 
         self.save_state()
-        return self.state, []
+        return self.state, fill_logs
 
-    def buy(self, symbol: str, price: float, shares: int, stop_price: Optional[float] = None, strategy_obj=None, strategy_name: Optional[str] = None, entry_index: Optional[int] = None):
-        if shares <= 0 or price <= 0:
-            return False
-        cost = shares * price
-        if self.state["cash"] < cost:
-            return False
+    # ... (Keep existing close_position, _execute_governor, run_daily_scan, process_exits) ...
+    # CRITICAL: _execute_governor uses self.buy(), so it inherits the fixes automatically.
+    # We just need to ensure the methods are preserved below.
 
-        strat_obj = strategy_obj or self._match_strategy(strategy_name or "")
-        strat_name = strategy_name or getattr(strat_obj, "name", "Unknown")
-        stop_val = stop_price if stop_price is not None else price * 0.9
+    def close_position(self, symbol, reason="Manual"):
+        if symbol not in self.portfolio: return False, "Position not found"
+        pos = self.portfolio[symbol]
+        exit_price = self.get_realtime_price(symbol)
+        if exit_price <= 0: return False, "Could not fetch valid price"
 
-        self.state["cash"] -= cost
-        self.portfolio[symbol] = {
-            "shares": shares,
-            "entry_price": price,
-            "stop_price": stop_val,
-            "strategy": strat_name,
-            "strategy_name": strat_name,
-            "strategy_obj": strat_obj,
-            "date": str(datetime.now().date()),
-            "current_price": price,
-            "unrealized_pnl": 0.0,
-            "unrealized_pct": 0.0,
-            "entry_i": entry_index,
-        }
+        proceeds = exit_price * pos["shares"]
+        pnl = proceeds - (pos["entry_price"] * pos["shares"])
+        pnl_pct = ((exit_price - pos["entry_price"]) / pos["entry_price"]) * 100
+
+        self.state["cash"] += proceeds
+        self.state["history"].append({
+            "symbol": symbol, "strategy": pos.get("strategy_name", ""),
+            "type": "SELL", "reason": reason, "entry_date": pos["date"],
+            "exit_date": str(datetime.now().date()), "entry_price": pos["entry_price"],
+            "exit_price": exit_price, "shares": pos["shares"], "pnl": pnl, "return_pct": pnl_pct,
+        })
+        del self.portfolio[symbol]
         self.update_valuations()
-        return True
-
-    def queue_order(self, symbol: str, target_value: float, est_price: float, stop_price: Optional[float] = None, strategy_obj=None, strategy_name: Optional[str] = None, entry_index: Optional[int] = None) -> bool:
-        if not symbol or target_value <= 0 or est_price <= 0:
-            return False
-        if symbol in self.portfolio or self._is_pending(symbol):
-            return False
-
-        strat_obj = strategy_obj or self._match_strategy(strategy_name or "")
-        strat_name = strategy_name or getattr(strat_obj, "name", "Unknown")
-        self.state.setdefault("pending_orders", [])
-        self.state["pending_orders"].append(
-            {
-                "symbol": symbol,
-                "target_value": target_value,
-                "est_price": est_price,
-                "stop_price": stop_price if stop_price is not None else est_price * 0.9,
-                "strategy_name": strat_name,
-                "strategy_obj": strat_obj,
-                "entry_i": entry_index,
-                "type": "MOO",
-            }
-        )
-        self.save_state()
-        return True
-
-    def _is_pending(self, symbol: str) -> bool:
-        return any((o.get("symbol") or "").upper() == symbol.upper() for o in self.state.get("pending_orders", []))
+        return True, f"Sold {symbol} at ${exit_price:.2f} (PnL: ${pnl:.2f})"
 
     def _normalize_candidate(self, cand: Dict) -> Optional[Dict]:
         sym = cand.get("symbol") or cand.get("Symbol")
-        if not sym:
-            return None
-
+        if not sym: return None
         price = cand.get("price") or cand.get("Price")
-        if price is None:
-            price = self.get_realtime_price(sym)
-        try:
-            price = float(price)
-        except:  # noqa: E722
-            return None
-        if price <= 0:
-            return None
-
+        if price is None: price = self.get_realtime_price(sym)
+        try: price = float(price)
+        except: return None
+        if price <= 0: return None
         stop = cand.get("stop") or cand.get("Stop")
         strategy_name = cand.get("strategy_name") or cand.get("strategy") or cand.get("Strategy")
-        strat_obj = self._match_strategy(strategy_name) if strategy_name else self._default_strategy()
+        strat_obj = self._get_strategy_by_name(strategy_name)
         score = cand.get("score")
         if score is None:
             score = cand.get("Raw_Score", 50)
-            if "wealth" in strat_obj.name.lower():
-                score *= 1.3
+            if "wealth" in strat_obj.name.lower(): score *= 1.3
         else:
-            try:
-                score = float(score)
-            except:  # noqa: E722
-                score = 50
-
+            try: score = float(score)
+            except: score = 50
         return {
-            "symbol": sym,
-            "price": price,
-            "stop": stop if stop is not None else price * 0.9,
-            "strategy_name": strat_obj.name,
-            "strategy_obj": strat_obj,
-            "score": score,
+            "symbol": sym, "price": price, "stop": stop if stop is not None else price * 0.9,
+            "strategy_name": strat_obj.name, "strategy_obj": strat_obj, "score": score,
             "entry_i": cand.get("entry_i"),
         }
 
@@ -406,47 +398,45 @@ class PaperTrader:
         normalized = []
         for cand in candidates:
             norm = self._normalize_candidate(cand)
-            if norm:
-                normalized.append(norm)
+            if norm: normalized.append(norm)
 
         normalized.sort(key=lambda x: x.get("score", 0), reverse=True)
-        sector_exposure = self._current_sector_exposure(include_pending=True)
+        sector_exposure = self._current_sector_exposure()
+
+        # Calculate committed cash from pending orders
+        pending_committed = sum(o.get("committed_cash", 0) for o in self.state.get("pending_orders", []))
+        available_cash = self.state["cash"] - pending_committed
 
         for cand in normalized:
-            if len(self.portfolio) >= MAX_POSITIONS:
-                break
-            if cand["symbol"] in self.portfolio or self._is_pending(cand["symbol"]):
-                continue
+            if len(self.portfolio) + len(self.state.get("pending_orders", [])) >= MAX_POSITIONS: break
+            if cand["symbol"] in self.portfolio: continue
+            if any(o['symbol'] == cand['symbol'] for o in self.state.get("pending_orders", [])): continue
 
             current_equity = self.state["cash"] + sum(sector_exposure.values())
             trade_val = current_equity * POSITION_FRACTION
-            if trade_val <= 0 or self.state["cash"] < trade_val:
-                continue
+            if trade_val <= 0 or available_cash < trade_val: continue
 
             sec = self._resolve_sector(cand["symbol"])
             projected_exp = (sector_exposure.get(sec, 0.0) + trade_val) / current_equity if current_equity > 0 else 1.0
-            if projected_exp > SECTOR_CAP:
-                continue
+            if projected_exp > SECTOR_CAP: continue
 
             shares = int(trade_val / cand["price"])
-            if shares <= 0:
-                continue
+            if shares <= 0: continue
 
-            queued = self.queue_order(
-                cand["symbol"],
-                trade_val,
-                cand["price"],
-                stop_price=cand["stop"],
-                strategy_obj=cand["strategy_obj"],
-                strategy_name=cand["strategy_name"],
+            success = self.buy(
+                cand["symbol"], cand["price"], shares, stop_price=cand["stop"],
+                strategy_obj=cand["strategy_obj"], strategy_name=cand["strategy_name"],
                 entry_index=cand.get("entry_i"),
             )
-            if queued:
-                sector_exposure[sec] = sector_exposure.get(sec, 0.0) + trade_val
-                logs.append(f"📝 QUEUED {cand['symbol']} for MOO (${trade_val:.2f})")
+            if success:
+                sector_exposure[sec] = exposure_update = sector_exposure.get(sec, 0.0) + (shares * cand["price"])
+                sector_exposure[sec] = exposure_update
+                available_cash -= (shares * cand["price"])
+                logs.append(f"⏳ QUEUED {cand['symbol']} x{shares} (Est. ${cand['price']:.2f})")
         return logs
 
     def run_daily_scan(self, data_dict: Optional[Dict[str, pd.DataFrame]] = None, global_data: Optional[Dict[str, pd.DataFrame]] = None, scoring_weights: Optional[Dict] = None) -> List[str]:
+        # (Keeping original logic, just ensuring it calls _execute_governor which calls updated buy)
         scoring = scoring_weights or self.scoring_weights
         vix_df = global_data.get("VIX") if global_data else None
         spy_df = global_data.get("SPY") if global_data else None
@@ -461,25 +451,18 @@ class PaperTrader:
         candidates = []
         for strat in self.strategies:
             for sym, df in data_dict.items():
-                if df is None or df.empty:
-                    continue
+                if df is None or df.empty: continue
                 try:
                     enriched = _compute_indicators(df.copy(), spy_df=spy_df)
-                    if vix_df is not None:
-                        enriched["vix"] = vix_df["close"].reindex(enriched.index).ffill().fillna(20.0)
-                    else:
-                        enriched["vix"] = 20.0
-                    if len(enriched) <= MIN_BARS:
-                        continue
+                    if vix_df is not None: enriched["vix"] = vix_df["close"].reindex(enriched.index).ffill().fillna(20.0)
+                    else: enriched["vix"] = 20.0
+                    if len(enriched) <= MIN_BARS: continue
 
                     signal_idx = len(enriched) - 2
                     trade_idx = signal_idx + 1
-                    if signal_idx < 0 or trade_idx <= 0:
-                        continue
-                    if trade_idx < MIN_BARS:
-                        continue
-                    if not strat.entry(enriched, signal_idx):
-                        continue
+                    if signal_idx < 0 or trade_idx <= 0: continue
+                    if trade_idx < MIN_BARS: continue
+                    if not strat.entry(enriched, signal_idx): continue
 
                     row_prev = enriched.iloc[signal_idx]
                     raw_score = calculate_backtest_quality_score(row_prev, strat.name, weights=scoring)
@@ -492,19 +475,12 @@ class PaperTrader:
                     stop_mult = float(getattr(strat, "params", {}).get("stop_loss_atr", 3.0))
                     stop_price = open_px - (effective_atr * stop_mult)
 
-                    candidates.append(
-                        {
-                            "symbol": sym,
-                            "price": open_px,
-                            "stop": stop_price,
-                            "strategy_name": strat.name,
-                            "strategy_obj": strat,
-                            "score": score,
-                            "entry_i": trade_idx,
-                        }
-                    )
-                except:  # noqa: E722
-                    continue
+                    candidates.append({
+                        "symbol": sym, "price": open_px, "stop": stop_price,
+                        "strategy_name": strat.name, "strategy_obj": strat,
+                        "score": score, "entry_i": trade_idx,
+                    })
+                except: continue
 
         return self._execute_governor(candidates)
 
@@ -513,24 +489,18 @@ class PaperTrader:
 
     def process_exits(self, strategies_map=None):
         exits = []
+        # Copy items to allow deletion during iteration
         for sym, pos in list(self.portfolio.items()):
-            strat_obj = pos.get("strategy_obj") or self._match_strategy(pos.get("strategy_name") or pos.get("strategy") or "")
-            if strat_obj is None and strategies_map:
-                strat_name = pos.get("strategy_name") or pos.get("strategy")
-                if strat_name and strategies_map.get(strat_name):
-                    strat_obj = GenericStrategy(strategies_map[strat_name])
-            if strat_obj is None:
-                strat_obj = self._default_strategy()
-            pos["strategy_obj"] = strat_obj
+            strat_obj = pos.get("strategy_obj") or self._get_strategy_by_name(pos.get("strategy_name"))
+            if strat_obj is None: strat_obj = self.strategies[0]
+            pos["strategy_obj"] = strat_obj # Ensure attached
 
             df = fetch_single_symbol(sym, days=200, force_fresh=False)
-            if df is None or df.empty:
-                continue
+            if df is None or df.empty: continue
 
             df = _compute_indicators(df)
             current_idx = len(df) - 1
-            if current_idx < 0:
-                continue
+            if current_idx < 0: continue
 
             entry_i = pos.get("entry_i")
             if entry_i is None:
@@ -539,40 +509,29 @@ class PaperTrader:
                     today_dt = datetime.now().date()
                     days_held = (today_dt - entry_dt).days
                     entry_i = max(0, current_idx - days_held)
-                except:  # noqa: E722
-                    entry_i = current_idx
+                except: entry_i = current_idx
 
             stop_price = pos.get("stop_price", pos.get("entry_price", 0) * 0.9)
             if strat_obj.exit(df, current_idx, entry_i, pos["entry_price"], stop_price):
                 exit_price = float(df.iloc[-1]["close"])
-                if df.iloc[-1]["low"] < stop_price:
-                    exit_price = stop_price
+                if df.iloc[-1]["low"] < stop_price: exit_price = stop_price
 
                 proceeds = exit_price * pos["shares"]
                 pnl = proceeds - (pos["entry_price"] * pos["shares"])
                 pct = (exit_price - pos["entry_price"]) / pos["entry_price"] * 100
 
                 self.state["cash"] += proceeds
-                self.state["history"].append(
-                    {
-                        "symbol": sym,
-                        "strategy": pos.get("strategy_name", strat_obj.name),
-                        "type": "AUTO_EXIT",
-                        "reason": "Signal/Stop",
-                        "entry_date": pos["date"],
-                        "exit_date": str(datetime.now().date()),
-                        "entry_price": pos["entry_price"],
-                        "exit_price": exit_price,
-                        "shares": pos["shares"],
-                        "pnl": pnl,
-                        "return_pct": pct,
-                    }
-                )
+                self.state["history"].append({
+                    "symbol": sym, "strategy": pos.get("strategy_name", strat_obj.name),
+                    "type": "AUTO_EXIT", "reason": "Signal/Stop",
+                    "entry_date": pos["date"], "exit_date": str(datetime.now().date()),
+                    "entry_price": pos["entry_price"], "exit_price": exit_price,
+                    "shares": pos["shares"], "pnl": pnl, "return_pct": pct,
+                })
                 del self.portfolio[sym]
                 exits.append(f"SOLD {sym} at ${exit_price:.2f} ({pnl:.2f})")
 
         self.save_state()
         return exits
-
-    # Alias for compatibility with newer naming
+    
     check_exits = process_exits

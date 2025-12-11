@@ -357,14 +357,47 @@ elif mode == "Simulator":
     else:
         st.info("Portfolio is empty.")
         
-    st.subheader("⏳ Pending Orders")
-    if st.button("🔄 Process Pending Orders (Morning Fill)"):
-        fill_logs = pt.process_pending_orders()
-        if fill_logs:
-            for log in fill_logs:
-                st.write(log)
-        st.rerun()
-    if state.get("pending_orders"):
-        st.dataframe(pd.DataFrame(state["pending_orders"]))
+    st.subheader("⏳ Pending Orders (Market-On-Open)")
+    
+    pending = state.get("pending_orders", [])
+    if pending:
+        # --- PHASE 3 FIX: Optimized Dataframe Sanitization ---
+        df_pending = pd.DataFrame(pending)
+        
+        # Safe drop of 'strategy_obj' if it exists
+        if "strategy_obj" in df_pending.columns:
+            df_pending = df_pending.drop(columns=["strategy_obj"])
+            
+        # Display nicely
+        st.dataframe(
+            df_pending.style.format({
+                "committed_cash": "${:,.0f}", 
+                "order_price_estimate": "${:.2f}"
+            }), 
+            use_container_width=True
+        )
+        
+        # Calculate Logic for display
+        reserved = sum(o.get('committed_cash', 0) for o in pending)
+        avail = state['cash'] - reserved
+        
+        c1, c2 = st.columns(2)
+        c1.metric("Reserved Cash", f"${reserved:,.0f}")
+        c2.metric("True Available", f"${avail:,.0f}")
+        
+        # Add a clear manual trigger for filling
+        if st.button("🔔 Process Pending Orders (Morning Fill)", type="primary"):
+            with st.spinner("Executing Market-On-Open orders..."):
+                fill_logs = pt.process_pending_orders()
+            
+            if fill_logs:
+                for log in fill_logs:
+                    if "✅" in log: st.success(log)
+                    else: st.error(log)
+                st.session_state['portfolio_updated'] = True
+                st.rerun()
+            else:
+                st.info("No orders filled (check gap protection or data availability).")
+                
     else:
-        st.caption("No orders queued.")
+        st.caption("No orders queued for tomorrow.")
