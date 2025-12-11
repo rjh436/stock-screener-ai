@@ -16,11 +16,11 @@ from strategies.strategy_loader import load_strategies
 def calibrate():
     print("🚀 Starting Stop-Loss Calibration (Phase 4)...")
     
-    # 1. Load Data (S&P 100 for speed)
-    universe = "S&P 100" 
+    # 1. Load Data (FULL S&P 1500 for Accuracy)
+    universe = "S&P 1500" 
     print(f"📊 Loading {universe} Data (500 days)...")
     symbols = get_index_symbols(universe)
-    # Use 500 days to capture the recent regime but run fast
+    # 500 days captures the recent regime (High Rate/Vol)
     data = fetch_data_pack(symbols, days=500)
     
     # 2. Load Config
@@ -33,7 +33,7 @@ def calibrate():
         return
 
     # 3. Define Test Range
-    atr_settings = [2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
+    atr_settings = [2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
     
     # 4. Select Strategies
     target_names = ["Apex Wealth (Gen 12)", "Super Signal (Gen 12 Wealth)", "Apex Income (Gen 9)"]
@@ -44,8 +44,6 @@ def calibrate():
         return
 
     # 5. Run Calibration Loop
-    results = []
-    
     for config in configs:
         base_name = config['name']
         print(f"\n🔬 Calibrating: {base_name}")
