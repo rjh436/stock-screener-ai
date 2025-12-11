@@ -268,22 +268,29 @@ class PaperTrader:
                 remaining_orders.append(order)
                 continue
 
-            # 2. Dynamic Gap Protection (Based on Strategy Risk)
-            gap_pct = ((fill_price - est_price) / est_price) * 100 if est_price > 0 else 0
+            # 2. Dynamic Gap Protection (Open-to-Open comparison)
+            signal_open_price = order.get("signal_open", est_price)
+
+            # Calculate gap using OPEN prices (not close)
+            gap_pct = ((fill_price - signal_open_price) / signal_open_price) * 100 if signal_open_price > 0 else 0
 
             # Calculate strategy's ATR-based risk tolerance
             try:
                 s_name_gap = order.get("strategy_name") or order.get("strategy")
                 s_obj_gap = self._get_strategy_by_name(s_name_gap)
                 stop_mult_gap = float(s_obj_gap.params.get("stop_loss_atr", 3.0))
-                max_gap_threshold = 2.5  # Default
+
+                # Gap threshold = 50% of stop width
+                max_gap_threshold = stop_mult_gap * 0.5
+
+                # Strategy-specific overrides
                 if s_name_gap and "wealth" in s_name_gap.lower():
-                    max_gap_threshold = 2.0
+                    max_gap_threshold = min(max_gap_threshold, 2.0)
             except:  # noqa: E722
                 max_gap_threshold = 2.5
 
             if abs(gap_pct) > max_gap_threshold:
-                fill_log.append(f"❌ CANCELED {sym}: Gap {gap_pct:+.1f}% exceeds {max_gap_threshold}% limit")
+                fill_log.append(f"❌ CANCELED {sym}: Gap {gap_pct:+.1f}% exceeds {max_gap_threshold:.1f}% limit (open-to-open)")
                 continue
 
             # 3. Cost Check
@@ -453,27 +460,50 @@ class PaperTrader:
             if trade_val <= 0 or available_cash < trade_val:
                 continue
 
-            sec = self._resolve_sector(cand["symbol"])
-            position_val = shares * price
-            projected_exp = (sector_exposure.get(sec, 0.0) + position_val) / current_equity if current_equity > 0 else 1.0
-            if projected_exp > SECTOR_CAP: continue
-
             # Calculate shares based on RISK, not position size
             risk_per_trade = current_equity * MAX_RISK_PER_TRADE
             price = cand["price"]
             stop_price = cand["stop"]
             risk_per_share = price - stop_price
 
-            if risk_per_share <= 0:
-                continue  # Invalid stop
+            # SAFETY CHECK 1: Minimum risk distance (at least 1% of price)
+            min_risk_distance = price * 0.01
+            if risk_per_share < min_risk_distance:
+                risk_pct = (risk_per_share / price) * 100 if price > 0 else 0
+                logs.append(f"⚠️ REJECTED {cand['symbol']}: Stop too tight ({risk_pct:.2f}% < 1.0% minimum)")
+                continue
 
+            # SAFETY CHECK 2: Maximum risk distance (no more than 20% of price)
+            max_risk_distance = price * 0.20
+            if risk_per_share > max_risk_distance:
+                logs.append(f"⚠️ REJECTED {cand['symbol']}: Stop too wide ({risk_per_share/price*100:.2f}% > 20% maximum)")
+                continue
+
+            # Calculate shares
             shares = int(risk_per_trade / risk_per_share)
 
-            # Cap total position value at 20% equity (prevents over-leverage on tight stops)
+            # SAFETY CHECK 3: Absolute maximum shares per position
+            MAX_SHARES_PER_POSITION = 1000
+            if shares > MAX_SHARES_PER_POSITION:
+                logs.append(f"ℹ️ CAPPED {cand['symbol']}: Reduced from {shares} to {MAX_SHARES_PER_POSITION} shares (safety limit)")
+                shares = MAX_SHARES_PER_POSITION
+
+            # SAFETY CHECK 4: Cap total position value at 20% equity
             max_shares_by_value = int((current_equity * POSITION_FRACTION) / price)
             shares = min(shares, max_shares_by_value)
 
-            if shares <= 0:
+            # SAFETY CHECK 5: Minimum viable position
+            if shares < 1:
+                logs.append(f"⚠️ REJECTED {cand['symbol']}: Position too small (< 1 share)")
+                continue
+
+            # Now compute position value and sector exposure after sizing
+            position_val = shares * price
+            sec = self._resolve_sector(cand["symbol"])
+            projected_exp = (sector_exposure.get(sec, 0.0) + position_val) / current_equity if current_equity > 0 else 1.0
+
+            if projected_exp > SECTOR_CAP:
+                logs.append(f"⚠️ REJECTED {cand['symbol']}: Sector {sec} would be {projected_exp*100:.0f}% (limit: {SECTOR_CAP*100:.0f}%)")
                 continue
 
             success = self.buy(
@@ -484,7 +514,7 @@ class PaperTrader:
             if success:
                 sector_exposure[sec] = sector_exposure.get(sec, 0.0) + position_val
                 available_cash -= position_val
-                logs.append(f"⏳ QUEUED {cand['symbol']} x{shares} (Est. ${cand['price']:.2f})")
+                logs.append(f"⏳ QUEUED {cand['symbol']} x{shares} @ ${cand['price']:.2f} (Stop: ${cand['stop']:.2f})")
         return logs
 
     def run_daily_scan(self, data_dict: Optional[Dict[str, pd.DataFrame]] = None, global_data: Optional[Dict[str, pd.DataFrame]] = None, scoring_weights: Optional[Dict] = None) -> List[str]:
@@ -519,28 +549,29 @@ class PaperTrader:
                     
                     if not strat.entry(enriched, signal_idx): continue
 
-                    # Use Today's data for estimation
+                    # Use Yesterday's data for gap protection baseline
                     row_prev = enriched.iloc[signal_idx]
-                    
                     raw_score = calculate_backtest_quality_score(row_prev, strat.name, weights=scoring)
                     score = raw_score * 1.3 if "wealth" in strat.name.lower() else raw_score
-                    
-                    # Estimate Price (Today's Close) - Real fill will happen tomorrow
-                    open_px = float(row_prev["close"]) 
-                    
+
+                    # Store BOTH yesterday's close AND open
+                    signal_close = float(row_prev["close"])
+                    signal_open = float(row_prev["open"])
+
                     # Stop Loss (Estimation only - Recalculated on fill)
-                    atr = float(row_prev.get("atr14", open_px * 0.02))
+                    atr = float(row_prev.get("atr14", signal_close * 0.02))
                     stop_mult = float(getattr(strat, "params", {}).get("stop_loss_atr", 3.0))
-                    stop_price = open_px - (atr * stop_mult)
+                    stop_price = signal_close - (atr * stop_mult)
 
                     candidates.append({
-                        "symbol": sym, 
-                        "price": open_px, 
+                        "symbol": sym,
+                        "price": signal_close,
+                        "signal_open": signal_open,
                         "stop": stop_price,
-                        "strategy_name": strat.name, 
+                        "strategy_name": strat.name,
                         "strategy_obj": strat,
-                        "score": score, 
-                        "entry_i": signal_idx + 1 # Target entry index is tomorrow
+                        "score": score,
+                        "entry_i": signal_idx + 1
                     })
                 except: continue
 

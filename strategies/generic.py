@@ -54,35 +54,60 @@ class GenericStrategy(BaseStrategy):
         return {"entry_price": float(row.get("close", 0)), "stop_price": stop_price}
 
     def exit(self, df: pd.DataFrame, i: int, entry_i: int, entry_price: float, stop_price: float) -> bool:
+        """
+        Enhanced exit logic with trailing stops and hard loss floor.
+        """
         row = df.iloc[i]
         days_held = i - entry_i
         close_px = row.get("close", entry_price)
         pnl_pct = ((close_px - entry_price) / entry_price) * 100
 
-        # 1. Hard Stop (Volatility Adjusted) - The "Disaster" Line
-        if row.get("low", np.inf) < stop_price:
+        # === DYNAMIC TRAILING STOP ===
+        atr = row.get("atr14", close_px * 0.02)
+        stop_mult = float(self.genome.get("stop_loss_atr", 3.0))
+        trailing_stop = close_px - (atr * stop_mult)
+
+        # Hard floor: Never lose more than 12% (tightened to prevent gap-down slippage)
+        hard_floor = entry_price * 0.88
+
+        # Use the HIGHEST stop (tightest protection)
+        effective_stop = max(trailing_stop, hard_floor, stop_price)
+
+        # 1. STOP LOSS CHECK
+        if row.get("low", np.inf) < effective_stop:
             return True
 
-        # 2. Stale Trade Cleanup (Time Based)
+        # 2. TIME-BASED EXITS
         time_limit = int(self.genome.get("time_stop", 45))
-        if days_held >= time_limit:
-            sma50 = row.get("sma50")
-            if pnl_pct < 0:
-                return True  # Cut losers at time limit
-            if pnl_pct < 8.0:
-                return True  # Cut weak winners
-            if sma50 and close_px < sma50:
-                return True  # Cut broken trends
 
-        # 3. Trailing Stop (Trend Based)
+        # Progressive tightening in final 20% of hold period
+        if days_held >= time_limit * 0.8:
+            if pnl_pct < -5.0:
+                return True
+            if pnl_pct < 3.0:
+                sma20 = row.get("sma20", close_px)
+                if close_px < sma20:
+                    return True
+
+        # Final time limit
+        if days_held >= time_limit:
+            if pnl_pct < 0:
+                return True
+            if pnl_pct < 8.0:
+                return True
+            sma50 = row.get("sma50")
+            if sma50 and close_px < sma50:
+                return True
+
+        # 3. TREND BREAK PROTECTION
         sma50 = row.get("sma50")
         if sma50 and close_px < sma50:
             if pnl_pct > 0:
-                return True  # Protect gains
+                return True
             if days_held > 10:
-                return True  # Trend broken on a laggard
+                return True
 
-        # 4. Profit Targets (Optional)
+        # 4. PROFIT TARGETS
         for rule in self.genome.get("exit_rules", []):
             if rule.get("type") == "profit_target":
                 target_multiple = float(rule.get("val", 1.0))
@@ -90,4 +115,5 @@ class GenericStrategy(BaseStrategy):
                     return True
             elif self._check_condition(row, rule):
                 return True
+
         return False
