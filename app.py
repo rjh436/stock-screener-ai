@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import concurrent.futures
@@ -13,7 +12,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from data.schwab_client import sd
 from data.loader import fetch_data_pack
 from data.indices import get_index_symbols
-from execution.engine import run_backtest, _compute_indicators
+# --- PHASE 3 UPGRADE: Import Scoring Engine ---
+from execution.engine import run_backtest, _compute_indicators, calculate_backtest_quality_score, DEFAULT_SCORING_WEIGHTS
 from simulation.paper_trader import PaperTrader
 from strategies.strategy_loader import load_strategies
 
@@ -33,6 +33,14 @@ def format_rule(r):
 def color_pnl(val):
     color = 'green' if val > 0 else 'red' if val < 0 else 'white'
     return f'color: {color}'
+
+def score_to_rating(score):
+    """Convert numerical score to visual rating for UI"""
+    if score >= 85: return "🔥 Excellent"
+    elif score >= 75: return "⭐ Strong"
+    elif score >= 60: return "✅ Good"
+    elif score >= 50: return "⚠️ Fair"
+    return "❌ Weak"
 
 def calc_exit_plan(row, strategies_map):
     strat_name = row.get('Strategy', '').split(" + ")[0] 
@@ -135,6 +143,12 @@ if mode == "Live Screener":
                                 atr = row.get("atr14", row["close"]*0.02)
                                 stop_mult = float(s_conf.get("stop_loss_atr", 3.0))
                                 
+                                # --- PHASE 3: UNIFIED SCORING ENGINE ---
+                                # 1. Calculate Base Score
+                                raw_score = calculate_backtest_quality_score(row, s_conf["name"], DEFAULT_SCORING_WEIGHTS)
+                                # 2. Apply Wealth Boost (Match Simulator Logic)
+                                score = raw_score * 1.3 if "wealth" in s_conf["name"].lower() else raw_score
+                                
                                 exits = s_conf.get("exit_rules", [])
                                 if exits and exits[0].get("type") == "profit_target":
                                     target_txt = f"${row['close'] * float(exits[0].get('val')):.2f}"
@@ -142,11 +156,19 @@ if mode == "Live Screener":
                                     target_txt = "OPEN (Run)"
 
                                 results.append({
-                                    "Symbol": sym, "Strategy": s_conf["name"],
-                                    "Price": row["close"], "Stop Loss": row["close"] - (atr * stop_mult),
-                                    "Target": target_txt
+                                    "Symbol": sym, 
+                                    "Strategy": s_conf["name"],
+                                    "Price": row["close"], 
+                                    "Stop Loss": row["close"] - (atr * stop_mult),
+                                    "Target": target_txt,
+                                    "Score": score,
+                                    "Rating": score_to_rating(score)
                                 })
                         except: continue
+                
+                # Sort by Score Descending (Best setups first)
+                if results:
+                    results.sort(key=lambda x: x["Score"], reverse=True)
                 st.session_state.scan_results = pd.DataFrame(results)
 
     if st.session_state.scan_results is not None:
@@ -154,11 +176,21 @@ if mode == "Live Screener":
         if df.empty:
             st.info("No signals found today.")
         else:
-            dupes = df[df.duplicated(subset=['Symbol'], keep=False)]
-            if not dupes.empty:
-                st.success(f"🔥 SUPER SIGNALS: {len(dupes['Symbol'].unique())}")
-                st.dataframe(dupes)
-            st.dataframe(df.style.format({"Price": "${:.2f}", "Stop Loss": "${:.2f}"}), use_container_width=True)
+            # Summary Metrics
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Signals", len(df))
+            c2.metric("Best Score", f"{df['Score'].max():.1f}")
+            c3.metric("Top Strategy", df.iloc[0]['Strategy'])
+            
+            st.dataframe(
+                df.style.format({
+                    "Price": "${:.2f}", 
+                    "Stop Loss": "${:.2f}",
+                    "Score": "{:.1f}"
+                }), 
+                use_container_width=True
+            )
+            
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button("📥 Download CSV", csv, f"apex_scan_{datetime.now().date()}.csv", "text/csv")
 
