@@ -1,6 +1,7 @@
 import json
 import os
 import pandas as pd
+import pytz
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -32,13 +33,11 @@ class PaperTrader:
         # --- PHASE 3: FLYWEIGHT PATTERN (Shared Strategy Objects) ---
         self.strategy_configs = configs if configs is not None else self._load_default_configs()
         self.strategies = self._init_strategies(self.strategy_configs)
-        # Create a lookup cache: Name -> Strategy Object
         self._strategy_cache = {s.name: s for s in self.strategies}
         
         self.sector_map = self._load_sector_map()
         self.state = self._load_state()
         
-        # Rehydrate runtime references (attach strategy objects to positions)
         self._rehydrate_strategies()
 
     # --- INITIALIZATION HELPERS ---
@@ -74,32 +73,19 @@ class PaperTrader:
         return get_sector(sym_up)
 
     def _get_strategy_by_name(self, strategy_name: str) -> GenericStrategy:
-        """
-        Robust lookup that survives renames or missing configs.
-        """
         if not strategy_name:
             return self.strategies[0]
-            
-        # 1. Exact Match
         if strategy_name in self._strategy_cache:
             return self._strategy_cache[strategy_name]
-            
-        # 2. Fuzzy/Partial Match (e.g. "Apex Wealth" -> "Apex Wealth (Gen 12)")
         for name, strat in self._strategy_cache.items():
             if strategy_name in name or name in strategy_name:
                 return strat
-                
-        # 3. Fallback to default
         return self.strategies[0]
 
     def _rehydrate_strategies(self):
-        """Re-attaches strategy objects to portfolio/pending after loading from JSON."""
-        # 1. Portfolio
         for sym, pos in self.portfolio.items():
             s_name = pos.get("strategy_name") or pos.get("strategy")
             pos["strategy_obj"] = self._get_strategy_by_name(s_name)
-            
-        # 2. Pending Orders
         for order in self.state.get("pending_orders", []):
             s_name = order.get("strategy_name") or order.get("strategy")
             order["strategy_obj"] = self._get_strategy_by_name(s_name)
@@ -131,10 +117,6 @@ class PaperTrader:
         }
 
     def save_state(self):
-        """
-        Persists state to JSON. CRITICAL: Removes non-serializable objects (strategy_obj) before saving.
-        """
-        # Create a deep-ish copy to sanitize
         clean_state = {
             "cash": self.state["cash"],
             "equity": self.state["equity"],
@@ -143,14 +125,10 @@ class PaperTrader:
             "positions": {},
             "pending_orders": []
         }
-
-        # Sanitize Portfolio
         for sym, pos in self.portfolio.items():
             clean_pos = pos.copy()
             if "strategy_obj" in clean_pos: del clean_pos["strategy_obj"]
             clean_state["positions"][sym] = clean_pos
-
-        # Sanitize Pending Orders
         for order in self.state.get("pending_orders", []):
             clean_order = order.copy()
             if "strategy_obj" in clean_order: del clean_order["strategy_obj"]
@@ -185,13 +163,11 @@ class PaperTrader:
         """
         if shares <= 0 or price <= 0: return False
         
-        # 1. Calculate Reserved Cash
         reserved_cash = sum(o.get('committed_cash', 0) for o in self.state.get('pending_orders', []))
         available_cash = self.state["cash"] - reserved_cash
         
         estimated_cost = shares * price
         
-        # 2. Strict Funds Check
         if available_cash < estimated_cost:
             print(f"❌ REJECTED {symbol}: Insufficient funds (Need ${estimated_cost:,.0f}, Avail ${available_cash:,.0f})")
             return False
@@ -200,8 +176,6 @@ class PaperTrader:
         strat_name = strategy_name or getattr(strat_obj, "name", "Unknown")
         stop_val = stop_price if stop_price is not None else price * 0.9
 
-        # 3. Create Queue Order (MOO)
-        # Note: We do NOT store strategy_obj here to keep JSON clean. It's rehydrated by name later.
         order = {
             "symbol": symbol,
             "shares": shares,
@@ -224,7 +198,7 @@ class PaperTrader:
     def process_pending_orders(self) -> List[str]:
         """
         Executes pending MOO orders ONLY if market is open (9:30 AM ET).
-        Features: Timezone-aware checks, Gap Protection (±5%), and Strict Open Price enforcement.
+        FIX: Recalculates Stop Loss based on ACTUAL fill price.
         """
         fill_log = []
         remaining_orders = []
@@ -234,18 +208,14 @@ class PaperTrader:
 
         # --- TIMEZONE SETUP (New York) ---
         try:
-            import pytz
             ny_tz = pytz.timezone('America/New_York')
             now_ny = datetime.now(ny_tz)
         except ImportError:
-            # Fallback if pytz missing (unlikely in Streamlit)
             now_ny = datetime.now()
-            print("⚠️ pytz not found, using server time (risk of timezone mismatch)")
+            print("⚠️ pytz not found, using server time")
 
         today_ny = now_ny.date()
         market_open_time = now_ny.replace(hour=9, minute=30, second=0, microsecond=0)
-        
-        # Simple check: Is it past 9:30 AM in NY?
         is_market_open = now_ny >= market_open_time
 
         print(f"🔔 Processing {len(self.state['pending_orders'])} pending orders...")
@@ -254,37 +224,26 @@ class PaperTrader:
         for order in self.state.get("pending_orders", []):
             sym = order["symbol"]
             est_price = order.get("order_price_estimate", 0)
-            
-            # 1. Get Fill Price (Strict Market Open logic)
             fill_price = 0.0
             
-            # A. Try Schwab Quote (Real-time)
+            # 1. Get Fill Price
             try:
                 q = sd.get_quote(sym)
                 if q and sym in q and "quote" in q[sym]:
-                    # STRICT: We only accept 'openPrice' if it exists.
                     open_price = float(q[sym]["quote"].get("openPrice", 0))
-                    if open_price > 0:
-                        fill_price = open_price
+                    if open_price > 0: fill_price = open_price
             except: pass
             
-            # B. Fallback to recent data (Verify Date & Time)
+            # Fallback
             if fill_price == 0:
                 df = fetch_single_symbol(sym, days=5, force_fresh=True)
                 if df is not None and not df.empty:
-                    # STRICT: Ensure the last candle is from TODAY in NY
                     last_dt = df.index[-1]
-                    # Handle naive vs aware timestamps
-                    if last_dt.tzinfo is None and hasattr(now_ny, 'tzinfo'):
-                         # Assume data is local/naive, just check date
-                         if last_dt.date() == today_ny:
-                             fill_price = float(df.iloc[-1]["open"])
-                    else:
-                        # Compare dates directly
-                        if last_dt.date() == today_ny:
-                            fill_price = float(df.iloc[-1]["open"])
+                    # Simple date check
+                    if last_dt.date() == today_ny:
+                        fill_price = float(df.iloc[-1]["open"])
 
-            # C. Decision - WAITING condition
+            # WAITING logic
             if fill_price <= 0:
                 reason = "Market not open" if not is_market_open else "No Open Price yet"
                 fill_log.append(f"⏳ WAITING {sym}: {reason}")
@@ -300,7 +259,6 @@ class PaperTrader:
             # 3. Cost Check
             shares = order["shares"]
             actual_cost = shares * fill_price
-            
             if self.state["cash"] < actual_cost:
                 fill_log.append(f"❌ FAILED {sym}: Insufficient cash at fill")
                 continue
@@ -311,10 +269,25 @@ class PaperTrader:
             s_name = order.get("strategy_name") or order.get("strategy")
             s_obj = self._get_strategy_by_name(s_name)
             
+            # --- SAFETY FIX: RECALCULATE STOP LOSS ---
+            # Don't use the 'stop_price' from the order (based on est_price).
+            # Recalculate using the ACTUAL fill price and the strategy's multiplier.
+            try:
+                # We need fresh ATR for this. If unavailable, fallback to percentage.
+                # Since we already fetched df for fallback, we might have it, or fetch purely for ATR.
+                df_atr = fetch_single_symbol(sym, days=60, force_fresh=False)
+                df_ind = _compute_indicators(df_atr)
+                current_atr = float(df_ind.iloc[-1].get("atr14", fill_price * 0.02))
+                
+                stop_mult = float(s_obj.params.get("stop_loss_atr", 3.0))
+                real_stop_price = fill_price - (current_atr * stop_mult)
+            except:
+                real_stop_price = fill_price * 0.90 # Safe fallback
+            
             self.portfolio[sym] = {
                 "shares": shares,
                 "entry_price": fill_price,
-                "stop_price": order["stop_price"],
+                "stop_price": real_stop_price, # Updated Stop
                 "strategy": s_name,
                 "strategy_name": s_name,
                 "strategy_obj": s_obj,
@@ -325,7 +298,7 @@ class PaperTrader:
                 "entry_i": order.get("entry_i"),
             }
             
-            fill_log.append(f"✅ FILLED {sym} @ ${fill_price:.2f} (Gap: {gap_pct:+.1f}%)")
+            fill_log.append(f"✅ FILLED {sym} @ ${fill_price:.2f} (Stop: ${real_stop_price:.2f})")
 
         self.state["pending_orders"] = remaining_orders
         self.save_state()
@@ -333,26 +306,19 @@ class PaperTrader:
 
     def _current_sector_exposure(self) -> Dict[str, float]:
         exposure = {}
-        # Count Active Positions
         for sym, pos in self.portfolio.items():
             price = pos.get("current_price", pos.get("entry_price", 0))
             val = pos.get("shares", 0) * price
             sec = self._resolve_sector(sym)
             exposure[sec] = exposure.get(sec, 0.0) + val
-            
-        # Count Pending Orders (Reserved Capital)
         for order in self.state.get("pending_orders", []):
             val = order.get("committed_cash", 0)
             sec = self._resolve_sector(order["symbol"])
             exposure[sec] = exposure.get(sec, 0.0) + val
-            
         return exposure
 
     def update_valuations(self):
-        # We process orders explicitly via button now, but we can check if any are leftover
-        # fill_logs = self.process_pending_orders() 
         fill_logs = [] 
-        
         total_value = self.state["cash"]
         for sym, pos in self.portfolio.items():
             current_price = self.get_realtime_price(sym)
@@ -373,10 +339,6 @@ class PaperTrader:
 
         self.save_state()
         return self.state, fill_logs
-
-    # ... (Keep existing close_position, _execute_governor, run_daily_scan, process_exits) ...
-    # CRITICAL: _execute_governor uses self.buy(), so it inherits the fixes automatically.
-    # We just need to ensure the methods are preserved below.
 
     def close_position(self, symbol, reason="Manual"):
         if symbol not in self.portfolio: return False, "Position not found"
@@ -433,7 +395,6 @@ class PaperTrader:
         normalized.sort(key=lambda x: x.get("score", 0), reverse=True)
         sector_exposure = self._current_sector_exposure()
 
-        # Calculate committed cash from pending orders
         pending_committed = sum(o.get("committed_cash", 0) for o in self.state.get("pending_orders", []))
         available_cash = self.state["cash"] - pending_committed
 
@@ -459,17 +420,17 @@ class PaperTrader:
                 entry_index=cand.get("entry_i"),
             )
             if success:
-                sector_exposure[sec] = exposure_update = sector_exposure.get(sec, 0.0) + (shares * cand["price"])
-                sector_exposure[sec] = exposure_update
+                sector_exposure[sec] = sector_exposure.get(sec, 0.0) + (shares * cand["price"])
                 available_cash -= (shares * cand["price"])
                 logs.append(f"⏳ QUEUED {cand['symbol']} x{shares} (Est. ${cand['price']:.2f})")
         return logs
 
     def run_daily_scan(self, data_dict: Optional[Dict[str, pd.DataFrame]] = None, global_data: Optional[Dict[str, pd.DataFrame]] = None, scoring_weights: Optional[Dict] = None) -> List[str]:
-        # (Keeping original logic, just ensuring it calls _execute_governor which calls updated buy)
+        # PHASE 3 FIX: REAL-TIME SCANNING (Scan Today, Trade Tomorrow)
         scoring = scoring_weights or self.scoring_weights
         vix_df = global_data.get("VIX") if global_data else None
         spy_df = global_data.get("SPY") if global_data else None
+        
         if data_dict is None:
             tickers = get_index_symbols("S&P 1500")
             print(f"Loaded {len(tickers)} tickers from S&P 1500")
@@ -486,29 +447,36 @@ class PaperTrader:
                     enriched = _compute_indicators(df.copy(), spy_df=spy_df)
                     if vix_df is not None: enriched["vix"] = vix_df["close"].reindex(enriched.index).ffill().fillna(20.0)
                     else: enriched["vix"] = 20.0
+                    
                     if len(enriched) <= MIN_BARS: continue
 
-                    signal_idx = len(enriched) - 2
-                    trade_idx = signal_idx + 1
-                    if signal_idx < 0 or trade_idx <= 0: continue
-                    if trade_idx < MIN_BARS: continue
+                    # FIX: SCAN LATEST BAR (TODAY: -1)
+                    signal_idx = len(enriched) - 1
+                    
                     if not strat.entry(enriched, signal_idx): continue
 
+                    # Use Today's data for estimation
                     row_prev = enriched.iloc[signal_idx]
+                    
                     raw_score = calculate_backtest_quality_score(row_prev, strat.name, weights=scoring)
                     score = raw_score * 1.3 if "wealth" in strat.name.lower() else raw_score
-                    row_curr = enriched.iloc[trade_idx]
-                    open_px = float(row_curr.get("open", row_curr["close"]))
-                    signal_atr = float(row_prev.get("atr14", 0))
-                    current_atr = float(row_curr.get("atr14", signal_atr))
-                    effective_atr = max(signal_atr, current_atr)
+                    
+                    # Estimate Price (Today's Close) - Real fill will happen tomorrow
+                    open_px = float(row_prev["close"]) 
+                    
+                    # Stop Loss (Estimation only - Recalculated on fill)
+                    atr = float(row_prev.get("atr14", open_px * 0.02))
                     stop_mult = float(getattr(strat, "params", {}).get("stop_loss_atr", 3.0))
-                    stop_price = open_px - (effective_atr * stop_mult)
+                    stop_price = open_px - (atr * stop_mult)
 
                     candidates.append({
-                        "symbol": sym, "price": open_px, "stop": stop_price,
-                        "strategy_name": strat.name, "strategy_obj": strat,
-                        "score": score, "entry_i": trade_idx,
+                        "symbol": sym, 
+                        "price": open_px, 
+                        "stop": stop_price,
+                        "strategy_name": strat.name, 
+                        "strategy_obj": strat,
+                        "score": score, 
+                        "entry_i": signal_idx + 1 # Target entry index is tomorrow
                     })
                 except: continue
 
@@ -519,7 +487,6 @@ class PaperTrader:
 
     def process_exits(self, strategies_map=None):
         exits = []
-        # Copy items to allow deletion during iteration
         for sym, pos in list(self.portfolio.items()):
             strat_obj = pos.get("strategy_obj") or self._get_strategy_by_name(pos.get("strategy_name"))
             if strat_obj is None: strat_obj = self.strategies[0]
