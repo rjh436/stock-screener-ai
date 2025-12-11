@@ -251,8 +251,8 @@ elif mode == "Backtest":
 # --- 3. SIMULATOR (PRO MODE) ---
 elif mode == "Simulator":
     st.header("🎮 Paper Trader (Pro)")
-    trader = PaperTrader()
-    state = trader.state
+    pt = PaperTrader(configs=selected_strategies if selected_strategies else None)
+    state = pt.state
     
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Equity", f"${state['equity']:,.2f}")
@@ -261,23 +261,67 @@ elif mode == "Simulator":
     m3.metric("Total PnL", f"${pnl_val:,.2f}", delta=f"{pnl_val/100000*100:.2f}%")
     m4.metric("Positions", len(state['positions']))
     
+    if st.button("Run Daily Scan", type="primary"):
+        status = st.status("🚀 Initializing Simulation...", expanded=True)
+        
+        try:
+            # Step 1: Health Check
+            status.write("1️⃣ Verifying Strategies...")
+            if not getattr(pt, 'strategies', None):
+                status.update(label="❌ No Strategies Loaded!", state="error")
+                st.error("PaperTrader has 0 loaded strategies. Check config.")
+                st.stop()
+            status.write(f"   - Active: {[s.name for s in pt.strategies]}")
+            
+            # Step 2: Execution
+            status.write("2️⃣ Executing Scan & Governor...")
+            symbols = get_index_symbols("S&P 500")
+            data_pack = fetch_data_pack(symbols, days=400)
+            new_trades = pt.run_daily_scan(data_pack)
+            
+            # Step 3: Analysis
+            status.write(f"3️⃣ Scan Complete. Trades Generated: {len(new_trades) if new_trades else 0}")
+            status.update(label="✅ Simulation Complete", state="complete", expanded=False)
+            
+            # Step 4: Result Display
+            if new_trades:
+                st.success(f"✅ Executed {len(new_trades)} New Trade(s)!")
+                st.dataframe(new_trades)
+                
+                # Force Reload to show updated portfolio
+                st.session_state['portfolio_updated'] = True
+                st.rerun()
+            else:
+                st.info("ℹ️ Scan finished successfully, but NO trades were executed.")
+                with st.expander("🔍 Why? Possible Reasons"):
+                    st.markdown("""
+                    * **No Signals:** Entry rules were not met for any stock today.
+                    * **Risk Governor:** 60% Sector Limit prevented new positions.
+                    * **Duplicates:** Candidates are already owned.
+                    """)
+                    
+        except Exception as e:
+            status.update(label="❌ Simulation Failed", state="error")
+            st.error(f"Error: {str(e)}")
+            st.exception(e) # Show full stack trace
+    
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
         if st.button("🔄 Run Daily Cycle", type="primary"):
             with st.spinner("Processing..."):
-                trader.update_valuations() 
-                trader.process_exits(strategies_map)
+                pt.update_valuations()
+                pt.process_exits(strategies_map)
             st.success("Cycle Complete.")
             st.rerun()
     with c2:
         if st.button("📡 Refresh Prices"):
             with st.spinner("Fetching quotes..."):
-                trader.update_valuations() 
+                pt.update_valuations()
             st.success("Prices Updated.")
             st.rerun()
     with c3:
         if st.button("⚠️ Reset Account"):
-            trader.reset_account()
+            pt.reset_account()
             st.rerun()
 
     st.subheader("📂 Active Holdings")
@@ -308,7 +352,7 @@ elif mode == "Simulator":
             c_cols[6].caption(plan)
             
             if c_cols[7].button("SELL", key=f"sell_{sym}", use_container_width=True):
-                success, msg = trader.close_position(sym, reason="Manual")
+                success, msg = pt.close_position(sym, reason="Manual")
                 if success:
                     st.toast(f"✅ {msg}")
                     st.rerun()
