@@ -35,6 +35,7 @@ class PaperTrader:
         self.sector_map = self._load_sector_map()
         self.state = self._load_state()
         self._rehydrate_positions()
+        self.state.setdefault("pending_orders", [])
 
     @property
     def portfolio(self) -> Dict:
@@ -193,77 +194,96 @@ class PaperTrader:
         self.save_state()
         return True, f"Sold {symbol} at ${exit_price:.2f} (PnL: ${pnl:.2f})"
 
-    def process_pending_orders(self):
-        filled_log = []
-        remaining_orders = []
+    def process_pending_orders(self, market_data: Optional[Dict[str, pd.DataFrame]] = None) -> List[str]:
+        """
+        Fill queued Market-On-Open orders using provided market_data or live fetch.
+        """
+        filled_log: List[str] = []
+        remaining_orders: List[Dict] = []
 
         for order in self.state.get("pending_orders", []):
-            sym = order["symbol"]
-            order_date = order["date"]
-            fill_price = None
-            fill_date = None
+            sym = order.get("symbol")
+            if not sym:
+                continue
 
-            df = fetch_single_symbol(sym, days=5, force_fresh=True)
-            if df is not None and not df.empty:
-                last_dt = str(df.index[-1].date())
-                if last_dt > order_date:
-                    fill_price = float(df.iloc[-1]["open"])
-                    fill_date = last_dt
+            open_price = self._resolve_open_price(sym, market_data)
+            if open_price <= 0:
+                filled_log.append(f"❌ {sym}: No valid open price")
+                continue
 
-            if fill_price is None:
-                try:
-                    q = sd.get_quote(sym)
-                    if q and sym in q and "quote" in q[sym]:
-                        q_data = q[sym]["quote"]
-                        open_px = q_data.get("openPrice")
-                        if open_px and open_px > 0:
-                            fill_price = float(open_px)
-                            fill_date = str(datetime.now().date())
-                except:  # noqa: E722
-                    pass
+            target_value = float(order.get("target_value", 0) or 0)
+            if target_value <= 0:
+                target_value = float(order.get("est_price", open_price)) * float(order.get("shares", 0) or 0)
 
-            if fill_price and fill_date and fill_date > order_date:
-                committed = order["committed_cash"]
-                shares = int(committed / fill_price)
-                if shares > 0 and self.state["cash"] >= (shares * fill_price):
-                    strat_name = order.get("strategy_name") or order.get("strategy")
-                    strat_obj = self._match_strategy(strat_name) if strat_name else self._default_strategy()
+            shares = int(target_value / open_price)
+            if shares <= 0:
+                filled_log.append(f"❌ {sym}: Target value too low for open price")
+                continue
 
-                    self.state["cash"] -= (shares * fill_price)
-                    self.portfolio[sym] = {
-                        "shares": shares,
-                        "entry_price": fill_price,
-                        "stop_price": order["stop_price"],
-                        "strategy": strat_obj.name,
-                        "strategy_name": strat_obj.name,
-                        "strategy_obj": strat_obj,
-                        "date": fill_date,
-                        "current_price": fill_price,
-                        "unrealized_pnl": 0.0,
-                        "unrealized_pct": 0.0,
-                        "entry_i": order.get("entry_i"),
-                    }
-                    filled_log.append(f"✅ FILLED {sym} at ${fill_price:.2f}")
-                else:
-                    filled_log.append(f"❌ FAILED {sym}: Cash")
-            else:
-                remaining_orders.append(order)
+            cost = shares * open_price
+            if self.state["cash"] < cost:
+                filled_log.append(f"⚠️ {sym}: Skipped, insufficient cash for ${cost:.2f}")
+                continue
 
+            success = self.buy(
+                sym,
+                open_price,
+                shares,
+                stop_price=order.get("stop_price"),
+                strategy_name=order.get("strategy_name"),
+                entry_index=order.get("entry_i"),
+            )
+            if success:
+                filled_log.append(f"✅ FILLED {sym} x{shares} @ ${open_price:.2f}")
+
+        # Clear queue after processing
         self.state["pending_orders"] = remaining_orders
         self.save_state()
         return filled_log
 
-    def _current_sector_exposure(self) -> Dict[str, float]:
-        exposure = {}
+    def _resolve_open_price(self, symbol: str, market_data: Optional[Dict[str, pd.DataFrame]] = None) -> float:
+        """Derive open price from provided market data or fallbacks."""
+        try:
+            if market_data and symbol in market_data:
+                df = market_data[symbol]
+                if df is not None and not df.empty:
+                    row = df.iloc[-1]
+                    return float(row.get("open") or row.get("close"))
+        except Exception:
+            pass
+
+        df_live = fetch_single_symbol(symbol, days=3, force_fresh=True)
+        if df_live is not None and not df_live.empty:
+            try:
+                return float(df_live.iloc[-1].get("open"))
+            except Exception:
+                pass
+
+        return self.get_realtime_price(symbol)
+
+    def _current_sector_exposure(self, include_pending: bool = False) -> Dict[str, float]:
+        exposure: Dict[str, float] = {}
         for sym, pos in self.portfolio.items():
             price = pos.get("current_price", pos.get("entry_price", 0))
             val = pos.get("shares", 0) * price
             sec = self._resolve_sector(sym)
             exposure[sec] = exposure.get(sec, 0.0) + val
+
+        if include_pending:
+            for order in self.state.get("pending_orders", []):
+                sym = order.get("symbol")
+                if not sym:
+                    continue
+                sec = self._resolve_sector(sym)
+                target_val = float(order.get("target_value", 0) or 0)
+                if target_val <= 0:
+                    shares = float(order.get("shares", 0) or 0)
+                    est_price = float(order.get("est_price", 0) or 0)
+                    target_val = shares * est_price
+                exposure[sec] = exposure.get(sec, 0.0) + target_val
         return exposure
 
     def update_valuations(self):
-        fill_logs = self.process_pending_orders()
         total_value = self.state["cash"]
 
         for sym, pos in self.portfolio.items():
@@ -285,7 +305,7 @@ class PaperTrader:
             self.state["equity_curve"][-1]["equity"] = total_value
 
         self.save_state()
-        return self.state, fill_logs
+        return self.state, []
 
     def buy(self, symbol: str, price: float, shares: int, stop_price: Optional[float] = None, strategy_obj=None, strategy_name: Optional[str] = None, entry_index: Optional[int] = None):
         if shares <= 0 or price <= 0:
@@ -314,6 +334,33 @@ class PaperTrader:
         }
         self.update_valuations()
         return True
+
+    def queue_order(self, symbol: str, target_value: float, est_price: float, stop_price: Optional[float] = None, strategy_obj=None, strategy_name: Optional[str] = None, entry_index: Optional[int] = None) -> bool:
+        if not symbol or target_value <= 0 or est_price <= 0:
+            return False
+        if symbol in self.portfolio or self._is_pending(symbol):
+            return False
+
+        strat_obj = strategy_obj or self._match_strategy(strategy_name or "")
+        strat_name = strategy_name or getattr(strat_obj, "name", "Unknown")
+        self.state.setdefault("pending_orders", [])
+        self.state["pending_orders"].append(
+            {
+                "symbol": symbol,
+                "target_value": target_value,
+                "est_price": est_price,
+                "stop_price": stop_price if stop_price is not None else est_price * 0.9,
+                "strategy_name": strat_name,
+                "strategy_obj": strat_obj,
+                "entry_i": entry_index,
+                "type": "MOO",
+            }
+        )
+        self.save_state()
+        return True
+
+    def _is_pending(self, symbol: str) -> bool:
+        return any((o.get("symbol") or "").upper() == symbol.upper() for o in self.state.get("pending_orders", []))
 
     def _normalize_candidate(self, cand: Dict) -> Optional[Dict]:
         sym = cand.get("symbol") or cand.get("Symbol")
@@ -363,12 +410,12 @@ class PaperTrader:
                 normalized.append(norm)
 
         normalized.sort(key=lambda x: x.get("score", 0), reverse=True)
-        sector_exposure = self._current_sector_exposure()
+        sector_exposure = self._current_sector_exposure(include_pending=True)
 
         for cand in normalized:
             if len(self.portfolio) >= MAX_POSITIONS:
                 break
-            if cand["symbol"] in self.portfolio:
+            if cand["symbol"] in self.portfolio or self._is_pending(cand["symbol"]):
                 continue
 
             current_equity = self.state["cash"] + sum(sector_exposure.values())
@@ -385,18 +432,18 @@ class PaperTrader:
             if shares <= 0:
                 continue
 
-            success = self.buy(
+            queued = self.queue_order(
                 cand["symbol"],
+                trade_val,
                 cand["price"],
-                shares,
                 stop_price=cand["stop"],
                 strategy_obj=cand["strategy_obj"],
                 strategy_name=cand["strategy_name"],
                 entry_index=cand.get("entry_i"),
             )
-            if success:
-                sector_exposure[sec] = sector_exposure.get(sec, 0.0) + (shares * cand["price"])
-                logs.append(f"✅ BOUGHT {cand['symbol']} x{shares} @ ${cand['price']:.2f}")
+            if queued:
+                sector_exposure[sec] = sector_exposure.get(sec, 0.0) + trade_val
+                logs.append(f"📝 QUEUED {cand['symbol']} for MOO (${trade_val:.2f})")
         return logs
 
     def run_daily_scan(self, data_dict: Optional[Dict[str, pd.DataFrame]] = None, global_data: Optional[Dict[str, pd.DataFrame]] = None, scoring_weights: Optional[Dict] = None) -> List[str]:

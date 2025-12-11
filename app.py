@@ -280,17 +280,13 @@ elif mode == "Simulator":
             new_trades = pt.run_daily_scan(data_pack)
             
             # Step 3: Analysis
-            status.write(f"3️⃣ Scan Complete. Trades Generated: {len(new_trades) if new_trades else 0}")
+            status.write(f"3️⃣ Scan Complete. Orders Queued: {len(new_trades) if new_trades else 0}")
             status.update(label="✅ Simulation Complete", state="complete", expanded=False)
             
             # Step 4: Result Display
             if new_trades:
-                st.success(f"✅ Executed {len(new_trades)} New Trade(s)!")
-                st.dataframe(new_trades)
-                
-                # Force Reload to show updated portfolio
-                st.session_state['portfolio_updated'] = True
-                st.rerun()
+                st.success(f"📝 Queued {len(new_trades)} order(s) for Market Open.")
+                st.dataframe(pd.DataFrame({"Orders": new_trades}))
             else:
                 st.info("ℹ️ Scan finished successfully, but NO trades were executed.")
                 with st.expander("🔍 Why? Possible Reasons"):
@@ -362,6 +358,12 @@ elif mode == "Simulator":
         st.info("Portfolio is empty.")
         
     st.subheader("⏳ Pending Orders")
+    if st.button("🔄 Process Pending Orders (Morning Fill)"):
+        fill_logs = pt.process_pending_orders()
+        if fill_logs:
+            for log in fill_logs:
+                st.write(log)
+        st.rerun()
     if state.get("pending_orders"):
         st.dataframe(pd.DataFrame(state["pending_orders"]))
     else:
