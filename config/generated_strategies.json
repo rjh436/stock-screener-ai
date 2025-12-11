@@ -30,7 +30,7 @@
                 "val": 1.19
             }
         ],
-        "stop_loss_atr": 4.4,
+        "stop_loss_atr": 4.5,
         "time_stop": 71
     },
     {
@@ -64,7 +64,7 @@
                 "val": 1.08
             }
         ],
-        "stop_loss_atr": 5.1,
+        "stop_loss_atr": 3.5,
         "time_stop": 45
     }
 ]

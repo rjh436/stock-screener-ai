@@ -206,7 +206,7 @@ elif mode == "Backtest":
             {"col": "bb_width", "op": ">", "val": 0.17}
         ],
         "exit_rules": [],
-        "stop_loss_atr": 4.4,
+        "stop_loss_atr": 3.5,
         "time_stop": 71
     }
     
