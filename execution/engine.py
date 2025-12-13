@@ -93,9 +93,13 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> pd.Dat
             df['rs_ratio'] = df['close'] / spy_aligned
             df['rs_sma20'] = df['rs_ratio'].rolling(20).mean()
             df['rs_trend'] = df['rs_ratio'] - df['rs_sma20'] 
+            df['spy_close'] = spy_aligned
+            df['spy_sma200'] = spy_aligned.rolling(200).mean()
         else:
             df['rs_ratio'] = 1.0
             df['rs_trend'] = 0.0
+            df['spy_close'] = np.nan
+            df['spy_sma200'] = np.nan
 
         return df
     except: return df
@@ -250,6 +254,20 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
                 score = raw_score * 1.3 if "wealth" in strat.name.lower() else raw_score
                 open_px = float(row_curr["open"])
 
+                params = getattr(strat, "params", {}) if hasattr(strat, "params") else {}
+                gap_protect = float(params.get("gap_protection", 0) or 0)
+                if gap_protect > 0:
+                    prev_close = float(row_prev.get("close", 0) or 0)
+                    if prev_close > 0 and open_px < prev_close * gap_protect:
+                        continue
+
+                if params.get("regime_filter"):
+                    spy_close = row_prev.get("spy_close", np.nan)
+                    spy_sma200 = row_prev.get("spy_sma200", np.nan)
+                    if pd.notna(spy_close) and pd.notna(spy_sma200):
+                        if spy_close < spy_sma200:
+                            continue
+
                 signal_atr = float(row_prev.get("atr14", 0))
                 current_atr = float(row_curr.get("atr14", signal_atr))
                 effective_atr = max(signal_atr, current_atr)
@@ -258,6 +276,14 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
 
                 # Adjust for volatility regime
                 atr_pct = (effective_atr / open_px) * 100 if open_px > 0 else 2.0
+                atr_scale = 1.0
+                if params.get("use_atr_sizing"):
+                    if atr_pct > 5.0:
+                        atr_scale = 0.6
+                    elif atr_pct > 3.0:
+                        atr_scale = 0.8
+                    elif atr_pct < 1.5:
+                        atr_scale = 1.1
 
                 if atr_pct > 5.0:  # High volatility environment
                     adjusted_mult = base_stop_mult * 1.2  # Widen stops 20%
@@ -275,7 +301,8 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
                     "stop": real_stop,
                     "score": score,
                     "strategy_name": strat.name,
-                    "strategy_obj": strat
+                    "strategy_obj": strat,
+                    "atr_scale": atr_scale
                 })
 
         # Step C: Sort & Execute (Governor)
@@ -289,7 +316,7 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
             # Recalculate equity dynamically to shrink sizing as cash is used
             current_sector_equity = sum(sector_exposure.values())
             current_equity = cash + current_sector_equity
-            trade_val = current_equity * pos_fraction
+            trade_val = current_equity * pos_fraction * cand.get("atr_scale", 1.0)
 
             cand_sec = resolve_sector(cand["sym"])
             proj_exp = (sector_exposure.get(cand_sec, 0.0) + trade_val) / current_equity if current_equity > 0 else 1.0

@@ -61,6 +61,7 @@ class GenericStrategy(BaseStrategy):
         days_held = i - entry_i
         close_px = row.get("close", entry_price)
         pnl_pct = ((close_px - entry_price) / entry_price) * 100
+        use_bb_exit = bool(self.genome.get("use_bb_exit", False))
 
         # === DYNAMIC TRAILING STOP ===
         atr = row.get("atr14", close_px * 0.02)
@@ -76,6 +77,12 @@ class GenericStrategy(BaseStrategy):
         # 1. STOP LOSS CHECK
         if row.get("low", np.inf) < effective_stop:
             return True
+
+        # 1b. Bollinger profit release (optional)
+        if use_bb_exit:
+            bb_upper = row.get("bb_upper", np.nan)
+            if pd.notna(bb_upper) and row.get("high", close_px) >= bb_upper:
+                return True
 
         # 2. TIME-BASED EXITS
         time_limit = int(self.genome.get("time_stop", 45))
@@ -109,6 +116,8 @@ class GenericStrategy(BaseStrategy):
 
         # 4. PROFIT TARGETS
         for rule in self.genome.get("exit_rules", []):
+            if use_bb_exit and rule.get("type") == "profit_target":
+                continue
             if rule.get("type") == "profit_target":
                 target_multiple = float(rule.get("val", 1.0))
                 if row.get("high", 0) >= (entry_price * target_multiple):
