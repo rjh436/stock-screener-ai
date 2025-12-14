@@ -268,30 +268,19 @@ class PaperTrader:
                 remaining_orders.append(order)
                 continue
 
-            # 2. Dynamic Gap Protection (Open-to-Open comparison)
-            signal_open_price = order.get("signal_open", est_price)
+            # 2. Standardized Gap Protection (prev close vs fill)
+            df_hist = fetch_single_symbol(sym, days=60, force_fresh=True)
+            prev_close = None
+            if df_hist is not None and not df_hist.empty:
+                df_hist = df_hist.sort_index()
+                if len(df_hist) >= 2:
+                    prev_close = float(df_hist.iloc[-2].get("close", 0) or 0)
 
-            # Calculate gap using OPEN prices (not close)
-            gap_pct = ((fill_price - signal_open_price) / signal_open_price) * 100 if signal_open_price > 0 else 0
-
-            # Calculate strategy's ATR-based risk tolerance
-            try:
-                s_name_gap = order.get("strategy_name") or order.get("strategy")
-                s_obj_gap = self._get_strategy_by_name(s_name_gap)
-                stop_mult_gap = float(s_obj_gap.params.get("stop_loss_atr", 3.0))
-
-                # Gap threshold = 50% of stop width
-                max_gap_threshold = stop_mult_gap * 0.5
-
-                # Strategy-specific overrides
-                if s_name_gap and "wealth" in s_name_gap.lower():
-                    max_gap_threshold = min(max_gap_threshold, 2.0)
-            except:  # noqa: E722
-                max_gap_threshold = 2.5
-
-            if abs(gap_pct) > max_gap_threshold:
-                fill_log.append(f"❌ CANCELED {sym}: Gap {gap_pct:+.1f}% exceeds {max_gap_threshold:.1f}% limit (open-to-open)")
-                continue
+            if prev_close and prev_close > 0:
+                gap_pct_close = (fill_price - prev_close) / prev_close
+                if gap_pct_close < -0.08:
+                    fill_log.append(f"❌ CANCELED {sym}: Gap {gap_pct_close*100:+.1f}% below -8.0% (prev close vs open)")
+                    continue
 
             # 3. Cost Check
             shares = order["shares"]
@@ -310,29 +299,22 @@ class PaperTrader:
             # Don't use the 'stop_price' from the order (based on est_price).
             # Recalculate using the ACTUAL fill price and the strategy's multiplier.
             try:
-                # 1. Get FRESH ATR data for today
-                df_atr = fetch_single_symbol(sym, days=60, force_fresh=True)
-                df_ind = _compute_indicators(df_atr)
-                current_atr = float(df_ind.iloc[-1].get("atr14", fill_price * 0.02))
-                
-                # 2. Calculate PERCENTAGE risk from original signal
+                df_ind = _compute_indicators(df_hist.copy()) if df_hist is not None else None
+                atr_idx = -2 if df_ind is not None and len(df_ind) >= 2 else -1
+                current_atr = float(df_ind.iloc[atr_idx].get("atr14", fill_price * 0.02)) if df_ind is not None else fill_price * 0.02
+
                 est_price = order.get("order_price_estimate", fill_price)
                 stop_mult = float(s_obj.params.get("stop_loss_atr", 3.0))
-                
-                # Original intended stop distance as percentage
-                original_stop_distance = (current_atr * stop_mult) / est_price
-                
-                # 3. Apply SAME percentage risk to actual fill price
+
+                original_stop_distance = (current_atr * stop_mult) / est_price if est_price > 0 else 0.08
                 real_stop_price = fill_price * (1 - original_stop_distance)
-                
-                # 4. Safety check: If gap is unfavorable, tighten stop
-                gap_pct_local = abs((fill_price - est_price) / est_price)
-                if gap_pct_local > 0.03 and fill_price < est_price:  # Gapped down > 3%
-                    max_loss_pct = original_stop_distance * 1.2  # Allow 20% buffer
+
+                gap_pct_local = abs((fill_price - est_price) / est_price) if est_price > 0 else 0
+                if gap_pct_local > 0.03 and fill_price < est_price:
+                    max_loss_pct = original_stop_distance * 1.2
                     real_stop_price = max(real_stop_price, fill_price * (1 - max_loss_pct))
                     
             except Exception as e:  # noqa: E722
-                # Fallback: Conservative 8% stop
                 real_stop_price = fill_price * 0.92
                 print(f"⚠️ Stop calculation failed for {sym}: {e}")
             

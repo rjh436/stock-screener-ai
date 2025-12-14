@@ -209,12 +209,16 @@ elif mode == "Backtest":
         "name": "Super Signal (Gen 12 Wealth)",
         "type": "hybrid",
         "entry_rules": [
-            {"col": "cci", "op": "<", "val": 0},
-            {"col": "bb_width", "op": ">", "val": 0.17}
+            {"col": "cci", "op": "<", "val": -50},              # Stronger Oversold
+            {"col": "bb_width", "op": ">", "val": 0.17},
+            {"col": "volume", "op": ">", "ref": "vol_ma20"},    # Volume Confirmation
+            {"col": "close", "op": ">", "ref": "sma50"},        # Trend Filter (Price > 50 SMA)
+            {"col": "sma50", "op": ">", "ref": "sma200"}        # Regime Filter (Golden Cross)
         ],
         "exit_rules": [],
-        "stop_loss_atr": 3.5,  # FIXED: Matches Apex Income Trend Settings
-        "time_stop": 71
+        "stop_loss_atr": 4.0,       # Widened to survive morning chop
+        "time_stop": 45,
+        "gap_protection_pct": 0.08  # 8% Gap Protection
     }
     
     col_uni, col_dur = st.columns([1, 3])

@@ -222,6 +222,7 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
     
     pos_fraction = 0.20
     max_positions = 5
+    max_risk_per_trade = 0.02
 
     for current_dt in all_dates:
         # Step A: Update state
@@ -268,31 +269,25 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
                         if spy_close < spy_sma200:
                             continue
 
-                signal_atr = float(row_prev.get("atr14", 0))
-                current_atr = float(row_curr.get("atr14", signal_atr))
-                effective_atr = max(signal_atr, current_atr)
-                # Base stop multiplier from strategy
+                signal_atr = float(row_prev.get("atr14", 0) or 0)
+                if signal_atr <= 0:
+                    continue
+
+                prev_close = float(row_prev.get("close", 0) or 0)
+                gap_pct = ((open_px - prev_close) / prev_close) if prev_close > 0 else 0.0
+                if gap_pct < -0.08:
+                    continue
+
+                # Base stop multiplier from strategy (no look-ahead)
                 base_stop_mult = float(getattr(strat, "params", {}).get("stop_loss_atr", 3.0))
 
-                # Adjust for volatility regime
-                atr_pct = (effective_atr / open_px) * 100 if open_px > 0 else 2.0
-                atr_scale = 1.0
-                if params.get("use_atr_sizing"):
-                    if atr_pct > 5.0:
-                        atr_scale = 0.6
-                    elif atr_pct > 3.0:
-                        atr_scale = 0.8
-                    elif atr_pct < 1.5:
-                        atr_scale = 1.1
+                # Disable widening if stock is crashing (>3% gap down)
+                atr_pct = (signal_atr / open_px) * 100 if open_px > 0 else 0.0
+                adjusted_mult = base_stop_mult
+                if gap_pct > -0.03 and atr_pct > 5.0:
+                    adjusted_mult *= 1.2
 
-                if atr_pct > 5.0:  # High volatility environment
-                    adjusted_mult = base_stop_mult * 1.2  # Widen stops 20%
-                elif atr_pct < 1.5:  # Low volatility
-                    adjusted_mult = base_stop_mult * 0.9  # Tighten stops 10%
-                else:
-                    adjusted_mult = base_stop_mult
-
-                stop_width = effective_atr * adjusted_mult
+                stop_width = signal_atr * adjusted_mult
                 real_stop = open_px - stop_width
 
                 daily_candidates.append({
@@ -302,7 +297,7 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
                     "score": score,
                     "strategy_name": strat.name,
                     "strategy_obj": strat,
-                    "atr_scale": atr_scale
+                    "prev_close": prev_close
                 })
 
         # Step C: Sort & Execute (Governor)
@@ -316,16 +311,26 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
             # Recalculate equity dynamically to shrink sizing as cash is used
             current_sector_equity = sum(sector_exposure.values())
             current_equity = cash + current_sector_equity
-            trade_val = current_equity * pos_fraction * cand.get("atr_scale", 1.0)
+
+            risk_amt = current_equity * max_risk_per_trade
+            risk_per_share = cand["px"] - cand["stop"]
+            if risk_per_share <= cand["px"] * 0.01:
+                risk_per_share = cand["px"] * 0.01
+            shares_risk = int(risk_amt / risk_per_share)
+
+            val_cap = current_equity * pos_fraction
+            shares_val = int(val_cap / cand["px"])
+
+            shares = min(shares_risk, shares_val)
+            cost = shares * cand["px"]
+            if shares <= 0 or cash < cost:
+                continue
+
+            trade_val = cost
 
             cand_sec = resolve_sector(cand["sym"])
             proj_exp = (sector_exposure.get(cand_sec, 0.0) + trade_val) / current_equity if current_equity > 0 else 1.0
             if proj_exp > 0.60:
-                continue
-
-            shares = int(trade_val / cand["px"])
-            cost = shares * cand["px"]
-            if shares <= 0 or cash < cost:
                 continue
 
             cash -= cost
