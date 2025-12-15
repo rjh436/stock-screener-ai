@@ -1,5 +1,28 @@
 [
     {
+        "name": "Apex Wealth (Gen 14)",
+        "type": "wealth",
+        "entry_rules": [],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.15
+            }
+        ],
+        "stop_loss_atr": 3.0,
+        "time_stop": 60,
+        "adx_threshold": 25.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 15.0,
+        "use_scalp_exit": true,
+        "use_bb_exit": false,
+        "scoring_weights": {
+            "sniper_bonus": 50.0,
+            "rsi_factor": 2.0,
+            "trend_bonus": 20.0
+        }
+    },
+    {
         "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
         "type": "hybrid",
         "entry_rules": [
