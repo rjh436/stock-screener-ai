@@ -1,29 +1,6 @@
 [
     {
-        "name": "Apex Wealth (Gen 14)",
-        "type": "wealth",
-        "entry_rules": [],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.15
-            }
-        ],
-        "stop_loss_atr": 3.0,
-        "time_stop": 60,
-        "adx_threshold": 25.0,
-        "rsi_strong": 40.0,
-        "rsi_weak": 15.0,
-        "use_scalp_exit": true,
-        "use_bb_exit": false,
-        "scoring_weights": {
-            "sniper_bonus": 50.0,
-            "rsi_factor": 2.0,
-            "trend_bonus": 20.0
-        }
-    },
-    {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
         "type": "hybrid",
         "entry_rules": [
             {
@@ -53,13 +30,13 @@
                 "val": 1.05
             }
         ],
-        "stop_loss_atr": 4.5,
+        "stop_loss_atr": 4.4,
         "time_stop": 45,
         "use_scalp_exit": false,
         "adx_threshold": 28.0
     },
     {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
         "type": "hybrid",
         "entry_rules": [
             {
@@ -89,13 +66,13 @@
                 "val": 1.05
             }
         ],
-        "stop_loss_atr": 3.3,
+        "stop_loss_atr": 4.4,
         "time_stop": 45,
         "use_scalp_exit": false,
         "adx_threshold": 28.0
     },
     {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut",
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
         "type": "hybrid",
         "entry_rules": [
             {
@@ -125,436 +102,445 @@
                 "val": 1.05
             }
         ],
-        "stop_loss_atr": 4.7,
-        "time_stop": 45,
-        "use_scalp_exit": false
-    },
-    {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 0
-            },
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0.17
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.05
-            }
-        ],
-        "stop_loss_atr": 4.7,
-        "time_stop": 45,
-        "use_scalp_exit": false
-    },
-    {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 0
-            },
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0.17
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.05
-            }
-        ],
-        "stop_loss_atr": 4.7,
-        "time_stop": 45,
-        "use_scalp_exit": false,
-        "rsi_weak": 14.0
-    },
-    {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 0
-            },
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0.17
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.05
-            }
-        ],
-        "stop_loss_atr": 4.7,
-        "time_stop": 45,
-        "use_scalp_exit": false
-    },
-    {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 0
-            },
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0.17
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.05
-            }
-        ],
-        "stop_loss_atr": 4.7,
-        "time_stop": 45,
-        "use_scalp_exit": false,
-        "rsi_weak": 25.0
-    },
-    {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 0
-            },
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0.17
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.05
-            }
-        ],
-        "stop_loss_atr": 4.7,
-        "time_stop": 45,
-        "use_scalp_exit": false
-    },
-    {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 0
-            },
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0.17
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.05
-            }
-        ],
-        "stop_loss_atr": 4.7,
-        "time_stop": 45,
-        "use_scalp_exit": false,
-        "rsi_weak": 25.0
-    },
-    {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 0
-            },
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0.17
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.05
-            }
-        ],
-        "stop_loss_atr": 4.7,
-        "time_stop": 45,
-        "use_scalp_exit": false,
-        "adx_threshold": 28.0
-    },
-    {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 0
-            },
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0.17
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.05
-            }
-        ],
-        "stop_loss_atr": 4.7,
-        "time_stop": 45,
-        "use_scalp_exit": false
-    },
-    {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 0
-            },
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0.17
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.05
-            }
-        ],
-        "stop_loss_atr": 4.7,
-        "time_stop": 45,
-        "use_scalp_exit": false,
-        "rsi_weak": 25.0,
-        "adx_threshold": 23.0
-    },
-    {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 0
-            },
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0.17
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.05
-            }
-        ],
-        "stop_loss_atr": 4.7,
-        "time_stop": 45,
-        "use_scalp_exit": false
-    },
-    {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 0
-            },
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0.17
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.05
-            }
-        ],
-        "stop_loss_atr": 4.7,
-        "time_stop": 45,
-        "use_scalp_exit": true
-    },
-    {
-        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
-        "type": "hybrid",
-        "entry_rules": [
-            {
-                "col": "close",
-                "op": ">",
-                "val": 0
-            },
-            {
-                "col": "bb_width",
-                "op": ">",
-                "val": 0.17
-            },
-            {
-                "col": "rsi14",
-                "op": "<",
-                "ref": "stoch_k"
-            },
-            {
-                "col": "volume",
-                "op": ">",
-                "ref": "vol_ma20"
-            }
-        ],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.05
-            }
-        ],
-        "stop_loss_atr": 4.7,
+        "stop_loss_atr": 4.4,
         "time_stop": 45,
         "use_scalp_exit": false,
         "adx_threshold": 28.0,
-        "rsi_weak": 25.0
+        "rsi_strong": 55.0
+    },
+    {
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.05
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 45,
+        "use_scalp_exit": false,
+        "adx_threshold": 28.0
+    },
+    {
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.05
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 45,
+        "use_scalp_exit": true,
+        "adx_threshold": 28.0
+    },
+    {
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.05
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 45,
+        "use_scalp_exit": false,
+        "adx_threshold": 28.0
+    },
+    {
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.05
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 45,
+        "use_scalp_exit": false,
+        "adx_threshold": 28.0
+    },
+    {
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.05
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 45,
+        "use_scalp_exit": false,
+        "adx_threshold": 28.0
+    },
+    {
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.05
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 45,
+        "use_scalp_exit": false,
+        "adx_threshold": 31.0
+    },
+    {
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.05
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 45,
+        "use_scalp_exit": false,
+        "adx_threshold": 28.0,
+        "rsi_strong": 55.0
+    },
+    {
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.05
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 45,
+        "use_scalp_exit": false,
+        "adx_threshold": 28.0
+    },
+    {
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.05
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 45,
+        "use_scalp_exit": false,
+        "adx_threshold": 28.0,
+        "rsi_strong": 55.0
+    },
+    {
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.05
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 45,
+        "use_scalp_exit": true,
+        "adx_threshold": 28.0
+    },
+    {
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.05
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 45,
+        "use_scalp_exit": false,
+        "adx_threshold": 28.0
+    },
+    {
+        "name": "Apex Income (Gen 9)_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut_mut",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.05
+            }
+        ],
+        "stop_loss_atr": 4.4,
+        "time_stop": 45,
+        "use_scalp_exit": false,
+        "adx_threshold": 28.0,
+        "rsi_strong": 41.0
     }
 ]
