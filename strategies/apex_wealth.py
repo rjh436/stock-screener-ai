@@ -11,6 +11,8 @@ class ApexWealthStrategy(GenericStrategy):
     """
 
     def entry(self, df: pd.DataFrame, i: int) -> dict:
+        # We still call super() to respect basic hygiene (if any), 
+        # but the JSON 'entry_rules' will be empty for Wealth, passing this immediately.
         signal = super().entry(df, i)
         if not signal:
             return None
@@ -31,6 +33,7 @@ class ApexWealthStrategy(GenericStrategy):
         rsi2 = row.get("rsi2", 50)
 
         # 1. STRUCTURAL SAFETY (Hardcoded Guardrails)
+        # These are non-negotiable safety floors.
         if close_px < ema200: return None
         if highest55 > 0 and close_px < (0.80 * highest55): return None
 
