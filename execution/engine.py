@@ -251,14 +251,16 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
 
                 row_prev = df.iloc[i-1]
                 row_curr = df.iloc[i]
+                prev_close = float(row_prev.get("close", 0) or 0)
+                open_px = float(row_curr["open"])
+                low_px = float(row_curr.get("low", open_px))
+
                 raw_score = calculate_backtest_quality_score(row_prev, strat.name, weights=scoring_weights)
                 score = raw_score * 1.3 if "wealth" in strat.name.lower() else raw_score
-                open_px = float(row_curr["open"])
 
                 params = getattr(strat, "params", {}) if hasattr(strat, "params") else {}
                 gap_protect = float(params.get("gap_protection", 0) or 0)
                 if gap_protect > 0:
-                    prev_close = float(row_prev.get("close", 0) or 0)
                     if prev_close > 0 and open_px < prev_close * gap_protect:
                         continue
 
@@ -273,26 +275,41 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
                 if signal_atr <= 0:
                     continue
 
-                prev_close = float(row_prev.get("close", 0) or 0)
                 gap_pct = ((open_px - prev_close) / prev_close) if prev_close > 0 else 0.0
                 if gap_pct < -0.08:
                     continue
+
+                # Determine fill price using limit orders when provided by the strategy
+                entry_px = open_px
+                limit_ratio = entry_signal.get("limit_ratio") if isinstance(entry_signal, dict) else None
+                if limit_ratio is not None and prev_close > 0:
+                    try:
+                        limit_ratio_val = float(limit_ratio)
+                        target_px = prev_close * limit_ratio_val
+                        if open_px < target_px:
+                            entry_px = open_px  # Gap down through the limit
+                        elif low_px < target_px:
+                            entry_px = target_px  # Intraday penetration
+                        else:
+                            continue  # No fill, skip this opportunity
+                    except (TypeError, ValueError):
+                        pass
 
                 # Base stop multiplier from strategy (no look-ahead)
                 base_stop_mult = float(getattr(strat, "params", {}).get("stop_loss_atr", 3.0))
 
                 # Disable widening if stock is crashing (>3% gap down)
-                atr_pct = (signal_atr / open_px) * 100 if open_px > 0 else 0.0
+                atr_pct = (signal_atr / entry_px) * 100 if entry_px > 0 else 0.0
                 adjusted_mult = base_stop_mult
                 if gap_pct > -0.03 and atr_pct > 5.0:
                     adjusted_mult *= 1.2
 
                 stop_width = signal_atr * adjusted_mult
-                real_stop = open_px - stop_width
+                real_stop = entry_px - stop_width
 
                 daily_candidates.append({
                     "sym": sym,
-                    "px": open_px,
+                    "px": entry_px,
                     "stop": real_stop,
                     "score": score,
                     "strategy_name": strat.name,
