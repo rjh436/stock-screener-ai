@@ -35,12 +35,16 @@ def calibrate():
     # 3. Define Test Range
     atr_settings = [2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
     
-    # 4. Select Strategies
-    target_names = ["Apex Wealth (Gen 12)", "Super Signal (Gen 12 Wealth)", "Apex Income (Gen 9)"]
+    # 4. Select Strategies (Updated to be version-agnostic)
+    # This catches "Apex Wealth (Gen 16.1)", "Apex Wealth (Gen 12)", etc.
+    target_names = ["Apex Wealth", "Apex Income", "Super Signal"]
     configs = [s for s in default_configs if any(t in s['name'] for t in target_names)]
     
     if not configs:
         print("❌ Target strategies not found in config!")
+        # Debug info: Print what IS in the file so the user knows
+        if default_configs:
+            print(f"   Found in file: {[s.get('name', 'Unknown') for s in default_configs]}")
         return
 
     # 5. Run Calibration Loop
