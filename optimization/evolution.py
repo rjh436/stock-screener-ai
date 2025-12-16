@@ -52,11 +52,12 @@ class EvolutionEngine:
             "stop_loss_atr": round(random.uniform(3.0, 7.0), 1),
             "time_stop": random.choice([30, 45, 60, 75, 90]),
             "scoring_weights": self._random_scoring_weights(),
-            # GEN 14: Default Dual Lane Params
+            # GEN 15: The Limit Runner Params
             "adx_threshold": 25.0,
             "rsi_strong": 40.0,
             "rsi_weak": 15.0,
-            "use_scalp_exit": True
+            "limit_ratio": 0.98,  # 2% Discount Default
+            "trail_atr": 3.0      # 3x ATR Trail Default
         }
         return genome
 
@@ -72,15 +73,16 @@ class EvolutionEngine:
         for i in range(10):
             pop.append(self.mutate(golden_seed))
 
-        # 3. Provided Strategies (Seed the Optimizer with current Wealth config)
+        # 3. Provided Strategies (Seed the Optimizer)
         if base_strategies:
             for strat in base_strategies:
                 clone = copy.deepcopy(strat)
-                # Ensure Gen 14 params exist
+                # Ensure Gen 15 params exist
                 clone["adx_threshold"] = clone.get("adx_threshold", 25.0)
                 clone["rsi_strong"] = clone.get("rsi_strong", 40.0)
                 clone["rsi_weak"] = clone.get("rsi_weak", 15.0)
-                clone["use_scalp_exit"] = clone.get("use_scalp_exit", True)
+                clone["limit_ratio"] = clone.get("limit_ratio", 0.98)
+                clone["trail_atr"] = clone.get("trail_atr", 3.0)
                 pop.append(clone)
 
         # 4. Fill Rest
@@ -98,30 +100,38 @@ class EvolutionEngine:
         mutant["name"] = mutant["name"] + "_mut"
         r = random.random()
         
-        if r < 0.2:
-            # DUAL LANE MUTATION (The New Logic)
-            trait = random.choice(["adx", "strong", "weak", "scalp"])
-            if trait == "adx":
-                mutant["adx_threshold"] = float(random.randint(15, 35))
-            elif trait == "strong":
-                # Lane A: Strong Trend RSI (30-55)
-                mutant["rsi_strong"] = float(random.randint(30, 55))
-            elif trait == "weak":
-                # Lane B: Weak Trend RSI (5-25)
-                mutant["rsi_weak"] = float(random.randint(5, 25))
-            elif trait == "scalp":
-                # Toggle Scalp Exit
-                mutant["use_scalp_exit"] = not mutant.get("use_scalp_exit", True)
+        if r < 0.25:
+            # GEN 15 EXECUTION & EXIT MUTATIONS
+            trait = random.choice(["limit", "trail", "dual_lane"])
+            
+            if trait == "limit":
+                # Mutate Entry Discount (0.93 to 1.00)
+                # 1.00 = Market Order, 0.93 = Deep 7% discount
+                mutant["limit_ratio"] = round(random.uniform(0.93, 1.00), 3)
+                
+            elif trait == "trail":
+                # Mutate Trailing Stop (2.0 to 6.0 ATR)
+                mutant["trail_atr"] = round(random.uniform(2.0, 6.0), 1)
+                
+            elif trait == "dual_lane":
+                sub_trait = random.choice(["adx", "strong", "weak"])
+                if sub_trait == "adx":
+                    mutant["adx_threshold"] = float(random.randint(15, 35))
+                elif sub_trait == "strong":
+                    mutant["rsi_strong"] = float(random.randint(30, 55))
+                elif sub_trait == "weak":
+                    mutant["rsi_weak"] = float(random.randint(5, 25))
 
-        elif r < 0.4:
+        elif r < 0.45:
             # TIME STOP & PROFIT
             mutant["time_stop"] = random.choice([20, 30, 45, 60, 80])
+            # Note: Profit Target is less relevant with Trailing Stop, but kept as failsafe
             for rule in mutant.get("exit_rules", []):
                 if rule["type"] == "profit_target":
                     rule["val"] = round(random.uniform(1.05, 1.30), 2)
 
-        elif r < 0.6:
-            # STOP LOSS
+        elif r < 0.65:
+            # BASE STOP LOSS
             mutant["stop_loss_atr"] = round(random.uniform(2.5, 6.0), 1)
 
         else:
