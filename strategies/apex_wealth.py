@@ -5,10 +5,9 @@ from strategies.generic import GenericStrategy
 
 class ApexWealthStrategy(GenericStrategy):
     """
-    Apex Wealth (Gen 15 - The Limit Runner):
-    A Deep Value strategy that solves the "Profit Ceiling" by:
-    1. Buying cheaper (Limit Orders @ 2% discount).
-    2. Selling later (ATR Trailing Stops to capture trends).
+    Apex Wealth (Gen 16.1 - Staircase Hunter):
+    Uses a 3-stage exit to safely transition from 'Volatility Acceptance'
+    to 'Breakeven Protection' to 'Aggressive Trailing'.
     """
 
     def entry(self, df: pd.DataFrame, i: int) -> dict:
@@ -51,8 +50,6 @@ class ApexWealthStrategy(GenericStrategy):
             if rsi2 <= rsi_weak: valid_setup = True
 
         if valid_setup:
-            # RETURN LIMIT ORDER INSTRUCTION
-            # The engine will only fill if Low < (Close * limit_ratio)
             return {
                 "limit_ratio": limit_ratio,
                 "stop_loss_atr": float(self.genome.get("stop_loss_atr", 3.0))
@@ -62,39 +59,59 @@ class ApexWealthStrategy(GenericStrategy):
 
     def exit(self, df, i, entry_i, entry_price, stop_price) -> bool:
         row = df.iloc[i]
-        days_held = i - entry_i
-        close_px = row.get("close", entry_price)
-        high_px = row.get("high", close_px)
-        
-        # --- GEN 15 EXIT LOGIC (The Runner) ---
+
+        entry_idx = int(entry_i) if entry_i is not None else 0
+        entry_idx = max(0, min(entry_idx, i))
+        days_held = i - entry_idx
+
+        close_px = float(row.get("close", entry_price) or entry_price)
+        low_px = float(row.get("low", close_px) or close_px)
+
+        # --- GEN 16.1 STAIRCASE EXIT ---
         trail_mult = float(self.genome.get("trail_atr", 3.0))
         time_limit = int(self.genome.get("time_stop", 60))
-        
-        # 1. Calculate Dynamic Trailing Stop
-        # Stop is calculated from the Highest High since entry
-        # We simulate this by checking if today's Low hit the theoretical trail
-        # Note: In a real engine, we'd track 'highest_high' statefully. 
-        # Here we approximate using the current bar's ATR.
-        atr = row.get("atr14", close_px * 0.02)
-        
-        # Base hard stop (Initial Risk)
-        if row.get("low") < stop_price:
+
+        # Entry volatility reference (ATR14 at entry decision time; avoids lookahead)
+        atr_ref_idx = max(0, entry_idx - 1)
+        entry_atr = df.iloc[atr_ref_idx].get("atr14", np.nan)
+        try:
+            entry_atr = float(entry_atr)
+        except (TypeError, ValueError):
+            entry_atr = np.nan
+        if not np.isfinite(entry_atr) or entry_atr <= 0:
+            entry_atr = float(entry_price) * 0.02
+
+        # Use peak high since entry for monotonic stage activation and true trailing behavior
+        peak_high = float(row.get("high", close_px) or close_px)
+        if "high" in df.columns and entry_idx <= i:
+            peak_high_val = df.iloc[entry_idx : i + 1]["high"].max()
+            try:
+                peak_high_val = float(peak_high_val)
+            except (TypeError, ValueError):
+                peak_high_val = np.nan
+            if np.isfinite(peak_high_val):
+                peak_high = peak_high_val
+
+        profit_per_share = max(0.0, peak_high - float(entry_price))
+        profit_atr_units = profit_per_share / entry_atr if entry_atr > 0 else 0.0
+
+        hard_stop = float(stop_price) if stop_price is not None else float(entry_price) * 0.90
+        effective_stop = hard_stop
+
+        # STAGE 1: Early (< 1.0 ATR profit) -> Hard Stop only
+        # STAGE 2: Bridge (1.0 - 2.0 ATR profit) -> Move stop to breakeven + buffer
+        breakeven_buffer_stop = float(entry_price) + (0.1 * entry_atr)
+        if 1.0 <= profit_atr_units < 2.0:
+            effective_stop = max(effective_stop, breakeven_buffer_stop)
+
+        # STAGE 3: Runner (>= 2.0 ATR profit) -> Activate trailing stop: peak_high - 3.0 * ATR
+        if profit_atr_units >= 2.0:
+            trailing_stop = peak_high - (entry_atr * trail_mult)
+            effective_stop = max(effective_stop, breakeven_buffer_stop, trailing_stop)
+
+        if low_px < effective_stop:
             return True
 
-        # 2. Profit Trailing (The "Let it Run" Logic)
-        # If we are profitable, we switch to a trailing stop
-        if close_px > entry_price:
-            # Theoretical Trail: High - (ATR * Mult)
-            dynamic_stop = high_px - (atr * trail_mult)
-            
-            # If price drops below this dynamic stop, we exit
-            if row.get("low") < dynamic_stop:
-                # But ensure we don't exit below our entry if we are just starting
-                # (Allow some breathing room unless we are deep in profit)
-                if dynamic_stop > entry_price: 
-                    return True
-
-        # 3. Time Stop (Fail-safe)
         if days_held >= time_limit:
             return True
 
