@@ -1,8 +1,7 @@
 import random
 import copy
-import json
+import math
 from typing import List, Dict
-from strategies.generic import GenericStrategy
 
 class EvolutionEngine:
     def __init__(self):
@@ -52,43 +51,61 @@ class EvolutionEngine:
             "stop_loss_atr": round(random.uniform(3.0, 7.0), 1),
             "time_stop": random.choice([30, 45, 60, 75, 90]),
             "scoring_weights": self._random_scoring_weights(),
-            # GEN 15: The Limit Runner Params
+            # GEN 16.1 PARAMETERS
             "adx_threshold": 25.0,
             "rsi_strong": 40.0,
             "rsi_weak": 15.0,
-            "limit_ratio": 0.98,  # 2% Discount Default
-            "trail_atr": 3.0      # 3x ATR Trail Default
+            "limit_ratio": 0.98,
+            "trail_atr": 3.0,
+            "trail_activation": 1.03
         }
         return genome
 
+    def calculate_fitness(self, metrics: Dict) -> float:
+        """
+        Calculates the fitness score of a strategy based on backtest metrics.
+        Implements a 'Profit Gate' to kill micro-scalpers.
+        """
+        cagr = metrics.get('cagr', 0)
+        win_rate = metrics.get('hit_rate', 0)
+        avg_profit = metrics.get('avg_profit_pct', 0)
+        max_dd = metrics.get('max_drawdown_pct', 0) # Negative number
+        trades = metrics.get('total_trades', 0)
+
+        # 1. Base Score (Growth driven)
+        score = (cagr * 100) * 2.0 
+
+        # 2. Risk Penalty (Punish Drawdown)
+        if max_dd < -15.0:
+            score -= (abs(max_dd) - 15.0) * 5.0 # Heavy penalty for busting safety limit
+
+        # 3. Win Rate Bonus (But capped impact)
+        if win_rate > 60.0:
+            score += (win_rate - 60.0) * 0.5
+
+        # 4. THE PROFIT GATE (The Anti-Scalper Logic)
+        # If the strategy makes peanuts per trade, we nuke its score.
+        if avg_profit < 2.5:
+            score *= 0.5  # 50% Penalty
+            score -= 20.0 # Flat Penalty
+
+        # 5. Starvation Penalty
+        if trades < 30:
+            score = 0.0 # Disqualify starvation
+
+        return max(score, 0.0)
+
     def create_initial_population(self, base_name: str = "Strategy", base_strategies: List[Dict] = None) -> List[Dict]:
         pop: List[Dict] = []
-        
-        # 1. Golden Seed
-        golden_seed = self._create_random_strategy(base_name)
-        golden_seed["name"] = f"{base_name}_GOLDEN"
-        pop.append(golden_seed)
-
-        # 2. Neighborhood
-        for i in range(10):
-            pop.append(self.mutate(golden_seed))
-
-        # 3. Provided Strategies (Seed the Optimizer)
         if base_strategies:
             for strat in base_strategies:
                 clone = copy.deepcopy(strat)
-                # Ensure Gen 15 params exist
-                clone["adx_threshold"] = clone.get("adx_threshold", 25.0)
-                clone["rsi_strong"] = clone.get("rsi_strong", 40.0)
-                clone["rsi_weak"] = clone.get("rsi_weak", 15.0)
+                # Ensure Gen 16 params exist
                 clone["limit_ratio"] = clone.get("limit_ratio", 0.98)
                 clone["trail_atr"] = clone.get("trail_atr", 3.0)
                 pop.append(clone)
-
-        # 4. Fill Rest
         while len(pop) < self.population_size:
             pop.append(self._create_random_strategy(f"{base_name}_EXPLORE"))
-
         self.population = pop
         return pop
     
@@ -100,19 +117,16 @@ class EvolutionEngine:
         mutant["name"] = mutant["name"] + "_mut"
         r = random.random()
         
-        if r < 0.25:
-            # GEN 15 EXECUTION & EXIT MUTATIONS
+        if r < 0.3:
+            # GEN 16 EXECUTION MUTATIONS
             trait = random.choice(["limit", "trail", "dual_lane"])
-            
             if trait == "limit":
-                # Mutate Entry Discount (0.93 to 1.00)
-                # 1.00 = Market Order, 0.93 = Deep 7% discount
-                mutant["limit_ratio"] = round(random.uniform(0.93, 1.00), 3)
-                
+                # Mutate Entry Discount (0.95 to 1.00)
+                # We avoid < 0.95 to prevent starvation
+                mutant["limit_ratio"] = round(random.uniform(0.95, 1.00), 3)
             elif trait == "trail":
-                # Mutate Trailing Stop (2.0 to 6.0 ATR)
-                mutant["trail_atr"] = round(random.uniform(2.0, 6.0), 1)
-                
+                # Mutate Trailing Stop (Wider range to encourage holding)
+                mutant["trail_atr"] = round(random.uniform(2.5, 6.0), 1)
             elif trait == "dual_lane":
                 sub_trait = random.choice(["adx", "strong", "weak"])
                 if sub_trait == "adx":
@@ -122,16 +136,8 @@ class EvolutionEngine:
                 elif sub_trait == "weak":
                     mutant["rsi_weak"] = float(random.randint(5, 25))
 
-        elif r < 0.45:
-            # TIME STOP & PROFIT
-            mutant["time_stop"] = random.choice([20, 30, 45, 60, 80])
-            # Note: Profit Target is less relevant with Trailing Stop, but kept as failsafe
-            for rule in mutant.get("exit_rules", []):
-                if rule["type"] == "profit_target":
-                    rule["val"] = round(random.uniform(1.05, 1.30), 2)
-
-        elif r < 0.65:
-            # BASE STOP LOSS
+        elif r < 0.5:
+            # STOP LOSS
             mutant["stop_loss_atr"] = round(random.uniform(2.5, 6.0), 1)
 
         else:
@@ -144,7 +150,7 @@ class EvolutionEngine:
 
     def evolve(self, ranked):
         self.generation_count += 1
-        survivors = [r["genome"] for r in ranked[:10]] # Top 10 survive
+        survivors = [r["genome"] for r in ranked[:10]] 
         next_gen = survivors[:]
         while len(next_gen) < self.population_size:
             parent = random.choice(survivors)

@@ -42,16 +42,24 @@ def calculate_fitness(result):
         
         # Reward: CAGR + Profit Depth + Risk-Adjusted Return
         fitness = (cagr * 1000) + (avgprof * 300) + (calmar * 200) + (edge * 500)
+        if avgprof < 2.5:
+            fitness *= 0.5
         return fitness
     
     # 4. Income/Trend strategies: Prioritize consistency
     if "Income" in name or "Gen9" in name:
         if hit < 60.0:
             return -3000 + (hit * 30)
-        return (cagr * 1000) + (hit * 100) + (calmar * 150)
+        fitness = (cagr * 1000) + (hit * 100) + (calmar * 150)
+        if avgprof < 2.5:
+            fitness *= 0.5
+        return fitness
     
     # Default: CAGR-focused
-    return cagr * 1000 + (edge * 200)
+    fitness = cagr * 1000 + (edge * 200)
+    if avgprof < 2.5:
+        fitness *= 0.5
+    return fitness
 
 def load_optimization_data(universe="S&P 1500", days=1260):
     print(f"📥 Loading Data for {universe}...")
