@@ -114,18 +114,17 @@ class EvolutionEngine:
 
     def mutate(self, genome: Dict) -> Dict:
         mutant = copy.deepcopy(genome)
-        mutant["name"] = mutant["name"] + "_mut"
+        base_name = mutant.get("name", "Strategy")
+        mutant["name"] = f"{base_name}_mut"
+
         r = random.random()
-        
+
         if r < 0.3:
             # GEN 16 EXECUTION MUTATIONS
             trait = random.choice(["limit", "trail", "dual_lane"])
             if trait == "limit":
-                # Mutate Entry Discount (0.95 to 1.00)
-                # We avoid < 0.95 to prevent starvation
                 mutant["limit_ratio"] = round(random.uniform(0.95, 1.00), 3)
             elif trait == "trail":
-                # Mutate Trailing Stop (Wider range to encourage holding)
                 mutant["trail_atr"] = round(random.uniform(2.5, 6.0), 1)
             elif trait == "dual_lane":
                 sub_trait = random.choice(["adx", "strong", "weak"])
@@ -141,19 +140,115 @@ class EvolutionEngine:
             mutant["stop_loss_atr"] = round(random.uniform(2.5, 6.0), 1)
 
         else:
-            # SCORING WEIGHTS
-            if "scoring_weights" in mutant:
-                k = random.choice(list(mutant["scoring_weights"].keys()))
-                mutant["scoring_weights"][k] = round(mutant["scoring_weights"][k] * random.uniform(0.8, 1.2), 2)
-            
+            # SCORING WEIGHTS (Adaptive Mutation + Breakthrough Mutation)
+            scoring = copy.deepcopy(mutant.get("scoring_weights") or {})
+            if not scoring:
+                scoring = self._random_scoring_weights()
+
+            key = random.choice(list(scoring.keys()))
+
+            # Adaptive mutation: early exploration vs late refinement
+            if self.generation_count < 20:
+                scale_low, scale_high = 0.50, 1.50
+            else:
+                scale_low, scale_high = 0.85, 1.15
+
+            # 10% breakthrough mutation: reset weight to a brand-new value.
+            if random.random() < 0.10:
+                new_val = round(random.uniform(5.0, 80.0), 2)
+                if "penalty" in key and float(scoring.get(key, 0) or 0) < 0:
+                    new_val = -new_val
+                scoring[key] = new_val
+            else:
+                try:
+                    cur = float(scoring.get(key, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    cur = 0.0
+                scoring[key] = round(cur * random.uniform(scale_low, scale_high), 2)
+
+            mutant["scoring_weights"] = scoring
+
         return mutant
 
     def evolve(self, ranked):
+        """
+        Quota Elitism:
+        - The next generation always contains a 50/50 split of:
+          - Wealth strategies: type == "wealth"
+          - Income strategies: type in {"hybrid", "income"}
+        """
         self.generation_count += 1
-        survivors = [r["genome"] for r in ranked[:10]] 
-        next_gen = survivors[:]
+
+        target_wealth = self.population_size // 2
+        target_income = self.population_size - target_wealth
+
+        elite_total = min(10, self.population_size)
+        elite_wealth = min(target_wealth, elite_total // 2)
+        elite_income = min(target_income, elite_total - elite_wealth)
+
+        def is_wealth(g: Dict) -> bool:
+            return str(g.get("type", "")).lower() == "wealth"
+
+        def is_income(g: Dict) -> bool:
+            return str(g.get("type", "")).lower() in {"hybrid", "income"}
+
+        # Select elites per bucket from the ranked list (best -> worst)
+        wealth_elites: List[Dict] = []
+        income_elites: List[Dict] = []
+        for r in ranked or []:
+            genome = r.get("genome") if isinstance(r, dict) else None
+            if not isinstance(genome, dict):
+                continue
+
+            if is_wealth(genome):
+                if len(wealth_elites) < elite_wealth:
+                    elite = copy.deepcopy(genome)
+                    elite["type"] = "wealth"
+                    wealth_elites.append(elite)
+            else:
+                if len(income_elites) < elite_income:
+                    elite = copy.deepcopy(genome)
+                    if not is_income(elite):
+                        elite["type"] = "hybrid"
+                    income_elites.append(elite)
+
+            if len(wealth_elites) >= elite_wealth and len(income_elites) >= elite_income:
+                break
+
+        # Fallback seeding if a bucket is missing (keeps the system moving forward)
+        while len(wealth_elites) < elite_wealth:
+            seed = self._create_random_strategy("WEALTH_SEED")
+            seed["type"] = "wealth"
+            wealth_elites.append(seed)
+
+        while len(income_elites) < elite_income:
+            seed = self._create_random_strategy("INCOME_SEED")
+            seed["type"] = "hybrid"
+            income_elites.append(seed)
+
+        next_gen: List[Dict] = []
+
+        # Start with elites (elitism)
+        next_gen.extend(wealth_elites)
+        next_gen.extend(income_elites)
+
+        # Fill Wealth quota via mutation
+        while sum(1 for g in next_gen if is_wealth(g)) < target_wealth:
+            parent = random.choice(wealth_elites)
+            child = self.mutate(parent)
+            child["type"] = "wealth"
+            next_gen.append(child)
+
+        # Fill Income quota via mutation
         while len(next_gen) < self.population_size:
-            parent = random.choice(survivors)
-            next_gen.append(self.mutate(parent))
+            parent = random.choice(income_elites)
+            child = self.mutate(parent)
+            if not is_income(child):
+                child["type"] = "hybrid"
+            next_gen.append(child)
+
+        # Enforce exact population size (safety guard)
+        next_gen = next_gen[: self.population_size]
+
         self.population = next_gen
         return next_gen

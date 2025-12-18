@@ -16,50 +16,41 @@ from data.indices import get_index_symbols
 GEN_CONFIG = os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/generated_strategies.json"))
 
 def calculate_fitness(result):
-    name = result.get("strategy", "")
-    cagr = result.get("cagr", 0)
-    avgprof = result.get("avg_profit_pct", 0)
-    hit = result.get("hit_rate", 0)
-    trades = result.get("total_trades", 0)
-    max_dd = abs(result.get("max_drawdown_pct", 0.01))  # Prevent division by zero
-    
-    # 1. Activity Floor
-    if trades < 20:
-        return -1e6
-    
-    # 2. Calculate Risk-Adjusted Metrics
-    win_expectancy = (avgprof * hit / 100)
-    loss_expectancy = abs(avgprof * 0.5) * (100 - hit) / 100  # Assume losses = 50% of wins
-    edge = win_expectancy - loss_expectancy
-    
-    calmar = cagr / max_dd if max_dd > 0 else 0
-    
-    # 3. REVISED MANDATE: Prioritize Sharpe-like edge + CAGR
-    if "Sniper" in name or "Gen12" in name or "Wealth" in name:
-        # Lower win rate threshold from 60% to 55%
-        if hit < 55.0:
-            return -5000 + (hit * 50)  # Gentler penalty
-        
-        # Reward: CAGR + Profit Depth + Risk-Adjusted Return
-        fitness = (cagr * 1000) + (avgprof * 300) + (calmar * 200) + (edge * 500)
-        if avgprof < 2.5:
-            fitness *= 0.5
-        return fitness
-    
-    # 4. Income/Trend strategies: Prioritize consistency
-    if "Income" in name or "Gen9" in name:
-        if hit < 60.0:
-            return -3000 + (hit * 30)
-        fitness = (cagr * 1000) + (hit * 100) + (calmar * 150)
-        if avgprof < 2.5:
-            fitness *= 0.5
-        return fitness
-    
-    # Default: CAGR-focused
-    fitness = cagr * 1000 + (edge * 200)
-    if avgprof < 2.5:
-        fitness *= 0.5
-    return fitness
+    """
+    Soft Fitness:
+    - No hard penalties / no string matching.
+    - Targets:
+      - Win Rate: 60%
+      - Avg Profit: 5%
+    - If below target, apply a multiplier of (actual/target).
+    """
+    try:
+        cagr = float(result.get("cagr", 0.0) or 0.0)
+        avg_profit = float(result.get("avg_profit_pct", 0.0) or 0.0)
+        win_rate = float(result.get("hit_rate", 0.0) or 0.0)
+        trades = int(result.get("total_trades", 0) or 0)
+        max_dd_pct = float(result.get("max_drawdown_pct", 0.0) or 0.0)
+    except Exception:
+        return 0.0
+
+    # Base (growth + risk-adjusted component)
+    dd_pct = abs(max_dd_pct)
+    dd_frac = dd_pct / 100.0 if dd_pct > 0 else 0.0
+    calmar = (cagr / dd_frac) if dd_frac > 0 else 0.0
+    base = max(cagr, 0.0) * 1000.0 + max(calmar, 0.0) * 200.0
+
+    # Soft Activity factor (avoid starvation without hard disqualification)
+    activity_factor = min(1.0, trades / 20.0) if trades > 0 else 0.0
+
+    # Soft targets
+    win_target = 60.0
+    profit_target = 5.0
+
+    win_factor = (win_rate / win_target) if win_rate < win_target else 1.0
+    profit_factor = (avg_profit / profit_target) if avg_profit < profit_target else 1.0
+
+    fitness = base * activity_factor * win_factor * profit_factor
+    return float(max(fitness, 0.0))
 
 def load_optimization_data(universe="S&P 1500", days=1260):
     print(f"📥 Loading Data for {universe}...")
@@ -80,12 +71,25 @@ def run_evolution_cycle(engine, data_map, global_context):
             engine.population = json.load(f)
     except: engine.generate_initial_population()
 
-    # Run 3 Generations per Cycle
-    for gen in range(3):
+    # Run 5 Generations per Cycle
+    for gen in range(5):
         print(f"   🧬 Gen {engine.generation_count} Evaluation...")
         pop_res = []
-        with ThreadPoolExecutor(max_workers=10) as ex:
-            futures = {ex.submit(run_backtest, GenericStrategy(g), data_map, None, 100000.0, None, global_context): g for g in engine.population}
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            futures = {
+                # Fix Wiring: pass genome scoring_weights as final argument to run_backtest.
+                ex.submit(
+                    run_backtest,
+                    GenericStrategy(g),
+                    data_map,
+                    None,
+                    100000.0,
+                    None,
+                    global_context,
+                    g.get("scoring_weights"),
+                ): g
+                for g in engine.population
+            }
             for f in futures:
                 try:
                     res = f.result()
@@ -107,6 +111,7 @@ if __name__ == "__main__":
     data_map, global_context = load_optimization_data("S&P 1500", days=1260)
     if not data_map: sys.exit(1)
     engine = EvolutionEngine()
+    engine.population_size = 100
     
     # Run 5 Full Cycles
     for i in range(5):
