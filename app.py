@@ -1,24 +1,12 @@
 import streamlit as st
+import pandas as pd
 import concurrent.futures
 import sys
 import os
 import json
+import joblib
+import numpy as np
 from datetime import datetime, timedelta
-
-try:
-    import pandas as pd
-    import joblib
-    import numpy as np
-except ModuleNotFoundError as e:
-    missing = getattr(e, "name", "a required dependency")
-    print(f"❌ Missing dependency: {missing}")
-    print("   Activate your venv or run: .venv/bin/streamlit run app.py")
-    try:
-        st.error(f"Missing dependency: `{missing}`. Run with your venv: `.venv/bin/streamlit run app.py`")
-        st.stop()
-    except Exception:
-        pass
-    raise SystemExit(1)
 
 # Ensure project root is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -45,7 +33,13 @@ def load_strategy_configs():
 def load_ai_model():
     if os.path.exists(MODEL_PATH):
         try:
-            return joblib.load(MODEL_PATH)
+            model = joblib.load(MODEL_PATH)
+            # CRITICAL PERFORMANCE FIX: Force model to run in serial mode.
+            # The Backtester is already parallel (8 workers). If the AI also tries to be parallel,
+            # we get 64 threads fighting for 8 cores (Deadlock/Slowdown).
+            # Setting n_jobs=1 makes it faster by eliminating overhead.
+            model.n_jobs = 1 
+            return model
         except Exception as e:
             print(f"⚠️ Failed to load AI model: {e}")
             return None
@@ -59,7 +53,6 @@ def color_pnl(val):
     return f'color: {color}'
 
 def score_to_rating(score):
-    """Convert numerical score to visual rating for UI"""
     if score >= 85: return "🔥 Excellent"
     elif score >= 75: return "⭐ Strong"
     elif score >= 60: return "✅ Good"
@@ -103,7 +96,6 @@ with st.sidebar:
     selected_strategies = []
     if strategies_list:
         for i, s in enumerate(strategies_list):
-            # Enumerate key to prevent duplicate ID crash
             use = st.checkbox(s.get('name'), value=True, key=f"chk_{s.get('name')}_{i}")
             if use: selected_strategies.append(s)
             
@@ -233,22 +225,6 @@ if mode == "Live Screener":
 # --- 2. BACKTEST ---
 elif mode == "Backtest":
     st.header("📈 Historical Performance Lab")
-    use_ai = st.checkbox("🧠 Apply AI Filter (Conf > 60%)", value=False)
-    super_signal_conf = {
-        "name": "Super Signal (Gen 12 Wealth)",
-        "type": "hybrid",
-        "entry_rules": [
-            {"col": "cci", "op": "<", "val": -50},
-            {"col": "bb_width", "op": ">", "val": 0.17},
-            {"col": "volume", "op": ">", "ref": "vol_ma20"},
-            {"col": "close", "op": ">", "ref": "sma50"},
-            {"col": "sma50", "op": ">", "ref": "sma200"}
-        ],
-        "exit_rules": [],
-        "stop_loss_atr": 4.0,
-        "time_stop": 45,
-        "gap_protection_pct": 0.08
-    }
     
     col_uni, col_dur = st.columns([1, 3])
     with col_uni:
@@ -263,28 +239,35 @@ elif mode == "Backtest":
         for label in dur_map:
             if c1.button(label) if label=="1 Year" else c2.button(label) if label=="5 Years" else c3.button(label) if label=="10 Years" else c4.button(label) if label=="20 Years" else c5.button(label):
                 st.session_state.bt_duration = label
+    
+    # AI Filter Checkbox
+    use_ai = st.checkbox("🧠 Apply AI Filter (Conf > 60%)", value=False, help="Only take trades where Neural Net predicts >60% win probability.")
 
-    st.info(f"Settings: **{bt_universe}** for **{st.session_state.bt_duration}**")
+    st.info(f"Settings: **{bt_universe}** for **{st.session_state.bt_duration}** | AI Filter: **{'ON' if use_ai else 'OFF'}**")
 
     if st.button("🚀 RUN BACKTEST", type="primary"):
         if not selected_strategies:
             st.error("Please select at least one strategy.")
         else:
+            # Prepare AI Model (if needed)
+            ai_model_obj = None
+            if use_ai:
+                ai_model_obj = load_ai_model()
+                if not ai_model_obj:
+                    st.warning("⚠️ AI Model not found! Running raw backtest.")
+
             with st.spinner("Simulating..."):
-                ai_model = load_ai_model() if use_ai else None
                 days = dur_map.get(st.session_state.bt_duration, 1260)
                 symbols = get_index_symbols(bt_universe)
                 data = fetch_data_pack(symbols, days=days + 200)
                 
                 if "backtest_results" not in st.session_state: st.session_state.backtest_results = {}
                 results_map = {}
-                run_set = list(selected_strategies)
-                run_set.append(super_signal_conf)
-                run_strategies = load_strategies(run_set)
+                run_strategies = load_strategies(selected_strategies)
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                     future_map = {
-                        executor.submit(run_backtest, strat, data, ai_model=ai_model if use_ai else None): strat.name
+                        executor.submit(run_backtest, strat, data, start_cash=100000.0, start_date=None, export_ml_data=False, ai_model=ai_model_obj): strat.name
                         for strat in run_strategies
                     }
                     for future in concurrent.futures.as_completed(future_map):
@@ -306,7 +289,18 @@ elif mode == "Backtest":
                 col1.metric("CAGR", f"{res['cagr']:.1%}")
                 col2.metric("Win Rate", f"{res['hit_rate']:.1f}%")
                 col3.metric("Avg Profit", f"{res['avg_profit_pct']:.2f}%")
+                
                 st.line_chart(res["equity_curve"])
+                
+                # --- DOWNLOAD BUTTON RESTORED ---
+                csv_data = res["equity_curve"].to_csv().encode('utf-8')
+                st.download_button(
+                    label="📥 Download Results (CSV)",
+                    data=csv_data,
+                    file_name=f"{name}_backtest.csv",
+                    mime="text/csv",
+                    key=f"dl_{i}"
+                )
 
 # --- 3. SIMULATOR (PRO MODE) ---
 elif mode == "Simulator":
@@ -340,7 +334,6 @@ elif mode == "Simulator":
             
             if new_trades:
                 st.success(f"📝 Queued {len(new_trades)} order(s).")
-                # CLEAN DF FOR DISPLAY (Drop Objects)
                 df_orders = pd.DataFrame(new_trades)
                 if "strategy_obj" in df_orders.columns:
                     df_orders = df_orders.drop(columns=["strategy_obj"])
@@ -374,7 +367,6 @@ elif mode == "Simulator":
     st.subheader("📂 Active Holdings")
     
     if state['positions']:
-        # Manual Column Layout to avoid DataFrame/Arrow Object Error
         col_widths = [1.2, 1.0, 1.2, 1.2, 1.2, 1.5, 2.5, 1.2]
         h_cols = st.columns(col_widths)
         headers = ["Symbol", "Qty", "Entry", "Current", "Stop Loss", "PnL", "Exit Plan", "Action"]
