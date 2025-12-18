@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import warnings
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -17,12 +18,16 @@ import data.indices as indices
 from execution import engine
 from strategies.strategy_loader import load_strategies
 
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
+
 MODEL_PATH = "models/apex_neural_v1.pkl"
 STRATEGY_PATH = "config/training_strategies.json"
+SECTOR_MAP_PATH = "config/sectors.json"
 CONFIDENCE_THRESHOLD = 0.60
 LOOKBACK_DAYS = 300
 
 FEATURE_COLS = ["rsi2", "adx", "atr_pct", "dist_sma50", "dist_sma200", "vol_rel"]
+_SECTOR_MAP: Optional[Dict[str, str]] = None
 
 
 def get_latest_features(df: pd.DataFrame) -> Optional[np.ndarray]:
@@ -104,6 +109,31 @@ def _load_strategy() -> Optional[object]:
     return strategy
 
 
+def _load_sector_map() -> Dict[str, str]:
+    sector_map_path = os.path.join(PROJECT_ROOT, SECTOR_MAP_PATH)
+    if not os.path.exists(sector_map_path):
+        return {}
+    try:
+        with open(sector_map_path, "r") as f:
+            sector_map = json.load(f) or {}
+        if not isinstance(sector_map, dict):
+            return {}
+        return {str(k).upper(): str(v) for k, v in sector_map.items() if k and v}
+    except Exception:
+        return {}
+
+
+def resolve_sector(symbol: str) -> str:
+    global _SECTOR_MAP
+    if _SECTOR_MAP is None:
+        _SECTOR_MAP = _load_sector_map()
+
+    sym_up = (symbol or "").upper()
+    if sym_up in _SECTOR_MAP:
+        return _SECTOR_MAP[sym_up]
+    return "Unknown"
+
+
 def main() -> None:
     if not os.path.exists(MODEL_PATH):
         print(f"❌ Model not found: {MODEL_PATH}")
@@ -130,6 +160,9 @@ def main() -> None:
     data: Dict[str, pd.DataFrame] = {sym: df for sym, df in fetched if df is not None and not df.empty}
     print(f"✅ Data loaded: {len(data)} symbols")
 
+    global _SECTOR_MAP
+    _SECTOR_MAP = _load_sector_map()
+
     hits: List[Dict] = []
 
     for sym, df in data.items():
@@ -152,7 +185,8 @@ def main() -> None:
             continue
 
         try:
-            prob = float(model.predict_proba(features)[0][1])
+            features_df = pd.DataFrame(features, columns=FEATURE_COLS)
+            prob = float(model.predict_proba(features_df)[0][1])
         except Exception:
             continue
 
@@ -172,7 +206,7 @@ def main() -> None:
                 "Symbol": sym,
                 "Signal Price": price,
                 "Probability": prob,
-                "Sector": engine.get_sector(sym),
+                "Sector": resolve_sector(sym),
             }
         )
 

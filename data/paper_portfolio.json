@@ -1,6 +1,6 @@
 {
     "cash": 27329.140000000003,
-    "equity": 100989.61,
+    "equity": 101740.99,
     "history": [],
     "equity_curve": [
         {
@@ -10,6 +10,10 @@
         {
             "date": "2025-12-13",
             "equity": 100989.61
+        },
+        {
+            "date": "2025-12-17",
+            "equity": 101740.99
         }
     ],
     "positions": {
@@ -20,9 +24,9 @@
             "strategy": "Apex Wealth (Gen 12)",
             "strategy_name": "Apex Wealth (Gen 12)",
             "date": "2025-12-11",
-            "current_price": 277.0,
-            "unrealized_pnl": 990.7499999999984,
-            "unrealized_pct": 5.007771333257508,
+            "current_price": 285.01,
+            "unrealized_pnl": 1591.4999999999977,
+            "unrealized_pct": 8.044277645096466,
             "entry_i": 332
         },
         "ZTS": {
@@ -32,9 +36,9 @@
             "strategy": "Apex Wealth (Gen 12)",
             "strategy_name": "Apex Wealth (Gen 12)",
             "date": "2025-12-11",
-            "current_price": 119.91,
-            "unrealized_pnl": 185.17999999999955,
-            "unrealized_pct": 0.7901151550811111,
+            "current_price": 122.9,
+            "unrealized_pnl": 774.2100000000014,
+            "unrealized_pct": 3.303353786668914,
             "entry_i": 332
         },
         "CARR": {
@@ -44,9 +48,9 @@
             "strategy": "Apex Wealth (Gen 12)",
             "strategy_name": "Apex Wealth (Gen 12)",
             "date": "2025-12-11",
-            "current_price": 53.4,
-            "unrealized_pnl": -186.32000000000187,
-            "unrealized_pct": -0.632675846669154,
+            "current_price": 52.6,
+            "unrealized_pnl": -624.7200000000003,
+            "unrealized_pct": -2.1213248976553785,
             "entry_i": 332
         }
     },
