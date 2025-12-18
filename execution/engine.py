@@ -324,7 +324,7 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
         for cand in daily_candidates:
             if cand["sym"] in positions:
                 continue
-            if len(positions) >= max_positions:
+            if not export_ml_data and len(positions) >= max_positions:
                 break
 
             # Recalculate equity dynamically to shrink sizing as cash is used
@@ -342,14 +342,17 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
 
             shares = min(shares_risk, shares_val)
             cost = shares * cand["px"]
-            if shares <= 0 or cash < cost:
+            if export_ml_data and (shares <= 0 or cash < cost):
+                shares = 100  # Force simulated size
+                cost = 0      # Free trade
+            elif shares <= 0 or cash < cost:
                 continue
 
             trade_val = cost
 
             cand_sec = resolve_sector(cand["sym"])
             proj_exp = (sector_exposure.get(cand_sec, 0.0) + trade_val) / current_equity if current_equity > 0 else 1.0
-            if proj_exp > 0.60:
+            if not export_ml_data and proj_exp > 0.60:
                 continue
 
             cash -= cost
@@ -422,11 +425,33 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
                         if close_px and np.isfinite(close_px) and close_px != 0:
                             atr_pct = atr14_val / close_px
 
+                        vol_val = entry_row.get("volume", 0)
+                        vol_ma20_val = entry_row.get("vol_ma20", 1)
+                        try:
+                            vol_val = float(vol_val)
+                        except (TypeError, ValueError):
+                            vol_val = 0.0
+                        try:
+                            vol_ma20_val = float(vol_ma20_val)
+                        except (TypeError, ValueError):
+                            vol_ma20_val = 1.0
+                        if not np.isfinite(vol_val):
+                            vol_val = 0.0
+                        if not np.isfinite(vol_ma20_val):
+                            vol_ma20_val = 1.0
+
+                        vol_rel = 0.0
+                        try:
+                            vol_rel = float(vol_val / (vol_ma20_val + 1.0))
+                        except Exception:
+                            vol_rel = 0.0
+
                         ml_data.append({
                             "rsi2": float(entry_row.get("rsi2", 50) or 50),
                             "adx": float(entry_row.get("adx", 0) or 0),
                             "atr14": atr14_val,
                             "atr_pct": float(atr_pct),
+                            "vol_rel": vol_rel,
                             "dist_to_sma50": float(dist_to_sma50),
                             "dist_to_sma200": float(dist_to_sma200),
                             "dist_sma50": float(dist_to_sma50),

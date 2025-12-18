@@ -20,7 +20,7 @@ def train_model():
     
     # 2. Define Features & Target
     # These must match what we logged in engine.py
-    feature_cols = ["rsi2", "adx", "atr_pct", "dist_sma50", "dist_sma200"]
+    feature_cols = ["rsi2", "adx", "atr_pct", "dist_sma50", "dist_sma200", "vol_rel"]
     target_col = "outcome" # 1 = Win, 0 = Loss
     
     # Clean Data (Drop rows with missing values)
@@ -52,6 +52,25 @@ def train_model():
     importances = model.feature_importances_
     for name, imp in sorted(zip(feature_cols, importances), key=lambda x: x[1], reverse=True):
         print(f"   - {name}: {imp:.4f}")
+
+    # 5b. Confidence Threshold Analysis
+    probs = model.predict_proba(X_test)[:, 1]
+    y_true = np.asarray(y_test)
+
+    print("\n🔍 CONFIDENCE THRESHOLD ANALYSIS")
+    print("==========================================")
+    print("Threshold  | Win Rate   | Trades Found   ")
+    print("------------------------------------------")
+
+    thresholds = [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
+    for thr in thresholds:
+        mask = probs >= thr
+        trades_found = int(np.sum(mask))
+        if trades_found == 0:
+            win_rate = 0.0
+        else:
+            win_rate = float(np.mean(y_true[mask] == 1)) * 100.0
+        print(f"{thr:0.2f}       | {win_rate:0.1f}%      | {trades_found:<14d}")
         
     # 6. Save Model
     os.makedirs("models", exist_ok=True)
