@@ -1,0 +1,73 @@
+{
+    "cash": 27329.140000000003,
+    "equity": 101740.99,
+    "history": [],
+    "equity_curve": [
+        {
+            "date": "2025-12-11",
+            "equity": 100967.3052
+        },
+        {
+            "date": "2025-12-13",
+            "equity": 100989.61
+        },
+        {
+            "date": "2025-12-17",
+            "equity": 101740.99
+        }
+    ],
+    "positions": {
+        "RCL": {
+            "shares": 75,
+            "entry_price": 263.79,
+            "stop_price": 223.33687142857144,
+            "strategy": "Apex Wealth (Gen 12)",
+            "strategy_name": "Apex Wealth (Gen 12)",
+            "date": "2025-12-11",
+            "current_price": 285.01,
+            "unrealized_pnl": 1591.4999999999977,
+            "unrealized_pct": 8.044277645096466,
+            "entry_i": 332
+        },
+        "ZTS": {
+            "shares": 197,
+            "entry_price": 118.97,
+            "stop_price": 105.66326857142857,
+            "strategy": "Apex Wealth (Gen 12)",
+            "strategy_name": "Apex Wealth (Gen 12)",
+            "date": "2025-12-11",
+            "current_price": 122.9,
+            "unrealized_pnl": 774.2100000000014,
+            "unrealized_pct": 3.303353786668914,
+            "entry_i": 332
+        },
+        "CARR": {
+            "shares": 548,
+            "entry_price": 53.74,
+            "stop_price": 46.69170285714286,
+            "strategy": "Apex Wealth (Gen 12)",
+            "strategy_name": "Apex Wealth (Gen 12)",
+            "date": "2025-12-11",
+            "current_price": 52.6,
+            "unrealized_pnl": -624.7200000000003,
+            "unrealized_pct": -2.1213248976553785,
+            "entry_i": 332
+        }
+    },
+    "pending_orders": [
+        {
+            "symbol": "CEG",
+            "shares": 34,
+            "committed_cash": 11495.74,
+            "order_price_estimate": 338.11,
+            "stop_price": 279.16571428571433,
+            "strategy": "Apex Wealth (Gen 16.2)_mut",
+            "strategy_name": "Apex Wealth (Gen 16.2)_mut",
+            "date": "2025-12-18",
+            "type": "BUY_MOO",
+            "status": "PENDING",
+            "entry_i": 327,
+            "queued_at": "2025-12-18T09:02:31.233776"
+        }
+    ]
+}

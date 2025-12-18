@@ -1,12 +1,24 @@
 import streamlit as st
-import pandas as pd
 import concurrent.futures
 import sys
 import os
 import json
-import joblib
-import numpy as np
 from datetime import datetime, timedelta
+
+try:
+    import pandas as pd
+    import joblib
+    import numpy as np
+except ModuleNotFoundError as e:
+    missing = getattr(e, "name", "a required dependency")
+    print(f"❌ Missing dependency: {missing}")
+    print("   Activate your venv or run: .venv/bin/streamlit run app.py")
+    try:
+        st.error(f"Missing dependency: `{missing}`. Run with your venv: `.venv/bin/streamlit run app.py`")
+        st.stop()
+    except Exception:
+        pass
+    raise SystemExit(1)
 
 # Ensure project root is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))

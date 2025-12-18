@@ -4,14 +4,49 @@ import json
 import warnings
 from typing import Dict, List, Optional, Tuple
 
-import pandas as pd
-import numpy as np
-import joblib
-
 # Add project root to path so `python tools/run_ai_scanner.py` works reliably.
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+
+os.chdir(PROJECT_ROOT)
+
+
+def _find_venv_python() -> str | None:
+    candidates = [
+        os.path.join(PROJECT_ROOT, ".venv", "bin", "python"),
+        os.path.join(PROJECT_ROOT, ".venv", "Scripts", "python.exe"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _ensure_venv() -> None:
+    venv_python = _find_venv_python()
+    if not venv_python:
+        return
+    if os.path.realpath(sys.executable) == os.path.realpath(venv_python):
+        return
+    if os.environ.get("APEX_VENV_REEXEC") == "1":
+        return
+    os.environ["APEX_VENV_REEXEC"] = "1"
+    os.execv(venv_python, [venv_python] + sys.argv)
+
+
+_ensure_venv()
+
+
+try:
+    import pandas as pd
+    import numpy as np
+    import joblib
+except ModuleNotFoundError as e:
+    missing = getattr(e, "name", "a required dependency")
+    print(f"❌ Missing dependency: {missing}")
+    print("   Try running: .venv/bin/python tools/run_ai_scanner.py")
+    sys.exit(1)
 
 import data.loader as loader
 import data.indices as indices
