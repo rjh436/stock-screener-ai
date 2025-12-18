@@ -54,5 +54,20 @@
             "entry_i": 332
         }
     },
-    "pending_orders": []
+    "pending_orders": [
+        {
+            "symbol": "CEG",
+            "shares": 34,
+            "committed_cash": 11495.74,
+            "order_price_estimate": 338.11,
+            "stop_price": 279.16571428571433,
+            "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
+            "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
+            "date": "2025-12-18",
+            "type": "BUY_MOO",
+            "status": "PENDING",
+            "entry_i": 327,
+            "queued_at": "2025-12-18T09:23:09.324649"
+        }
+    ]
 }
