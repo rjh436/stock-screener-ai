@@ -158,8 +158,21 @@ def calculate_backtest_quality_score(row, strategy_name, weights=None):
     final_score = clamped_base + adjustment
     return max(0.0, final_score)
 
-def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None, scoring_weights=None, export_ml_data=False):
+def run_backtest(
+    strategy,
+    data,
+    symbol_universe=None,
+    start_cash=100000.0,
+    start_date=None,
+    global_data=None,
+    scoring_weights=None,
+    export_ml_data=False,
+    ai_model=None,
+    ai_threshold=0.60,
+):
     import json, os
+    strategies = strategy
+    data_dict = data
 
     # Backward compatibility: allow single strategy input
     if not isinstance(strategies, (list, tuple)):
@@ -183,6 +196,33 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
         if sym_up in sector_map:
             return sector_map[sym_up]
         return get_sector(sym_up)
+
+    def _extract_ml_features(row) -> Optional[np.ndarray]:
+        try:
+            close = row["close"]
+            if close is None or not np.isfinite(close) or close <= 0:
+                return None
+
+            rsi2 = row.get("rsi2", 50)
+            adx = row.get("adx", 0)
+            atr_pct = (row.get("atr14", 0) / close) if close > 0 else 0
+            dist_sma50 = (close - row.get("sma50", close)) / close
+            dist_sma200 = (close - row.get("sma200", close)) / close
+            vol_rel = row.get("volume", 0) / (row.get("vol_ma20", 1) + 1)
+
+            features = np.array([[rsi2, adx, atr_pct, dist_sma50, dist_sma200, vol_rel]], dtype=float)
+            if not np.all(np.isfinite(features)):
+                return None
+            return features
+        except Exception:
+            return None
+
+    ml_feature_cols = ["rsi2", "adx", "atr_pct", "dist_sma50", "dist_sma200", "vol_rel"]
+    if ai_model is not None and hasattr(ai_model, "feature_names_in_"):
+        try:
+            ml_feature_cols = [str(c) for c in ai_model.feature_names_in_]
+        except Exception:
+            pass
 
     symbols = list(data_dict.keys())
     if symbol_universe: symbols = [s for s in symbols if s in symbol_universe]
@@ -251,6 +291,16 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
                     continue
 
                 row_prev = df.iloc[i-1]
+                if ai_model is not None:
+                    features = _extract_ml_features(row_prev)
+                    if features is not None:
+                        try:
+                            features_df = pd.DataFrame(features, columns=ml_feature_cols)
+                            prob = ai_model.predict_proba(features_df)[0][1]
+                            if prob < ai_threshold:
+                                continue
+                        except Exception:
+                            pass
                 row_curr = df.iloc[i]
                 prev_close = float(row_prev.get("close", 0) or 0)
                 open_px = float(row_curr["open"])

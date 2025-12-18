@@ -233,6 +233,7 @@ if mode == "Live Screener":
 # --- 2. BACKTEST ---
 elif mode == "Backtest":
     st.header("📈 Historical Performance Lab")
+    use_ai = st.checkbox("🧠 Apply AI Filter (Conf > 60%)", value=False)
     super_signal_conf = {
         "name": "Super Signal (Gen 12 Wealth)",
         "type": "hybrid",
@@ -270,6 +271,7 @@ elif mode == "Backtest":
             st.error("Please select at least one strategy.")
         else:
             with st.spinner("Simulating..."):
+                ai_model = load_ai_model() if use_ai else None
                 days = dur_map.get(st.session_state.bt_duration, 1260)
                 symbols = get_index_symbols(bt_universe)
                 data = fetch_data_pack(symbols, days=days + 200)
@@ -282,7 +284,7 @@ elif mode == "Backtest":
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                     future_map = {
-                        executor.submit(run_backtest, strat, data): strat.name
+                        executor.submit(run_backtest, strat, data, ai_model=ai_model if use_ai else None): strat.name
                         for strat in run_strategies
                     }
                     for future in concurrent.futures.as_completed(future_map):
