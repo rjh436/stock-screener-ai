@@ -1,0 +1,28 @@
+[
+    {
+        "name": "Apex Wealth (Training Mode)",
+        "type": "wealth",
+        "entry_rules": [],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.25
+            }
+        ],
+        "stop_loss_atr": 3.0,
+        "time_stop": 60,
+        "adx_threshold": 15.0,
+        "rsi_strong": 55.0,
+        "rsi_weak": 10.0,
+        "limit_ratio": 0.999,
+        "trail_atr": 4.0,
+        "trail_activation": 1.03,
+        "scoring_weights": {
+            "sniper_bonus": 10.0,
+            "rsi_factor": 3.0,
+            "trend_bonus": 30.0,
+            "vol_bonus": 10.0,
+            "atr_high_bonus": 20.0
+        }
+    }
+]

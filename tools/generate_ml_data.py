@@ -60,7 +60,7 @@ def generate_data():
     print(f"✅ Data loaded: {len(full_data)} symbols with price history.")
     
     # 2. Load Best Strategy
-    config_path = "config/generated_strategies.json"
+    config_path = "config/training_strategies.json"
     if not os.path.exists(config_path):
         print("❌ No strategy config found!")
         return
