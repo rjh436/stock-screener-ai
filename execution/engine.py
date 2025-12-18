@@ -158,7 +158,7 @@ def calculate_backtest_quality_score(row, strategy_name, weights=None):
     final_score = clamped_base + adjustment
     return max(0.0, final_score)
 
-def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None, scoring_weights=None):
+def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.0, start_date=None, global_data=None, scoring_weights=None, export_ml_data=False):
     import json, os
 
     # Backward compatibility: allow single strategy input
@@ -219,6 +219,7 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
     equity_curve = []
     trade_pnls = []
     trades_list = []
+    ml_data = [] if export_ml_data else None
     
     pos_fraction = 0.20
     max_positions = 5
@@ -314,7 +315,8 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
                     "score": score,
                     "strategy_name": strat.name,
                     "strategy_obj": strat,
-                    "prev_close": prev_close
+                    "prev_close": prev_close,
+                    **({"signal_i": i - 1} if export_ml_data else {})
                 })
 
         # Step C: Sort & Execute (Governor)
@@ -357,7 +359,8 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
                 "stop_price": cand["stop"],
                 "entry_i": enriched[cand["sym"]].index.get_loc(current_dt),
                 "strategy_name": cand["strategy_name"],
-                "strategy_obj": cand["strategy_obj"]
+                "strategy_obj": cand["strategy_obj"],
+                **({"signal_i": cand.get("signal_i")} if export_ml_data else {})
             }
             sector_exposure[cand_sec] = sector_exposure.get(cand_sec, 0.0) + cost
 
@@ -385,6 +388,54 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
 
                 cash += pos["shares"] * exit_px
                 trade_pnls.append(pnl)
+
+                if export_ml_data and ml_data is not None:
+                    try:
+                        entry_feat_i = pos.get("signal_i")
+                        if entry_feat_i is None:
+                            entry_feat_i = pos.get("entry_i", 0)
+                        entry_feat_i = int(entry_feat_i)
+                        entry_feat_i = max(0, min(entry_feat_i, len(df) - 1))
+
+                        entry_row = df.iloc[entry_feat_i]
+                        close_px = float(entry_row.get("close", 0) or 0)
+                        atr14_val = float(entry_row.get("atr14", 0) or 0)
+
+                        sma50 = entry_row.get("sma50", close_px)
+                        sma200 = entry_row.get("sma200", close_px)
+                        try:
+                            sma50 = float(sma50)
+                        except (TypeError, ValueError):
+                            sma50 = close_px
+                        try:
+                            sma200 = float(sma200)
+                        except (TypeError, ValueError):
+                            sma200 = close_px
+
+                        dist_to_sma50 = 0.0
+                        dist_to_sma200 = 0.0
+                        if close_px and np.isfinite(close_px) and close_px != 0:
+                            dist_to_sma50 = (close_px - sma50) / close_px
+                            dist_to_sma200 = (close_px - sma200) / close_px
+
+                        atr_pct = 0.0
+                        if close_px and np.isfinite(close_px) and close_px != 0:
+                            atr_pct = atr14_val / close_px
+
+                        ml_data.append({
+                            "rsi2": float(entry_row.get("rsi2", 50) or 50),
+                            "adx": float(entry_row.get("adx", 0) or 0),
+                            "atr14": atr14_val,
+                            "atr_pct": float(atr_pct),
+                            "dist_to_sma50": float(dist_to_sma50),
+                            "dist_to_sma200": float(dist_to_sma200),
+                            "dist_sma50": float(dist_to_sma50),
+                            "dist_sma200": float(dist_to_sma200),
+                            "profit_pct": float(pct),
+                            "outcome": 1 if pct > 0 else 0,
+                        })
+                    except Exception:
+                        pass
 
                 trades_list.append({
                     "Symbol": sym,
@@ -425,6 +476,14 @@ def run_backtest(strategies, data_dict, symbol_universe=None, start_cash=100000.
     rolling_max = eq_df["Equity"].cummax()
     drawdowns = (eq_df["Equity"] - rolling_max) / rolling_max
     max_dd = drawdowns.min() * 100
+
+    if export_ml_data and ml_data:
+        try:
+            out_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ml_training_data.csv"))
+            pd.DataFrame(ml_data).to_csv(out_path, index=False)
+            print(f"🧠 ML Data Exported: {len(ml_data)} samples saved to {out_path}")
+        except Exception as e:
+            print(f"⚠️ ML Data Export failed: {e}")
 
     return {
         "strategy": strategy_label,
