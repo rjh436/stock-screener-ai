@@ -1,115 +1,242 @@
 
-import os
+from __future__ import annotations
+
 import json
+import logging
+import os
 import sys
-import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional, Sequence, Tuple
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from data.indices import get_index_symbols
 from data.loader import fetch_data_pack
 from execution.engine import run_backtest
 from optimization.evolution import EvolutionEngine
 from strategies.generic import GenericStrategy
-from data.indices import get_index_symbols
 
-GEN_CONFIG = os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/generated_strategies.json"))
 
-def calculate_fitness(result):
-    """
-    Soft Fitness:
-    - No hard penalties / no string matching.
-    - Targets:
-      - Win Rate: 60%
-      - Avg Profit: 5%
-    - If below target, apply a multiplier of (actual/target), capped at 1.0.
-    """
-    try:
-        cagr = float(result.get("cagr", 0.0) or 0.0)
-        avg_profit = float(result.get("avg_profit_pct", 0.0) or 0.0)
-        win_rate = float(result.get("hit_rate", 0.0) or 0.0)
-        max_dd_pct = float(result.get("max_drawdown_pct", 0.0) or 0.0)
-    except Exception:
+GEN_CONFIG = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", "generated_strategies.json"))
+
+MAX_WORKERS = 16
+POPULATION_SIZE = 100
+
+# Persistence quotas (exact)
+EXPORT_TOP_WEALTH = 7
+EXPORT_TOP_INCOME = 8  # includes "income" and "hybrid"
+
+# Strategic mandates (fractions)
+MANDATE_CAGR_TARGET = 0.40
+MANDATE_PROFIT_TARGET = 0.05
+MANDATE_WIN_TARGET = 0.60
+
+
+logger = logging.getLogger(__name__)
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+
+def _clamp01(x: float) -> float:
+    if x <= 0.0:
         return 0.0
+    if x >= 1.0:
+        return 1.0
+    return float(x)
 
-    # Base (growth + risk-adjusted component)
-    dd_pct = abs(max_dd_pct)
-    dd_frac = dd_pct / 100.0 if dd_pct > 0 else 0.0
-    calmar = (cagr / dd_frac) if dd_frac > 0 else 0.0
+
+def _to_float(val, default: float = 0.0) -> float:
+    try:
+        return float(val)
+    except Exception:
+        return float(default)
+
+
+def _pct_to_frac(x: float) -> float:
+    """
+    Accept either percent units (e.g., 65.0) or fraction units (e.g., 0.65).
+    """
+    x = _to_float(x, 0.0)
+    return (x / 100.0) if x > 1.0 else x
+
+
+def calculate_fitness(result: Dict) -> float:
+    """
+    Fitness uses fractional units (strategic mandates):
+    - CAGR target: 0.40
+    - Avg profit target: 0.05
+    - Win rate target: 0.60
+
+    Final: base * win_factor * profit_factor * cagr_factor
+    """
+    cagr = _to_float(result.get("cagr", 0.0) or 0.0)
+    win_rate = _pct_to_frac(result.get("hit_rate", 0.0) or 0.0)
+    avg_profit = _pct_to_frac(result.get("avg_profit_pct", 0.0) or 0.0)
+    max_dd_pct = _to_float(result.get("max_drawdown_pct", 0.0) or 0.0)
+
+    dd_abs = abs(max_dd_pct)
+    dd_frac = (dd_abs / 100.0) if dd_abs > 1.0 else dd_abs
+    calmar = (cagr / dd_frac) if dd_frac > 0.0 else 0.0
+
     base = max(cagr, 0.0) * 1000.0 + max(calmar, 0.0) * 200.0
 
-    # Soft targets
-    win_target = 60.0
-    profit_target = 5.0
+    win_factor = _clamp01(win_rate / MANDATE_WIN_TARGET) if MANDATE_WIN_TARGET > 0 else 0.0
+    profit_factor = _clamp01(avg_profit / MANDATE_PROFIT_TARGET) if MANDATE_PROFIT_TARGET > 0 else 0.0
+    cagr_factor = _clamp01(cagr / MANDATE_CAGR_TARGET) if MANDATE_CAGR_TARGET > 0 else 0.0
 
-    win_factor = min(1.0, max(0.0, win_rate / win_target)) if win_target > 0 else 0.0
-    profit_factor = min(1.0, max(0.0, avg_profit / profit_target)) if profit_target > 0 else 0.0
-
-    fitness = base * win_factor * profit_factor
+    fitness = base * win_factor * profit_factor * cagr_factor
     return float(max(fitness, 0.0))
 
-def load_optimization_data(universe="S&P 1500", days=1260):
+
+def load_optimization_data(universe: str = "S&P 1500", days: int = 1260):
     print(f"📥 Loading Data for {universe}...")
     symbols = get_index_symbols(universe)
-    if not symbols: return {}, {}
+    if not symbols:
+        return {}, {}
+
     data_map = fetch_data_pack(symbols, days=days)
     g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days)
-    
-    # Robust VIX loading
-    vix = g_data.get("$VIX")
-    if vix is None: vix = g_data.get("VIX")
-    
+
+    vix = g_data.get("$VIX") or g_data.get("VIX")
     return data_map, {"SPY": g_data.get("SPY"), "VIX": vix}
 
-def run_evolution_cycle(engine, data_map, global_context):
-    try:
-        with open(GEN_CONFIG, "r") as f:
-            engine.population = json.load(f)
-    except: engine.generate_initial_population()
 
-    # Run 5 Generations per Cycle
-    for gen in range(5):
-        print(f"   🧬 Gen {engine.generation_count} Evaluation...")
-        pop_res = []
-        with ThreadPoolExecutor(max_workers=16) as ex:
-            futures = {
-                # Fix Wiring: pass genome scoring_weights as final argument to run_backtest.
-                ex.submit(
-                    run_backtest,
-                    GenericStrategy(g),
-                    data_map,
-                    None,
-                    100000.0,
-                    None,
-                    global_context,
-                    g.get("scoring_weights"),
-                ): g
-                for g in engine.population
-            }
-            for f in futures:
-                try:
-                    res = f.result()
-                    score = calculate_fitness(res)
-                    pop_res.append({"genome": futures[f], "score": score, "stats": res})
-                except: pass
-        
-        if not pop_res: continue
-        ranked = sorted(pop_res, key=lambda x: x["score"], reverse=True)
-        best = ranked[0]["stats"]
-        print(f"      🏆 Top: {best.get('strategy')[:25]}.. | CAGR: {best.get('cagr',0):.1%} | Profit: {best.get('avg_profit_pct',0):.1f}% | Hit: {best.get('hit_rate',0):.1f}%")
-        
+def _read_parent_strategies(path: str) -> Optional[List[Dict]]:
+    try:
+        with open(path, "r") as f:
+            payload = json.load(f)
+        if isinstance(payload, list):
+            return [p for p in payload if isinstance(p, dict)]
+        return None
+    except Exception:
+        return None
+
+
+def _format_top_line(stats: Dict, genome: Dict, score: float) -> str:
+    name = str(stats.get("strategy") or genome.get("name") or "Unknown")
+    name_short = (name[:25] + "..") if len(name) > 27 else name
+
+    cagr = _to_float(stats.get("cagr", 0.0) or 0.0)
+    hit_pct = _pct_to_frac(stats.get("hit_rate", 0.0) or 0.0) * 100.0
+    profit_pct = _pct_to_frac(stats.get("avg_profit_pct", 0.0) or 0.0) * 100.0
+
+    return (
+        f"      🏆 Top: {name_short} | Type: {str(genome.get('type','?')).lower():6s}"
+        f" | Fitness: {score:9.2f} | CAGR: {cagr:6.1%} | Profit: {profit_pct:6.2f}% | Hit: {hit_pct:6.2f}%"
+    )
+
+
+def _evaluate_population(
+    population: Sequence[Dict],
+    data_map: Dict,
+    global_context: Dict,
+) -> Tuple[List[Dict], List[Dict]]:
+    results: List[Dict] = []
+    failures: List[Dict] = []
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        future_to_genome = {
+            ex.submit(
+                run_backtest,
+                GenericStrategy(genome),
+                data_map,
+                None,
+                100000.0,
+                None,
+                global_context,
+                genome.get("scoring_weights"),
+            ): genome
+            for genome in population
+        }
+
+        for fut in as_completed(future_to_genome):
+            genome = future_to_genome[fut]
+            g_name = str(genome.get("name") or "unknown")
+            g_type = str(genome.get("type") or "income").lower()
+            try:
+                stats = fut.result()
+                score = calculate_fitness(stats)
+                results.append({"genome": genome, "score": score, "stats": stats})
+            except Exception as e:
+                failures.append({"name": g_name, "type": g_type, "error": str(e)})
+                logger.exception("Backtest failed for %s [%s]", g_name, g_type)
+                results.append({"genome": genome, "score": 0.0, "stats": {"strategy": g_name, "cagr": 0.0, "avg_profit_pct": 0.0, "hit_rate": 0.0}})
+
+    return results, failures
+
+
+def _export_quota_strategies(ranked: Sequence[Dict]) -> List[Dict]:
+    wealth: List[Dict] = []
+    income: List[Dict] = []
+
+    def is_wealth(g: Dict) -> bool:
+        return str(g.get("type") or "").lower() == "wealth"
+
+    def is_income(g: Dict) -> bool:
+        return str(g.get("type") or "").lower() in {"income", "hybrid"}
+
+    for r in ranked:
+        genome = r.get("genome") if isinstance(r, dict) else None
+        if not isinstance(genome, dict):
+            continue
+
+        if is_wealth(genome):
+            if len(wealth) < EXPORT_TOP_WEALTH:
+                wealth.append(genome)
+        else:
+            if len(income) < EXPORT_TOP_INCOME:
+                if not is_income(genome):
+                    genome = dict(genome)
+                    genome["type"] = "income"
+                income.append(genome)
+
+        if len(wealth) >= EXPORT_TOP_WEALTH and len(income) >= EXPORT_TOP_INCOME:
+            break
+
+    # With quota-aware populations, these should always be met.
+    return wealth[:EXPORT_TOP_WEALTH] + income[:EXPORT_TOP_INCOME]
+
+
+def run_evolution_cycle(engine: EvolutionEngine, data_map: Dict, global_context: Dict, generations: int = 5) -> None:
+    parents = _read_parent_strategies(GEN_CONFIG)
+    engine.population_size = POPULATION_SIZE
+    engine.population = engine.generate_initial_population(base_strategies=parents, base_name="HighCaliber")
+
+    for _ in range(generations):
+        print(f"   🧬 Gen {engine.generation_count} Evaluation... (pop={len(engine.population)})")
+
+        pop_res, failures = _evaluate_population(engine.population, data_map, global_context)
+        ranked = sorted(pop_res, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)
+
+        if failures:
+            by_type = {}
+            for f in failures:
+                by_type[f["type"]] = by_type.get(f["type"], 0) + 1
+            logger.warning("Backtest failures: %d (by type=%s)", len(failures), by_type)
+
+        top = ranked[0] if ranked else None
+        if top is not None:
+            print(_format_top_line(top.get("stats") or {}, top.get("genome") or {}, float(top.get("score") or 0.0)))
+
         engine.evolve(ranked)
+
+        export = _export_quota_strategies(ranked)
         with open(GEN_CONFIG, "w") as f:
-            json.dump([r["genome"] for r in ranked[:15]], f, indent=4)
+            json.dump(export, f, indent=4)
+
 
 if __name__ == "__main__":
     print("🚀 Starting 'High Caliber' Optimization")
     data_map, global_context = load_optimization_data("S&P 1500", days=1260)
-    if not data_map: sys.exit(1)
+    if not data_map:
+        sys.exit(1)
+
     engine = EvolutionEngine()
-    engine.population_size = 100
-    
-    # Run 5 Full Cycles
+    engine.population_size = POPULATION_SIZE
+
     for i in range(5):
         print(f"\n⚡ [Cycle {i+1}/5] Starting...")
-        run_evolution_cycle(engine, data_map, global_context)
+        run_evolution_cycle(engine, data_map, global_context, generations=5)

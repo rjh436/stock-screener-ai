@@ -1,37 +1,82 @@
-import random
+from __future__ import annotations
+
 import copy
-import math
-from typing import List, Dict
+import random
+from typing import Dict, Iterable, List, Optional, Sequence
+
+
+_WEALTH_TYPE = "wealth"
+_INCOME_TYPES = {"income", "hybrid"}
+
 
 class EvolutionEngine:
-    def __init__(self):
-        self.population_size = 50
-        self.mutation_rate = 0.2
-        self.generation_count = 0
-        self.population = []
-        
+    """
+    Quota-aware GA engine.
+
+    Hard constraints:
+    - Population is always 50/50 split:
+      - Wealth species: `type == "wealth"`
+      - Income species: `type in {"income", "hybrid"}`
+
+    Soft constraints:
+    - Children inherit their parent's lineage tag (`income` vs `hybrid`).
+    - Mutation scaling is adaptive:
+      - Gen < 20: exploration (0.50–1.50)
+      - Gen >= 20: refinement  (0.85–1.15)
+    """
+
+    def __init__(self) -> None:
+        self.population_size: int = 100
+        self.mutation_rate: float = 0.2
+        self.generation_count: int = 0
+        self.population: List[Dict] = []
+
         self.INDICATORS = {
             "price": ["close", "sma50", "sma200", "bb_lower"],
             "momentum": ["rs_trend", "rs_ratio", "cci"],
             "oscillator": ["rsi2", "rsi14", "adx", "stoch_k"],
             "volatility": ["atr14", "bb_width"],
-            "volume": ["volume", "vol_ma20"]
+            "volume": ["volume", "vol_ma20"],
         }
         self.OPERATORS = [">", "<"]
 
-    def _random_rule(self):
+    @staticmethod
+    def _normalize_type(raw_type: Optional[str], *, default: str = "income") -> str:
+        t = str(raw_type or "").strip().lower()
+        if t == _WEALTH_TYPE:
+            return _WEALTH_TYPE
+        if t in _INCOME_TYPES:
+            return t
+        return default
+
+    @classmethod
+    def _is_wealth(cls, genome: Dict) -> bool:
+        return cls._normalize_type(genome.get("type"), default="income") == _WEALTH_TYPE
+
+    @classmethod
+    def _is_income_species(cls, genome: Dict) -> bool:
+        return cls._normalize_type(genome.get("type"), default="income") in _INCOME_TYPES
+
+    def _random_rule(self) -> Dict:
         cat = random.choice(list(self.INDICATORS.keys()))
         col = random.choice(self.INDICATORS[cat])
         op = random.choice(self.OPERATORS)
+
         val = 0
-        if "rsi" in col: val = random.randint(5, 95)
-        elif "vix" in col: val = random.randint(15, 40)
-        elif "adx" in col: val = random.randint(20, 40)
-        elif "bb_width" in col: val = round(random.uniform(0.1, 0.5), 2)
-        elif "cci" in col: val = random.choice([-100, 0, 100])
+        if "rsi" in col:
+            val = random.randint(5, 95)
+        elif "vix" in col:
+            val = random.randint(15, 40)
+        elif "adx" in col:
+            val = random.randint(20, 40)
+        elif "bb_width" in col:
+            val = round(random.uniform(0.10, 0.50), 2)
+        elif "cci" in col:
+            val = random.choice([-100, 0, 100])
+
         return {"col": col, "op": op, "val": val}
 
-    def _random_scoring_weights(self) -> Dict:
+    def _random_scoring_weights(self) -> Dict[str, float]:
         return {
             "sniper_bonus": round(random.uniform(30.0, 80.0), 2),
             "rsi_factor": round(random.uniform(1.5, 3.5), 2),
@@ -42,10 +87,47 @@ class EvolutionEngine:
             "trend_penalty": round(random.uniform(-25.0, -5.0), 2),
         }
 
-    def _create_random_strategy(self, name_prefix="Random") -> Dict:
+    @staticmethod
+    def _stable_rand_suffix() -> str:
+        return f"{random.randint(1000, 9999)}"
+
+    def _ensure_schema(self, genome: Dict, *, default_type: str) -> Dict:
+        g = copy.deepcopy(genome) if isinstance(genome, dict) else {}
+
+        g["type"] = self._normalize_type(g.get("type"), default=default_type)
+        g["name"] = str(g.get("name") or f"Strategy_{self._stable_rand_suffix()}")
+
+        entry_rules = g.get("entry_rules")
+        if not isinstance(entry_rules, list):
+            g["entry_rules"] = []
+
+        exit_rules = g.get("exit_rules")
+        if not isinstance(exit_rules, list) or not exit_rules:
+            g["exit_rules"] = [{"type": "profit_target", "val": 1.08}]
+
+        g["stop_loss_atr"] = float(g.get("stop_loss_atr", 5.0) or 5.0)
+        g["time_stop"] = int(g.get("time_stop", 45) or 45)
+
+        scoring = g.get("scoring_weights")
+        if not isinstance(scoring, dict) or not scoring:
+            g["scoring_weights"] = self._random_scoring_weights()
+
+        # GEN 16.1 PARAMETERS (backward compatible defaults)
+        g["adx_threshold"] = float(g.get("adx_threshold", 25.0) or 25.0)
+        g["rsi_strong"] = float(g.get("rsi_strong", 40.0) or 40.0)
+        g["rsi_weak"] = float(g.get("rsi_weak", 15.0) or 15.0)
+        g["limit_ratio"] = float(g.get("limit_ratio", 0.98) or 0.98)
+        g["trail_atr"] = float(g.get("trail_atr", 3.0) or 3.0)
+        g["trail_activation"] = float(g.get("trail_activation", 1.03) or 1.03)
+
+        return g
+
+    def _create_random_strategy(self, *, name_prefix: str, strategy_type: str) -> Dict:
+        strategy_type_norm = self._normalize_type(strategy_type, default="income")
+
         genome = {
-            "name": f"{name_prefix}_{random.randint(1000,9999)}",
-            "type": "random",
+            "name": f"{name_prefix}_{self._stable_rand_suffix()}",
+            "type": strategy_type_norm,
             "entry_rules": [self._random_rule() for _ in range(random.randint(2, 4))],
             "exit_rules": [{"type": "profit_target", "val": round(random.uniform(1.05, 1.25), 2)}],
             "stop_loss_atr": round(random.uniform(3.0, 7.0), 1),
@@ -57,103 +139,107 @@ class EvolutionEngine:
             "rsi_weak": 15.0,
             "limit_ratio": 0.98,
             "trail_atr": 3.0,
-            "trail_activation": 1.03
+            "trail_activation": 1.03,
         }
         return genome
 
-    def calculate_fitness(self, metrics: Dict) -> float:
+    def create_initial_population(self, base_name: str = "Strategy", base_strategies: Optional[Sequence[Dict]] = None) -> List[Dict]:
         """
-        Calculates the fitness score of a strategy based on backtest metrics.
-        Implements a 'Profit Gate' to kill micro-scalpers.
+        Gen0 seeding:
+        - If base strategies exist but are fewer than `population_size`, expand them to
+          a full population by mutation (not by shrinking evaluation to a tiny set).
+        - Always enforces 50/50 Wealth vs Income species.
         """
-        cagr = metrics.get('cagr', 0)
-        win_rate = metrics.get('hit_rate', 0)
-        avg_profit = metrics.get('avg_profit_pct', 0)
-        max_dd = metrics.get('max_drawdown_pct', 0) # Negative number
-        trades = metrics.get('total_trades', 0)
+        target_wealth = self.population_size // 2
+        target_income = self.population_size - target_wealth
 
-        # 1. Base Score (Growth driven)
-        score = (cagr * 100) * 2.0 
+        wealth_seeds: List[Dict] = []
+        income_seeds: List[Dict] = []
 
-        # 2. Risk Penalty (Punish Drawdown)
-        if max_dd < -15.0:
-            score -= (abs(max_dd) - 15.0) * 5.0 # Heavy penalty for busting safety limit
+        for s in base_strategies or []:
+            if not isinstance(s, dict):
+                continue
+            t_norm = self._normalize_type(s.get("type"), default="income")
+            seeded = self._ensure_schema(s, default_type=t_norm)
+            if self._is_wealth(seeded):
+                wealth_seeds.append(seeded)
+            else:
+                income_seeds.append(seeded)
 
-        # 3. Win Rate Bonus (But capped impact)
-        if win_rate > 60.0:
-            score += (win_rate - 60.0) * 0.5
+        if not wealth_seeds:
+            wealth_seeds.append(self._create_random_strategy(name_prefix=f"{base_name}_WEALTH_SEED", strategy_type=_WEALTH_TYPE))
+        if not income_seeds:
+            income_seeds.append(self._create_random_strategy(name_prefix=f"{base_name}_INCOME_SEED", strategy_type="income"))
 
-        # 4. THE PROFIT GATE (The Anti-Scalper Logic)
-        # If the strategy makes peanuts per trade, we nuke its score.
-        if avg_profit < 2.5:
-            score *= 0.5  # 50% Penalty
-            score -= 20.0 # Flat Penalty
+        wealth_pop: List[Dict] = []
+        income_pop: List[Dict] = []
 
-        # 5. Starvation Penalty
-        if trades < 30:
-            score = 0.0 # Disqualify starvation
+        # Keep the provided parents (up to quota) as exact clones in Gen0.
+        wealth_pop.extend(copy.deepcopy(wealth_seeds[:target_wealth]))
+        income_pop.extend(copy.deepcopy(income_seeds[:target_income]))
 
-        return max(score, 0.0)
+        # Fill remaining slots via mutation (seed expansion).
+        while len(wealth_pop) < target_wealth:
+            parent = random.choice(wealth_seeds)
+            child = self.mutate(parent)
+            child["type"] = _WEALTH_TYPE
+            wealth_pop.append(child)
 
-    def create_initial_population(self, base_name: str = "Strategy", base_strategies: List[Dict] = None) -> List[Dict]:
-        pop: List[Dict] = []
-        if base_strategies:
-            for strat in base_strategies:
-                clone = copy.deepcopy(strat)
-                # Ensure Gen 16 params exist
-                clone["limit_ratio"] = clone.get("limit_ratio", 0.98)
-                clone["trail_atr"] = clone.get("trail_atr", 3.0)
-                pop.append(clone)
-        while len(pop) < self.population_size:
-            pop.append(self._create_random_strategy(f"{base_name}_EXPLORE"))
+        while len(income_pop) < target_income:
+            parent = random.choice(income_seeds)
+            child = self.mutate(parent)
+            parent_type = self._normalize_type(parent.get("type"), default="income")
+            child["type"] = parent_type if parent_type in _INCOME_TYPES else "income"
+            income_pop.append(child)
+
+        pop = wealth_pop[:target_wealth] + income_pop[:target_income]
+        random.shuffle(pop)
+
         self.population = pop
         return pop
-    
-    def generate_initial_population(self, base_strategies: List[Dict] = None, base_name: str = "Strategy"):
+
+    def generate_initial_population(self, base_strategies: Optional[Sequence[Dict]] = None, base_name: str = "Strategy") -> List[Dict]:
         return self.create_initial_population(base_name=base_name, base_strategies=base_strategies)
 
     def mutate(self, genome: Dict) -> Dict:
-        mutant = copy.deepcopy(genome)
-        base_name = mutant.get("name", "Strategy")
-        mutant["name"] = f"{base_name}_mut"
+        parent_type = self._normalize_type(genome.get("type"), default="income")
+        mutant = self._ensure_schema(genome, default_type=parent_type)
+
+        base_name = str(mutant.get("name") or "Strategy")
+        mutant["name"] = f"{base_name}_g{self.generation_count}_m{self._stable_rand_suffix()}"
 
         r = random.random()
 
-        if r < 0.3:
-            # GEN 16 EXECUTION MUTATIONS
+        if r < 0.30:
             trait = random.choice(["limit", "trail", "dual_lane"])
             if trait == "limit":
                 mutant["limit_ratio"] = round(random.uniform(0.95, 1.00), 3)
             elif trait == "trail":
                 mutant["trail_atr"] = round(random.uniform(2.5, 6.0), 1)
-            elif trait == "dual_lane":
+            else:
                 sub_trait = random.choice(["adx", "strong", "weak"])
                 if sub_trait == "adx":
                     mutant["adx_threshold"] = float(random.randint(15, 35))
                 elif sub_trait == "strong":
                     mutant["rsi_strong"] = float(random.randint(30, 55))
-                elif sub_trait == "weak":
+                else:
                     mutant["rsi_weak"] = float(random.randint(5, 25))
 
-        elif r < 0.5:
-            # STOP LOSS
+        elif r < 0.50:
             mutant["stop_loss_atr"] = round(random.uniform(2.5, 6.0), 1)
 
         else:
-            # SCORING WEIGHTS (Adaptive Mutation + Breakthrough Mutation)
             scoring = copy.deepcopy(mutant.get("scoring_weights") or {})
             if not scoring:
                 scoring = self._random_scoring_weights()
 
             key = random.choice(list(scoring.keys()))
 
-            # Adaptive mutation: early exploration vs late refinement
             if self.generation_count < 20:
                 scale_low, scale_high = 0.50, 1.50
             else:
                 scale_low, scale_high = 0.85, 1.15
 
-            # 10% breakthrough mutation: reset weight to a brand-new value.
             if random.random() < 0.10:
                 new_val = round(random.uniform(5.0, 80.0), 2)
                 if "penalty" in key and float(scoring.get(key, 0) or 0) < 0:
@@ -168,14 +254,12 @@ class EvolutionEngine:
 
             mutant["scoring_weights"] = scoring
 
+        mutant["type"] = parent_type
         return mutant
 
-    def evolve(self, ranked):
+    def evolve(self, ranked: Optional[Sequence[Dict]]) -> List[Dict]:
         """
-        Quota Elitism:
-        - The next generation always contains a 50/50 split of:
-          - Wealth strategies: type == "wealth"
-          - Income strategies: type in {"income", "hybrid"}
+        Quota elitism with lineage-correct children.
         """
         self.generation_count += 1
 
@@ -186,69 +270,56 @@ class EvolutionEngine:
         elite_wealth = min(target_wealth, elite_total // 2)
         elite_income = min(target_income, elite_total - elite_wealth)
 
-        def is_wealth(g: Dict) -> bool:
-            return str(g.get("type", "")).lower() == "wealth"
-
-        def is_income(g: Dict) -> bool:
-            return str(g.get("type", "")).lower() in {"income", "hybrid"}
-
-        # Select elites per bucket from the ranked list (best -> worst)
         wealth_elites: List[Dict] = []
         income_elites: List[Dict] = []
+
         for r in ranked or []:
             genome = r.get("genome") if isinstance(r, dict) else None
             if not isinstance(genome, dict):
                 continue
 
-            if is_wealth(genome):
+            t_norm = self._normalize_type(genome.get("type"), default="income")
+            g = self._ensure_schema(genome, default_type=t_norm)
+
+            if self._is_wealth(g):
                 if len(wealth_elites) < elite_wealth:
-                    elite = copy.deepcopy(genome)
-                    elite["type"] = "wealth"
+                    elite = copy.deepcopy(g)
+                    elite["type"] = _WEALTH_TYPE
                     wealth_elites.append(elite)
             else:
                 if len(income_elites) < elite_income:
-                    elite = copy.deepcopy(genome)
-                    if not is_income(elite):
-                        elite["type"] = "income"
+                    elite = copy.deepcopy(g)
+                    elite_type = self._normalize_type(elite.get("type"), default="income")
+                    elite["type"] = elite_type if elite_type in _INCOME_TYPES else "income"
                     income_elites.append(elite)
 
             if len(wealth_elites) >= elite_wealth and len(income_elites) >= elite_income:
                 break
 
-        # Fallback seeding if a bucket is missing (keeps the system moving forward)
         while len(wealth_elites) < elite_wealth:
-            seed = self._create_random_strategy("WEALTH_SEED")
-            seed["type"] = "wealth"
-            wealth_elites.append(seed)
+            wealth_elites.append(self._create_random_strategy(name_prefix="WEALTH_SEED", strategy_type=_WEALTH_TYPE))
 
         while len(income_elites) < elite_income:
-            seed = self._create_random_strategy("INCOME_SEED")
-            seed["type"] = "income"
-            income_elites.append(seed)
+            income_elites.append(self._create_random_strategy(name_prefix="INCOME_SEED", strategy_type="income"))
 
-        next_gen: List[Dict] = []
+        wealth_next: List[Dict] = [copy.deepcopy(g) for g in wealth_elites]
+        income_next: List[Dict] = [copy.deepcopy(g) for g in income_elites]
 
-        # Start with elites (elitism)
-        next_gen.extend(wealth_elites)
-        next_gen.extend(income_elites)
-
-        # Fill Wealth quota via mutation
-        while sum(1 for g in next_gen if is_wealth(g)) < target_wealth:
+        while len(wealth_next) < target_wealth:
             parent = random.choice(wealth_elites)
             child = self.mutate(parent)
-            child["type"] = "wealth"
-            next_gen.append(child)
+            child["type"] = _WEALTH_TYPE
+            wealth_next.append(child)
 
-        # Fill Income quota via mutation
-        while len(next_gen) < self.population_size:
+        while len(income_next) < target_income:
             parent = random.choice(income_elites)
             child = self.mutate(parent)
-            if not is_income(child):
-                child["type"] = "income"
-            next_gen.append(child)
+            parent_type = self._normalize_type(parent.get("type"), default="income")
+            child["type"] = parent_type if parent_type in _INCOME_TYPES else "income"
+            income_next.append(child)
 
-        # Enforce exact population size (safety guard)
-        next_gen = next_gen[: self.population_size]
+        next_gen = wealth_next[:target_wealth] + income_next[:target_income]
+        random.shuffle(next_gen)
 
         self.population = next_gen
         return next_gen
