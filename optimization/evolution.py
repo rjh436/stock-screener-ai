@@ -175,7 +175,7 @@ class EvolutionEngine:
         Quota Elitism:
         - The next generation always contains a 50/50 split of:
           - Wealth strategies: type == "wealth"
-          - Income strategies: type in {"hybrid", "income"}
+          - Income strategies: type in {"income", "hybrid"}
         """
         self.generation_count += 1
 
@@ -190,7 +190,7 @@ class EvolutionEngine:
             return str(g.get("type", "")).lower() == "wealth"
 
         def is_income(g: Dict) -> bool:
-            return str(g.get("type", "")).lower() in {"hybrid", "income"}
+            return str(g.get("type", "")).lower() in {"income", "hybrid"}
 
         # Select elites per bucket from the ranked list (best -> worst)
         wealth_elites: List[Dict] = []
@@ -209,7 +209,7 @@ class EvolutionEngine:
                 if len(income_elites) < elite_income:
                     elite = copy.deepcopy(genome)
                     if not is_income(elite):
-                        elite["type"] = "hybrid"
+                        elite["type"] = "income"
                     income_elites.append(elite)
 
             if len(wealth_elites) >= elite_wealth and len(income_elites) >= elite_income:
@@ -223,7 +223,7 @@ class EvolutionEngine:
 
         while len(income_elites) < elite_income:
             seed = self._create_random_strategy("INCOME_SEED")
-            seed["type"] = "hybrid"
+            seed["type"] = "income"
             income_elites.append(seed)
 
         next_gen: List[Dict] = []
@@ -244,7 +244,7 @@ class EvolutionEngine:
             parent = random.choice(income_elites)
             child = self.mutate(parent)
             if not is_income(child):
-                child["type"] = "hybrid"
+                child["type"] = "income"
             next_gen.append(child)
 
         # Enforce exact population size (safety guard)

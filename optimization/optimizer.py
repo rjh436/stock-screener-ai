@@ -22,13 +22,12 @@ def calculate_fitness(result):
     - Targets:
       - Win Rate: 60%
       - Avg Profit: 5%
-    - If below target, apply a multiplier of (actual/target).
+    - If below target, apply a multiplier of (actual/target), capped at 1.0.
     """
     try:
         cagr = float(result.get("cagr", 0.0) or 0.0)
         avg_profit = float(result.get("avg_profit_pct", 0.0) or 0.0)
         win_rate = float(result.get("hit_rate", 0.0) or 0.0)
-        trades = int(result.get("total_trades", 0) or 0)
         max_dd_pct = float(result.get("max_drawdown_pct", 0.0) or 0.0)
     except Exception:
         return 0.0
@@ -39,17 +38,14 @@ def calculate_fitness(result):
     calmar = (cagr / dd_frac) if dd_frac > 0 else 0.0
     base = max(cagr, 0.0) * 1000.0 + max(calmar, 0.0) * 200.0
 
-    # Soft Activity factor (avoid starvation without hard disqualification)
-    activity_factor = min(1.0, trades / 20.0) if trades > 0 else 0.0
-
     # Soft targets
     win_target = 60.0
     profit_target = 5.0
 
-    win_factor = (win_rate / win_target) if win_rate < win_target else 1.0
-    profit_factor = (avg_profit / profit_target) if avg_profit < profit_target else 1.0
+    win_factor = min(1.0, max(0.0, win_rate / win_target)) if win_target > 0 else 0.0
+    profit_factor = min(1.0, max(0.0, avg_profit / profit_target)) if profit_target > 0 else 0.0
 
-    fitness = base * activity_factor * win_factor * profit_factor
+    fitness = base * win_factor * profit_factor
     return float(max(fitness, 0.0))
 
 def load_optimization_data(universe="S&P 1500", days=1260):

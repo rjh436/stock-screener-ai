@@ -24,5 +24,39 @@
             "vol_bonus": 10.0,
             "atr_high_bonus": 20.0
         }
+    },
+    {
+        "name": "Apex Income (Gen 9)",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "close",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "bb_width",
+                "op": ">",
+                "val": 0.17
+            },
+            {
+                "col": "rsi14",
+                "op": "<",
+                "ref": "stoch_k"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "ref": "vol_ma20"
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.08
+            }
+        ],
+        "stop_loss_atr": 5.1,
+        "time_stop": 45
     }
 ]
