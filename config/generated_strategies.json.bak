@@ -1,6 +1,6 @@
 [
     {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
+        "name": "Apex Wealth (Gen 16.2)_mut",
         "type": "wealth",
         "entry_rules": [],
         "exit_rules": [
@@ -26,7 +26,7 @@
         }
     },
     {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut",
+        "name": "Apex Wealth (Gen 16.2)_mut",
         "type": "wealth",
         "entry_rules": [],
         "exit_rules": [
@@ -52,7 +52,7 @@
         }
     },
     {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut",
+        "name": "Apex Wealth (Gen 16.2)_mut",
         "type": "wealth",
         "entry_rules": [],
         "exit_rules": [
@@ -78,7 +78,7 @@
         }
     },
     {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut",
+        "name": "Apex Wealth (Gen 16.2)_mut",
         "type": "wealth",
         "entry_rules": [],
         "exit_rules": [
@@ -104,7 +104,7 @@
         }
     },
     {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut",
+        "name": "Apex Wealth (Gen 16.2)_mut",
         "type": "wealth",
         "entry_rules": [],
         "exit_rules": [
@@ -130,7 +130,7 @@
         }
     },
     {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut_mut",
+        "name": "Apex Wealth (Gen 16.2)_mut",
         "type": "wealth",
         "entry_rules": [],
         "exit_rules": [
@@ -156,7 +156,7 @@
         }
     },
     {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut_mut",
+        "name": "Apex Wealth (Gen 16.2)_mut",
         "type": "wealth",
         "entry_rules": [],
         "exit_rules": [
@@ -182,7 +182,7 @@
         }
     },
     {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut",
+        "name": "Apex Wealth (Gen 16.2)_mut",
         "type": "wealth",
         "entry_rules": [],
         "exit_rules": [
@@ -208,7 +208,7 @@
         }
     },
     {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut_mut",
+        "name": "Apex Wealth (Gen 16.2)_mut",
         "type": "wealth",
         "entry_rules": [],
         "exit_rules": [
@@ -234,7 +234,7 @@
         }
     },
     {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut_mut",
+        "name": "Apex Wealth (Gen 16.2)_mut",
         "type": "wealth",
         "entry_rules": [],
         "exit_rules": [
@@ -260,7 +260,7 @@
         }
     },
     {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut_mut",
+        "name": "Apex Wealth (Gen 16.2)_mut",
         "type": "wealth",
         "entry_rules": [],
         "exit_rules": [
@@ -274,19 +274,19 @@
         "adx_threshold": 25.0,
         "rsi_strong": 40.0,
         "rsi_weak": 15.0,
-        "limit_ratio": 0.969,
+        "limit_ratio": 0.98,
         "trail_atr": 3.6,
         "trail_activation": 1.03,
         "scoring_weights": {
             "sniper_bonus": 60.0,
             "rsi_factor": 3.0,
-            "trend_bonus": 30.0,
-            "vol_bonus": 10.0,
+            "trend_bonus": 34.35,
+            "vol_bonus": 9.32,
             "atr_high_bonus": 22.62
         }
     },
     {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut_mut",
+        "name": "Apex Wealth (Gen 16.2)_mut",
         "type": "wealth",
         "entry_rules": [],
         "exit_rules": [
@@ -298,9 +298,61 @@
         "stop_loss_atr": 3.1,
         "time_stop": 60,
         "adx_threshold": 25.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 15.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 3.6,
+        "trail_activation": 1.03,
+        "scoring_weights": {
+            "sniper_bonus": 65.22,
+            "rsi_factor": 2.73,
+            "trend_bonus": 30.0,
+            "vol_bonus": 10.0,
+            "atr_high_bonus": 20.0
+        }
+    },
+    {
+        "name": "Apex Wealth (Gen 16.2)_mut",
+        "type": "wealth",
+        "entry_rules": [],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.25
+            }
+        ],
+        "stop_loss_atr": 3.1,
+        "time_stop": 60,
+        "adx_threshold": 25.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 15.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 3.6,
+        "trail_activation": 1.03,
+        "scoring_weights": {
+            "sniper_bonus": 60.0,
+            "rsi_factor": 3.0,
+            "trend_bonus": 30.0,
+            "vol_bonus": 10.0,
+            "atr_high_bonus": 20.0
+        }
+    },
+    {
+        "name": "Apex Wealth (Gen 16.2)_mut",
+        "type": "wealth",
+        "entry_rules": [],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.25
+            }
+        ],
+        "stop_loss_atr": 3.1,
+        "time_stop": 60,
+        "adx_threshold": 33.0,
         "rsi_strong": 38.0,
         "rsi_weak": 15.0,
-        "limit_ratio": 0.99,
+        "limit_ratio": 0.992,
         "trail_atr": 3.6,
         "trail_activation": 1.03,
         "scoring_weights": {
@@ -312,33 +364,7 @@
         }
     },
     {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut_mut",
-        "type": "wealth",
-        "entry_rules": [],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.25
-            }
-        ],
-        "stop_loss_atr": 3.1,
-        "time_stop": 60,
-        "adx_threshold": 25.0,
-        "rsi_strong": 40.0,
-        "rsi_weak": 18.0,
-        "limit_ratio": 0.98,
-        "trail_atr": 3.6,
-        "trail_activation": 1.03,
-        "scoring_weights": {
-            "sniper_bonus": 60.0,
-            "rsi_factor": 3.0,
-            "trend_bonus": 30.0,
-            "vol_bonus": 11.05,
-            "atr_high_bonus": 20.0
-        }
-    },
-    {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut",
+        "name": "Apex Wealth (Gen 16.2)_mut",
         "type": "wealth",
         "entry_rules": [],
         "exit_rules": [
@@ -353,40 +379,14 @@
         "rsi_strong": 40.0,
         "rsi_weak": 15.0,
         "limit_ratio": 0.98,
-        "trail_atr": 3.6,
-        "trail_activation": 1.03,
-        "scoring_weights": {
-            "sniper_bonus": 60.0,
-            "rsi_factor": 3.0,
-            "trend_bonus": 30.0,
-            "vol_bonus": 11.59,
-            "atr_high_bonus": 20.0
-        }
-    },
-    {
-        "name": "Apex Wealth (Gen 16.2)_mut_mut_mut_mut_mut",
-        "type": "wealth",
-        "entry_rules": [],
-        "exit_rules": [
-            {
-                "type": "profit_target",
-                "val": 1.25
-            }
-        ],
-        "stop_loss_atr": 3.1,
-        "time_stop": 60,
-        "adx_threshold": 25.0,
-        "rsi_strong": 40.0,
-        "rsi_weak": 15.0,
-        "limit_ratio": 0.974,
-        "trail_atr": 3.6,
+        "trail_atr": 3.7,
         "trail_activation": 1.03,
         "scoring_weights": {
             "sniper_bonus": 60.0,
             "rsi_factor": 3.0,
             "trend_bonus": 30.0,
             "vol_bonus": 10.0,
-            "atr_high_bonus": 22.62
+            "atr_high_bonus": 20.0
         }
     }
 ]
