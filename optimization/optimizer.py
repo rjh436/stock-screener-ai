@@ -114,8 +114,14 @@ def load_optimization_data(universe: str = "S&P 1500", days: int = 1260):
     data_map = fetch_data_pack(symbols, days=days)
     g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days)
 
-    vix = g_data.get("$VIX") or g_data.get("VIX")
-    return data_map, {"SPY": g_data.get("SPY"), "VIX": vix}
+    spy_df = g_data.get("SPY")
+
+    # Avoid DataFrame truthiness (ValueError: ambiguous truth value)
+    vix_df = g_data.get("$VIX")
+    if vix_df is None:
+        vix_df = g_data.get("VIX")
+
+    return data_map, {"SPY": spy_df, "VIX": vix_df}
 
 
 def _read_parent_strategies(path: str) -> Optional[List[Dict]]:
