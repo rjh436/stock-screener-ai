@@ -14,7 +14,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from data.schwab_client import sd
 from data.loader import fetch_data_pack
 from data.indices import get_index_symbols
-from execution.engine import run_backtest, _compute_indicators, calculate_backtest_quality_score, DEFAULT_SCORING_WEIGHTS
+from execution.engine import (
+    DEFAULT_SCORING_WEIGHTS,
+    _compute_indicators,
+    calculate_backtest_quality_score,
+    prepare_backtest_data,
+    run_backtest,
+)
 from simulation.paper_trader import PaperTrader
 from strategies.strategy_loader import load_strategies
 
@@ -249,7 +255,6 @@ elif mode == "Backtest":
         if not selected_strategies:
             st.error("Please select at least one strategy.")
         else:
-            # Prepare AI Model (if needed)
             ai_model_obj = None
             if use_ai:
                 ai_model_obj = load_ai_model()
@@ -259,27 +264,49 @@ elif mode == "Backtest":
             with st.spinner("Simulating..."):
                 days = dur_map.get(st.session_state.bt_duration, 1260)
                 symbols = get_index_symbols(bt_universe)
-                data = fetch_data_pack(symbols, days=days + 200)
-                
-                if "backtest_results" not in st.session_state: st.session_state.backtest_results = {}
+                data = fetch_data_pack(symbols, days=days + 200) or {}
+
+                # Fetch global context once (required for RS + VIX overlays in the engine)
+                g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days + 200) or {}
+                spy_df = g_data.get("SPY")
+                vix_df = g_data.get("$VIX")
+                if vix_df is None:
+                    vix_df = g_data.get("VIX")
+                global_data = {"SPY": spy_df, "VIX": vix_df}
+
+                # Turbo: precompute indicators/arrays once, then reuse across all strategies.
+                prepared = prepare_backtest_data(
+                    data,
+                    symbol_universe=symbols,
+                    start_date=None,
+                    global_data=global_data,
+                )
+
                 results_map = {}
                 run_strategies = load_strategies(selected_strategies)
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                     future_map = {
-                        executor.submit(run_backtest, strat, data, start_cash=100000.0, start_date=None, export_ml_data=False, ai_model=ai_model_obj): strat.name
+                        executor.submit(
+                            run_backtest,
+                            strat,
+                            prepared,
+                            start_cash=100000.0,
+                            start_date=None,
+                            export_ml_data=False,
+                            ai_model=ai_model_obj,
+                        ): strat.name
                         for strat in run_strategies
                     }
                     for future in concurrent.futures.as_completed(future_map):
                         name = future_map[future]
                         try:
-                            res = future.result()
-                            results_map[name] = res
+                            results_map[name] = future.result()
                         except Exception as e:
                             st.error(f"Backtest failed for {name}: {e}")
-                    
+
                 st.session_state.backtest_results = results_map
-            
+
     if "backtest_results" in st.session_state and st.session_state.backtest_results:
         tabs = st.tabs(list(st.session_state.backtest_results.keys()))
         for i, name in enumerate(st.session_state.backtest_results.keys()):
