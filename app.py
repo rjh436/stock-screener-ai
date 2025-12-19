@@ -41,8 +41,8 @@ def load_ai_model():
         try:
             model = joblib.load(MODEL_PATH)
             # CRITICAL PERFORMANCE FIX: Force model to run in serial mode.
-            # The Backtester is already parallel (8 workers). If the AI also tries to be parallel,
-            # we get 64 threads fighting for 8 cores (Deadlock/Slowdown).
+            # The Backtester is already parallel (up to 12 workers). If the AI also tries to be parallel,
+            # we get thread oversubscription (Deadlock/Slowdown).
             # Setting n_jobs=1 makes it faster by eliminating overhead.
             model.n_jobs = 1 
             return model
@@ -249,7 +249,13 @@ elif mode == "Backtest":
     # AI Filter Checkbox
     use_ai = st.checkbox("🧠 Apply AI Filter (Conf > 60%)", value=False, help="Only take trades where Neural Net predicts >60% win probability.")
 
-    st.info(f"Settings: **{bt_universe}** for **{st.session_state.bt_duration}** | AI Filter: **{'ON' if use_ai else 'OFF'}**")
+    bt_duration = st.session_state.bt_duration
+    days = dur_map.get(bt_duration, 1260)
+    cache_key = f"{bt_universe}|{bt_duration}"
+    if "backtest_cache" not in st.session_state:
+        st.session_state.backtest_cache = {}
+
+    st.info(f"Settings: **{bt_universe}** for **{bt_duration}** | AI Filter: **{'ON' if use_ai else 'OFF'}**")
 
     if st.button("🚀 RUN BACKTEST", type="primary"):
         if not selected_strategies:
@@ -260,32 +266,45 @@ elif mode == "Backtest":
                 ai_model_obj = load_ai_model()
                 if not ai_model_obj:
                     st.warning("⚠️ AI Model not found! Running raw backtest.")
+            else:
+                ai_model_obj = None
+
+            cache = st.session_state.backtest_cache
+            prepared = cache.get(cache_key)
+            cache_hit = prepared is not None
+            if cache_hit:
+                st.success("⚡ Using Cached Data (Instant Mode Active)")
 
             with st.spinner("Simulating..."):
-                days = dur_map.get(st.session_state.bt_duration, 1260)
-                symbols = get_index_symbols(bt_universe)
-                data = fetch_data_pack(symbols, days=days + 200) or {}
+                if not cache_hit:
+                    symbols = get_index_symbols(bt_universe)
+                    data = fetch_data_pack(symbols, days=days + 200) or {}
 
-                # Fetch global context once (required for RS + VIX overlays in the engine)
-                g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days + 200) or {}
-                spy_df = g_data.get("SPY")
-                vix_df = g_data.get("$VIX")
-                if vix_df is None:
-                    vix_df = g_data.get("VIX")
-                global_data = {"SPY": spy_df, "VIX": vix_df}
+                    # Fetch global context once (required for RS + VIX overlays in the engine)
+                    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days + 200) or {}
+                    spy_df = g_data.get("SPY")
+                    vix_df = g_data.get("$VIX")
+                    if vix_df is None:
+                        vix_df = g_data.get("VIX")
+                    global_data = {"SPY": spy_df, "VIX": vix_df}
 
-                # Turbo: precompute indicators/arrays once, then reuse across all strategies.
-                prepared = prepare_backtest_data(
-                    data,
-                    symbol_universe=symbols,
-                    start_date=None,
-                    global_data=global_data,
-                )
+                    # Turbo: precompute indicators/arrays once, then reuse across all strategies.
+                    prepared = prepare_backtest_data(
+                        data,
+                        symbol_universe=symbols,
+                        start_date=None,
+                        global_data=global_data,
+                    )
+                    cache[cache_key] = prepared
+
+                tested_symbols = len(getattr(prepared, "enriched", {}) or {})
+                st.caption(f"Symbols tested: {tested_symbols}")
 
                 results_map = {}
                 run_strategies = load_strategies(selected_strategies)
+                max_workers = min(len(run_strategies), 12) or 1
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_map = {
                         executor.submit(
                             run_backtest,
