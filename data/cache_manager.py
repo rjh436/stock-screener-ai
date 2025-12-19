@@ -10,14 +10,26 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # Cache is considered stale if older than this many days
 CACHE_STALENESS_DAYS = 7
 
+def _cache_verbose() -> bool:
+    return os.getenv("DATA_CACHE_VERBOSE", "0").strip() in {"1", "true", "TRUE", "yes", "YES"}
+
+
+def _cache_log(msg: str) -> None:
+    if _cache_verbose():
+        print(msg)
+
+
 class DataCache:
     @staticmethod
-    def get_cached_data(symbol: str, validate: bool = True) -> pd.DataFrame:
+    def get_cached_data(symbol: str, validate: bool = True, *, allow_stale: bool = False) -> pd.DataFrame:
         """Load cached data for a symbol if it exists.
         
         Args:
             symbol: Stock symbol
             validate: If True, check for data quality issues
+            allow_stale: If True, return cached data even if cache file is older than
+                CACHE_STALENESS_DAYS. This enables incremental refresh without discarding
+                otherwise good historical data.
             
         Returns:
             DataFrame or None if cache is invalid/missing
@@ -28,18 +40,18 @@ class DataCache:
                 df = pd.read_parquet(path)
                 
                 # Check staleness
-                if DataCache.is_cache_stale(symbol):
-                    print(f"{symbol} cache is stale (>7 days old), will refresh")
+                if DataCache.is_cache_stale(symbol) and not allow_stale:
+                    _cache_log(f"{symbol} cache is stale (>{CACHE_STALENESS_DAYS} days old), will refresh")
                     return None
                 
                 # Validate data integrity
                 if validate and not DataCache.validate_data(df, symbol):
-                    print(f"{symbol} cache failed validation, will refresh")
+                    _cache_log(f"{symbol} cache failed validation, will refresh")
                     return None
                     
                 return df
             except Exception as e:
-                print(f"Error reading cache for {symbol}: {e}")
+                _cache_log(f"Error reading cache for {symbol}: {e}")
         return None
 
     @staticmethod
@@ -60,12 +72,12 @@ class DataCache:
         try:
             df.to_parquet(path)
         except Exception as e:
-            print(f"Error saving cache for {symbol}: {e}")
+            _cache_log(f"Error saving cache for {symbol}: {e}")
 
     @staticmethod
     def get_last_date(symbol: str) -> date:
         """Get the last available date in the cache."""
-        df = DataCache.get_cached_data(symbol, validate=False)
+        df = DataCache.get_cached_data(symbol, validate=False, allow_stale=True)
         if df is not None and not df.empty:
             return df.index.max().date()
         return None
@@ -103,14 +115,14 @@ class DataCache:
         # Check for NaN values
         for col in critical_cols:
             if col in df.columns and df[col].isna().any():
-                print(f"{symbol}: Found NaN values in {col}")
+                _cache_log(f"{symbol}: Found NaN values in {col}")
                 return False
         
         # Check for zero/negative prices
         price_cols = ['open', 'high', 'low', 'close']
         for col in price_cols:
             if col in df.columns and (df[col] <= 0).any():
-                print(f"{symbol}: Found zero/negative values in {col}")
+                _cache_log(f"{symbol}: Found zero/negative values in {col}")
                 return False
         
         # Check for massive date gaps (>30 days, indicating missing data)
@@ -118,7 +130,7 @@ class DataCache:
             date_diffs = df.index.to_series().diff()
             max_gap = date_diffs.max()
             if max_gap > timedelta(days=30):
-                print(f"{symbol}: Found suspicious date gap of {max_gap.days} days")
+                _cache_log(f"{symbol}: Found suspicious date gap of {max_gap.days} days")
                 return False
         
         return True
