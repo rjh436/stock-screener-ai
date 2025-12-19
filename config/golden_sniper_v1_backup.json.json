@@ -1,0 +1,587 @@
+[
+    {
+        "name": "Apex Wealth (Gen 16.2)_g0_m9027_g1_m3892_g2_m1247_g3_m9037_g4_m9280_g5_m4977_g6_m5040_g7_m1216_g8_m7298_g9_m7402_g10_m4774_g11_m3199_g12_m3781_g13_m9203_g14_m6047_g15_m8884_g16_m9723_g17_m4406_g19_m7333_g21_m7209_g22_m5262_g24_m7628_g0_m1358_g2_m4613_g3_m1217_g4_m6770_g5_m5002_g6_m3052_g7_m2172_g8_m8647_g9_m3536_g10_m3889_g11_m7590_g13_m4360_g14_m2853_g15_m3784_g16_m7263_g17_m8257_g18_m2104_g19_m9835_g20_m1855_g21_m2477_g22_m9881_g23_m6777_g24_m3469_g0_m6328_g1_m8981_g2_m2409_g3_m9587_g4_m1731_g5_m5910_g6_m3416_g7_m5578_g8_m8333_g9_m8812_g10_B4391_g11_m1388_g12_m1739_g13_B5346_g14_m8569_g15_m9248_g16_m9317_g17_m8406_g18_m7736_g20_m3227_g22_m2354_g23_m9615_g24_m7882_g0_m1210_g2_m8689_g3_m1047_g4_m1218_g5_m3762_g6_m7719_g8_m1877_g11_m5096_g12_m3840_g13_m8588_g16_m7649_g17_m9562_g18_m9389_g19_m5424_g21_m3044_g22_m6374",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 41.76,
+            "rsi_factor": 4.12,
+            "trend_bonus": 70.0,
+            "vol_bonus": 17.89,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -25.8
+        },
+        "adx_threshold": 28.0,
+        "rsi_strong": 35.0,
+        "rsi_weak": 11.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.4
+    },
+    {
+        "name": "Apex Wealth (Gen 16.2)_g0_m9027_g1_m3892_g2_m1247_g3_m9037_g4_m9280_g5_m4977_g6_m5040_g7_m1216_g8_m7298_g9_m7402_g10_m4774_g11_m3199_g12_m3781_g13_m9203_g14_m6047_g15_m8884_g16_m9723_g17_m4406_g19_m7333_g21_m7209_g22_m5262_g24_m7628_g0_m1358_g2_m4613_g3_m1217_g4_m6770_g5_m5002_g6_m3052_g7_m2172_g8_m8647_g9_m3536_g10_m3889_g11_m7590_g13_m4360_g14_m2853_g15_m3784_g16_m7263_g17_m8257_g18_m2104_g19_m9835_g20_m1855_g21_m2477_g22_m9881_g23_m6777_g24_m3469_g0_m6328_g1_m8981_g2_m2409_g3_m9587_g4_m1731_g5_m5910_g6_m3416_g7_m5578_g8_m8333_g9_m8812_g10_B4391_g11_m1388_g12_m1739_g13_B5346_g14_m8569_g15_m9248_g16_m9317_g17_m8406_g18_m7736_g20_m3227_g22_m2354_g23_m9615_g24_m7882_g0_m1210_g2_m8689_g3_m1047_g4_m1218_g5_m3762_g6_m7719_g8_m1877_g11_m5096_g12_m2636_g13_m4541_g14_m2698_g15_m9819_g16_m1437_g20_m3202_g23_m5354_g24_m4937",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 41.76,
+            "rsi_factor": 4.12,
+            "trend_bonus": 66.02,
+            "vol_bonus": 24.36,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -40.0
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 35.0,
+        "rsi_weak": 16.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.4
+    },
+    {
+        "name": "Apex Wealth (Gen 16.2)_g0_m9027_g1_m3892_g2_m1247_g3_m9037_g4_m9280_g5_m4977_g6_m5040_g7_m1216_g8_m7298_g9_m7402_g10_m4774_g11_m3199_g12_m3781_g13_m9203_g14_m6047_g15_m8884_g16_m9723_g17_m4406_g19_m7333_g21_m7209_g22_m5262_g24_m7628_g0_m1358_g2_m4613_g3_m1217_g4_m6770_g5_m5002_g6_m3052_g7_m2172_g8_m8647_g9_m3536_g10_m3889_g11_m7590_g13_m4360_g14_m2853_g15_m3784_g16_m7263_g17_m8257_g18_m2104_g19_m9835_g20_m1855_g21_m2477_g22_m9881_g23_m6777_g24_m3469_g0_m6328_g1_m8981_g2_m2409_g3_m9587_g4_m1731_g5_m5910_g6_m3416_g7_m5578_g8_m8333_g9_m8812_g10_B4391_g11_m1388_g12_m1739_g13_B5346_g14_m8569_g15_m9248_g16_m9317_g17_m8406_g18_m7736_g20_m3227_g22_m2354_g23_m9615_g24_m7882_g0_m1210_g2_m8689_g3_m1047_g4_m1218_g5_m3762_g6_m7719_g8_m1877_g11_m5096_g12_m3840_g13_m8588_g16_m7649_g17_m9562_g18_m9389_g19_m5424_g21_m3044_g22_m1893_g23_m3850_g24_m7360",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 41.76,
+            "rsi_factor": 4.12,
+            "trend_bonus": 70.0,
+            "vol_bonus": 17.89,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -25.8
+        },
+        "adx_threshold": 19.0,
+        "rsi_strong": 54.0,
+        "rsi_weak": 11.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.395
+    },
+    {
+        "name": "Apex Wealth (Gen 16.2)_g0_m9027_g1_m3892_g2_m1247_g3_m9037_g4_m9280_g5_m4977_g6_m5040_g7_m1216_g8_m7298_g9_m7402_g10_m4774_g11_m3199_g12_m3781_g13_m9203_g14_m6047_g15_m8884_g16_m9723_g17_m4406_g19_m7333_g21_m7209_g22_m5262_g24_m7628_g0_m1358_g2_m4613_g3_m1217_g4_m6770_g5_m5002_g6_m3052_g7_m2172_g8_m8647_g9_m3536_g10_m3889_g11_m7590_g13_m4360_g14_m2853_g15_m3784_g16_m7263_g17_m8257_g18_m2104_g19_m9835_g20_m1855_g21_m2477_g22_m9881_g23_m6777_g24_m3469_g0_m6328_g1_m8981_g2_m2409_g3_m9587_g4_m1731_g5_m5910_g6_m3416_g7_m5578_g8_m8333_g9_m8812_g10_B4391_g11_m1388_g12_m1739_g13_B5346_g14_m8569_g15_m9248_g16_m9317_g17_m8406_g18_m7736_g20_m3227_g22_m2354_g23_m9615_g24_m7882_g0_m1210_g2_m8689_g3_m1047_g4_m1218_g5_m3762_g6_m7719_g8_m1877_g11_m5096_g12_m3840_g13_m8588_g16_m7649_g17_m9562_g18_m9389_g19_m5424_g21_m3044_g22_m6374_g24_m9334",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 40.0,
+            "rsi_factor": 4.12,
+            "trend_bonus": 70.0,
+            "vol_bonus": 17.89,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -25.8
+        },
+        "adx_threshold": 28.0,
+        "rsi_strong": 35.0,
+        "rsi_weak": 11.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.4
+    },
+    {
+        "name": "Apex Wealth (Gen 16.2)_g0_m9027_g1_m3892_g2_m1247_g3_m9037_g4_m9280_g5_m4977_g6_m5040_g7_m1216_g8_m7298_g9_m7402_g10_m4774_g11_m3199_g12_m3781_g13_m9203_g14_m6047_g15_m8884_g16_m9723_g17_m4406_g19_m7333_g21_m7209_g22_m5262_g24_m7628_g0_m1358_g2_m4613_g3_m1217_g4_m6770_g5_m5002_g6_m3052_g7_m2172_g8_m8647_g9_m3536_g10_m3889_g11_m7590_g13_m4360_g14_m2853_g15_m3784_g16_m7263_g17_m8257_g18_m2104_g19_m9835_g20_m1855_g21_m2477_g22_m9881_g23_m6777_g24_m3469_g0_m6328_g1_m8981_g2_m2409_g3_m9587_g4_m1731_g5_m5910_g6_m3416_g7_m5578_g8_m8333_g9_m8812_g10_B4391_g11_m1388_g12_m1739_g13_B5346_g14_m8569_g15_m9248_g16_m9317_g17_m8406_g18_m7736_g20_m3227_g22_m2354_g23_m9615_g24_m7882_g0_m1210_g2_m8689_g3_m1047_g4_m1218_g5_m3762_g6_m7719_g8_m1877_g11_m5096_g12_m3840_g13_m8588_g16_m7649_g17_m9562_g18_m9389_g19_m5424_g21_m3044_g22_m1893_g24_m4440",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 41.76,
+            "rsi_factor": 4.12,
+            "trend_bonus": 70.0,
+            "vol_bonus": 17.89,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -25.8
+        },
+        "adx_threshold": 34.0,
+        "rsi_strong": 35.0,
+        "rsi_weak": 11.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.395
+    },
+    {
+        "name": "Apex Wealth (Gen 16.2)_g0_m9027_g1_m3892_g2_m1247_g3_m9037_g4_m9280_g5_m4977_g6_m5040_g7_m1216_g8_m7298_g9_m7402_g10_m4774_g11_m3199_g12_m3781_g13_m9203_g14_m6047_g15_m8884_g16_m9723_g17_m4406_g19_m7333_g21_m7209_g22_m5262_g24_m7628_g0_m1358_g2_m4613_g3_m1217_g4_m6770_g5_m5002_g6_m3052_g7_m2172_g8_m8647_g9_m3536_g10_m3889_g11_m7590_g13_m4360_g14_m2853_g15_m3784_g16_m7263_g17_m8257_g18_m2104_g19_m9835_g20_m1855_g21_m2477_g22_m9881_g23_m6777_g24_m3469_g0_m6328_g1_m8981_g2_m2409_g3_m9587_g4_m1731_g5_m5910_g6_m3416_g7_m5578_g8_m8333_g9_m8812_g10_B4391_g11_m1388_g12_m1739_g13_B5346_g14_m8569_g15_m9248_g16_m9317_g17_m8406_g18_m7736_g20_m3227_g22_m2354_g23_m9615_g24_m7882_g0_m1210_g2_m8689_g3_m1047_g4_m1218_g5_m3762_g6_m7719_g8_m1877_g11_m5096_g12_m2636_g13_m4541_g14_m2698_g15_m9819_g16_m1437_g20_m3202_g23_m8465_g24_m6138",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 41.76,
+            "rsi_factor": 4.12,
+            "trend_bonus": 67.55,
+            "vol_bonus": 20.95,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -35.57
+        },
+        "adx_threshold": 31.0,
+        "rsi_strong": 35.0,
+        "rsi_weak": 16.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.4
+    },
+    {
+        "name": "Apex Wealth (Gen 16.2)_g0_m9027_g1_m3892_g2_m1247_g3_m9037_g4_m9280_g5_m4977_g6_m5040_g7_m1216_g8_m7298_g9_m7402_g10_m4774_g11_m3199_g12_m3781_g13_m9203_g14_m6047_g15_m8884_g16_m9723_g17_m4406_g19_m7333_g21_m7209_g22_m5262_g24_m7628_g0_m1358_g2_m4613_g3_m1217_g4_m6770_g5_m5002_g6_m3052_g7_m2172_g8_m8647_g9_m3536_g10_m3889_g11_m7590_g13_m4360_g14_m2853_g15_m3784_g16_m7263_g17_m8257_g18_m2104_g19_m9835_g20_m1855_g21_m2477_g22_m9881_g23_m6777_g24_m3469_g0_m6328_g1_m8981_g2_m2409_g3_m9587_g4_m1731_g5_m5910_g6_m3416_g7_m5578_g8_m8333_g9_m8812_g10_B4391_g11_m1388_g12_m1739_g13_B5346_g14_m8569_g15_m9248_g16_m9317_g17_m8406_g18_m7736_g20_m3227_g22_m2354_g23_m9615_g24_m7882_g0_m1210_g2_m8689_g3_m1047_g4_m1218_g5_m3762_g6_m7719_g8_m1877_g11_m5096_g12_m2636_g13_m4541_g14_m2698_g15_m9819_g16_m1437_g20_m3202_g23_m8465_g24_m8141",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 41.76,
+            "rsi_factor": 4.12,
+            "trend_bonus": 67.55,
+            "vol_bonus": 24.36,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -35.57
+        },
+        "adx_threshold": 31.0,
+        "rsi_strong": 30.0,
+        "rsi_weak": 16.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.4
+    },
+    {
+        "name": "Apex Income (Gen 9)_g0_m6188_g1_m2386_g2_m8593_g3_m3771_g4_m1867_g5_m8802_g8_m1309_g9_m5623_g10_m1024_g11_m9117_g12_m9774_g13_m4320_g15_m9419_g16_m6671_g17_m4719_g18_m8597_g19_m3623_g20_m8223_g21_m3441_g22_m3984_g23_m2959_g24_m5475_g0_m3119_g1_m6483_g2_m5739_g3_m5214_g4_m4734_g6_m2056_g7_m4118_g11_m5546_g12_m1152_g13_m4049_g14_m9287_g16_m9571_g19_m6728_g20_m4808_g22_m7250_g24_m8923_g0_m3533_g1_m1878_g2_m5990_g3_m3927_g4_m8443_g5_m9724_g6_m2861_g7_m7978_g8_m1710_g9_m8227_g12_m7434_g13_m6692_g14_m2063_g15_m2442_g17_m5199_g18_m2620_g19_m7798_g21_B7586_g22_m1606_g23_m5463_g24_m9282_g0_m1696_g1_m6371_g2_m2304_g4_m6283_g5_m3262_g7_m4718_g8_m9884_g9_m8004_g11_m5560_g13_m1251_g14_m2180_g18_m4587_g20_m5857_g21_m5960_g22_m7850_g23_m2616_g24_m9763",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 8.0,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 13.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.3,
+        "trail_activation": 1.327
+    },
+    {
+        "name": "Apex Income (Gen 9)_g0_m6188_g1_m2386_g2_m8593_g3_m3771_g4_m1867_g5_m8802_g8_m1309_g9_m5623_g10_m1024_g11_m9117_g12_m9774_g13_m4320_g15_m9419_g16_m6671_g17_m4719_g18_m8597_g19_m3623_g20_m8223_g21_m3441_g22_m3984_g23_m2959_g24_m5475_g0_m3119_g1_m6483_g2_m5739_g3_m5214_g4_m4734_g6_m2056_g7_m4118_g11_m5546_g12_m1152_g13_m4049_g14_m9287_g16_m9571_g19_m6728_g20_m4808_g22_m7250_g24_m8923_g0_m3533_g1_m1878_g2_m5990_g3_m3927_g4_m8443_g5_m9724_g6_m2861_g7_m7978_g8_m1710_g9_m8227_g12_m7434_g13_m6692_g14_m2063_g15_m2442_g17_m5199_g18_m2620_g19_m7798_g21_B7586_g22_m1606_g23_m5463_g24_m9282_g0_m1696_g1_m6371_g2_m2304_g4_m6283_g5_m3262_g7_m4718_g8_m9884_g9_m8004_g11_m5560_g13_m1251_g14_m2180_g18_m4587_g20_m5857_g21_m5960_g22_m7850_g23_m2616_g24_m9128",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.0,
+            "vol_bonus": 8.0,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 13.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.327
+    },
+    {
+        "name": "Apex Income (Gen 9)_g0_m6188_g1_m2386_g2_m8593_g3_m3771_g4_m1867_g5_m8802_g8_m1309_g9_m5623_g10_m1024_g11_m9117_g12_m9774_g13_m4320_g15_m9419_g16_m6671_g17_m4719_g18_m8597_g19_m3623_g20_m8223_g21_m3441_g22_m3984_g23_m2959_g24_m5475_g0_m3119_g1_m6483_g2_m5739_g3_m5214_g4_m4734_g6_m2056_g7_m4118_g11_m5546_g12_m1152_g13_m4049_g14_m9287_g16_m9571_g19_m6728_g20_m4808_g22_m7250_g24_m8923_g0_m3533_g1_m1878_g2_m5990_g3_m3927_g4_m8443_g5_m9724_g6_m2861_g7_m7978_g8_m1710_g9_m8227_g12_m7434_g13_m6692_g14_m2063_g15_m2442_g17_m5199_g18_m2620_g19_m7798_g21_B7586_g22_m1606_g23_m5463_g24_m9282_g0_m1696_g1_m6371_g2_m2304_g4_m6283_g5_m3262_g7_m4718_g8_m9884_g9_m8004_g11_m5560_g13_m1251_g14_m2180_g18_m4587_g20_m5857_g21_m5960_g22_m7850_g23_m8956_g24_m2515",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 8.0,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 12.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.266
+    },
+    {
+        "name": "Apex Income (Gen 9)_g0_m6188_g1_m2386_g2_m8593_g3_m3771_g4_m1867_g5_m8802_g8_m1309_g9_m5623_g10_m1024_g11_m9117_g12_m9774_g13_m4320_g15_m9419_g16_m6671_g17_m4719_g18_m8597_g19_m3623_g20_m8223_g21_m3441_g22_m3984_g23_m2959_g24_m5475_g0_m3119_g1_m6483_g2_m5739_g3_m5214_g4_m4734_g6_m2056_g7_m4118_g11_m5546_g12_m1152_g13_m4049_g14_m9287_g16_m9571_g19_m6728_g20_m4808_g22_m7250_g24_m8923_g0_m3533_g1_m1878_g2_m5990_g3_m3927_g4_m8443_g5_m9724_g6_m2861_g7_m7978_g8_m1710_g9_m8227_g12_m7434_g13_m6692_g14_m2063_g15_m2442_g17_m5199_g18_m2620_g19_m7798_g21_B7586_g22_m1606_g23_m5463_g24_m9282_g0_m1696_g1_m6371_g2_m2304_g4_m6283_g5_m3262_g7_m4718_g8_m9884_g9_m8004_g11_m5560_g13_m1251_g14_m2180_g18_m4587_g20_m5857_g21_m2744_g22_m4673_g23_m9389_g24_m6932",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 9.94,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 22.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 19.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.377
+    },
+    {
+        "name": "Apex Income (Gen 9)_g0_m6188_g1_m2386_g2_m8593_g3_m3771_g4_m1867_g5_m8802_g8_m1309_g9_m5623_g10_m1024_g11_m9117_g12_m9774_g13_m4320_g15_m9419_g16_m6671_g17_m4719_g18_m8597_g19_m3623_g20_m8223_g21_m3441_g22_m3984_g23_m2959_g24_m5475_g0_m3119_g1_m6483_g2_m5739_g3_m5214_g4_m4734_g6_m2056_g7_m4118_g11_m5546_g12_m1152_g13_m4049_g14_m9287_g16_m9571_g19_m6728_g20_m4808_g22_m7250_g24_m8923_g0_m3533_g1_m1878_g2_m5990_g3_m3927_g4_m8443_g5_m9724_g6_m2861_g7_m7978_g8_m1710_g9_m8227_g12_m7434_g13_m6692_g14_m2063_g15_m2442_g17_m5199_g18_m2620_g19_m7798_g21_B7586_g22_m1606_g23_m5463_g24_m9282_g0_m1696_g1_m6371_g2_m2304_g4_m6283_g5_m3262_g7_m4718_g8_m9884_g9_m8004_g11_m5560_g13_m1251_g14_m2180_g18_m4587_g20_m5857_g21_m2744_g22_m4673_g23_m9389_g24_m3117",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 9.94,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 17.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 19.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.377
+    },
+    {
+        "name": "Apex Income (Gen 9)_g0_m6188_g1_m2386_g2_m8593_g3_m3771_g4_m1867_g5_m8802_g8_m1309_g9_m5623_g10_m1024_g11_m9117_g12_m9774_g13_m4320_g15_m9419_g16_m6671_g17_m4719_g18_m8597_g19_m3623_g20_m8223_g21_m3441_g22_m3984_g23_m2959_g24_m5475_g0_m3119_g1_m6483_g2_m5739_g3_m5214_g4_m4734_g6_m2056_g7_m4118_g11_m5546_g12_m1152_g13_m4049_g14_m9287_g16_m9571_g19_m6728_g20_m4808_g22_m7250_g24_m8923_g0_m3533_g1_m1878_g2_m5990_g3_m3927_g4_m8443_g5_m9724_g6_m2861_g7_m7978_g8_m1710_g9_m8227_g12_m7434_g13_m6692_g14_m2063_g15_m2442_g17_m5199_g18_m2620_g19_m7798_g21_B7586_g22_m1606_g23_m5463_g24_m9282_g0_m1696_g1_m6371_g2_m2304_g4_m6283_g5_m3262_g7_m4718_g8_m9884_g9_m8004_g11_m5560_g13_m1251_g14_m2180_g18_m4587_g20_m5857_g21_m2744",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 9.94,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 15.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.298
+    },
+    {
+        "name": "Apex Income (Gen 9)_g0_m6188_g1_m2386_g2_m8593_g3_m3771_g4_m1867_g5_m8802_g8_m1309_g9_m5623_g10_m1024_g11_m9117_g12_m9774_g13_m4320_g15_m9419_g16_m6671_g17_m4719_g18_m8597_g19_m3623_g20_m8223_g21_m3441_g22_m3984_g23_m2959_g24_m5475_g0_m3119_g1_m6483_g2_m5739_g3_m5214_g4_m4734_g6_m2056_g7_m4118_g11_m5546_g12_m1152_g13_m4049_g14_m9287_g16_m9571_g19_m6728_g20_m4808_g22_m7250_g24_m8923_g0_m3533_g1_m1878_g2_m5990_g3_m3927_g4_m8443_g5_m9724_g6_m2861_g7_m7978_g8_m1710_g9_m8227_g12_m7434_g13_m6692_g14_m2063_g15_m2442_g17_m5199_g18_m2620_g19_m7798_g21_B7586_g22_m1606_g23_m5463_g24_m9282_g0_m1696_g1_m6371_g2_m2304_g4_m6283_g5_m3262_g7_m4718_g8_m9884_g9_m8004_g11_m5560_g13_m1251_g14_m2180_g18_m4587_g20_m5857_g21_m2744_g23_m4026",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 9.94,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 15.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.343
+    },
+    {
+        "name": "Apex Income (Gen 9)_g0_m6188_g1_m2386_g2_m8593_g3_m3771_g4_m1867_g5_m8802_g8_m1309_g9_m5623_g10_m1024_g11_m9117_g12_m9774_g13_m4320_g15_m9419_g16_m6671_g17_m4719_g18_m8597_g19_m3623_g20_m8223_g21_m3441_g22_m3984_g23_m2959_g24_m5475_g0_m3119_g1_m6483_g2_m5739_g3_m5214_g4_m4734_g6_m2056_g7_m4118_g11_m5546_g12_m1152_g13_m4049_g14_m9287_g16_m9571_g19_m6728_g20_m4808_g22_m7250_g24_m8923_g0_m3533_g1_m1878_g2_m5990_g3_m3927_g4_m8443_g5_m9724_g6_m2861_g7_m7978_g8_m1710_g9_m8227_g12_m7434_g13_m6692_g14_m2063_g15_m2442_g17_m5199_g18_m2620_g19_m7798_g21_B7586_g22_m1606_g23_m5463_g24_m9282_g0_m1696_g1_m6371_g2_m2304_g4_m6283_g5_m3262_g7_m4718_g8_m9884_g9_m8004_g11_m5560_g13_m1251_g14_m2180_g18_m4587_g20_m5857_g21_m2744_g22_m4673_g23_m9389",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 9.94,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 19.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.377
+    }
+]
