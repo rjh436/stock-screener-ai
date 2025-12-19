@@ -12,7 +12,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data.indices import get_index_symbols
 from data.loader import fetch_data_pack
-from execution.engine import run_backtest
+from execution.engine import prepare_backtest_data, run_backtest
 from optimization.evolution import EvolutionEngine
 from strategies.generic import GenericStrategy
 
@@ -63,6 +63,24 @@ def _pct_to_frac(x: float) -> float:
     return (x / 100.0) if x > 1.0 else x
 
 
+def _threshold_multiplier(value: float, target: float, *, power_below: float) -> float:
+    """
+    Returns a smooth multiplier that:
+    - Strongly penalizes falling short of target (power scaling)
+    - Continues to reward exceeding target (linear)
+    """
+    target = _to_float(target, 0.0)
+    value = _to_float(value, 0.0)
+
+    if target <= 0.0 or value <= 0.0:
+        return 0.0
+
+    ratio = value / target
+    if ratio < 1.0:
+        return float(ratio**power_below)
+    return float(1.0 + (ratio - 1.0))
+
+
 def calculate_fitness(result: Dict) -> float:
     """
     Fitness uses fractional units (strategic mandates):
@@ -70,7 +88,11 @@ def calculate_fitness(result: Dict) -> float:
     - Avg profit target: 0.05
     - Win rate target: 0.60
 
-    Final: base * win_factor * profit_factor * cagr_factor
+    Fitness is a "sniper" objective:
+    - Avg profit per trade has a cubic penalty below mandate and a linear reward above it.
+    - Win rate has a quadratic penalty below mandate and a linear reward above it.
+    - CAGR has a linear penalty below mandate and a linear reward above it.
+    - Calmar is capped so ultra-low drawdowns can't dominate selection.
     """
     cagr = _to_float(result.get("cagr", 0.0) or 0.0)
     win_rate = _pct_to_frac(result.get("hit_rate", 0.0) or 0.0)
@@ -79,15 +101,18 @@ def calculate_fitness(result: Dict) -> float:
 
     dd_abs = abs(max_dd_pct)
     dd_frac = (dd_abs / 100.0) if dd_abs > 1.0 else dd_abs
-    calmar = (cagr / dd_frac) if dd_frac > 0.0 else 0.0
+    calmar_raw = (cagr / dd_frac) if dd_frac > 0.0 else 0.0
+    calmar_capped = min(max(calmar_raw, 0.0), 20.0)
 
-    base = max(cagr, 0.0) * 1000.0 + max(calmar, 0.0) * 200.0
+    # Strategic multipliers (always a gradient, even above mandates)
+    profit_multiplier = _threshold_multiplier(avg_profit, MANDATE_PROFIT_TARGET, power_below=3.0)
+    win_multiplier = _threshold_multiplier(win_rate, MANDATE_WIN_TARGET, power_below=2.0)
+    cagr_multiplier = _threshold_multiplier(cagr, MANDATE_CAGR_TARGET, power_below=1.0)
 
-    win_factor = _clamp01(win_rate / MANDATE_WIN_TARGET) if MANDATE_WIN_TARGET > 0 else 0.0
-    profit_factor = _clamp01(avg_profit / MANDATE_PROFIT_TARGET) if MANDATE_PROFIT_TARGET > 0 else 0.0
-    cagr_factor = _clamp01(cagr / MANDATE_CAGR_TARGET) if MANDATE_CAGR_TARGET > 0 else 0.0
+    # Calmar bonus is deliberately modest; can't dominate profit.
+    calmar_bonus = 1.0 + (calmar_capped / 40.0)  # max 1.5x
 
-    fitness = base * win_factor * profit_factor * cagr_factor
+    fitness = 1000.0 * calmar_bonus * profit_multiplier * win_multiplier * cagr_multiplier
     return float(max(fitness, 0.0))
 
 
@@ -131,7 +156,7 @@ def _format_top_line(stats: Dict, genome: Dict, score: float) -> str:
 
 def _evaluate_population(
     population: Sequence[Dict],
-    data_map: Dict,
+    prepared_data,
     global_context: Dict,
 ) -> Tuple[List[Dict], List[Dict]]:
     results: List[Dict] = []
@@ -142,7 +167,7 @@ def _evaluate_population(
             ex.submit(
                 run_backtest,
                 GenericStrategy(genome),
-                data_map,
+                prepared_data,
                 None,
                 100000.0,
                 None,
@@ -205,10 +230,12 @@ def run_evolution_cycle(engine: EvolutionEngine, data_map: Dict, global_context:
     engine.population_size = POPULATION_SIZE
     engine.population = engine.generate_initial_population(base_strategies=parents, base_name="HighCaliber")
 
+    prepared_data = prepare_backtest_data(data_map, symbol_universe=None, start_date=None, global_data=global_context)
+
     for _ in range(generations):
         print(f"   🧬 Gen {engine.generation_count} Evaluation... (pop={len(engine.population)})")
 
-        pop_res, failures = _evaluate_population(engine.population, data_map, global_context)
+        pop_res, failures = _evaluate_population(engine.population, prepared_data, global_context)
         ranked = sorted(pop_res, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)
 
         if failures:

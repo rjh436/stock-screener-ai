@@ -8,6 +8,29 @@ from typing import Dict, Iterable, List, Optional, Sequence
 _WEALTH_TYPE = "wealth"
 _INCOME_TYPES = {"income", "hybrid"}
 
+# Exit parameter ranges (Sniper mode)
+_PROFIT_TARGET_MIN = 1.05
+_PROFIT_TARGET_MAX = 1.30
+_TIME_STOP_MIN = 20
+_TIME_STOP_MAX = 90
+_TRAIL_ACTIVATION_MIN = 1.01
+_TRAIL_ACTIVATION_MAX = 1.10
+
+# Scoring weight ranges (higher floors to prevent "low standards" loopholes)
+_SCORING_RANGES: Dict[str, tuple[float, float]] = {
+    "sniper_bonus": (40.0, 100.0),
+    "rsi_factor": (2.5, 4.5),
+    "trend_bonus": (30.0, 70.0),
+    "vol_bonus": (8.0, 30.0),
+    "atr_high_bonus": (12.0, 40.0),
+    "atr_med_bonus": (4.0, 20.0),
+    "trend_penalty": (-40.0, -10.0),
+}
+
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
 
 class EvolutionEngine:
     """
@@ -21,8 +44,8 @@ class EvolutionEngine:
     Soft constraints:
     - Children inherit their parent's lineage tag (`income` vs `hybrid`).
     - Mutation scaling is adaptive:
-      - Gen < 20: exploration (0.50–1.50)
-      - Gen >= 20: refinement  (0.85–1.15)
+      - Gen < 25: exploration (0.50–1.50)
+      - Gen >= 25: refinement  (0.85–1.15)
     """
 
     def __init__(self) -> None:
@@ -77,15 +100,10 @@ class EvolutionEngine:
         return {"col": col, "op": op, "val": val}
 
     def _random_scoring_weights(self) -> Dict[str, float]:
-        return {
-            "sniper_bonus": round(random.uniform(30.0, 80.0), 2),
-            "rsi_factor": round(random.uniform(1.5, 3.5), 2),
-            "trend_bonus": round(random.uniform(10.0, 40.0), 2),
-            "vol_bonus": round(random.uniform(5.0, 20.0), 2),
-            "atr_high_bonus": round(random.uniform(10.0, 25.0), 2),
-            "atr_med_bonus": round(random.uniform(2.0, 8.0), 2),
-            "trend_penalty": round(random.uniform(-25.0, -5.0), 2),
-        }
+        weights: Dict[str, float] = {}
+        for key, (lo, hi) in _SCORING_RANGES.items():
+            weights[key] = round(random.uniform(lo, hi), 2)
+        return weights
 
     @staticmethod
     def _stable_rand_suffix() -> str:
@@ -103,14 +121,50 @@ class EvolutionEngine:
 
         exit_rules = g.get("exit_rules")
         if not isinstance(exit_rules, list) or not exit_rules:
-            g["exit_rules"] = [{"type": "profit_target", "val": 1.08}]
+            exit_rules = [{"type": "profit_target", "val": 1.08}]
+
+        normalized_exit_rules: List[Dict] = []
+        has_profit_target = False
+        for rule in exit_rules:
+            if not isinstance(rule, dict):
+                continue
+            r = dict(rule)
+            if r.get("type") == "profit_target":
+                has_profit_target = True
+                try:
+                    val = float(r.get("val", 1.08) or 1.08)
+                except (TypeError, ValueError):
+                    val = 1.08
+                r["val"] = round(_clamp(val, _PROFIT_TARGET_MIN, _PROFIT_TARGET_MAX), 2)
+            normalized_exit_rules.append(r)
+
+        if not has_profit_target:
+            normalized_exit_rules.append({"type": "profit_target", "val": 1.08})
+
+        g["exit_rules"] = normalized_exit_rules
 
         g["stop_loss_atr"] = float(g.get("stop_loss_atr", 5.0) or 5.0)
-        g["time_stop"] = int(g.get("time_stop", 45) or 45)
+        try:
+            time_stop = int(g.get("time_stop", 45) or 45)
+        except Exception:
+            time_stop = 45
+        g["time_stop"] = int(_clamp(float(time_stop), float(_TIME_STOP_MIN), float(_TIME_STOP_MAX)))
 
         scoring = g.get("scoring_weights")
         if not isinstance(scoring, dict) or not scoring:
-            g["scoring_weights"] = self._random_scoring_weights()
+            scoring = self._random_scoring_weights()
+        else:
+            scoring = copy.deepcopy(scoring)
+
+        # Enforce minimum floors / ranges for core scoring weights
+        for key, (lo, hi) in _SCORING_RANGES.items():
+            try:
+                cur = float(scoring.get(key, random.uniform(lo, hi)))
+            except (TypeError, ValueError):
+                cur = random.uniform(lo, hi)
+            scoring[key] = round(_clamp(cur, lo, hi), 2)
+
+        g["scoring_weights"] = scoring
 
         # GEN 16.1 PARAMETERS (backward compatible defaults)
         g["adx_threshold"] = float(g.get("adx_threshold", 25.0) or 25.0)
@@ -118,7 +172,11 @@ class EvolutionEngine:
         g["rsi_weak"] = float(g.get("rsi_weak", 15.0) or 15.0)
         g["limit_ratio"] = float(g.get("limit_ratio", 0.98) or 0.98)
         g["trail_atr"] = float(g.get("trail_atr", 3.0) or 3.0)
-        g["trail_activation"] = float(g.get("trail_activation", 1.03) or 1.03)
+        try:
+            trail_act = float(g.get("trail_activation", 1.03) or 1.03)
+        except (TypeError, ValueError):
+            trail_act = 1.03
+        g["trail_activation"] = round(_clamp(trail_act, _TRAIL_ACTIVATION_MIN, _TRAIL_ACTIVATION_MAX), 3)
 
         return g
 
@@ -129,9 +187,9 @@ class EvolutionEngine:
             "name": f"{name_prefix}_{self._stable_rand_suffix()}",
             "type": strategy_type_norm,
             "entry_rules": [self._random_rule() for _ in range(random.randint(2, 4))],
-            "exit_rules": [{"type": "profit_target", "val": round(random.uniform(1.05, 1.25), 2)}],
+            "exit_rules": [{"type": "profit_target", "val": round(random.uniform(_PROFIT_TARGET_MIN, _PROFIT_TARGET_MAX), 2)}],
             "stop_loss_atr": round(random.uniform(3.0, 7.0), 1),
-            "time_stop": random.choice([30, 45, 60, 75, 90]),
+            "time_stop": random.randint(_TIME_STOP_MIN, _TIME_STOP_MAX),
             "scoring_weights": self._random_scoring_weights(),
             # GEN 16.1 PARAMETERS
             "adx_threshold": 25.0,
@@ -139,7 +197,7 @@ class EvolutionEngine:
             "rsi_weak": 15.0,
             "limit_ratio": 0.98,
             "trail_atr": 3.0,
-            "trail_activation": 1.03,
+            "trail_activation": round(random.uniform(_TRAIL_ACTIVATION_MIN, _TRAIL_ACTIVATION_MAX), 3),
         }
         return genome
 
@@ -210,7 +268,7 @@ class EvolutionEngine:
 
         r = random.random()
 
-        if r < 0.30:
+        if r < 0.25:
             trait = random.choice(["limit", "trail", "dual_lane"])
             if trait == "limit":
                 mutant["limit_ratio"] = round(random.uniform(0.95, 1.00), 3)
@@ -225,7 +283,60 @@ class EvolutionEngine:
                 else:
                     mutant["rsi_weak"] = float(random.randint(5, 25))
 
-        elif r < 0.50:
+        elif r < 0.45:
+            # Exit knobs (sniper selection)
+            trait = random.choice(["profit_target", "time_stop", "trail_activation"])
+
+            if trait == "profit_target":
+                exit_rules = mutant.get("exit_rules")
+                if not isinstance(exit_rules, list):
+                    exit_rules = []
+
+                pt_rule = None
+                for rule in exit_rules:
+                    if isinstance(rule, dict) and rule.get("type") == "profit_target":
+                        pt_rule = rule
+                        break
+                if pt_rule is None:
+                    pt_rule = {"type": "profit_target", "val": 1.08}
+                    exit_rules.append(pt_rule)
+
+                if self.generation_count < 25:
+                    new_val = random.uniform(_PROFIT_TARGET_MIN, _PROFIT_TARGET_MAX)
+                else:
+                    try:
+                        cur = float(pt_rule.get("val", 1.08) or 1.08)
+                    except (TypeError, ValueError):
+                        cur = 1.08
+                    new_val = cur * random.uniform(0.95, 1.05)
+
+                pt_rule["val"] = round(_clamp(float(new_val), _PROFIT_TARGET_MIN, _PROFIT_TARGET_MAX), 2)
+                mutant["exit_rules"] = exit_rules
+
+            elif trait == "time_stop":
+                if self.generation_count < 25:
+                    mutant["time_stop"] = random.randint(_TIME_STOP_MIN, _TIME_STOP_MAX)
+                else:
+                    try:
+                        cur = int(mutant.get("time_stop", 45) or 45)
+                    except Exception:
+                        cur = 45
+                    new_val = int(round(cur * random.uniform(0.85, 1.15)))
+                    mutant["time_stop"] = max(_TIME_STOP_MIN, min(_TIME_STOP_MAX, new_val))
+
+            else:
+                # trail_activation
+                if self.generation_count < 25:
+                    new_val = random.uniform(_TRAIL_ACTIVATION_MIN, _TRAIL_ACTIVATION_MAX)
+                else:
+                    try:
+                        cur = float(mutant.get("trail_activation", 1.03) or 1.03)
+                    except (TypeError, ValueError):
+                        cur = 1.03
+                    new_val = cur + random.uniform(-0.01, 0.01)
+                mutant["trail_activation"] = round(_clamp(float(new_val), _TRAIL_ACTIVATION_MIN, _TRAIL_ACTIVATION_MAX), 3)
+
+        elif r < 0.60:
             mutant["stop_loss_atr"] = round(random.uniform(2.5, 6.0), 1)
 
         else:
@@ -235,22 +346,22 @@ class EvolutionEngine:
 
             key = random.choice(list(scoring.keys()))
 
-            if self.generation_count < 20:
+            if self.generation_count < 25:
                 scale_low, scale_high = 0.50, 1.50
             else:
                 scale_low, scale_high = 0.85, 1.15
 
-            if random.random() < 0.10:
-                new_val = round(random.uniform(5.0, 80.0), 2)
-                if "penalty" in key and float(scoring.get(key, 0) or 0) < 0:
-                    new_val = -new_val
-                scoring[key] = new_val
+            if random.random() < 0.15:
+                lo, hi = _SCORING_RANGES.get(key, (5.0, 80.0))
+                scoring[key] = round(random.uniform(lo, hi), 2)
             else:
                 try:
                     cur = float(scoring.get(key, 0.0) or 0.0)
                 except (TypeError, ValueError):
                     cur = 0.0
-                scoring[key] = round(cur * random.uniform(scale_low, scale_high), 2)
+                new_val = float(cur) * random.uniform(scale_low, scale_high)
+                lo, hi = _SCORING_RANGES.get(key, (0.0, 100.0))
+                scoring[key] = round(_clamp(new_val, lo, hi), 2)
 
             mutant["scoring_weights"] = scoring
 
