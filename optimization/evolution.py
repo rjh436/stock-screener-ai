@@ -13,8 +13,12 @@ _PROFIT_TARGET_MIN = 1.05
 _PROFIT_TARGET_MAX = 1.30
 _TIME_STOP_MIN = 20
 _TIME_STOP_MAX = 90
-_TRAIL_ACTIVATION_MIN = 1.01
-_TRAIL_ACTIVATION_MAX = 1.10
+_TRAIL_ACTIVATION_MIN = 1.08
+_TRAIL_ACTIVATION_MAX = 1.20
+
+# Diversity injection (random reset)
+_BREAKTHROUGH_CHANCE = 0.25
+_BREAKTHROUGH_START_GEN = 25
 
 # Scoring weight ranges (higher floors to prevent "low standards" loopholes)
 _SCORING_RANGES: Dict[str, tuple[float, float]] = {
@@ -53,6 +57,7 @@ class EvolutionEngine:
         self.mutation_rate: float = 0.2
         self.generation_count: int = 0
         self.population: List[Dict] = []
+        self.breakthrough_chance: float = _BREAKTHROUGH_CHANCE
 
         self.INDICATORS = {
             "price": ["close", "sma50", "sma200", "bb_lower"],
@@ -266,6 +271,15 @@ class EvolutionEngine:
         base_name = str(mutant.get("name") or "Strategy")
         mutant["name"] = f"{base_name}_g{self.generation_count}_m{self._stable_rand_suffix()}"
 
+        # Breakthrough: random reset to escape local optima (keeps lineage type).
+        if self.generation_count >= _BREAKTHROUGH_START_GEN:
+            if random.random() < float(self.breakthrough_chance or 0.0):
+                reset = self._create_random_strategy(name_prefix=f"BREAK_{parent_type.upper()}", strategy_type=parent_type)
+                reset = self._ensure_schema(reset, default_type=parent_type)
+                reset["type"] = parent_type
+                reset["name"] = f"{base_name}_g{self.generation_count}_B{self._stable_rand_suffix()}"
+                return reset
+
         r = random.random()
 
         if r < 0.25:
@@ -301,14 +315,13 @@ class EvolutionEngine:
                     pt_rule = {"type": "profit_target", "val": 1.08}
                     exit_rules.append(pt_rule)
 
-                if self.generation_count < 25:
-                    new_val = random.uniform(_PROFIT_TARGET_MIN, _PROFIT_TARGET_MAX)
-                else:
-                    try:
-                        cur = float(pt_rule.get("val", 1.08) or 1.08)
-                    except (TypeError, ValueError):
-                        cur = 1.08
-                    new_val = cur * random.uniform(0.95, 1.05)
+                try:
+                    cur = float(pt_rule.get("val", 1.08) or 1.08)
+                except (TypeError, ValueError):
+                    cur = 1.08
+
+                # Upward bias: actively hunt for larger profit targets.
+                new_val = cur * random.uniform(1.0, 1.10)
 
                 pt_rule["val"] = round(_clamp(float(new_val), _PROFIT_TARGET_MIN, _PROFIT_TARGET_MAX), 2)
                 mutant["exit_rules"] = exit_rules

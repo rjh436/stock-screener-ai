@@ -11,7 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data.indices import get_index_symbols
 from data.loader import fetch_data_pack
-from execution.engine import prepare_backtest_data, run_backtest
+from execution.engine import PreparedBacktestData, prepare_backtest_data, run_backtest
 from optimization.evolution import EvolutionEngine
 from strategies.generic import GenericStrategy
 
@@ -51,7 +51,27 @@ def _pct_to_frac(x: float) -> float:
     Accept either percent units (e.g., 65.0) or fraction units (e.g., 0.65).
     """
     x = _to_float(x, 0.0)
-    return (x / 100.0) if x > 1.0 else x
+    return (x / 100.0) if x > 1.5 else x
+
+
+def _profit_to_frac(x: float) -> float:
+    """
+    Like `_pct_to_frac`, but safe around the 0–1.5 range where avg trade profit
+    can be reported either as:
+      - percent units (e.g., 1.0 == 1.0%)
+      - fraction units (e.g., 0.01 == 1.0%)
+    """
+    x = _to_float(x, 0.0)
+    if x <= 0.0:
+        return 0.0
+
+    # Most of the system reports `avg_profit_pct` in percent units.
+    # But if it's already a small fraction (<=50%), keep it.
+    if x <= 0.50:
+        return float(x)
+
+    # Otherwise treat it as percent units.
+    return float(x / 100.0)
 
 
 def _threshold_multiplier(value: float, target: float, *, power_below: float) -> float:
@@ -87,7 +107,7 @@ def calculate_fitness(result: Dict) -> float:
     """
     cagr = _to_float(result.get("cagr", 0.0) or 0.0)
     win_rate = _pct_to_frac(result.get("hit_rate", 0.0) or 0.0)
-    avg_profit = _pct_to_frac(result.get("avg_profit_pct", 0.0) or 0.0)
+    avg_profit = _profit_to_frac(result.get("avg_profit_pct", 0.0) or 0.0)
     max_dd_pct = _to_float(result.get("max_drawdown_pct", 0.0) or 0.0)
 
     dd_abs = abs(max_dd_pct)
@@ -104,6 +124,12 @@ def calculate_fitness(result: Dict) -> float:
     calmar_bonus = 1.0 + (calmar_capped / 40.0)  # max 1.5x
 
     fitness = 1000.0 * calmar_bonus * profit_multiplier * win_multiplier * cagr_multiplier
+
+    # Fitness kick: create a cliff below 2.5% avg profit/trade to break the 1% local optimum.
+    if avg_profit < 0.025:
+        kick = (avg_profit / 0.025) ** 2.0
+        fitness *= float(kick)
+
     return float(max(fitness, 0.0))
 
 
@@ -137,17 +163,18 @@ def _format_top_line(stats: Dict, genome: Dict, score: float) -> str:
 
     cagr = _to_float(stats.get("cagr", 0.0) or 0.0)
     hit_pct = _pct_to_frac(stats.get("hit_rate", 0.0) or 0.0) * 100.0
-    profit_pct = _pct_to_frac(stats.get("avg_profit_pct", 0.0) or 0.0) * 100.0
+    avg_profit = _profit_to_frac(stats.get("avg_profit_pct", 0.0) or 0.0)
+    profit_pct = avg_profit * 100.0
 
     return (
         f"      🏆 Top: {name_short} | Type: {str(genome.get('type','?')).lower():6s}"
-        f" | Fitness: {score:9.2f} | CAGR: {cagr:6.1%} | Profit: {profit_pct:6.2f}% | Hit: {hit_pct:6.2f}%"
+        f" | Fitness: {score:9.2f} | CAGR: {cagr:6.1%} | Profit: {profit_pct:5.1f}% | Hit: {hit_pct:6.2f}%"
     )
 
 
 def _evaluate_population(
     population: Sequence[Dict],
-    prepared_data,
+    prepared_data: PreparedBacktestData,
     global_context: Dict,
 ) -> Tuple[List[Dict], List[Dict]]:
     results: List[Dict] = []
