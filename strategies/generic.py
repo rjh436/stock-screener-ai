@@ -223,10 +223,11 @@ class GenericStrategy(BaseStrategy):
                 if not self.check_fundamentals(str(ticker)):
                     return None
 
-        atr = row.get("atr14", row.get("close", 0) * 0.02)
-        mult = float(self.genome.get("stop_loss_atr", 2.5))
-        stop_price = float(row.get("close", 0)) - (atr * mult)
-        return {"entry_price": float(row.get("close", 0)), "stop_price": stop_price}
+        _ = row  # keep signature stable; engine computes fills/stops natively
+        return {
+            "limit_ratio": self.params.get("limit_ratio"),
+            "stop_loss_atr": self.params.get("stop_loss_atr"),
+        }
 
     def exit(self, df: pd.DataFrame, i: int, entry_i: int, entry_price: float, stop_price: float) -> bool:
         """

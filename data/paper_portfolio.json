@@ -1,6 +1,6 @@
 {
-    "cash": 27329.140000000003,
-    "equity": 103042.64,
+    "cash": 15048.340000000004,
+    "equity": 102991.82,
     "history": [],
     "equity_curve": [
         {
@@ -17,7 +17,7 @@
         },
         {
             "date": "2025-12-19",
-            "equity": 103042.64
+            "equity": 102991.82
         }
     ],
     "positions": {
@@ -28,9 +28,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-11",
-            "current_price": 294.38,
-            "unrealized_pnl": 2294.249999999998,
-            "unrealized_pct": 11.596345577921822,
+            "current_price": 295.99,
+            "unrealized_pnl": 2414.999999999999,
+            "unrealized_pct": 12.206679555707186,
             "entry_i": 332
         },
         "ZTS": {
@@ -40,9 +40,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-11",
-            "current_price": 123.52,
-            "unrealized_pnl": 896.3499999999995,
-            "unrealized_pct": 3.8244935698075118,
+            "current_price": 122.15,
+            "unrealized_pnl": 626.4600000000014,
+            "unrealized_pct": 2.6729427586786643,
             "entry_i": 332
         },
         "CARR": {
@@ -52,26 +52,23 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-11",
-            "current_price": 53.47,
-            "unrealized_pnl": -147.9600000000017,
-            "unrealized_pct": -0.5024190547078584,
+            "current_price": 53.91,
+            "unrealized_pnl": 93.15999999999704,
+            "unrealized_pct": 0.3163379233345638,
             "entry_i": 332
-        }
-    },
-    "pending_orders": [
-        {
-            "symbol": "CEG",
+        },
+        "CEG": {
             "shares": 34,
-            "committed_cash": 11495.74,
-            "order_price_estimate": 338.11,
-            "stop_price": 279.16571428571433,
+            "entry_price": 361.2,
+            "stop_price": 289.07041401910624,
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
-            "date": "2025-12-18",
-            "type": "BUY_MOO",
-            "status": "PENDING",
-            "entry_i": 327,
-            "queued_at": "2025-12-18T09:23:09.324649"
+            "date": "2025-12-19",
+            "current_price": 357.0,
+            "unrealized_pnl": -142.7999999999996,
+            "unrealized_pct": -1.1627906976744156,
+            "entry_i": 327
         }
-    ]
+    },
+    "pending_orders": []
 }

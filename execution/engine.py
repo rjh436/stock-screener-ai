@@ -33,6 +33,9 @@ _ATR_MED_THRESH_PCT = 2.0
 _VOL_REL_THRESH = 1.5
 _SNIPER_BB_WIDTH_THRESH = 0.17
 
+# Diagnostics: enable to print every strategy's trail activation on each run.
+_DEBUG_TRAIL_ACTIVATION = os.environ.get("APEX_DEBUG_TRAIL_ACTIVATION", "").strip() not in ("", "0", "false", "False")
+
 
 def get_sector(symbol: str) -> str:
     tech = {"AAPL", "MSFT", "NVDA", "GOOG", "GOOGL", "META", "AMZN", "TSLA", "AVGO", "AMD"}
@@ -747,6 +750,8 @@ def _legacy_run_backtest(
                     float(bb_width_arr[prev_i]),
                     w,
                 )
+                if score < MIN_ENTRY_SCORE:
+                    continue
 
                 candidates_by_day[day_idx].append(
                     _Candidate(
@@ -798,6 +803,8 @@ def _legacy_run_backtest(
 
         current_sector_equity = float(sum(sector_exposure.values()))
         for cand in daily_candidates:
+            if cand.score < MIN_ENTRY_SCORE:
+                break
             if cand.sym in positions:
                 continue
             if not export_ml_data and len(positions) >= max_positions:
@@ -1405,6 +1412,11 @@ def run_backtest(
         regime_filter = bool(params.get("regime_filter", False))
         base_stop_mult = float(params.get("stop_loss_atr", 3.0) or 3.0)
         compiled_strategies.append((strat, w, params, gap_ratio, regime_filter, base_stop_mult))
+
+    # Diagnostic: verify trail_activation is flowing from JSON -> strategy.params -> engine.
+    for strat, _w, params, _gap_ratio, _regime_filter, _base_stop_mult in compiled_strategies:
+        if _DEBUG_TRAIL_ACTIVATION or (isinstance(params.get("version_info"), dict) and params["version_info"].get("status") == "Golden State"):
+            print(f"DEBUG: {strat.name} using activation: {params.get('trail_activation')}")
 
     np_isfinite = np.isfinite
 
