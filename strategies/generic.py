@@ -230,7 +230,11 @@ class GenericStrategy(BaseStrategy):
 
     def exit(self, df: pd.DataFrame, i: int, entry_i: int, entry_price: float, stop_price: float) -> bool:
         """
-        Enhanced exit logic with trailing stops and hard loss floor.
+        Fallback exit logic.
+
+        Note: Primary execution for `GenericStrategy` genomes is handled by the native
+        engine (`execution/engine.py`) via `_generic_exit_decision`. This method is
+        kept for compatibility and non-native execution paths.
         """
         row = df.iloc[i]
         days_held = i - entry_i

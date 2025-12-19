@@ -535,26 +535,39 @@ def _legacy_run_backtest(
 
             n = len(df)
             open_arr = _get_np_col(df, "open", np.nan, length=n)
+            high_arr = _get_np_col(df, "high", np.nan, length=n)
             low_arr = _get_np_col(df, "low", np.nan, length=n)
             close_arr = _get_np_col(df, "close", np.nan, length=n)
             if not np.isfinite(low_arr).any():
                 low_arr = open_arr
+            if not np.isfinite(high_arr).any():
+                high_arr = open_arr
 
             enriched[sym] = _SymbolArrays(
                 df=df,
                 index=df.index.values.astype("datetime64[ns]"),
+                gidx=np.empty(n, dtype=np.int32),
                 open=open_arr,
+                high=high_arr,
                 low=low_arr if low_arr is not None else open_arr,
                 close=close_arr,
                 volume=_get_np_col(df, "volume", 0.0, length=n),
                 rsi2=_get_np_col(df, "rsi2", 50.0, length=n),
+                rsi14=_get_np_col(df, "rsi14", 50.0, length=n),
                 adx=_get_np_col(df, "adx", 0.0, length=n),
+                stoch_k=_get_np_col(df, "stoch_k", 0.0, length=n),
                 atr14=_get_np_col(df, "atr14", 0.0, length=n),
                 vol_ma20=_get_np_col(df, "vol_ma20", 1.0, length=n),
+                sma20=_get_np_col(df, "sma20", np.nan, length=n),
                 sma50=_get_np_col(df, "sma50", np.nan, length=n),
                 sma200=_get_np_col(df, "sma200", np.nan, length=n),
                 cci=_get_np_col(df, "cci", 0.0, length=n),
                 bb_width=_get_np_col(df, "bb_width", 0.0, length=n),
+                bb_lower=_get_np_col(df, "bb_lower", np.nan, length=n),
+                bb_upper=_get_np_col(df, "bb_upper", np.nan, length=n),
+                rs_ratio=_get_np_col(df, "rs_ratio", 1.0, length=n),
+                rs_trend=_get_np_col(df, "rs_trend", 0.0, length=n),
+                vix=_get_np_col(df, "vix", 20.0, length=n),
                 spy_close=_get_np_col(df, "spy_close", np.nan, length=n),
                 spy_sma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
             )
@@ -575,6 +588,9 @@ def _legacy_run_backtest(
         return _empty_result(strategy_label, float(start_cash), strategies[0].params if strategies else {})
 
     all_dates = all_index.values.astype("datetime64[ns]")
+    for sym_data in enriched.values():
+        sym_data.gidx = np.searchsorted(all_dates, sym_data.index).astype(np.int32, copy=False)
+
     date_to_idx = {dt: i for i, dt in enumerate(all_dates)}
     candidates_by_day: List[List[_Candidate]] = [[] for _ in range(len(all_dates))]
 
@@ -844,21 +860,49 @@ def _legacy_run_backtest(
                 continue
 
             try:
-                should_exit = bool(active_strat.exit(sym_data.df, loc, pos["entry_i"], pos["entry_price"], pos["stop_price"]))
+                genome = getattr(active_strat, "params", {}) if hasattr(active_strat, "params") else {}
+                genome = genome or {}
+
+                entry_i = int(pos.get("entry_i", 0) or 0)
+                entry_price = float(pos["entry_price"])
+                initial_stop = float(pos["stop_price"])
+
+                if isinstance(active_strat, GenericStrategy) and active_strat.__class__.exit is GenericStrategy.exit:
+                    should_exit, effective_stop, target_px = _generic_exit_decision(
+                        genome,
+                        sym_data,
+                        loc,
+                        entry_i,
+                        entry_price,
+                        initial_stop,
+                    )
+                else:
+                    should_exit = bool(active_strat.exit(sym_data.df, loc, entry_i, entry_price, initial_stop))
+                    effective_stop = initial_stop
+                    target_px = None
             except Exception:
                 should_exit = False
+                effective_stop = float(pos["stop_price"])
+                target_px = None
 
             if not should_exit:
                 continue
 
             open_px = float(sym_data.open[loc])
             low_px = float(sym_data.low[loc])
+            high_px = float(sym_data.high[loc])
             close_px = float(sym_data.close[loc])
-            stop_px = float(pos["stop_price"])
 
-            exit_px = stop_px if low_px < stop_px else close_px
-            if low_px < stop_px and open_px < stop_px:
-                exit_px = open_px
+            if not np_isfinite(low_px):
+                low_px = close_px
+            if not np_isfinite(high_px):
+                high_px = close_px
+
+            exit_px = close_px
+            if np_isfinite(effective_stop) and low_px < effective_stop:
+                exit_px = effective_stop if open_px >= effective_stop else open_px
+            elif target_px is not None and np_isfinite(target_px) and high_px >= target_px:
+                exit_px = float(target_px)
             if exit_px < pos["entry_price"] * 0.5:
                 exit_px = pos["entry_price"] * 0.5
 
