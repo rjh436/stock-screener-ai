@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -38,14 +37,6 @@ if not logging.getLogger().handlers:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
-
-
-def _clamp01(x: float) -> float:
-    if x <= 0.0:
-        return 0.0
-    if x >= 1.0:
-        return 1.0
-    return float(x)
 
 
 def _to_float(val, default: float = 0.0) -> float:
