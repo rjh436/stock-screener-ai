@@ -13,12 +13,12 @@ _PROFIT_TARGET_MIN = 1.05
 _PROFIT_TARGET_MAX = 1.30
 _TIME_STOP_MIN = 20
 _TIME_STOP_MAX = 90
-_TRAIL_ACTIVATION_MIN = 1.08
-_TRAIL_ACTIVATION_MAX = 1.20
+_TRAIL_ACTIVATION_MIN = 1.15
+_TRAIL_ACTIVATION_MAX = 1.40
 
 # Diversity injection (random reset)
 _BREAKTHROUGH_CHANCE = 0.25
-_BREAKTHROUGH_START_GEN = 25
+_BREAKTHROUGH_START_GEN = 10
 
 # Scoring weight ranges (higher floors to prevent "low standards" loopholes)
 _SCORING_RANGES: Dict[str, tuple[float, float]] = {
@@ -178,9 +178,9 @@ class EvolutionEngine:
         g["limit_ratio"] = float(g.get("limit_ratio", 0.98) or 0.98)
         g["trail_atr"] = float(g.get("trail_atr", 3.0) or 3.0)
         try:
-            trail_act = float(g.get("trail_activation", 1.03) or 1.03)
+            trail_act = float(g.get("trail_activation", _TRAIL_ACTIVATION_MIN) or _TRAIL_ACTIVATION_MIN)
         except (TypeError, ValueError):
-            trail_act = 1.03
+            trail_act = _TRAIL_ACTIVATION_MIN
         g["trail_activation"] = round(_clamp(trail_act, _TRAIL_ACTIVATION_MIN, _TRAIL_ACTIVATION_MAX), 3)
 
         return g
@@ -282,6 +282,11 @@ class EvolutionEngine:
 
         r = random.random()
 
+        # Mutation bucket probabilities:
+        # - 25%: entry/filters
+        # - 35%: exit knobs (profit_target/time_stop/trail_activation)
+        # - 15%: stop-loss ATR
+        # - 25%: scoring weights
         if r < 0.25:
             trait = random.choice(["limit", "trail", "dual_lane"])
             if trait == "limit":
@@ -297,7 +302,7 @@ class EvolutionEngine:
                 else:
                     mutant["rsi_weak"] = float(random.randint(5, 25))
 
-        elif r < 0.45:
+        elif r < 0.60:
             # Exit knobs (sniper selection)
             trait = random.choice(["profit_target", "time_stop", "trail_activation"])
 
@@ -320,8 +325,12 @@ class EvolutionEngine:
                 except (TypeError, ValueError):
                     cur = 1.08
 
-                # Upward bias: actively hunt for larger profit targets.
-                new_val = cur * random.uniform(1.0, 1.10)
+                # Upward bias: push exits toward larger targets.
+                if self.generation_count < 25:
+                    base = random.uniform(_PROFIT_TARGET_MIN, _PROFIT_TARGET_MAX)
+                else:
+                    base = cur * random.uniform(0.90, 1.10)
+                new_val = float(base) * 1.10
 
                 pt_rule["val"] = round(_clamp(float(new_val), _PROFIT_TARGET_MIN, _PROFIT_TARGET_MAX), 2)
                 mutant["exit_rules"] = exit_rules
@@ -340,16 +349,19 @@ class EvolutionEngine:
             else:
                 # trail_activation
                 if self.generation_count < 25:
-                    new_val = random.uniform(_TRAIL_ACTIVATION_MIN, _TRAIL_ACTIVATION_MAX)
+                    base = random.uniform(_TRAIL_ACTIVATION_MIN, _TRAIL_ACTIVATION_MAX)
                 else:
                     try:
-                        cur = float(mutant.get("trail_activation", 1.03) or 1.03)
+                        cur = float(mutant.get("trail_activation", _TRAIL_ACTIVATION_MIN) or _TRAIL_ACTIVATION_MIN)
                     except (TypeError, ValueError):
-                        cur = 1.03
-                    new_val = cur + random.uniform(-0.01, 0.01)
+                        cur = _TRAIL_ACTIVATION_MIN
+                    base = cur + random.uniform(-0.02, 0.02)
+
+                # Upward bias: delay trailing until deeper in profit.
+                new_val = float(base) * 1.10
                 mutant["trail_activation"] = round(_clamp(float(new_val), _TRAIL_ACTIVATION_MIN, _TRAIL_ACTIVATION_MAX), 3)
 
-        elif r < 0.60:
+        elif r < 0.75:
             mutant["stop_loss_atr"] = round(random.uniform(2.5, 6.0), 1)
 
         else:

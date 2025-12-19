@@ -46,34 +46,6 @@ def _to_float(val, default: float = 0.0) -> float:
         return float(default)
 
 
-def _pct_to_frac(x: float) -> float:
-    """
-    Accept either percent units (e.g., 65.0) or fraction units (e.g., 0.65).
-    """
-    x = _to_float(x, 0.0)
-    return (x / 100.0) if x > 1.5 else x
-
-
-def _profit_to_frac(x: float) -> float:
-    """
-    Like `_pct_to_frac`, but safe around the 0–1.5 range where avg trade profit
-    can be reported either as:
-      - percent units (e.g., 1.0 == 1.0%)
-      - fraction units (e.g., 0.01 == 1.0%)
-    """
-    x = _to_float(x, 0.0)
-    if x <= 0.0:
-        return 0.0
-
-    # Most of the system reports `avg_profit_pct` in percent units.
-    # But if it's already a small fraction (<=50%), keep it.
-    if x <= 0.50:
-        return float(x)
-
-    # Otherwise treat it as percent units.
-    return float(x / 100.0)
-
-
 def _threshold_multiplier(value: float, target: float, *, power_below: float) -> float:
     """
     Returns a smooth multiplier that:
@@ -95,28 +67,28 @@ def _threshold_multiplier(value: float, target: float, *, power_below: float) ->
 def calculate_fitness(result: Dict) -> float:
     """
     Fitness uses fractional units (strategic mandates):
-    - CAGR target: 0.40
-    - Avg profit target: 0.05
-    - Win rate target: 0.60
+    - CAGR target: 0.40 (already fractional, e.g. 0.42 == 42%)
+    - Avg profit target: 0.05 (avg trade return fraction, e.g. 0.055 == 5.5%)
+    - Win rate target: 0.60 (fraction, e.g. 0.63 == 63%)
 
     Fitness is a "sniper" objective:
-    - Avg profit per trade has a cubic penalty below mandate and a linear reward above it.
+    - Avg profit per trade has a quartic penalty below mandate and a linear reward above it.
     - Win rate has a quadratic penalty below mandate and a linear reward above it.
     - CAGR has a linear penalty below mandate and a linear reward above it.
     - Calmar is capped so ultra-low drawdowns can't dominate selection.
     """
     cagr = _to_float(result.get("cagr", 0.0) or 0.0)
-    win_rate = _pct_to_frac(result.get("hit_rate", 0.0) or 0.0)
-    avg_profit = _profit_to_frac(result.get("avg_profit_pct", 0.0) or 0.0)
+    win_rate = _to_float(result.get("hit_rate", 0.0) or 0.0) / 100.0
+    avg_profit = _to_float(result.get("avg_profit_pct", 0.0) or 0.0) / 100.0
     max_dd_pct = _to_float(result.get("max_drawdown_pct", 0.0) or 0.0)
 
     dd_abs = abs(max_dd_pct)
-    dd_frac = (dd_abs / 100.0) if dd_abs > 1.0 else dd_abs
+    dd_frac = dd_abs / 100.0
     calmar_raw = (cagr / dd_frac) if dd_frac > 0.0 else 0.0
     calmar_capped = min(max(calmar_raw, 0.0), 20.0)
 
     # Strategic multipliers (always a gradient, even above mandates)
-    profit_multiplier = _threshold_multiplier(avg_profit, MANDATE_PROFIT_TARGET, power_below=3.0)
+    profit_multiplier = _threshold_multiplier(avg_profit, MANDATE_PROFIT_TARGET, power_below=4.0)
     win_multiplier = _threshold_multiplier(win_rate, MANDATE_WIN_TARGET, power_below=2.0)
     cagr_multiplier = _threshold_multiplier(cagr, MANDATE_CAGR_TARGET, power_below=1.0)
 
@@ -162,8 +134,8 @@ def _format_top_line(stats: Dict, genome: Dict, score: float) -> str:
     name_short = (name[:25] + "..") if len(name) > 27 else name
 
     cagr = _to_float(stats.get("cagr", 0.0) or 0.0)
-    hit_pct = _pct_to_frac(stats.get("hit_rate", 0.0) or 0.0) * 100.0
-    avg_profit = _profit_to_frac(stats.get("avg_profit_pct", 0.0) or 0.0)
+    hit_pct = _to_float(stats.get("hit_rate", 0.0) or 0.0)
+    avg_profit = _to_float(stats.get("avg_profit_pct", 0.0) or 0.0) / 100.0
     profit_pct = avg_profit * 100.0
 
     return (
