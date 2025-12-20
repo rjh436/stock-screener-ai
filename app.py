@@ -5,7 +5,6 @@ import sys
 import os
 import json
 import joblib
-import numpy as np
 from datetime import datetime, timedelta
 
 # Ensure project root is in path
@@ -107,8 +106,6 @@ with st.sidebar:
             if use: selected_strategies.append(s)
             
             with st.expander(f"📘 Strategy Guide: {s.get('name', 'Strategy')}"):
-                role = str(s.get("type", "generic") or "generic").title()
-
                 try:
                     limit_ratio = float(s.get("limit_ratio")) if s.get("limit_ratio") is not None else None
                 except Exception:
@@ -135,44 +132,26 @@ with st.sidebar:
                     time_stop = 45
                 time_stop = max(1, time_stop)
 
-                regime_filter = bool(s.get("regime_filter", False))
-
-                profit_targets = []
-                for rule in (s.get("exit_rules") or []):
-                    if not isinstance(rule, dict) or rule.get("type") != "profit_target":
-                        continue
-                    try:
-                        profit_targets.append(float(rule.get("val")))
-                    except Exception:
-                        continue
-                profit_targets = sorted([t for t in profit_targets if t and t > 1.0])
-
-                limit_desc = "Market/Open (no limit ratio)"
+                limit_desc = "market/open (no limit ratio set)"
                 if limit_ratio is not None and limit_ratio > 0:
                     limit_desc = f"{limit_ratio:.2f}× prior close (~{(1.0 - limit_ratio) * 100.0:.1f}% below)"
 
-                trail_activation_desc = f"{trail_activation:.2f}× entry (+{(trail_activation - 1.0) * 100.0:.0f}% activation)"
-
-                targets_desc = "None (run winners)"
-                if profit_targets:
-                    targets_desc = ", ".join([f"+{(t - 1.0) * 100.0:.0f}%" for t in profit_targets])
+                trail_activation_desc = f"+{(trail_activation - 1.0) * 100.0:.0f}% (activation {trail_activation:.2f})"
 
                 st.markdown(
                     f"""
-**🔭 Strategy Philosophy**
+**🔭 Strategy Mandate**
 - **Elite Sniper Gate:** only enter when **Score ≥ {MIN_ENTRY_SCORE:.0f}**.
-- **Role:** {role}.
+- **RSI Pullback Rule:** only enter when **RSI2 < 20**.
 
-**⚔️ Entry Protocol**
-- **Limit Orders:** {limit_desc}.
-- **Regime Filter (200D SMA):** {"ON — SPY must be above its 200-day SMA." if regime_filter else "OFF"}.
+**⚔️ Execution Protocol**
+- **Limit Orders:** fills at {limit_desc}.
 
 **🛡️ Risk & Exit**
-- **Hard Stop:** {stop_loss_atr:.2f}× ATR below entry.
-- **Trailing Stop:** {trail_atr:.2f}× ATR from peak; **dormant until** {trail_activation_desc}.
-- **Profit Targets:** {targets_desc}.
+- **ATR Stop:** {stop_loss_atr:.2f}× ATR below entry is the sole risk floor.
+- **Trailing Stop:** dormant until {trail_activation_desc}; then trails at {trail_atr:.2f}× ATR.
 
-**⏳ Time Stop**
+**⏳ Time Exit**
 - Automatic exit after **{time_stop}** trading days.
 """
                 )
@@ -500,7 +479,7 @@ elif mode == "Backtest":
                 col1.metric("CAGR", f"{res['cagr']:.1%}")
                 col2.metric("Win Rate", f"{res['hit_rate']:.1f}%")
                 col3.metric("Avg Profit", f"{res['avg_profit_pct']:.2f}%")
-                col4.metric("Total Trades", int(res.get("total_trades", 0) or 0))
+                col4.metric("Total Trades", res["total_trades"])
                 
                 st.line_chart(res["equity_curve"])
                 

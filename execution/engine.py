@@ -193,6 +193,10 @@ def _score_candidate(
     if not np_isfinite(rsi2):
         rsi2 = 50.0
 
+    sniper_ok = bool(np_isfinite(cci) and np_isfinite(bb_width) and cci < 0 and bb_width > _SNIPER_BB_WIDTH_THRESH)
+    if rsi2 > 20.0 or not sniper_ok:
+        return 0.0
+
     base_score = (100.0 - float(rsi2)) * w.rsi_factor
     base_score = min(100.0, max(0.0, base_score))
 
@@ -213,9 +217,8 @@ def _score_candidate(
     if np_isfinite(close_px) and close_px > 0 and np_isfinite(sma200) and sma200 > 0:
         score += w.trend_bonus if close_px > sma200 else w.trend_penalty
 
-    if np_isfinite(cci) and np_isfinite(bb_width):
-        if cci < 0 and bb_width > _SNIPER_BB_WIDTH_THRESH:
-            score += w.sniper_bonus
+    if sniper_ok:
+        score += w.sniper_bonus
 
     return max(0.0, float(score))
 
@@ -323,22 +326,9 @@ def _strategy_role(params: Dict[str, Any]) -> str:
 
 def _apply_super_signal_overrides(genome: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Super Signal execution mode (Wealth execution):
-    - Remove profit targets (let winners run)
-    - Force trailing stop activation + ATR multiple
+    Super Signal execution mode: honor the genome without overrides.
     """
-    g = dict(genome or {})
-
-    exit_rules = g.get("exit_rules")
-    if isinstance(exit_rules, list):
-        g["exit_rules"] = [
-            r for r in exit_rules if not (isinstance(r, dict) and str(r.get("type", "")).lower() == "profit_target")
-        ]
-
-    g["trail_atr"] = 2.5
-    g["trail_activation"] = 1.40
-    g["use_bb_exit"] = False
-    return g
+    return genome
 
 
 @dataclass(slots=True)
@@ -1008,6 +998,7 @@ def _legacy_run_backtest(
                     "PnL": pnl,
                     "Return%": pct,
                     "Strategy": pos.get("strategy_name", strategy_label),
+                    "is_super_signal": bool(pos.get("is_super_signal", False)),
                 }
             )
             del positions[sym]
@@ -1171,6 +1162,7 @@ def _score_candidates_vectorized(
     w: _ScoreWeights,
 ) -> np.ndarray:
     rsi2 = np.where(np.isfinite(rsi2), rsi2, 50.0)
+    sniper_ok = np.isfinite(cci) & np.isfinite(bb_width) & (cci < 0) & (bb_width > _SNIPER_BB_WIDTH_THRESH)
 
     base = (100.0 - rsi2) * float(w.rsi_factor)
     base = np.clip(base, 0.0, 100.0)
@@ -1197,10 +1189,13 @@ def _score_candidates_vectorized(
     )
 
     score += np.where(
-        np.isfinite(cci) & np.isfinite(bb_width) & (cci < 0) & (bb_width > _SNIPER_BB_WIDTH_THRESH),
+        sniper_ok,
         float(w.sniper_bonus),
         0.0,
     )
+
+    gate = (rsi2 <= 20.0) & sniper_ok
+    score = np.where(gate, score, 0.0)
 
     return np.maximum(score, 0.0)
 
@@ -1250,7 +1245,9 @@ def _generic_exit_decision(
     except (TypeError, ValueError):
         trail_mult = 3.0
 
-    act_raw = genome.get("trail_activation", 1.0)
+    if not isinstance(genome, dict) or "trail_activation" not in genome:
+        raise ValueError("trail_activation missing from genome")
+    act_raw = genome.get("trail_activation")
     try:
         trail_activation = float(act_raw or 1.0)
     except (TypeError, ValueError):
@@ -1272,8 +1269,7 @@ def _generic_exit_decision(
     if trailing_active and atr > 0:
         trailing_stop = peak_high - (atr * trail_mult)
 
-    hard_floor = entry_price * 0.88
-    effective_stop = max(float(initial_stop), hard_floor)
+    effective_stop = float(initial_stop)
     if np_isfinite(trailing_stop):
         effective_stop = max(effective_stop, float(trailing_stop))
 
