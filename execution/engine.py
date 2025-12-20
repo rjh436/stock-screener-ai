@@ -27,6 +27,7 @@ DEFAULT_SCORING_WEIGHTS: Dict[str, float] = {
 
 MIN_BARS = 200
 MIN_ENTRY_SCORE = 120.0
+SUPER_SIGNAL_NAME = "SUPER SIGNAL (Wealth + Income)"
 
 _ATR_HIGH_THRESH_PCT = 3.0
 _ATR_MED_THRESH_PCT = 2.0
@@ -297,6 +298,47 @@ class _Candidate:
     strategy_obj: Any
     entry_i: int
     signal_i: int
+    is_super_signal: bool = False
+
+
+def _strategy_role(params: Dict[str, Any]) -> str:
+    raw_type = params.get("type")
+    if isinstance(raw_type, str):
+        t = raw_type.strip().lower()
+        if "wealth" in t:
+            return "wealth"
+        if "income" in t:
+            return "income"
+
+    raw_name = params.get("name")
+    if isinstance(raw_name, str):
+        n = raw_name.lower()
+        if "wealth" in n:
+            return "wealth"
+        if "income" in n:
+            return "income"
+
+    return ""
+
+
+def _apply_super_signal_overrides(genome: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Super Signal execution mode (Wealth execution):
+    - Remove profit targets (let winners run)
+    - Force trailing stop activation + ATR multiple
+    """
+    g = dict(genome or {})
+
+    exit_rules = g.get("exit_rules")
+    if isinstance(exit_rules, list):
+        g["exit_rules"] = [
+            r for r in exit_rules if not (isinstance(r, dict) and str(r.get("type", "")).lower() == "profit_target")
+        ]
+
+    g["trail_atr"] = 2.5
+    g["trail_activation"] = 1.40
+    g["use_bb_exit"] = False
+    return g
 
 
 @dataclass(slots=True)
@@ -483,6 +525,8 @@ def _legacy_run_backtest(
 
     data_dict: Dict[str, pd.DataFrame] = data or {}
     strategy_label = strategies[0].name if len(strategies) == 1 else "MultiStrategy"
+    if super_signal_only:
+        strategy_label = SUPER_SIGNAL_NAME
 
     sector_map = _load_sector_map()
 
@@ -845,6 +889,7 @@ def _legacy_run_backtest(
                 "strategy_name": cand.strategy_name,
                 "strategy_obj": cand.strategy_obj,
                 "signal_i": cand.signal_i,
+                "is_super_signal": bool(getattr(cand, "is_super_signal", False)),
             }
             sector_exposure[cand_sec] = sector_exposure.get(cand_sec, 0.0) + cost
             current_sector_equity += cost
@@ -1355,12 +1400,14 @@ def run_backtest(
     export_ml_data=False,
     ai_model=None,
     ai_threshold=0.60,
+    super_signal_only: bool = False,
 ):
     """
     Sniper-mode backtest engine:
     - Precomputable data path (PreparedBacktestData) for GA speed
     - MIN_ENTRY_SCORE gating for selective entries
     - Explicit support for trail_activation + time_stop for GenericStrategy genomes
+    - Optional super-signal confluence mode (Wealth + Income)
     """
     strategies = strategy if isinstance(strategy, (list, tuple)) else [strategy]
     strategies = [s for s in strategies if s is not None]
@@ -1417,6 +1464,12 @@ def run_backtest(
     for strat, _w, params, _gap_ratio, _regime_filter, _base_stop_mult in compiled_strategies:
         if _DEBUG_TRAIL_ACTIVATION or (isinstance(params.get("version_info"), dict) and params["version_info"].get("status") == "Golden State"):
             print(f"DEBUG: {strat.name} using activation: {params.get('trail_activation')}")
+
+    wealth_present = any(_strategy_role(params) == "wealth" for _s, _w, params, _g, _r, _b in compiled_strategies)
+    income_present = any(_strategy_role(params) == "income" for _s, _w, params, _g, _r, _b in compiled_strategies)
+    confluence_possible = wealth_present and income_present
+    if super_signal_only and not confluence_possible:
+        return _empty_result(SUPER_SIGNAL_NAME, float(start_cash), strategies[0].params if strategies else {})
 
     np_isfinite = np.isfinite
 
@@ -1669,6 +1722,58 @@ def run_backtest(
                     )
                 )
 
+    # --- Super Signal Confluence (Wealth + Income on same symbol/day) ---
+    if confluence_possible:
+        for day_idx, day_list in enumerate(candidates_by_day):
+            if not day_list:
+                continue
+
+            wealth_by_sym: Dict[str, _Candidate] = {}
+            income_by_sym: Dict[str, _Candidate] = {}
+
+            for cand in day_list:
+                c_params = getattr(cand.strategy_obj, "params", {}) if hasattr(cand.strategy_obj, "params") else {}
+                role = _strategy_role(c_params or {})
+                if role == "wealth":
+                    best = wealth_by_sym.get(cand.sym)
+                    if best is None or cand.score > best.score:
+                        wealth_by_sym[cand.sym] = cand
+                elif role == "income":
+                    best = income_by_sym.get(cand.sym)
+                    if best is None or cand.score > best.score:
+                        income_by_sym[cand.sym] = cand
+
+            super_syms = set(wealth_by_sym).intersection(income_by_sym)
+            if not super_syms:
+                if super_signal_only:
+                    candidates_by_day[day_idx] = []
+                continue
+
+            super_candidates: List[_Candidate] = []
+            for sym in super_syms:
+                w_cand = wealth_by_sym[sym]
+                i_cand = income_by_sym[sym]
+                super_candidates.append(
+                    _Candidate(
+                        sym=sym,
+                        entry_px=w_cand.entry_px,
+                        stop_px=w_cand.stop_px,
+                        score=max(w_cand.score, i_cand.score),
+                        strategy_name=SUPER_SIGNAL_NAME,
+                        strategy_obj=w_cand.strategy_obj,
+                        entry_i=w_cand.entry_i,
+                        signal_i=w_cand.signal_i,
+                        is_super_signal=True,
+                    )
+                )
+
+            if super_signal_only:
+                candidates_by_day[day_idx] = super_candidates
+            else:
+                kept = [c for c in day_list if c.sym not in super_syms]
+                kept.extend(super_candidates)
+                candidates_by_day[day_idx] = kept
+
     for day_list in candidates_by_day:
         if len(day_list) > 1:
             day_list.sort(key=lambda c: c.score, reverse=True)
@@ -1749,6 +1854,7 @@ def run_backtest(
                 "strategy_name": cand.strategy_name,
                 "strategy_obj": cand.strategy_obj,
                 "signal_i": cand.signal_i,
+                "is_super_signal": bool(getattr(cand, "is_super_signal", False)),
             }
             sector_exposure[cand_sec] = sector_exposure.get(cand_sec, 0.0) + cost
             current_sector_equity += cost
@@ -1775,7 +1881,16 @@ def run_backtest(
             genome = genome or {}
 
             try:
-                if isinstance(active_strat, GenericStrategy) and active_strat.__class__.exit is GenericStrategy.exit:
+                if bool(pos.get("is_super_signal", False)):
+                    should_exit, effective_stop, target_px = _generic_exit_decision(
+                        _apply_super_signal_overrides(genome),
+                        sym_data,
+                        loc,
+                        entry_i,
+                        float(pos["entry_price"]),
+                        float(pos["stop_price"]),
+                    )
+                elif isinstance(active_strat, GenericStrategy) and active_strat.__class__.exit is GenericStrategy.exit:
                     should_exit, effective_stop, target_px = _generic_exit_decision(
                         genome,
                         sym_data,
@@ -1866,6 +1981,7 @@ def run_backtest(
                     "PnL": pnl,
                     "Return%": pct,
                     "Strategy": pos.get("strategy_name", strategy_label),
+                    "is_super_signal": bool(pos.get("is_super_signal", False)),
                 }
             )
             del positions[sym]

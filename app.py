@@ -129,94 +129,149 @@ if mode == "Live Screener":
     else:
         st.warning("⚠️ AI Model not found. Showing raw signals only.")
 
-    if "scan_results" not in st.session_state: st.session_state.scan_results = None
+    if "scan_results" not in st.session_state:
+        st.session_state.scan_results = None
 
     col1, col2 = st.columns([1, 4])
     with col1:
         universe = st.selectbox("Universe", ["S&P 500", "S&P 100", "S&P 1500"], index=2)
+        super_only = st.checkbox(
+            "⭐ Super Signal ONLY",
+            value=False,
+            help="Only show tickers where both Wealth and Income triggered.",
+        )
         run_btn = st.button("RUN SCAN", type="primary")
-        
+    
     if run_btn:
         with st.spinner(f"Scanning {universe}..."):
             symbols = get_index_symbols(universe)
             data = fetch_data_pack(symbols, days=400)
             results = []
+            triggered_types = {}
             
             if not selected_strategies:
                 st.warning("No strategies selected!")
             else:
                 strat_objects = load_strategies(selected_strategies)
-                for strat in strat_objects:
-                    s_conf = strat.params
-                    for sym, df in data.items():
-                        if df is None or df.empty: continue
-                        try:
-                            df_ind = _compute_indicators(df.copy())
-                            if df_ind.empty or len(df_ind) < 2: continue
+                for sym, df in data.items():
+                    if df is None or df.empty:
+                        continue
+                    try:
+                        df_ind = _compute_indicators(df.copy())
+                        if df_ind.empty or len(df_ind) < 2:
+                            continue
 
-                            if strat.entry(df_ind, len(df_ind) - 2):
-                                row_signal = df_ind.iloc[-2]
-                                row_current = df_ind.iloc[-1]
+                        signal_i = len(df_ind) - 2
+                        row_signal = df_ind.iloc[signal_i]
+                        row_current = df_ind.iloc[-1]
 
-                                atr = row_signal.get("atr14", row_signal["close"]*0.02)
-                                stop_mult = float(s_conf.get("stop_loss_atr", 3.0))
+                        for strat in strat_objects:
+                            s_conf = strat.params or {}
+                            if not strat.entry(df_ind, signal_i):
+                                continue
 
-                                raw_score = calculate_backtest_quality_score(row_signal, s_conf["name"], DEFAULT_SCORING_WEIGHTS)
-                                score = raw_score * 1.3 if "wealth" in s_conf["name"].lower() else raw_score
+                            s_type = str(s_conf.get("type", "") or "").lower()
+                            if not s_type:
+                                name = str(s_conf.get("name", "") or "").lower()
+                                if "wealth" in name:
+                                    s_type = "wealth"
+                                elif "income" in name:
+                                    s_type = "income"
+                                else:
+                                    s_type = "other"
+                            triggered_types.setdefault(sym, set()).add(s_type)
 
-                                exits = s_conf.get("exit_rules", [])
-                                target_txt = f"${row_signal['close'] * float(exits[0].get('val')):.2f}" if exits and exits[0].get("type") == "profit_target" else "OPEN"
+                            atr = row_signal.get("atr14", row_signal["close"] * 0.02)
+                            stop_mult = float(s_conf.get("stop_loss_atr", 3.0))
 
-                                estimated_entry = row_current["close"]
+                            raw_score = calculate_backtest_quality_score(
+                                row_signal,
+                                s_conf.get("name", ""),
+                                DEFAULT_SCORING_WEIGHTS,
+                            )
+                            score = raw_score * 1.3 if "wealth" in str(s_conf.get("name", "")).lower() else raw_score
 
-                                # AI Logic
-                                ai_prob = 0.0
-                                if ai_model:
-                                    try:
-                                        f_rsi2 = row_signal.get("rsi2", 50)
-                                        f_adx = row_signal.get("adx", 0)
-                                        f_close = row_signal.get("close", 1.0)
-                                        f_atr_pct = (row_signal.get("atr14", 0) / f_close) if f_close > 0 else 0
-                                        f_sma50 = row_signal.get("sma50", f_close)
-                                        f_sma200 = row_signal.get("sma200", f_close)
-                                        f_dist50 = (f_close - f_sma50) / f_close
-                                        f_dist200 = (f_close - f_sma200) / f_close
-                                        f_vol = row_signal.get("volume", 0)
-                                        f_vol20 = row_signal.get("vol_ma20", 1)
-                                        f_vol_rel = f_vol / (f_vol20 + 1)
-                                        
-                                        features = pd.DataFrame([[f_rsi2, f_adx, f_atr_pct, f_dist50, f_dist200, f_vol_rel]], 
-                                                              columns=["rsi2", "adx", "atr_pct", "dist_sma50", "dist_sma200", "vol_rel"])
-                                        ai_prob = ai_model.predict_proba(features)[0][1]
-                                    except Exception:
-                                        ai_prob = 0.0
+                            exits = s_conf.get("exit_rules", [])
+                            target_txt = (
+                                f"${row_signal['close'] * float(exits[0].get('val')):.2f}"
+                                if exits and exits[0].get("type") == "profit_target"
+                                else "OPEN"
+                            )
 
-                                results.append({
-                                    "Symbol": sym, 
-                                    "Strategy": s_conf["name"],
+                            estimated_entry = row_current["close"]
+
+                            # AI Logic
+                            ai_prob = 0.0
+                            if ai_model:
+                                try:
+                                    f_rsi2 = row_signal.get("rsi2", 50)
+                                    f_adx = row_signal.get("adx", 0)
+                                    f_close = row_signal.get("close", 1.0)
+                                    f_atr_pct = (row_signal.get("atr14", 0) / f_close) if f_close > 0 else 0
+                                    f_sma50 = row_signal.get("sma50", f_close)
+                                    f_sma200 = row_signal.get("sma200", f_close)
+                                    f_dist50 = (f_close - f_sma50) / f_close
+                                    f_dist200 = (f_close - f_sma200) / f_close
+                                    f_vol = row_signal.get("volume", 0)
+                                    f_vol20 = row_signal.get("vol_ma20", 1)
+                                    f_vol_rel = f_vol / (f_vol20 + 1)
+                                    
+                                    features = pd.DataFrame(
+                                        [[f_rsi2, f_adx, f_atr_pct, f_dist50, f_dist200, f_vol_rel]],
+                                        columns=["rsi2", "adx", "atr_pct", "dist_sma50", "dist_sma200", "vol_rel"],
+                                    )
+                                    ai_prob = ai_model.predict_proba(features)[0][1]
+                                except Exception:
+                                    ai_prob = 0.0
+
+                            results.append(
+                                {
+                                    "Symbol": sym,
+                                    "Strategy": s_conf.get("name", strat.name),
                                     "Price": row_current["close"],
                                     "Stop Loss": estimated_entry - (atr * stop_mult),
                                     "Target": target_txt,
                                     "Score": score,
-                                    "AI Confidence": ai_prob
-                                })
-                        except: 
-                            continue
+                                    "AI Confidence": ai_prob,
+                                }
+                            )
+                    except Exception:
+                        continue
                 
+                confluence_syms = {
+                    sym for sym, types in triggered_types.items() if "wealth" in types and "income" in types
+                }
+                for row in results:
+                    row["Conviction"] = (
+                        "🔥 SUPER SIGNAL: Both Wealth and Income triggered."
+                        if row.get("Symbol") in confluence_syms
+                        else "✅ STANDARD: Only one triggered."
+                    )
+
                 if results:
-                    results.sort(key=lambda x: (x["AI Confidence"], x["Score"]), reverse=True)
+                    results.sort(
+                        key=lambda x: (
+                            x.get("Symbol") in confluence_syms,
+                            x.get("AI Confidence", 0.0),
+                            x.get("Score", 0.0),
+                        ),
+                        reverse=True,
+                    )
                 st.session_state.scan_results = pd.DataFrame(results)
 
     if st.session_state.scan_results is not None:
         df = st.session_state.scan_results
+        if isinstance(df, pd.DataFrame) and super_only and "Conviction" in df.columns:
+            df = df[df["Conviction"].astype(str).str.startswith("🔥")].copy()
+
         if df.empty:
             st.info("No signals found today.")
         else:
             c1, c2, c3 = st.columns(3)
             c1.metric("Total Signals", len(df))
-            top_ai = df['AI Confidence'].max()
+            top_ai = df["AI Confidence"].max()
             c2.metric("Top AI Confidence", f"{top_ai:.1%}")
-            c3.metric("Top Strategy", df.iloc[0]['Strategy'])
+            c3.metric("Top Strategy", df.iloc[0]["Strategy"])
             
             st.dataframe(
                 df.style.format({
@@ -246,8 +301,16 @@ elif mode == "Backtest":
             if c1.button(label) if label=="1 Year" else c2.button(label) if label=="5 Years" else c3.button(label) if label=="10 Years" else c4.button(label) if label=="20 Years" else c5.button(label):
                 st.session_state.bt_duration = label
     
-    # AI Filter Checkbox
-    use_ai = st.checkbox("🧠 Apply AI Filter (Conf > 60%)", value=False, help="Only take trades where Neural Net predicts >60% win probability.")
+    use_ai = st.checkbox(
+        "🧠 Apply AI Filter (Conf > 60%)",
+        value=False,
+        help="Only take trades where Neural Net predicts >60% win probability.",
+    )
+    run_super_signal = st.checkbox(
+        "⭐ Run Super Signal Confluence",
+        value=False,
+        help="Adds a third backtest that trades only when BOTH Wealth + Income trigger on the same symbol/day.",
+    )
 
     bt_duration = st.session_state.bt_duration
     days = dur_map.get(bt_duration, 1260)
@@ -302,7 +365,34 @@ elif mode == "Backtest":
 
                 results_map = {}
                 run_strategies = load_strategies(selected_strategies)
-                max_workers = min(len(run_strategies), 12) or 1
+
+                super_signal_pair = None
+                if run_super_signal:
+                    wealth_strat = next(
+                        (
+                            s
+                            for s in run_strategies
+                            if str(getattr(s, "params", {}).get("type", "")).lower() == "wealth"
+                            or "wealth" in s.name.lower()
+                        ),
+                        None,
+                    )
+                    income_strat = next(
+                        (
+                            s
+                            for s in run_strategies
+                            if str(getattr(s, "params", {}).get("type", "")).lower() == "income"
+                            or "income" in s.name.lower()
+                        ),
+                        None,
+                    )
+                    if wealth_strat is None or income_strat is None:
+                        st.warning("⭐ Super Signal requires BOTH a Wealth and Income strategy selected.")
+                    else:
+                        super_signal_pair = (wealth_strat, income_strat)
+
+                extra_jobs = 1 if super_signal_pair is not None else 0
+                max_workers = min(len(run_strategies) + extra_jobs, 12) or 1
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_map = {
@@ -317,6 +407,21 @@ elif mode == "Backtest":
                         ): strat.name
                         for strat in run_strategies
                     }
+                    if super_signal_pair is not None:
+                        wealth_strat, income_strat = super_signal_pair
+                        future_map[
+                            executor.submit(
+                                run_backtest,
+                                [wealth_strat, income_strat],
+                                prepared,
+                                start_cash=100000.0,
+                                start_date=None,
+                                export_ml_data=False,
+                                ai_model=ai_model_obj,
+                                super_signal_only=True,
+                            )
+                        ] = "SUPER SIGNAL (Wealth + Income)"
+
                     for future in concurrent.futures.as_completed(future_map):
                         name = future_map[future]
                         try:
