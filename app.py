@@ -515,8 +515,8 @@ elif mode == "Backtest":
                     else:
                         super_signal_pair = (wealth_strat, income_strat)
 
-                # Optimized Parallelism: 4 workers for AI, 8 for standard runs.
-                max_workers = 4 if (use_ai and ai_model_obj) else 8
+                # Optimized Parallelism: 6 workers for AI, 10 for standard runs.
+                max_workers = 6 if use_ai else 10
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_map = {
@@ -558,6 +558,15 @@ elif mode == "Backtest":
                             return_when=concurrent.futures.FIRST_COMPLETED,
                         )
 
+                        next_completed = completed + len(done)
+                        if total_futures:
+                            progress_bar.progress(min(next_completed / total_futures, 1.0))
+                        status_text.text(
+                            f"Running Simulations... ({next_completed}/{total_futures} Done) "
+                            f"[Time Elapsed: {int(time.time() - start_time)}s]"
+                        )
+                        time.sleep(0.01)
+
                         for future in done:
                             name = future_map.pop(future, "Unknown")
                             try:
@@ -565,14 +574,6 @@ elif mode == "Backtest":
                             except Exception as e:
                                 st.error(f"Backtest failed for {name}: {e}")
                             completed += 1
-
-                        if total_futures:
-                            progress_bar.progress(min(completed / total_futures, 1.0))
-
-                        status_text.text(
-                            f"Running Simulations... ({completed}/{total_futures} Done) "
-                            f"[Time Elapsed: {int(time.time() - start_time)}s]"
-                        )
                     status_text.empty()
                     progress_bar.empty()
 

@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import streamlit as st
 import os
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
@@ -124,6 +125,7 @@ def fetch_single_symbol(
     return None
 
 
+@st.cache_data(persist="disk", ttl=86400)
 def fetch_data_pack(
     symbols: List[str],
     days: int = 1260,
