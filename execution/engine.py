@@ -194,8 +194,6 @@ def _score_candidate(
         rsi2 = 50.0
 
     sniper_ok = bool(np_isfinite(cci) and np_isfinite(bb_width) and cci < 0 and bb_width > _SNIPER_BB_WIDTH_THRESH)
-    if rsi2 > 20.0 or not sniper_ok:
-        return 0.0
 
     base_score = (100.0 - float(rsi2)) * w.rsi_factor
     base_score = min(100.0, max(0.0, base_score))
@@ -1194,9 +1192,6 @@ def _score_candidates_vectorized(
         0.0,
     )
 
-    gate = (rsi2 <= 20.0) & sniper_ok
-    score = np.where(gate, score, 0.0)
-
     return np.maximum(score, 0.0)
 
 
@@ -1216,6 +1211,9 @@ def _generic_exit_decision(
       - effective_stop (including trail_activation)
       - target_px (when profit_target triggers), else None
     """
+    if isinstance(genome, dict) and isinstance(genome.get("genome"), dict):
+        genome = genome["genome"]
+
     np_isfinite = np.isfinite
 
     close_px = float(sd.close[loc])
@@ -1245,12 +1243,10 @@ def _generic_exit_decision(
     except (TypeError, ValueError):
         trail_mult = 3.0
 
-    if not isinstance(genome, dict) or "trail_activation" not in genome:
-        raise ValueError("trail_activation missing from genome")
-    act_raw = genome.get("trail_activation")
     try:
+        act_raw = genome.get("trail_activation", 1.0) if isinstance(genome, dict) else 1.0
         trail_activation = float(act_raw or 1.0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, AttributeError):
         trail_activation = 1.0
     if not np_isfinite(trail_activation) or trail_activation < 1.0:
         trail_activation = 1.0
