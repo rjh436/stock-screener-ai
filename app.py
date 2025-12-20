@@ -5,6 +5,7 @@ import sys
 import os
 import json
 import joblib
+import time
 from datetime import datetime, timedelta
 
 # Ensure project root is in path
@@ -514,10 +515,8 @@ elif mode == "Backtest":
                     else:
                         super_signal_pair = (wealth_strat, income_strat)
 
-                extra_jobs = 1 if super_signal_pair is not None else 0
-                max_workers = min(len(run_strategies) + extra_jobs, 12) or 1
-                if ai_model_obj is not None:
-                    max_workers = 1
+                # Optimized Parallelism: 4 workers for AI, 8 for standard runs.
+                max_workers = 4 if (use_ai and ai_model_obj) else 8
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_map = {
@@ -548,27 +547,33 @@ elif mode == "Backtest":
                         ] = "SUPER SIGNAL (Wealth + Income)"
 
                     progress_bar = st.progress(0)
-                    status = st.empty()
+                    status_text = st.empty()
                     total_futures = len(future_map)
                     completed = 0
-                    pending = set(future_map.keys())
-                    while pending:
-                        done, pending = concurrent.futures.wait(
-                            pending,
-                            timeout=1.0,
+                    start_time = time.time()
+                    while future_map:
+                        done, _ = concurrent.futures.wait(
+                            future_map.keys(),
+                            timeout=0.5,
                             return_when=concurrent.futures.FIRST_COMPLETED,
                         )
+
                         for future in done:
-                            name = future_map[future]
+                            name = future_map.pop(future, "Unknown")
                             try:
                                 results_map[name] = future.result()
                             except Exception as e:
                                 st.error(f"Backtest failed for {name}: {e}")
                             completed += 1
+
                         if total_futures:
                             progress_bar.progress(min(completed / total_futures, 1.0))
-                        status.write(f"Completed {completed}/{total_futures} backtests...")
-                    status.empty()
+
+                        status_text.text(
+                            f"Running Simulations... ({completed}/{total_futures} Done) "
+                            f"[Time Elapsed: {int(time.time() - start_time)}s]"
+                        )
+                    status_text.empty()
                     progress_bar.empty()
 
                 st.session_state.backtest_results = results_map
@@ -621,7 +626,19 @@ elif mode == "Simulator":
             status.write("2️⃣ Executing Scan & Governor...")
             symbols = get_index_symbols("S&P 1500")
             data_pack = fetch_data_pack(symbols, days=400)
-            new_trades = pt.run_daily_scan(data_pack)
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            def _progress(done, total):
+                if total:
+                    progress_bar.progress(min(done / total, 1.0))
+                    status_text.text(f"Scanning... {done}/{total}")
+                else:
+                    status_text.text("Scanning...")
+
+            new_trades = pt.run_daily_scan(data_pack, progress_callback=_progress)
+            status_text.empty()
+            progress_bar.empty()
             
             status.write(f"3️⃣ Scan Complete. Orders Queued: {len(new_trades) if new_trades else 0}")
             status.update(label="✅ Simulation Complete", state="complete", expanded=False)
