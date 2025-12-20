@@ -16,6 +16,7 @@ from data.loader import fetch_data_pack
 from data.indices import get_index_symbols
 from execution.engine import (
     DEFAULT_SCORING_WEIGHTS,
+    MIN_ENTRY_SCORE,
     _compute_indicators,
     calculate_backtest_quality_score,
     prepare_backtest_data,
@@ -105,17 +106,76 @@ with st.sidebar:
             use = st.checkbox(s.get('name'), value=True, key=f"chk_{s.get('name')}_{i}")
             if use: selected_strategies.append(s)
             
-            with st.expander(f"🔎 View Rules: {s.get('name')[:12]}..."):
-                st.write(f"**Role:** {s.get('type')}")
-                st.write(f"**Stop:** {s.get('stop_loss_atr')} ATR")
-                exits = s.get('exit_rules', [])
-                if not exits:
-                    st.write("**Target:** NONE (Run)")
-                else:
-                    for rule in exits:
-                        if rule.get('type') == 'profit_target':
-                            pct = (float(rule.get('val')) - 1) * 100
-                            st.write(f"**Target:** +{pct:.1f}%")
+            with st.expander(f"📘 Strategy Guide: {s.get('name', 'Strategy')}"):
+                role = str(s.get("type", "generic") or "generic").title()
+
+                try:
+                    limit_ratio = float(s.get("limit_ratio")) if s.get("limit_ratio") is not None else None
+                except Exception:
+                    limit_ratio = None
+
+                try:
+                    stop_loss_atr = float(s.get("stop_loss_atr", 3.0) or 3.0)
+                except Exception:
+                    stop_loss_atr = 3.0
+
+                try:
+                    trail_activation = float(s.get("trail_activation", 1.0) or 1.0)
+                except Exception:
+                    trail_activation = 1.0
+
+                try:
+                    trail_atr = float(s.get("trail_atr", stop_loss_atr) or stop_loss_atr)
+                except Exception:
+                    trail_atr = stop_loss_atr
+
+                try:
+                    time_stop = int(s.get("time_stop", 45) or 45)
+                except Exception:
+                    time_stop = 45
+                time_stop = max(1, time_stop)
+
+                regime_filter = bool(s.get("regime_filter", False))
+
+                profit_targets = []
+                for rule in (s.get("exit_rules") or []):
+                    if not isinstance(rule, dict) or rule.get("type") != "profit_target":
+                        continue
+                    try:
+                        profit_targets.append(float(rule.get("val")))
+                    except Exception:
+                        continue
+                profit_targets = sorted([t for t in profit_targets if t and t > 1.0])
+
+                limit_desc = "Market/Open (no limit ratio)"
+                if limit_ratio is not None and limit_ratio > 0:
+                    limit_desc = f"{limit_ratio:.2f}× prior close (~{(1.0 - limit_ratio) * 100.0:.1f}% below)"
+
+                trail_activation_desc = f"{trail_activation:.2f}× entry (+{(trail_activation - 1.0) * 100.0:.0f}% activation)"
+
+                targets_desc = "None (run winners)"
+                if profit_targets:
+                    targets_desc = ", ".join([f"+{(t - 1.0) * 100.0:.0f}%" for t in profit_targets])
+
+                st.markdown(
+                    f"""
+**🔭 Strategy Philosophy**
+- **Elite Sniper Gate:** only enter when **Score ≥ {MIN_ENTRY_SCORE:.0f}**.
+- **Role:** {role}.
+
+**⚔️ Entry Protocol**
+- **Limit Orders:** {limit_desc}.
+- **Regime Filter (200D SMA):** {"ON — SPY must be above its 200-day SMA." if regime_filter else "OFF"}.
+
+**🛡️ Risk & Exit**
+- **Hard Stop:** {stop_loss_atr:.2f}× ATR below entry.
+- **Trailing Stop:** {trail_atr:.2f}× ATR from peak; **dormant until** {trail_activation_desc}.
+- **Profit Targets:** {targets_desc}.
+
+**⏳ Time Stop**
+- Automatic exit after **{time_stop}** trading days.
+"""
+                )
     else:
         st.error("⚠️ No strategies found in config file!")
 
@@ -436,10 +496,11 @@ elif mode == "Backtest":
         for i, name in enumerate(st.session_state.backtest_results.keys()):
             res = st.session_state.backtest_results[name]
             with tabs[i]:
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 col1.metric("CAGR", f"{res['cagr']:.1%}")
                 col2.metric("Win Rate", f"{res['hit_rate']:.1f}%")
                 col3.metric("Avg Profit", f"{res['avg_profit_pct']:.2f}%")
+                col4.metric("Total Trades", int(res.get("total_trades", 0) or 0))
                 
                 st.line_chart(res["equity_curve"])
                 

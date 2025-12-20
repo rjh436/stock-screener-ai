@@ -94,6 +94,14 @@ class GenericStrategy(BaseStrategy):
         super().__init__(genome)
 
     @property
+    def params(self) -> Dict:
+        return self.genome
+
+    @params.setter
+    def params(self, value: Dict) -> None:
+        self.genome = value or {}
+
+    @property
     def name(self) -> str:
         return self._name
 

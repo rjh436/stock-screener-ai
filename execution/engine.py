@@ -517,6 +517,7 @@ def _legacy_run_backtest(
     export_ml_data=False,
     ai_model=None,
     ai_threshold=0.60,
+    super_signal_only: bool = False,
 ):
     strategies = strategy if isinstance(strategy, (list, tuple)) else [strategy]
     strategies = [s for s in strategies if s is not None]
@@ -643,8 +644,7 @@ def _legacy_run_backtest(
 
     compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float]] = []
     for strat in strategies:
-        params = getattr(strat, "params", {}) if hasattr(strat, "params") else {}
-        params = params or {}
+        params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
         strat_weights = params.get("scoring_weights") if isinstance(params.get("scoring_weights"), dict) else None
         w = _compile_scoring_weights(scoring_weights, strat_weights)
         gap_ratio = _resolve_gap_protection_ratio(params)
@@ -912,8 +912,7 @@ def _legacy_run_backtest(
                 continue
 
             try:
-                genome = getattr(active_strat, "params", {}) if hasattr(active_strat, "params") else {}
-                genome = genome or {}
+                genome = getattr(active_strat, "params", getattr(active_strat, "genome", {})) or {}
 
                 entry_i = int(pos.get("entry_i", 0) or 0)
                 entry_price = float(pos["entry_price"])
@@ -1451,8 +1450,7 @@ def run_backtest(
 
     compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float]] = []
     for strat in strategies:
-        params = getattr(strat, "params", {}) if hasattr(strat, "params") else {}
-        params = params or {}
+        params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
         strat_weights = params.get("scoring_weights") if isinstance(params.get("scoring_weights"), dict) else None
         w = _compile_scoring_weights(scoring_weights, strat_weights)
         gap_ratio = _resolve_gap_protection_ratio(params)
@@ -1732,7 +1730,7 @@ def run_backtest(
             income_by_sym: Dict[str, _Candidate] = {}
 
             for cand in day_list:
-                c_params = getattr(cand.strategy_obj, "params", {}) if hasattr(cand.strategy_obj, "params") else {}
+                c_params = getattr(cand.strategy_obj, "params", getattr(cand.strategy_obj, "genome", {})) or {}
                 role = _strategy_role(c_params or {})
                 if role == "wealth":
                     best = wealth_by_sym.get(cand.sym)
@@ -1877,8 +1875,7 @@ def run_backtest(
             if not active_strat:
                 continue
 
-            genome = getattr(active_strat, "params", {}) if hasattr(active_strat, "params") else {}
-            genome = genome or {}
+            genome = getattr(active_strat, "params", getattr(active_strat, "genome", {})) or {}
 
             try:
                 if bool(pos.get("is_super_signal", False)):
