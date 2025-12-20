@@ -301,6 +301,28 @@ class _Candidate:
     entry_i: int
     signal_i: int
     is_super_signal: bool = False
+    ai_prob: float = 0.0
+    size_scalar: float = 1.0
+
+
+def _prob_to_size_scalar(prob: float) -> float:
+    try:
+        p = float(prob)
+    except (TypeError, ValueError):
+        return 0.0
+    if not np.isfinite(p):
+        return 0.0
+    if p < 0.50:
+        return 0.0
+    if p < 0.60:
+        t = (p - 0.50) / 0.10
+        return 0.25 + (0.75 * t)
+    t = (p - 0.60) / 0.40
+    if t < 0.0:
+        t = 0.0
+    elif t > 1.0:
+        t = 1.0
+    return 1.0 + (0.25 * t)
 
 
 def _strategy_role(params: Dict[str, Any]) -> str:
@@ -1781,19 +1803,23 @@ def run_backtest(
                 )
         else:
             for cand, prob in zip(all_pre_ai_candidates, probs):
-                if prob >= ai_threshold:
-                    candidates_by_day[cand["day_idx"]].append(
-                        _Candidate(
-                            sym=cand["sym"],
-                            entry_px=cand["entry_px"],
-                            stop_px=cand["stop_px"],
-                            score=cand["score"],
-                            strategy_name=cand["strategy_name"],
-                            strategy_obj=cand["strategy_obj"],
-                            entry_i=cand["entry_i"],
-                            signal_i=cand["signal_i"],
-                        )
+                scalar = _prob_to_size_scalar(prob)
+                if scalar <= 0.0:
+                    continue
+                candidates_by_day[cand["day_idx"]].append(
+                    _Candidate(
+                        sym=cand["sym"],
+                        entry_px=cand["entry_px"],
+                        stop_px=cand["stop_px"],
+                        score=cand["score"],
+                        strategy_name=cand["strategy_name"],
+                        strategy_obj=cand["strategy_obj"],
+                        entry_i=cand["entry_i"],
+                        signal_i=cand["signal_i"],
+                        ai_prob=float(prob),
+                        size_scalar=float(scalar),
                     )
+                )
 
     # --- Super Signal Confluence (Wealth + Income on same symbol/day) ---
     if confluence_possible:
@@ -1905,12 +1931,15 @@ def run_backtest(
             val_cap = current_equity * pos_fraction
             shares_val = int(val_cap / cand.entry_px) if cand.entry_px > 0 else 0
             shares = min(shares_risk, shares_val)
+            shares = int(shares * cand.size_scalar)
+            if shares <= 0:
+                continue
 
             cost = shares * cand.entry_px
-            if export_ml_data and (shares <= 0 or cash < cost):
+            if export_ml_data and cash < cost:
                 shares = 100
                 cost = 0.0
-            elif shares <= 0 or cash < cost:
+            elif cash < cost:
                 continue
 
             cand_sec = resolve_sector(cand.sym)
