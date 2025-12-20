@@ -74,6 +74,49 @@ class PaperTrader:
                 return []
         return []
 
+    def _migrate_position_genomes(self, state: Dict) -> None:
+        if not isinstance(state, dict):
+            return
+
+        strategy_map: Dict[str, Dict] = {}
+        if os.path.exists(DEFAULT_CONFIG_PATH):
+            try:
+                with open(DEFAULT_CONFIG_PATH, "r") as f:
+                    configs = json.load(f)
+                for cfg in configs or []:
+                    name = cfg.get("name")
+                    if name:
+                        strategy_map[str(name)] = cfg
+            except Exception:
+                strategy_map = {}
+
+        if not strategy_map:
+            return
+
+        def _normalize(name: str) -> str:
+            return "".join(ch for ch in str(name).lower() if ch.isalnum())
+
+        for pos in (state.get("positions") or {}).values():
+            if not isinstance(pos, dict):
+                continue
+            if "genome" in pos:
+                continue
+            s_name = pos.get("strategy_name") or pos.get("strategy") or ""
+            match = strategy_map.get(s_name)
+            if match is None and s_name:
+                target = _normalize(s_name)
+                best_key = ""
+                for key, cfg in strategy_map.items():
+                    key_norm = _normalize(key)
+                    if not key_norm:
+                        continue
+                    if key_norm in target or target in key_norm:
+                        if len(key_norm) > len(best_key):
+                            best_key = key_norm
+                            match = cfg
+            if match is not None:
+                pos["genome"] = match
+
     def _load_sector_map(self) -> Dict[str, str]:
         path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/sectors.json"))
         if os.path.exists(path):
@@ -122,6 +165,7 @@ class PaperTrader:
                     if "history" not in state: state["history"] = []
                     if "equity_curve" not in state: 
                         state["equity_curve"] = [{"date": str(datetime.now().date()), "equity": self.start_cash}]
+                    self._migrate_position_genomes(state)
                     return state
             except: pass
             

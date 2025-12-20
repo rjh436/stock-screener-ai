@@ -70,6 +70,22 @@ def calc_exit_plan(row, strategies_map):
     entry_price = row.get('Entry Price', 0)
     
     strat = strategies_map.get(strat_name)
+    if not strat and strat_name:
+        def _normalize(name: str) -> str:
+            return "".join(ch for ch in name.lower() if ch.isalnum())
+
+        target = _normalize(strat_name)
+        best_key = ""
+        best_cfg = None
+        for key, cfg in strategies_map.items():
+            key_norm = _normalize(str(key))
+            if not key_norm:
+                continue
+            if key_norm in target or target in key_norm:
+                if len(key_norm) > len(best_key):
+                    best_key = key_norm
+                    best_cfg = cfg
+        strat = best_cfg
     if not strat: return "Unknown"
     
     exits = strat.get("exit_rules", [])
@@ -184,7 +200,10 @@ if mode == "Live Screener":
     if run_btn:
         with st.spinner(f"Scanning {universe}..."):
             symbols = get_index_symbols(universe)
-            data = fetch_data_pack(symbols, days=400)
+            base_days = 400
+            data = fetch_data_pack(symbols, days=base_days)
+            g_data = fetch_data_pack(["SPY"], days=base_days + 200) or {}
+            spy_df = g_data.get("SPY")
             results = []
             triggered_types = {}
             
@@ -196,7 +215,7 @@ if mode == "Live Screener":
                     if df is None or df.empty:
                         continue
                     try:
-                        df_ind = _compute_indicators(df.copy())
+                        df_ind = _compute_indicators(df.copy(), spy_df=spy_df)
                         if df_ind.empty or len(df_ind) < 2:
                             continue
 
@@ -432,6 +451,8 @@ elif mode == "Backtest":
 
                 extra_jobs = 1 if super_signal_pair is not None else 0
                 max_workers = min(len(run_strategies) + extra_jobs, 12) or 1
+                if use_ai and ai_model_obj:
+                    max_workers = 1
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_map = {

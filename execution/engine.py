@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 from ta.momentum import StochasticOscillator
 from ta.trend import ADXIndicator, CCIIndicator
+from threadpoolctl import threadpool_limits
 
 from strategies.generic import GenericStrategy
 from strategies.strategy_loader import load_strategies
@@ -507,6 +508,11 @@ def _legacy_run_backtest(
     ai_threshold=0.60,
     super_signal_only: bool = False,
 ):
+    def _unwrap_genome(params: Dict[str, Any]) -> Dict[str, Any]:
+        if isinstance(params, dict) and isinstance(params.get("genome"), dict):
+            return params["genome"]
+        return params
+
     strategies = strategy if isinstance(strategy, (list, tuple)) else [strategy]
     strategies = [s for s in strategies if s is not None]
     if not strategies:
@@ -632,7 +638,8 @@ def _legacy_run_backtest(
 
     compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float]] = []
     for strat in strategies:
-        params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
+        raw_params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
+        params = _unwrap_genome(raw_params)
         strat_weights = params.get("scoring_weights") if isinstance(params.get("scoring_weights"), dict) else None
         w = _compile_scoring_weights(scoring_weights, strat_weights)
         gap_ratio = _resolve_gap_protection_ratio(params)
@@ -724,7 +731,8 @@ def _legacy_run_backtest(
                         )
                         if np.all(np_isfinite(features)):
                             features_df = pd.DataFrame(features, columns=ml_feature_cols)
-                            prob = ai_model.predict_proba(features_df)[0][1]
+                            with threadpool_limits(limits=1):
+                                prob = ai_model.predict_proba(features_df)[0][1]
                             if prob < ai_threshold:
                                 continue
                     except Exception:
@@ -1400,6 +1408,11 @@ def run_backtest(
     - Explicit support for trail_activation + time_stop for GenericStrategy genomes
     - Optional super-signal confluence mode (Wealth + Income)
     """
+    def _unwrap_genome(params: Dict[str, Any]) -> Dict[str, Any]:
+        if isinstance(params, dict) and isinstance(params.get("genome"), dict):
+            return params["genome"]
+        return params
+
     strategies = strategy if isinstance(strategy, (list, tuple)) else [strategy]
     strategies = [s for s in strategies if s is not None]
     if not strategies:
@@ -1442,7 +1455,8 @@ def run_backtest(
 
     compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float]] = []
     for strat in strategies:
-        params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
+        raw_params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
+        params = _unwrap_genome(raw_params)
         strat_weights = params.get("scoring_weights") if isinstance(params.get("scoring_weights"), dict) else None
         w = _compile_scoring_weights(scoring_weights, strat_weights)
         gap_ratio = _resolve_gap_protection_ratio(params)
@@ -1638,7 +1652,8 @@ def run_backtest(
                         features = np.array([[rsi2, adx, atr_pct, dist_sma50, dist_sma200, vol_rel]], dtype=float)
                         if np.all(np_isfinite(features)):
                             features_df = pd.DataFrame(features, columns=ml_feature_cols)
-                            prob = ai_model.predict_proba(features_df)[0][1]
+                            with threadpool_limits(limits=1):
+                                prob = ai_model.predict_proba(features_df)[0][1]
                             if prob < ai_threshold:
                                 continue
                     except Exception:
