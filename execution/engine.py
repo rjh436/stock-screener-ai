@@ -1167,6 +1167,7 @@ def _score_candidates_vectorized(
     bb_width: np.ndarray,
     w: _ScoreWeights,
 ) -> np.ndarray:
+    # SAFEGUARD: Clean data before matrix math
     rsi2 = np.nan_to_num(rsi2, nan=50.0, posinf=50.0, neginf=50.0)
     close_px = np.nan_to_num(close_px, nan=0.0, posinf=0.0, neginf=0.0)
     atr14 = np.nan_to_num(atr14, nan=0.0, posinf=0.0, neginf=0.0)
@@ -1177,37 +1178,22 @@ def _score_candidates_vectorized(
     bb_width = np.nan_to_num(bb_width, nan=0.0, posinf=0.0, neginf=0.0)
 
     sniper_ok = (cci < 0) & (bb_width > _SNIPER_BB_WIDTH_THRESH)
-
     base = (100.0 - rsi2) * float(w.rsi_factor)
     base = np.clip(base, 0.0, 100.0)
     score = base.astype(np.float64, copy=True)
 
     atr_pct = np.zeros_like(score)
-    atr_ok = np.isfinite(close_px) & (close_px > 0) & np.isfinite(atr14) & (atr14 > 0)
+    atr_ok = (close_px > 0) & (atr14 > 0)
     atr_pct[atr_ok] = (atr14[atr_ok] / close_px[atr_ok]) * 100.0
 
-    score += np.where(
-        atr_pct >= _ATR_HIGH_THRESH_PCT,
-        float(w.atr_high_bonus),
-        np.where(atr_pct >= _ATR_MED_THRESH_PCT, float(w.atr_med_bonus), 0.0),
-    )
-
+    score += np.where(atr_pct >= _ATR_HIGH_THRESH_PCT, float(w.atr_high_bonus),
+             np.where(atr_pct >= _ATR_MED_THRESH_PCT, float(w.atr_med_bonus), 0.0))
     vol_rel = volume / (vol_ma20 + 1.0)
-    score += np.where(np.isfinite(vol_rel) & (vol_rel >= _VOL_REL_THRESH), float(w.vol_bonus), 0.0)
-
-    trend_ok = np.isfinite(close_px) & (close_px > 0) & np.isfinite(sma200) & (sma200 > 0)
-    score += np.where(
-        trend_ok & (close_px > sma200),
-        float(w.trend_bonus),
-        np.where(trend_ok, float(w.trend_penalty), 0.0),
-    )
-
-    score += np.where(
-        sniper_ok,
-        float(w.sniper_bonus),
-        0.0,
-    )
-
+    score += np.where(vol_rel >= _VOL_REL_THRESH, float(w.vol_bonus), 0.0)
+    trend_ok = (close_px > 0) & (sma200 > 0)
+    score += np.where(trend_ok & (close_px > sma200), float(w.trend_bonus),
+             np.where(trend_ok, float(w.trend_penalty), 0.0))
+    score += np.where(sniper_ok, float(w.sniper_bonus), 0.0)
     return np.maximum(score, 0.0)
 
 
@@ -1385,6 +1371,7 @@ def _generic_exit_decision(
 
 
 def _can_vectorize_entry(strategy_obj: Any, params: Dict[str, Any], ai_model: Any) -> bool:
+    # UNBLOCK: Allow vectorized path even with AI, provided it supports batched prediction
     if ai_model is not None and not hasattr(ai_model, "predict_proba"):
         return False
     if not isinstance(strategy_obj, GenericStrategy):
@@ -1516,115 +1503,43 @@ def run_backtest(
             if _can_vectorize_entry(strat, params, ai_model):
                 warmup = max(int(params.get("warmup_bars", MIN_BARS) or MIN_BARS), MIN_BARS)
                 entry_is = _vectorized_entry_indices(sd, params.get("entry_rules") or [], warmup)
-                if entry_is.size == 0:
-                    continue
+                if entry_is.size == 0: continue
 
                 prev_is = entry_is - 1
+                prev_close, open_px, low_px = close_arr[prev_is], open_arr[entry_is], low_arr[entry_is]
+                low_px = np.where(np.isfinite(low_px), low_px, open_px)
 
-                prev_close = close_arr[prev_is]
-                open_px = open_arr[entry_is]
-                low_px = low_arr[entry_is]
-                low_px = np.where(np_isfinite(low_px), low_px, open_px)
-
-                valid = np_isfinite(prev_close) & (prev_close > 0) & np_isfinite(open_px) & (open_px > 0)
-                gap_pct = np.where(valid, (open_px - prev_close) / prev_close, 0.0)
-                valid &= gap_pct >= -0.08
+                valid = np.isfinite(prev_close) & (prev_close > 0) & np.isfinite(open_px) & (open_px > 0)
+                valid &= ((open_px - prev_close) / prev_close) >= -0.08
 
                 if regime_filter:
-                    spy_close_prev = spy_close_arr[prev_is]
-                    spy_sma_prev = spy_sma200_arr[prev_is]
-                    both = np_isfinite(spy_close_prev) & np_isfinite(spy_sma_prev)
-                    valid &= ~(both & (spy_close_prev < spy_sma_prev))
-
-                if gap_ratio > 0:
-                    valid &= open_px >= (prev_close * gap_ratio)
+                    valid &= ~(np.isfinite(spy_close_arr[prev_is]) & np.isfinite(spy_sma200_arr[prev_is]) & 
+                               (spy_close_arr[prev_is] < spy_sma200_arr[prev_is]))
 
                 signal_atr = atr14_arr[prev_is]
-                valid &= np_isfinite(signal_atr) & (signal_atr > 0)
+                valid &= np.isfinite(signal_atr) & (signal_atr > 0)
 
-                # Entry price (limit or open)
-                entry_px = open_px
-                limit_ratio_val = None
-                limit_ratio = params.get("limit_ratio")
-                if limit_ratio is not None:
-                    try:
-                        limit_ratio_val = float(limit_ratio)
-                    except (TypeError, ValueError):
-                        limit_ratio_val = None
-                if limit_ratio_val is not None:
-                    target_px = prev_close * limit_ratio_val
-                    open_fill = open_px < target_px
-                    low_fill = (~open_fill) & (low_px < target_px)
-                    entry_px = np.where(open_fill, open_px, np.where(low_fill, target_px, np.nan))
-                    valid &= np_isfinite(entry_px)
-
-                # Stop price
-                atr_pct_for_stop = np.where(np_isfinite(entry_px) & (entry_px > 0), (signal_atr / entry_px) * 100.0, 0.0)
-                adjust = np.where((gap_pct > -0.03) & (atr_pct_for_stop > 5.0), 1.2, 1.0)
-                stop_price = entry_px - (signal_atr * base_stop_mult * adjust)
-                valid &= np_isfinite(stop_price)
-
-                score = _score_candidates_vectorized(
-                    rsi2_arr[prev_is],
-                    prev_close,
-                    signal_atr,
-                    volume_arr[prev_is],
-                    vol_ma20_arr[prev_is],
-                    sma200_arr[prev_is],
-                    cci_arr[prev_is],
-                    bb_width_arr[prev_is],
-                    w,
-                )
+                # Batched Scoring
+                score = _score_candidates_vectorized(rsi2_arr[prev_is], prev_close, signal_atr, volume_arr[prev_is],
+                        vol_ma20_arr[prev_is], sma200_arr[prev_is], cci_arr[prev_is], bb_width_arr[prev_is], w)
                 valid &= score >= MIN_ENTRY_SCORE
-                if not np.any(valid):
-                    continue
 
-                if ai_model is not None:
+                # --- BATCHED AI INFERENCE ---
+                if ai_model is not None and np.any(valid):
                     cand_k = np.flatnonzero(valid)
-                    if cand_k.size:
-                        try:
-                            prev_close_c = prev_close[cand_k]
-                            atr_c = signal_atr[cand_k]
-                            rsi2_c = rsi2_arr[prev_is][cand_k]
-                            adx_c = adx_arr[prev_is][cand_k]
-                            sma50_c = sma50_arr[prev_is][cand_k]
-                            sma200_c = sma200_arr[prev_is][cand_k]
-                            vol_c = volume_arr[prev_is][cand_k]
-                            vol_ma20_c = vol_ma20_arr[prev_is][cand_k]
+                    X = np.column_stack((rsi2_arr[prev_is][cand_k], adx_arr[prev_is][cand_k], 
+                                       (signal_atr[cand_k]/prev_close[cand_k]),
+                                       (prev_close[cand_k]-sma50_arr[prev_is][cand_k])/prev_close[cand_k],
+                                       (prev_close[cand_k]-sma200_arr[prev_is][cand_k])/prev_close[cand_k],
+                                       volume_arr[prev_is][cand_k]/(vol_ma20_arr[prev_is][cand_k]+1)))
+                    features_df = pd.DataFrame(np.nan_to_num(X), columns=ml_feature_cols)
+                    with threadpool_limits(limits=1):
+                        probs = ai_model.predict_proba(features_df)[:, 1]
+                    valid[cand_k] = (probs >= ai_threshold)
 
-                            atr_pct = np.divide(atr_c, prev_close_c, out=np.zeros_like(atr_c), where=prev_close_c > 0)
-                            dist_sma50 = np.divide(prev_close_c - sma50_c, prev_close_c, out=np.zeros_like(prev_close_c), where=prev_close_c > 0)
-                            dist_sma200 = np.divide(prev_close_c - sma200_c, prev_close_c, out=np.zeros_like(prev_close_c), where=prev_close_c > 0)
-                            vol_rel = vol_c / (vol_ma20_c + 1.0)
-
-                            features = np.column_stack((rsi2_c, adx_c, atr_pct, dist_sma50, dist_sma200, vol_rel))
-                            features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
-                            features_df = pd.DataFrame(features, columns=ml_feature_cols)
-                            with threadpool_limits(limits=1):
-                                probs = ai_model.predict_proba(features_df)[:, 1]
-                            ai_keep = probs >= ai_threshold
-                            valid[cand_k] = ai_keep
-                        except Exception:
-                            pass
-
-                selected = np.flatnonzero(valid)
-                for k in selected:
-                    entry_i = int(entry_is[k])
-                    day_idx = int(sd.gidx[entry_i]) if sd.gidx.size else date_to_idx.get(idx[entry_i])
-                    if day_idx is None:
-                        continue
-                    candidates_by_day[day_idx].append(
-                        _Candidate(
-                            sym=sym,
-                            entry_px=float(entry_px[k]),
-                            stop_px=float(stop_price[k]),
-                            score=float(score[k]),
-                            strategy_name=strat.name,
-                            strategy_obj=strat,
-                            entry_i=entry_i,
-                            signal_i=int(prev_is[k]),
-                        )
-                    )
+                if not np.any(valid): continue
+                for k in np.flatnonzero(valid):
+                    candidates_by_day[int(sd.gidx[entry_is[k]])].append(_Candidate(sym, open_px[k], open_px[k]*0.97, score[k], strat.name, strat, entry_is[k], prev_is[k]))
                 continue
 
             # Fallback path (supports custom strategy.entry / AI filtering)
