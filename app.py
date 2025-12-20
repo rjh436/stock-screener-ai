@@ -66,42 +66,99 @@ def score_to_rating(score):
     return "❌ Weak"
 
 def calc_exit_plan(row, strategies_map):
-    strat_name = row.get('Strategy', '').split(" + ")[0] 
-    entry_price = row.get('Entry Price', 0)
-    
-    strat = strategies_map.get(strat_name)
-    if not strat and strat_name:
-        def _normalize(name: str) -> str:
-            return "".join(ch for ch in name.lower() if ch.isalnum())
+    def _unwrap_genome(value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except Exception:
+                return None
+        if isinstance(value, dict):
+            for _ in range(3):
+                nested = None
+                for key in ("genome", "params", "strategy"):
+                    if isinstance(value.get(key), dict):
+                        nested = value.get(key)
+                        break
+                if nested is None:
+                    break
+                value = nested
+        return value if isinstance(value, dict) else None
 
-        target = _normalize(strat_name)
-        best_key = ""
-        best_cfg = None
-        for key, cfg in strategies_map.items():
-            key_norm = _normalize(str(key))
-            if not key_norm:
-                continue
-            if key_norm in target or target in key_norm:
-                if len(key_norm) > len(best_key):
-                    best_key = key_norm
-                    best_cfg = cfg
-        strat = best_cfg
-    if not strat: return "Unknown"
-    
-    exits = strat.get("exit_rules", [])
+    entry_price = row.get("Entry Price", 0) or 0
+    try:
+        entry_price = float(entry_price)
+    except Exception:
+        entry_price = 0.0
+
+    genome = _unwrap_genome(
+        row.get("genome")
+        or row.get("Genome")
+        or row.get("params")
+        or row.get("Params")
+        or row.get("strategy_genome")
+    )
+    if genome is None:
+        strat_obj = row.get("strategy_obj")
+        if strat_obj is not None:
+            genome = _unwrap_genome(getattr(strat_obj, "params", None) or getattr(strat_obj, "genome", None))
+
+    strat = genome
+    strat_name = row.get("Strategy") or row.get("strategy_name") or row.get("strategy") or ""
+    if strat is None and isinstance(strat_name, dict):
+        strat = _unwrap_genome(strat_name)
+    if strat is None:
+        if isinstance(strat_name, str):
+            strat_name = strat_name.split(" + ")[0].strip()
+        else:
+            strat_name = str(strat_name).split(" + ")[0].strip()
+        strat = strategies_map.get(strat_name)
+        if not strat and strat_name:
+            def _normalize(name: str) -> str:
+                return "".join(ch for ch in str(name).lower() if ch.isalnum())
+
+            target = _normalize(strat_name)
+            best_key = ""
+            best_cfg = None
+            for key, cfg in strategies_map.items():
+                key_norm = _normalize(str(key))
+                if not key_norm:
+                    continue
+                if key_norm in target or target in key_norm:
+                    if len(key_norm) > len(best_key):
+                        best_key = key_norm
+                        best_cfg = cfg
+            strat = best_cfg
+    if not strat:
+        return "Unknown"
+
+    exits = strat.get("exit_rules") or []
+    if isinstance(exits, dict):
+        exits = [exits]
     for rule in exits:
+        if not isinstance(rule, dict):
+            continue
         if rule.get("type") == "profit_target":
-            target_px = entry_price * float(rule.get("val"))
-            return f"Target: ${target_px:.2f}"
-            
+            try:
+                target_px = entry_price * float(rule.get("val"))
+                return f"Target: ${target_px:.2f}"
+            except Exception:
+                return "Target: N/A"
+
     time_stop = strat.get("time_stop", 70)
     try:
-        entry_date = pd.to_datetime(row['Date'])
+        time_stop = int(time_stop)
+    except Exception:
+        time_stop = 70
+    try:
+        entry_date = pd.to_datetime(row.get("Date"))
         sell_date = entry_date + timedelta(days=time_stop)
         days_left = (sell_date.date() - datetime.now().date()).days
-        if days_left < 0: return "Time Limit (Sell)"
+        if days_left < 0:
+            return "Time Limit (Sell)"
         return f"Hold ({days_left}d left)"
-    except:
+    except Exception:
         return f"Hold {time_stop}d"
 
 # --- SIDEBAR ---
@@ -211,7 +268,13 @@ if mode == "Live Screener":
                 st.warning("No strategies selected!")
             else:
                 strat_objects = load_strategies(selected_strategies)
-                for sym, df in data.items():
+                total_symbols = len(data)
+                progress_bar = st.progress(0)
+                status = st.empty()
+                for i, (sym, df) in enumerate(data.items(), start=1):
+                    status.write(f"Scanning {sym} ({i}/{total_symbols})")
+                    if total_symbols:
+                        progress_bar.progress(min(i / total_symbols, 1.0))
                     if df is None or df.empty:
                         continue
                     try:
@@ -295,6 +358,8 @@ if mode == "Live Screener":
                             )
                     except Exception:
                         continue
+                status.empty()
+                progress_bar.empty()
                 
                 confluence_syms = {
                     sym for sym, types in triggered_types.items() if "wealth" in types and "income" in types
@@ -451,7 +516,7 @@ elif mode == "Backtest":
 
                 extra_jobs = 1 if super_signal_pair is not None else 0
                 max_workers = min(len(run_strategies) + extra_jobs, 12) or 1
-                if use_ai and ai_model_obj:
+                if ai_model_obj is not None:
                     max_workers = 1
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -482,12 +547,29 @@ elif mode == "Backtest":
                             )
                         ] = "SUPER SIGNAL (Wealth + Income)"
 
-                    for future in concurrent.futures.as_completed(future_map):
-                        name = future_map[future]
-                        try:
-                            results_map[name] = future.result()
-                        except Exception as e:
-                            st.error(f"Backtest failed for {name}: {e}")
+                    progress_bar = st.progress(0)
+                    status = st.empty()
+                    total_futures = len(future_map)
+                    completed = 0
+                    pending = set(future_map.keys())
+                    while pending:
+                        done, pending = concurrent.futures.wait(
+                            pending,
+                            timeout=1.0,
+                            return_when=concurrent.futures.FIRST_COMPLETED,
+                        )
+                        for future in done:
+                            name = future_map[future]
+                            try:
+                                results_map[name] = future.result()
+                            except Exception as e:
+                                st.error(f"Backtest failed for {name}: {e}")
+                            completed += 1
+                        if total_futures:
+                            progress_bar.progress(min(completed / total_futures, 1.0))
+                        status.write(f"Completed {completed}/{total_futures} backtests...")
+                    status.empty()
+                    progress_bar.empty()
 
                 st.session_state.backtest_results = results_map
 
@@ -594,7 +676,16 @@ elif mode == "Simulator":
             pnl_val_trade = (curr - entry) * shares
             pnl_pct = ((curr - entry) / entry) * 100
             
-            plan = calc_exit_plan({"Strategy": p.get('strategy_name', ''), "Entry Price": entry, "Date": p.get('date', datetime.now())}, strategies_map)
+            plan = calc_exit_plan(
+                {
+                    "Strategy": p.get("strategy_name", ""),
+                    "Entry Price": entry,
+                    "Date": p.get("date", datetime.now()),
+                    "genome": p.get("genome"),
+                    "strategy_obj": p.get("strategy_obj"),
+                },
+                strategies_map,
+            )
             
             c_cols[0].write(f"**{sym}**")
             c_cols[1].write(f"{shares}")

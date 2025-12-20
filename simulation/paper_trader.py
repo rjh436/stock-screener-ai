@@ -3,7 +3,7 @@ import os
 import pandas as pd
 import pytz
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from data.loader import fetch_single_symbol, fetch_data_pack
 from data.indices import get_index_symbols
@@ -218,7 +218,7 @@ class PaperTrader:
             return float(df.iloc[-1]["close"])
         return 0.0
 
-    def buy(self, symbol: str, price: float, shares: int, stop_price: Optional[float] = None, strategy_obj=None, strategy_name: Optional[str] = None, entry_index: Optional[int] = None):
+    def buy(self, symbol: str, price: float, shares: int, stop_price: Optional[float] = None, strategy_obj=None, strategy_name: Optional[str] = None, entry_index: Optional[int] = None, genome: Optional[Dict] = None):
         """
         PHASE 3: Queues a Market-On-Open (MOO) order.
         Checks 'Reserved Cash' to prevent overdrafts.
@@ -237,6 +237,13 @@ class PaperTrader:
         strat_obj = strategy_obj or self._get_strategy_by_name(strategy_name or "")
         strat_name = strategy_name or getattr(strat_obj, "name", "Unknown")
         stop_val = stop_price if stop_price is not None else price * 0.9
+        strat_genome = genome
+        if strat_genome is None and strat_obj is not None:
+            strat_genome = getattr(strat_obj, "params", None) or getattr(strat_obj, "genome", None)
+        if isinstance(strat_genome, dict):
+            strat_genome = dict(strat_genome)
+        else:
+            strat_genome = None
 
         order = {
             "symbol": symbol,
@@ -246,6 +253,7 @@ class PaperTrader:
             "stop_price": stop_val,
             "strategy": strat_name,
             "strategy_name": strat_name,
+            "genome": strat_genome,
             "date": str(datetime.now().date()),
             "type": "BUY_MOO",
             "status": "PENDING",
@@ -361,6 +369,14 @@ class PaperTrader:
             except Exception as e:  # noqa: E722
                 real_stop_price = fill_price * 0.92
                 print(f"⚠️ Stop calculation failed for {sym}: {e}")
+
+            order_genome = order.get("genome")
+            if order_genome is None and s_obj is not None:
+                order_genome = getattr(s_obj, "params", None) or getattr(s_obj, "genome", None)
+            if isinstance(order_genome, dict):
+                order_genome = dict(order_genome)
+            else:
+                order_genome = None
             
             self.portfolio[sym] = {
                 "shares": shares,
@@ -368,6 +384,7 @@ class PaperTrader:
                 "stop_price": real_stop_price, # Updated Stop
                 "strategy": s_name,
                 "strategy_name": s_name,
+                "genome": order_genome,
                 "strategy_obj": s_obj,
                 "date": str(today_ny),
                 "current_price": fill_price,
@@ -450,6 +467,13 @@ class PaperTrader:
         stop = cand.get("stop") or cand.get("Stop")
         strategy_name = cand.get("strategy_name") or cand.get("strategy") or cand.get("Strategy")
         strat_obj = self._get_strategy_by_name(strategy_name)
+        genome = cand.get("genome")
+        if genome is None and strat_obj is not None:
+            genome = getattr(strat_obj, "params", None) or getattr(strat_obj, "genome", None)
+        if isinstance(genome, dict):
+            genome = dict(genome)
+        else:
+            genome = None
         score = cand.get("score")
         if score is None:
             score = cand.get("Raw_Score", 50)
@@ -459,7 +483,7 @@ class PaperTrader:
             except: score = 50
         return {
             "symbol": sym, "price": price, "stop": stop if stop is not None else price * 0.9,
-            "strategy_name": strat_obj.name, "strategy_obj": strat_obj, "score": score,
+            "strategy_name": strat_obj.name, "strategy_obj": strat_obj, "score": score, "genome": genome,
             "entry_i": cand.get("entry_i"),
         }
 
@@ -536,6 +560,7 @@ class PaperTrader:
                 cand["symbol"], cand["price"], shares, stop_price=cand["stop"],
                 strategy_obj=cand["strategy_obj"], strategy_name=cand["strategy_name"],
                 entry_index=cand.get("entry_i"),
+                genome=cand.get("genome"),
             )
             if success:
                 sector_exposure[sec] = sector_exposure.get(sec, 0.0) + position_val
@@ -543,7 +568,7 @@ class PaperTrader:
                 logs.append(f"⏳ QUEUED {cand['symbol']} x{shares} @ ${cand['price']:.2f} (Stop: ${cand['stop']:.2f})")
         return logs
 
-    def run_daily_scan(self, data_dict: Optional[Dict[str, pd.DataFrame]] = None, global_data: Optional[Dict[str, pd.DataFrame]] = None, scoring_weights: Optional[Dict] = None) -> List[str]:
+    def run_daily_scan(self, data_dict: Optional[Dict[str, pd.DataFrame]] = None, global_data: Optional[Dict[str, pd.DataFrame]] = None, scoring_weights: Optional[Dict] = None, progress_callback: Optional[Callable[[int, int], None]] = None) -> List[str]:
         # PHASE 3 FIX: REAL-TIME SCANNING (Scan Today, Trade Tomorrow)
         scoring = scoring_weights or self.scoring_weights
         vix_df = global_data.get("VIX") if global_data else None
@@ -558,8 +583,18 @@ class PaperTrader:
             print(f"Loaded {len(tickers)} tickers from S&P 1500")
 
         candidates = []
+        total_steps = (len(self.strategies) * len(data_dict)) if data_dict else 0
+        processed = 0
         for strat in self.strategies:
+            strat_genome = getattr(strat, "params", None) or getattr(strat, "genome", None)
+            if isinstance(strat_genome, dict):
+                strat_genome = dict(strat_genome)
+            else:
+                strat_genome = None
             for sym, df in data_dict.items():
+                processed += 1
+                if progress_callback:
+                    progress_callback(processed, total_steps)
                 if df is None or df.empty: continue
                 try:
                     enriched = _compute_indicators(df.copy(), spy_df=spy_df)
@@ -596,6 +631,7 @@ class PaperTrader:
                         "stop": stop_price,
                         "strategy_name": strat.name,
                         "strategy_obj": strat,
+                        "genome": strat_genome,
                         "score": score,
                         "entry_i": signal_idx + 1
                     })
