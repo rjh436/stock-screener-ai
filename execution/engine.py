@@ -1167,8 +1167,16 @@ def _score_candidates_vectorized(
     bb_width: np.ndarray,
     w: _ScoreWeights,
 ) -> np.ndarray:
-    rsi2 = np.where(np.isfinite(rsi2), rsi2, 50.0)
-    sniper_ok = np.isfinite(cci) & np.isfinite(bb_width) & (cci < 0) & (bb_width > _SNIPER_BB_WIDTH_THRESH)
+    rsi2 = np.nan_to_num(rsi2, nan=50.0, posinf=50.0, neginf=50.0)
+    close_px = np.nan_to_num(close_px, nan=0.0, posinf=0.0, neginf=0.0)
+    atr14 = np.nan_to_num(atr14, nan=0.0, posinf=0.0, neginf=0.0)
+    volume = np.nan_to_num(volume, nan=0.0, posinf=0.0, neginf=0.0)
+    vol_ma20 = np.nan_to_num(vol_ma20, nan=0.0, posinf=0.0, neginf=0.0)
+    sma200 = np.nan_to_num(sma200, nan=0.0, posinf=0.0, neginf=0.0)
+    cci = np.nan_to_num(cci, nan=0.0, posinf=0.0, neginf=0.0)
+    bb_width = np.nan_to_num(bb_width, nan=0.0, posinf=0.0, neginf=0.0)
+
+    sniper_ok = (cci < 0) & (bb_width > _SNIPER_BB_WIDTH_THRESH)
 
     base = (100.0 - rsi2) * float(w.rsi_factor)
     base = np.clip(base, 0.0, 100.0)
@@ -1377,7 +1385,7 @@ def _generic_exit_decision(
 
 
 def _can_vectorize_entry(strategy_obj: Any, params: Dict[str, Any], ai_model: Any) -> bool:
-    if ai_model is not None:
+    if ai_model is not None and not hasattr(ai_model, "predict_proba"):
         return False
     if not isinstance(strategy_obj, GenericStrategy):
         return False
@@ -1531,10 +1539,6 @@ def run_backtest(
                 if gap_ratio > 0:
                     valid &= open_px >= (prev_close * gap_ratio)
 
-                # AI filtering (disabled for vectorized path)
-                if ai_model is not None:
-                    valid &= False
-
                 signal_atr = atr14_arr[prev_is]
                 valid &= np_isfinite(signal_atr) & (signal_atr > 0)
 
@@ -1574,6 +1578,34 @@ def run_backtest(
                 valid &= score >= MIN_ENTRY_SCORE
                 if not np.any(valid):
                     continue
+
+                if ai_model is not None:
+                    cand_k = np.flatnonzero(valid)
+                    if cand_k.size:
+                        try:
+                            prev_close_c = prev_close[cand_k]
+                            atr_c = signal_atr[cand_k]
+                            rsi2_c = rsi2_arr[prev_is][cand_k]
+                            adx_c = adx_arr[prev_is][cand_k]
+                            sma50_c = sma50_arr[prev_is][cand_k]
+                            sma200_c = sma200_arr[prev_is][cand_k]
+                            vol_c = volume_arr[prev_is][cand_k]
+                            vol_ma20_c = vol_ma20_arr[prev_is][cand_k]
+
+                            atr_pct = np.divide(atr_c, prev_close_c, out=np.zeros_like(atr_c), where=prev_close_c > 0)
+                            dist_sma50 = np.divide(prev_close_c - sma50_c, prev_close_c, out=np.zeros_like(prev_close_c), where=prev_close_c > 0)
+                            dist_sma200 = np.divide(prev_close_c - sma200_c, prev_close_c, out=np.zeros_like(prev_close_c), where=prev_close_c > 0)
+                            vol_rel = vol_c / (vol_ma20_c + 1.0)
+
+                            features = np.column_stack((rsi2_c, adx_c, atr_pct, dist_sma50, dist_sma200, vol_rel))
+                            features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+                            features_df = pd.DataFrame(features, columns=ml_feature_cols)
+                            with threadpool_limits(limits=1):
+                                probs = ai_model.predict_proba(features_df)[:, 1]
+                            ai_keep = probs >= ai_threshold
+                            valid[cand_k] = ai_keep
+                        except Exception:
+                            pass
 
                 selected = np.flatnonzero(valid)
                 for k in selected:
