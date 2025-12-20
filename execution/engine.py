@@ -1447,6 +1447,8 @@ def run_backtest(
 
     date_to_idx = {dt: i for i, dt in enumerate(all_dates)}
     candidates_by_day: List[List[_Candidate]] = [[] for _ in range(len(all_dates))]
+    use_global_ai = ai_model is not None and hasattr(ai_model, "predict_proba")
+    all_pre_ai_candidates: List[Dict[str, Any]] = []
 
     compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float]] = []
     for strat in strategies:
@@ -1503,7 +1505,8 @@ def run_backtest(
             if _can_vectorize_entry(strat, params, ai_model):
                 warmup = max(int(params.get("warmup_bars", MIN_BARS) or MIN_BARS), MIN_BARS)
                 entry_is = _vectorized_entry_indices(sd, params.get("entry_rules") or [], warmup)
-                if entry_is.size == 0: continue
+                if entry_is.size == 0:
+                    continue
 
                 prev_is = entry_is - 1
                 prev_close, open_px, low_px = close_arr[prev_is], open_arr[entry_is], low_arr[entry_is]
@@ -1513,33 +1516,87 @@ def run_backtest(
                 valid &= ((open_px - prev_close) / prev_close) >= -0.08
 
                 if regime_filter:
-                    valid &= ~(np.isfinite(spy_close_arr[prev_is]) & np.isfinite(spy_sma200_arr[prev_is]) & 
+                    valid &= ~(np.isfinite(spy_close_arr[prev_is]) & np.isfinite(spy_sma200_arr[prev_is]) &
                                (spy_close_arr[prev_is] < spy_sma200_arr[prev_is]))
 
                 signal_atr = atr14_arr[prev_is]
                 valid &= np.isfinite(signal_atr) & (signal_atr > 0)
 
                 # Batched Scoring
-                score = _score_candidates_vectorized(rsi2_arr[prev_is], prev_close, signal_atr, volume_arr[prev_is],
-                        vol_ma20_arr[prev_is], sma200_arr[prev_is], cci_arr[prev_is], bb_width_arr[prev_is], w)
+                score = _score_candidates_vectorized(
+                    rsi2_arr[prev_is],
+                    prev_close,
+                    signal_atr,
+                    volume_arr[prev_is],
+                    vol_ma20_arr[prev_is],
+                    sma200_arr[prev_is],
+                    cci_arr[prev_is],
+                    bb_width_arr[prev_is],
+                    w,
+                )
                 valid &= score >= MIN_ENTRY_SCORE
+                if not np.any(valid):
+                    continue
 
-                # --- BATCHED AI INFERENCE ---
-                if ai_model is not None and np.any(valid):
-                    cand_k = np.flatnonzero(valid)
-                    X = np.column_stack((rsi2_arr[prev_is][cand_k], adx_arr[prev_is][cand_k], 
-                                       (signal_atr[cand_k]/prev_close[cand_k]),
-                                       (prev_close[cand_k]-sma50_arr[prev_is][cand_k])/prev_close[cand_k],
-                                       (prev_close[cand_k]-sma200_arr[prev_is][cand_k])/prev_close[cand_k],
-                                       volume_arr[prev_is][cand_k]/(vol_ma20_arr[prev_is][cand_k]+1)))
-                    features_df = pd.DataFrame(np.nan_to_num(X), columns=ml_feature_cols)
-                    with threadpool_limits(limits=1):
-                        probs = ai_model.predict_proba(features_df)[:, 1]
-                    valid[cand_k] = (probs >= ai_threshold)
+                cand_k = np.flatnonzero(valid)
+                if use_global_ai:
+                    for k in cand_k:
+                        day_idx = int(sd.gidx[entry_is[k]]) if sd.gidx.size else date_to_idx.get(idx[entry_is[k]])
+                        if day_idx is None:
+                            continue
+                        prev_close_k = float(prev_close[k])
+                        if prev_close_k <= 0:
+                            continue
 
-                if not np.any(valid): continue
-                for k in np.flatnonzero(valid):
-                    candidates_by_day[int(sd.gidx[entry_is[k]])].append(_Candidate(sym, open_px[k], open_px[k]*0.97, score[k], strat.name, strat, entry_is[k], prev_is[k]))
+                        rsi2_k = float(rsi2_arr[prev_is[k]])
+                        adx_k = float(adx_arr[prev_is[k]])
+                        atr_k = float(signal_atr[k])
+                        sma50_k = float(sma50_arr[prev_is[k]])
+                        sma200_k = float(sma200_arr[prev_is[k]])
+                        vol_k = float(volume_arr[prev_is[k]])
+                        vol_ma20_k = float(vol_ma20_arr[prev_is[k]])
+
+                        atr_pct = atr_k / prev_close_k if prev_close_k > 0 else 0.0
+                        dist_sma50 = (prev_close_k - sma50_k) / prev_close_k if prev_close_k > 0 else 0.0
+                        dist_sma200 = (prev_close_k - sma200_k) / prev_close_k if prev_close_k > 0 else 0.0
+                        vol_rel = vol_k / (vol_ma20_k + 1.0)
+
+                        all_pre_ai_candidates.append(
+                            {
+                                "day_idx": day_idx,
+                                "sym": sym,
+                                "entry_px": float(open_px[k]),
+                                "stop_px": float(open_px[k] * 0.97),
+                                "score": float(score[k]),
+                                "strategy_name": strat.name,
+                                "strategy_obj": strat,
+                                "entry_i": int(entry_is[k]),
+                                "signal_i": int(prev_is[k]),
+                                "rsi2": rsi2_k,
+                                "adx": adx_k,
+                                "atr_pct": atr_pct,
+                                "dist_sma50": dist_sma50,
+                                "dist_sma200": dist_sma200,
+                                "vol_rel": vol_rel,
+                            }
+                        )
+                else:
+                    for k in cand_k:
+                        day_idx = int(sd.gidx[entry_is[k]]) if sd.gidx.size else date_to_idx.get(idx[entry_is[k]])
+                        if day_idx is None:
+                            continue
+                        candidates_by_day[day_idx].append(
+                            _Candidate(
+                                sym=sym,
+                                entry_px=float(open_px[k]),
+                                stop_px=float(open_px[k] * 0.97),
+                                score=float(score[k]),
+                                strategy_name=strat.name,
+                                strategy_obj=strat,
+                                entry_i=int(entry_is[k]),
+                                signal_i=int(prev_is[k]),
+                            )
+                        )
                 continue
 
             # Fallback path (supports custom strategy.entry / AI filtering)
@@ -1580,31 +1637,6 @@ def run_backtest(
                 if gap_ratio > 0 and prev_close > 0:
                     if open_px < prev_close * gap_ratio:
                         continue
-
-                if ai_model is not None:
-                    try:
-                        rsi2 = float(rsi2_arr[prev_i])
-                        adx = float(adx_arr[prev_i])
-                        atr14 = float(atr14_arr[prev_i])
-                        sma50 = float(sma50_arr[prev_i])
-                        sma200 = float(sma200_arr[prev_i])
-                        vol = float(volume_arr[prev_i])
-                        vol_ma20 = float(vol_ma20_arr[prev_i])
-
-                        atr_pct = (atr14 / prev_close) if prev_close > 0 else 0.0
-                        dist_sma50 = (prev_close - sma50) / prev_close if prev_close > 0 else 0.0
-                        dist_sma200 = (prev_close - sma200) / prev_close if prev_close > 0 else 0.0
-                        vol_rel = vol / (vol_ma20 + 1.0)
-
-                        features = np.array([[rsi2, adx, atr_pct, dist_sma50, dist_sma200, vol_rel]], dtype=float)
-                        if np.all(np_isfinite(features)):
-                            features_df = pd.DataFrame(features, columns=ml_feature_cols)
-                            with threadpool_limits(limits=1):
-                                prob = ai_model.predict_proba(features_df)[0][1]
-                            if prob < ai_threshold:
-                                continue
-                    except Exception:
-                        pass
 
                 signal_atr = float(atr14_arr[prev_i])
                 if not np_isfinite(signal_atr) or signal_atr <= 0:
@@ -1661,6 +1693,41 @@ def run_backtest(
                 if score < MIN_ENTRY_SCORE:
                     continue
 
+                if use_global_ai:
+                    rsi2 = float(rsi2_arr[prev_i])
+                    adx = float(adx_arr[prev_i])
+                    atr14 = float(atr14_arr[prev_i])
+                    sma50 = float(sma50_arr[prev_i])
+                    sma200 = float(sma200_arr[prev_i])
+                    vol = float(volume_arr[prev_i])
+                    vol_ma20 = float(vol_ma20_arr[prev_i])
+
+                    atr_pct = (atr14 / prev_close) if prev_close > 0 else 0.0
+                    dist_sma50 = (prev_close - sma50) / prev_close if prev_close > 0 else 0.0
+                    dist_sma200 = (prev_close - sma200) / prev_close if prev_close > 0 else 0.0
+                    vol_rel = vol / (vol_ma20 + 1.0)
+
+                    all_pre_ai_candidates.append(
+                        {
+                            "day_idx": day_idx,
+                            "sym": sym,
+                            "entry_px": float(entry_px),
+                            "stop_px": float(stop_price),
+                            "score": float(score),
+                            "strategy_name": strat.name,
+                            "strategy_obj": strat,
+                            "entry_i": i,
+                            "signal_i": prev_i,
+                            "rsi2": rsi2,
+                            "adx": adx,
+                            "atr_pct": atr_pct,
+                            "dist_sma50": dist_sma50,
+                            "dist_sma200": dist_sma200,
+                            "vol_rel": vol_rel,
+                        }
+                    )
+                    continue
+
                 candidates_by_day[day_idx].append(
                     _Candidate(
                         sym=sym,
@@ -1673,6 +1740,60 @@ def run_backtest(
                         signal_i=prev_i,
                     )
                 )
+
+    if use_global_ai and all_pre_ai_candidates:
+        probs = None
+        try:
+            features = np.array(
+                [
+                    [
+                        cand["rsi2"],
+                        cand["adx"],
+                        cand["atr_pct"],
+                        cand["dist_sma50"],
+                        cand["dist_sma200"],
+                        cand["vol_rel"],
+                    ]
+                    for cand in all_pre_ai_candidates
+                ],
+                dtype=float,
+            )
+            features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+            features_df = pd.DataFrame(features, columns=ml_feature_cols)
+            with threadpool_limits(limits=1):
+                probs = ai_model.predict_proba(features_df)[:, 1]
+        except Exception:
+            probs = None
+
+        if probs is None or len(probs) != len(all_pre_ai_candidates):
+            for cand in all_pre_ai_candidates:
+                candidates_by_day[cand["day_idx"]].append(
+                    _Candidate(
+                        sym=cand["sym"],
+                        entry_px=cand["entry_px"],
+                        stop_px=cand["stop_px"],
+                        score=cand["score"],
+                        strategy_name=cand["strategy_name"],
+                        strategy_obj=cand["strategy_obj"],
+                        entry_i=cand["entry_i"],
+                        signal_i=cand["signal_i"],
+                    )
+                )
+        else:
+            for cand, prob in zip(all_pre_ai_candidates, probs):
+                if prob >= ai_threshold:
+                    candidates_by_day[cand["day_idx"]].append(
+                        _Candidate(
+                            sym=cand["sym"],
+                            entry_px=cand["entry_px"],
+                            stop_px=cand["stop_px"],
+                            score=cand["score"],
+                            strategy_name=cand["strategy_name"],
+                            strategy_obj=cand["strategy_obj"],
+                            entry_i=cand["entry_i"],
+                            signal_i=cand["signal_i"],
+                        )
+                    )
 
     # --- Super Signal Confluence (Wealth + Income on same symbol/day) ---
     if confluence_possible:
