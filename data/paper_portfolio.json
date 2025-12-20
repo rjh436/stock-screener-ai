@@ -1,6 +1,6 @@
 {
     "cash": 15048.340000000004,
-    "equity": 102991.82,
+    "equity": 102847.6575,
     "history": [],
     "equity_curve": [
         {
@@ -18,6 +18,10 @@
         {
             "date": "2025-12-19",
             "equity": 102991.82
+        },
+        {
+            "date": "2025-12-20",
+            "equity": 102847.6575
         }
     ],
     "positions": {
@@ -28,9 +32,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-11",
-            "current_price": 295.99,
-            "unrealized_pnl": 2414.999999999999,
-            "unrealized_pct": 12.206679555707186,
+            "current_price": 294.2501,
+            "unrealized_pnl": 2284.5074999999965,
+            "unrealized_pct": 11.54710186132907,
             "entry_i": 332
         },
         "ZTS": {
@@ -40,9 +44,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-11",
-            "current_price": 122.15,
-            "unrealized_pnl": 626.4600000000014,
-            "unrealized_pct": 2.6729427586786643,
+            "current_price": 123.08,
+            "unrealized_pnl": 809.6699999999998,
+            "unrealized_pct": 3.4546524333865674,
             "entry_i": 332
         },
         "CARR": {
@@ -52,9 +56,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-11",
-            "current_price": 53.91,
-            "unrealized_pnl": 93.15999999999704,
-            "unrealized_pct": 0.3163379233345638,
+            "current_price": 53.65,
+            "unrealized_pnl": -49.32000000000187,
+            "unrealized_pct": -0.16747301823595723,
             "entry_i": 332
         },
         "CEG": {
@@ -64,9 +68,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-19",
-            "current_price": 357.0,
-            "unrealized_pnl": -142.7999999999996,
-            "unrealized_pct": -1.1627906976744156,
+            "current_price": 355.4,
+            "unrealized_pnl": -197.2000000000004,
+            "unrealized_pct": -1.6057585825027718,
             "entry_i": 327
         }
     },
