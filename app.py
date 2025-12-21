@@ -26,7 +26,7 @@ from simulation.paper_trader import PaperTrader
 from strategies.strategy_loader import load_strategies
 
 CONFIG_PATH = "config/generated_strategies.json"
-MODEL_PATH = "models/apex_neural_v4.pkl"
+MODEL_PATH = "models/apex_neural_v6.pkl"
 st.set_page_config(page_title="Apex Sniper AI", layout="wide", page_icon="🎯")
 
 # --- HELPERS ---
@@ -45,8 +45,8 @@ def load_ai_model():
             # we get thread oversubscription (Deadlock/Slowdown).
             # Setting n_jobs=1 makes it faster by eliminating overhead.
             model.n_jobs = 1 
-            st.toast("🎯 V4 Soft-Sizing Brain Deployed")
-            st.sidebar.success("🚀 APEX V5 RESTORATION: LINEAR GOVERNOR")
+            st.toast("🎯 V6 Alpha Scaler Brain Deployed")
+            st.sidebar.success("🚀 APEX V6 ALPHA SCALER ACTIVE")
             return model
         except Exception as e:
             print(f"⚠️ Failed to load AI model: {e}")

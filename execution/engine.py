@@ -333,21 +333,28 @@ class _Candidate:
 
 
 def _prob_to_size_scalar(prob: float, role: str = "", is_super_signal: bool = False) -> float:
-    # 1. Super Signal Confluence always gets 100% size
+    # Super Signal Confluence always gets max size.
     if is_super_signal:
+        return 1.5
+
+    try:
+        p = float(prob)
+    except (TypeError, ValueError):
+        return 1.0
+    if not np.isfinite(p):
         return 1.0
 
-    p = float(prob)
-    # 2. Linear Ramp: 50% floor at p=0.50, scaling to 100% at p=0.65
-    p0, p_full, min_size = 0.50, 0.65, 0.50
-
-    if p <= p0:
-        return min_size
-    if p >= p_full:
+    if p < 0.45:
+        return 0.75
+    if p <= 0.65:
         return 1.0
 
-    t = (p - p0) / (p_full - p0)
-    return float(min_size + (1.0 - min_size) * t)
+    t = (p - 0.65) / 0.35
+    if t < 0.0:
+        t = 0.0
+    if t > 1.0:
+        t = 1.0
+    return 1.25 + (0.25 * t)
 
 
 def _strategy_role(params: Dict[str, Any]) -> str:
@@ -1880,12 +1887,15 @@ def run_backtest(
         try:
             features = np.array(
                 [[cand.get(col, 0.0) for col in ml_feature_cols] for cand in all_pre_ai_candidates],
-                dtype=float,
+                dtype=np.float32,
             )
             features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
-            features_df = pd.DataFrame(features, columns=ml_feature_cols)
+            if hasattr(ai_model, "feature_names_in_"):
+                features_input = pd.DataFrame(features, columns=ml_feature_cols)
+            else:
+                features_input = features
             with threadpool_limits(limits=1):
-                probs = ai_model.predict_proba(features_df)[:, 1]
+                probs = ai_model.predict_proba(features_input)[:, 1]
         except Exception:
             probs = None
 
@@ -1967,7 +1977,7 @@ def run_backtest(
                     entry_i=w_cand.entry_i,
                     signal_i=w_cand.signal_i,
                     is_super_signal=True,
-                    size_scalar=1.0,
+                    size_scalar=1.5,
                 )
             )
 
@@ -1978,7 +1988,7 @@ def run_backtest(
                 kept.extend(super_candidates)
                 candidates_by_day[day_idx] = kept
 
-    # VIX guardrail: taper size in elevated volatility; panic-only veto for standalone income.
+    # VIX scaling: neutralize regime by adjusting size instead of vetoing trades.
     for day_idx, day_list in enumerate(candidates_by_day):
         if not day_list:
             continue
@@ -2000,19 +2010,9 @@ def run_backtest(
                 filtered.append(cand)
                 continue
 
-            if vix_prev >= 35.0:
-                c_params = getattr(cand.strategy_obj, "params", getattr(cand.strategy_obj, "genome", {})) or {}
-                if _strategy_role(c_params) == "income":
-                    continue
-                filtered.append(cand)
-                continue
-
-            if vix_prev >= 30.0:
-                base_size = float(getattr(cand, "size_scalar", 1.0))
-                if base_size < 0.50:
-                    base_size = 0.50
-                t = (vix_prev - 30.0) / 5.0
-                cand.size_scalar = max(0.50, min(1.0, 0.50 + (base_size - 0.50) * (1.0 - t)))
+            if vix_prev > 0:
+                base_size = float(getattr(cand, "size_scalar", 1.0) or 1.0)
+                cand.size_scalar = base_size * (20.0 / vix_prev)
 
             filtered.append(cand)
 
