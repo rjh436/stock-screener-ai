@@ -46,6 +46,7 @@ def load_ai_model():
             # Setting n_jobs=1 makes it faster by eliminating overhead.
             model.n_jobs = 1 
             st.toast("🎯 V3 Panic-Aware Brain Deployed")
+            st.sidebar.success("🚀 APEX V3 BRAIN: ONLINE")
             return model
         except Exception as e:
             print(f"⚠️ Failed to load AI model: {e}")
