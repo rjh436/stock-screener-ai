@@ -333,30 +333,21 @@ class _Candidate:
 
 
 def _prob_to_size_scalar(prob: float, role: str = "", is_super_signal: bool = False) -> float:
+    # 1. Super Signal Confluence always gets 100% size
     if is_super_signal:
         return 1.0
-    try:
-        p = float(prob)
-    except (TypeError, ValueError):
-        return 0.0
-    if not np.isfinite(p):
-        return 0.0
 
-    role_norm = (role or "").strip().lower()
-    if "income" in role_norm:
-        p0 = 0.35
-    elif "wealth" in role_norm:
-        p0 = 0.45
-    else:
-        p0 = 0.45
+    p = float(prob)
+    # 2. Linear Ramp: 50% floor at p=0.50, scaling to 100% at p=0.65
+    p0, p_full, min_size = 0.50, 0.65, 0.50
 
     if p <= p0:
-        return 0.0
+        return min_size
+    if p >= p_full:
+        return 1.0
 
-    size = ((p - p0) / (1.0 - p0)) ** 2
-    if size < 0.10:
-        size = 0.10
-    return min(size, 1.0)
+    t = (p - p0) / (p_full - p0)
+    return float(min_size + (1.0 - min_size) * t)
 
 
 def _strategy_role(params: Dict[str, Any]) -> str:
@@ -1645,10 +1636,6 @@ def run_backtest(
                 signal_atr = atr14_arr[prev_is]
                 valid &= np.isfinite(signal_atr) & (signal_atr > 0)
 
-                if is_income and not confluence_possible:
-                    vix_prev = vix_arr[prev_is]
-                    valid &= (~np.isfinite(vix_prev)) | (vix_prev <= 25.0)
-
                 # Batched Scoring
                 score = _score_candidates_vectorized(
                     rsi2_arr[prev_is],
@@ -1759,11 +1746,6 @@ def run_backtest(
                 gap_pct = (open_px - prev_close) / prev_close if prev_close > 0 else 0.0
                 if gap_pct < -0.08:
                     continue
-
-                if is_income and not confluence_possible:
-                    vix_prev = float(vix_arr[prev_i])
-                    if np_isfinite(vix_prev) and vix_prev > 25.0:
-                        continue
 
                 entry_signal = strat.entry(df, prev_i)
                 if not entry_signal:
@@ -1996,7 +1978,7 @@ def run_backtest(
                 kept.extend(super_candidates)
                 candidates_by_day[day_idx] = kept
 
-    # VIX gate for standalone income signals; allow super-signal confluence to bypass.
+    # VIX guardrail: taper size in elevated volatility; panic-only veto for standalone income.
     for day_idx, day_list in enumerate(candidates_by_day):
         if not day_list:
             continue
@@ -2007,11 +1989,6 @@ def run_backtest(
                 filtered.append(cand)
                 continue
 
-            c_params = getattr(cand.strategy_obj, "params", getattr(cand.strategy_obj, "genome", {})) or {}
-            if _strategy_role(c_params) != "income":
-                filtered.append(cand)
-                continue
-
             sym_data = enriched.get(cand.sym)
             if sym_data is None:
                 filtered.append(cand)
@@ -2019,8 +1996,23 @@ def run_backtest(
 
             sig_i = cand.signal_i
             vix_prev = float(sym_data.vix[sig_i]) if 0 <= sig_i < sym_data.vix.size else float("nan")
-            if np_isfinite(vix_prev) and vix_prev > 25.0:
+            if not np_isfinite(vix_prev):
+                filtered.append(cand)
                 continue
+
+            if vix_prev >= 35.0:
+                c_params = getattr(cand.strategy_obj, "params", getattr(cand.strategy_obj, "genome", {})) or {}
+                if _strategy_role(c_params) == "income":
+                    continue
+                filtered.append(cand)
+                continue
+
+            if vix_prev >= 30.0:
+                base_size = float(getattr(cand, "size_scalar", 1.0))
+                if base_size < 0.50:
+                    base_size = 0.50
+                t = (vix_prev - 30.0) / 5.0
+                cand.size_scalar = max(0.50, min(1.0, 0.50 + (base_size - 0.50) * (1.0 - t)))
 
             filtered.append(cand)
 
