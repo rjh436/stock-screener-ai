@@ -1617,6 +1617,7 @@ def run_backtest(
         rs_trend_arr = sd.rs_trend
         rs_mom20_arr = sd.rs_mom20
         vix_arr = sd.vix
+        vix_rel20_arr = sd.vix_rel20
         spy_close_arr = sd.spy_close
         spy_sma200_arr = sd.spy_sma200
         spy_regime_arr = sd.spy_regime
