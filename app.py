@@ -26,7 +26,7 @@ from simulation.paper_trader import PaperTrader
 from strategies.strategy_loader import load_strategies
 
 CONFIG_PATH = "config/generated_strategies.json"
-MODEL_PATH = "models/apex_neural_v1.pkl"
+MODEL_PATH = "models/apex_neural_v2.pkl"
 st.set_page_config(page_title="Apex Sniper AI", layout="wide", page_icon="🎯")
 
 # --- HELPERS ---
