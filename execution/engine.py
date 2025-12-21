@@ -775,6 +775,8 @@ def _legacy_run_backtest(
                     if open_px < prev_close * gap_ratio:
                         continue
 
+                ai_prob = 0.0
+                size_scalar = 1.0
                 if ai_model is not None:
                     try:
                         rsi2 = float(rsi2_arr[prev_i])
@@ -814,8 +816,11 @@ def _legacy_run_backtest(
                         features_df = pd.DataFrame(features, columns=ml_feature_cols)
                         with threadpool_limits(limits=1):
                             prob = ai_model.predict_proba(features_df)[0][1]
-                        if prob < ai_threshold:
+                        scalar = _prob_to_size_scalar(prob, role=_strategy_role(params))
+                        if scalar <= 0.0:
                             continue
+                        ai_prob = float(prob)
+                        size_scalar = float(scalar)
                     except Exception:
                         pass
 
@@ -884,6 +889,8 @@ def _legacy_run_backtest(
                         strategy_obj=strat,
                         entry_i=i,
                         signal_i=prev_i,
+                        ai_prob=ai_prob,
+                        size_scalar=size_scalar,
                     )
                 )
 
