@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 from ta.momentum import StochasticOscillator
 from ta.trend import ADXIndicator, CCIIndicator
-from threadpoolctl import threadpool_limits
 
 from strategies.generic import GenericStrategy
 from strategies.strategy_loader import load_strategies

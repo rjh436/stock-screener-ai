@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 import pandas as pd
@@ -19,6 +20,19 @@ from strategies.generic import GenericStrategy
 from strategies.strategy_loader import load_strategies
 
 PORTFOLIO_FILE = "data/paper_portfolio.json"
+TRADE_LEDGER_FILE = "data/sim_trade_history.csv"
+TRADE_LEDGER_HEADERS = [
+    "Symbol",
+    "Strategy",
+    "Entry_Date",
+    "Exit_Date",
+    "Entry_Price",
+    "Exit_Price",
+    "Shares",
+    "PnL_$",
+    "PnL_%",
+    "Reason",
+]
 DEFAULT_CONFIG_PATH = "config/generated_strategies.json"
 POSITION_FRACTION = 0.20
 MAX_POSITIONS = 5
@@ -39,6 +53,7 @@ class PaperTrader:
         
         self.sector_map = self._load_sector_map()
         self.state = self._load_state()
+        self._ensure_trade_ledger()
         
         self._rehydrate_strategies()
         # Validate strategy params to avoid missing config values
@@ -57,6 +72,45 @@ class PaperTrader:
             stop_atr = float(params.get("stop_loss_atr", 3.0))
             if stop_atr < 1.0 or stop_atr > 10.0:
                 print(f"❌ ERROR: {strat.name} stop_loss_atr={stop_atr} out of range [1.0, 10.0]")
+
+    def _ensure_trade_ledger(self) -> None:
+        if os.path.exists(TRADE_LEDGER_FILE):
+            return
+        os.makedirs(os.path.dirname(TRADE_LEDGER_FILE), exist_ok=True)
+        with open(TRADE_LEDGER_FILE, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(TRADE_LEDGER_HEADERS)
+
+    def _append_trade_ledger(
+        self,
+        symbol: str,
+        strategy: str,
+        entry_date: str,
+        exit_date: str,
+        entry_price: float,
+        exit_price: float,
+        shares: int,
+        pnl: float,
+        pnl_pct: float,
+        reason: str,
+    ) -> None:
+        self._ensure_trade_ledger()
+        with open(TRADE_LEDGER_FILE, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    symbol,
+                    strategy,
+                    entry_date,
+                    exit_date,
+                    entry_price,
+                    exit_price,
+                    shares,
+                    pnl,
+                    pnl_pct,
+                    reason,
+                ]
+            )
 
     # --- INITIALIZATION HELPERS ---
     def _init_strategies(self, configs: Optional[List[Dict]]) -> List[GenericStrategy]:
@@ -445,6 +499,22 @@ class PaperTrader:
         pnl = proceeds - (pos["entry_price"] * pos["shares"])
         pnl_pct = ((exit_price - pos["entry_price"]) / pos["entry_price"]) * 100
 
+        try:
+            self._append_trade_ledger(
+                symbol=symbol,
+                strategy=pos.get("strategy_name", ""),
+                entry_date=pos.get("date", ""),
+                exit_date=str(datetime.now().date()),
+                entry_price=pos["entry_price"],
+                exit_price=exit_price,
+                shares=pos["shares"],
+                pnl=pnl,
+                pnl_pct=pnl_pct,
+                reason=reason,
+            )
+        except Exception as e:
+            print(f"⚠️ Ledger append failed for {symbol}: {e}")
+
         self.state["cash"] += proceeds
         self.state["history"].append({
             "symbol": symbol, "strategy": pos.get("strategy_name", ""),
@@ -673,6 +743,22 @@ class PaperTrader:
                 proceeds = exit_price * pos["shares"]
                 pnl = proceeds - (pos["entry_price"] * pos["shares"])
                 pct = (exit_price - pos["entry_price"]) / pos["entry_price"] * 100
+
+                try:
+                    self._append_trade_ledger(
+                        symbol=sym,
+                        strategy=pos.get("strategy_name", strat_obj.name),
+                        entry_date=pos.get("date", ""),
+                        exit_date=str(datetime.now().date()),
+                        entry_price=pos["entry_price"],
+                        exit_price=exit_price,
+                        shares=pos["shares"],
+                        pnl=pnl,
+                        pnl_pct=pct,
+                        reason="Signal/Stop",
+                    )
+                except Exception as e:
+                    print(f"⚠️ Ledger append failed for {sym}: {e}")
 
                 self.state["cash"] += proceeds
                 self.state["history"].append({

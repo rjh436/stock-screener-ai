@@ -480,7 +480,7 @@ elif mode == "Simulator":
     m3.metric("Total PnL", f"${pnl_val:,.2f}", delta=f"{pnl_val/100000*100:.2f}%")
     m4.metric("Positions", len(state['positions']))
     
-    if st.button("Run Daily Scan", type="primary"):
+    if st.button("🔭 PHASE 1: Scan for New Entries (Evening/Market Close)", type="primary"):
         status = st.status("🚀 Initializing Simulation...", expanded=True)
         try:
             status.write("1️⃣ Verifying Strategies...")
@@ -524,20 +524,33 @@ elif mode == "Simulator":
     
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
-        if st.button("🔄 Run Daily Cycle", type="primary"):
+        if st.button("⚙️ PHASE 2: Execute Morning Fills & Exits (Market Open)", type="primary"):
             with st.spinner("Processing..."):
                 pt.update_valuations()
-                pt.process_exits(strategies_map)
+                # Process exits before fills to keep the slot limit intact.
+                exit_logs = pt.process_exits(strategies_map)
+                fill_logs = pt.process_pending_orders()
+            if exit_logs:
+                for log in exit_logs:
+                    st.info(log)
+            if fill_logs:
+                for log in fill_logs:
+                    if "✅" in log:
+                        st.success(log)
+                    elif "❌" in log:
+                        st.error(log)
+                    else:
+                        st.info(log)
             st.success("Cycle Complete.")
             st.rerun()
     with c2:
-        if st.button("📡 Refresh Prices"):
+        if st.button("📡 Live Portfolio Mark-to-Market"):
             with st.spinner("Fetching quotes..."):
                 pt.update_valuations()
             st.success("Prices Updated.")
             st.rerun()
     with c3:
-        if st.button("⚠️ Reset Account"):
+        if st.button("⚠️ Emergency System Reset (Wipe All State)"):
             pt.reset_account()
             st.rerun()
 
@@ -609,3 +622,25 @@ elif mode == "Simulator":
                 st.info("No orders filled.")
     else:
         st.caption("No orders queued for tomorrow.")
+
+    st.subheader("📜 Professional Trade Ledger")
+    ledger_path = "data/sim_trade_history.csv"
+    if os.path.exists(ledger_path):
+        try:
+            history_df = pd.read_csv(ledger_path)
+        except Exception as e:
+            st.warning(f"Could not load trade history: {e}")
+        else:
+            if history_df.empty:
+                st.caption("No closed trades yet.")
+            else:
+                st.dataframe(history_df.tail(20), use_container_width=True)
+                csv_data = history_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="📥 Export Performance Audit (CSV)",
+                    data=csv_data,
+                    file_name="sim_trade_history.csv",
+                    mime="text/csv",
+                )
+    else:
+        st.caption("No closed trades yet.")
