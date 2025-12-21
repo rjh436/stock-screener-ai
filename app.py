@@ -350,11 +350,6 @@ elif mode == "Backtest":
             if c1.button(label) if label=="1 Year" else c2.button(label) if label=="5 Years" else c3.button(label) if label=="10 Years" else c4.button(label) if label=="20 Years" else c5.button(label):
                 st.session_state.bt_duration = label
     
-    export_ml = st.checkbox(
-        "🧠 Export ML Training Data",
-        value=False,
-    )
-
     bt_duration = st.session_state.bt_duration
     days = dur_map.get(bt_duration, 1260)
     cache_key = f"{bt_universe}|{bt_duration}"
@@ -412,7 +407,6 @@ elif mode == "Backtest":
                             prepared,
                             start_cash=100000.0,
                             start_date=None,
-                            export_ml_data=export_ml,
                         ): strat.name
                         for strat in run_strategies
                     }

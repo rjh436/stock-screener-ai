@@ -1,7 +1,34 @@
 {
-    "cash": 15048.340000000004,
+    "cash": 68595.58,
     "equity": 102847.6575,
-    "history": [],
+    "history": [
+        {
+            "symbol": "ZTS",
+            "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
+            "type": "AUTO_EXIT",
+            "reason": "Signal/Stop",
+            "entry_date": "2025-12-11",
+            "exit_date": "2025-12-21",
+            "entry_price": 118.97,
+            "exit_price": 122.24,
+            "shares": 197,
+            "pnl": 644.1899999999987,
+            "return_pct": 2.748592082037485
+        },
+        {
+            "symbol": "CARR",
+            "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
+            "type": "AUTO_EXIT",
+            "reason": "Signal/Stop",
+            "entry_date": "2025-12-11",
+            "exit_date": "2025-12-21",
+            "entry_price": 53.74,
+            "exit_price": 53.77,
+            "shares": 548,
+            "pnl": 16.44000000000233,
+            "return_pct": 0.05582433941198574
+        }
+    ],
     "equity_curve": [
         {
             "date": "2025-12-11",
@@ -22,6 +49,10 @@
         {
             "date": "2025-12-20",
             "equity": 102847.6575
+        },
+        {
+            "date": "2025-12-21",
+            "equity": 102847.6575
         }
     ],
     "positions": {
@@ -35,30 +66,6 @@
             "current_price": 294.2501,
             "unrealized_pnl": 2284.5074999999965,
             "unrealized_pct": 11.54710186132907,
-            "entry_i": 332
-        },
-        "ZTS": {
-            "shares": 197,
-            "entry_price": 118.97,
-            "stop_price": 105.66326857142857,
-            "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
-            "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
-            "date": "2025-12-11",
-            "current_price": 123.08,
-            "unrealized_pnl": 809.6699999999998,
-            "unrealized_pct": 3.4546524333865674,
-            "entry_i": 332
-        },
-        "CARR": {
-            "shares": 548,
-            "entry_price": 53.74,
-            "stop_price": 46.69170285714286,
-            "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
-            "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
-            "date": "2025-12-11",
-            "current_price": 53.65,
-            "unrealized_pnl": -49.32000000000187,
-            "unrealized_pct": -0.16747301823595723,
             "entry_i": 332
         },
         "CEG": {
