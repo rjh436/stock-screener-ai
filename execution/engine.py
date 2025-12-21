@@ -47,7 +47,11 @@ def get_sector(symbol: str) -> str:
     return "Unknown"
 
 
-def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame | None = None) -> pd.DataFrame:
+def _compute_indicators(
+    df: pd.DataFrame,
+    spy_df: pd.DataFrame | None = None,
+    vix_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     try:
         df = df.sort_index().copy()
         df.columns = df.columns.str.lower()
@@ -118,6 +122,21 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame | None = None) ->
             df["spy_sma200"] = np.nan
             df["rs_mom20"] = 0.0
             df["spy_regime"] = 0.0
+
+        if vix_df is not None and not vix_df.empty and "close" in vix_df.columns:
+            vix_aligned = vix_df["close"].reindex(df.index).ffill().bfill()
+            df["vix"] = vix_aligned
+        elif "vix" in df.columns:
+            df["vix"] = df["vix"].ffill().bfill()
+        else:
+            df["vix"] = 20.0
+        df["vix"] = df["vix"].fillna(20.0)
+
+        df["vix_sma20"] = df["vix"].rolling(20).mean()
+        df["vix_rel20"] = 0.0
+        vix_sma20 = df["vix_sma20"]
+        mask = vix_sma20 > 0
+        df.loc[mask, "vix_rel20"] = (df.loc[mask, "vix"] / vix_sma20[mask]) - 1.0
 
         return df
     except Exception:
@@ -291,6 +310,8 @@ class _SymbolArrays:
     rs_trend: np.ndarray
     rs_mom20: np.ndarray
     vix: np.ndarray
+    vix_sma20: np.ndarray
+    vix_rel20: np.ndarray
     spy_close: np.ndarray
     spy_sma200: np.ndarray
     spy_regime: np.ndarray
@@ -433,15 +454,10 @@ def prepare_backtest_data(
             continue
 
         try:
-            df = _compute_indicators(df_raw.copy(), spy_df=spy_df)
+            df = _compute_indicators(df_raw.copy(), spy_df=spy_df, vix_df=vix_df)
 
             if "ticker" not in df.columns:
                 df["ticker"] = sym
-
-            if vix_df is not None and not vix_df.empty and "close" in vix_df.columns:
-                df["vix"] = vix_df["close"].reindex(df.index).ffill().fillna(20.0)
-            else:
-                df["vix"] = 20.0
 
             if start_date:
                 start_dt = pd.to_datetime(start_date).replace(tzinfo=None)
@@ -492,6 +508,8 @@ def prepare_backtest_data(
                 rs_trend=_get_np_col(df, "rs_trend", 0.0, length=n),
                 rs_mom20=_get_np_col(df, "rs_mom20", 0.0, length=n),
                 vix=_get_np_col(df, "vix", 20.0, length=n),
+                vix_sma20=_get_np_col(df, "vix_sma20", 20.0, length=n),
+                vix_rel20=_get_np_col(df, "vix_rel20", 0.0, length=n),
                 spy_close=_get_np_col(df, "spy_close", np.nan, length=n),
                 spy_sma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
                 spy_regime=_get_np_col(df, "spy_regime", 0.0, length=n),
@@ -580,15 +598,10 @@ def _legacy_run_backtest(
             continue
 
         try:
-            df = _compute_indicators(df_raw.copy(), spy_df=spy_df)
+            df = _compute_indicators(df_raw.copy(), spy_df=spy_df, vix_df=vix_df)
 
             if "ticker" not in df.columns:
                 df["ticker"] = sym
-
-            if vix_df is not None and not vix_df.empty and "close" in vix_df.columns:
-                df["vix"] = vix_df["close"].reindex(df.index).ffill().fillna(20.0)
-            else:
-                df["vix"] = 20.0
 
             if start_date:
                 start_dt = pd.to_datetime(start_date).replace(tzinfo=None)
@@ -638,6 +651,8 @@ def _legacy_run_backtest(
                 rs_trend=_get_np_col(df, "rs_trend", 0.0, length=n),
                 rs_mom20=_get_np_col(df, "rs_mom20", 0.0, length=n),
                 vix=_get_np_col(df, "vix", 20.0, length=n),
+                vix_sma20=_get_np_col(df, "vix_sma20", 20.0, length=n),
+                vix_rel20=_get_np_col(df, "vix_rel20", 0.0, length=n),
                 spy_close=_get_np_col(df, "spy_close", np.nan, length=n),
                 spy_sma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
                 spy_regime=_get_np_col(df, "spy_regime", 0.0, length=n),
@@ -696,6 +711,7 @@ def _legacy_run_backtest(
         rs_ratio_arr = sd.rs_ratio
         rs_trend_arr = sd.rs_trend
         rs_mom20_arr = sd.rs_mom20
+        vix_arr = sd.vix
         spy_close_arr = sd.spy_close
         spy_sma200_arr = sd.spy_sma200
         spy_regime_arr = sd.spy_regime
@@ -1019,6 +1035,8 @@ def _legacy_run_backtest(
                     sma200_entry = float(sym_data.sma200[entry_feat_i])
                     vol_entry = float(sym_data.volume[entry_feat_i])
                     vol_ma20_entry = float(sym_data.vol_ma20[entry_feat_i])
+                    vix_entry = float(sym_data.vix[entry_feat_i])
+                    vix_rel20_entry = float(sym_data.vix_rel20[entry_feat_i])
                     rs_ratio_entry = float(sym_data.rs_ratio[entry_feat_i])
                     rs_trend_entry = float(sym_data.rs_trend[entry_feat_i])
                     rs_mom20_entry = float(sym_data.rs_mom20[entry_feat_i])
@@ -1040,6 +1058,8 @@ def _legacy_run_backtest(
                             "dist_to_sma200": float(dist200),
                             "dist_sma50": float(dist50),
                             "dist_sma200": float(dist200),
+                            "vix": vix_entry,
+                            "vix_rel20": vix_rel20_entry,
                             "rs_ratio": rs_ratio_entry,
                             "rs_trend": rs_trend_entry,
                             "rs_mom20": rs_mom20_entry,
@@ -1564,6 +1584,7 @@ def run_backtest(
         spy_regime_arr = sd.spy_regime
 
         for strat, w, params, gap_ratio, regime_filter, base_stop_mult in compiled_strategies:
+            is_income = _strategy_role(params) == "income"
             # Vectorized entry for base GenericStrategy genomes (optimizer hot path)
             if _can_vectorize_entry(strat, params, ai_model):
                 warmup = max(int(params.get("warmup_bars", MIN_BARS) or MIN_BARS), MIN_BARS)
@@ -1584,6 +1605,10 @@ def run_backtest(
 
                 signal_atr = atr14_arr[prev_is]
                 valid &= np.isfinite(signal_atr) & (signal_atr > 0)
+
+                if is_income:
+                    vix_prev = vix_arr[prev_is]
+                    valid &= (~np.isfinite(vix_prev)) | (vix_prev <= 25.0)
 
                 # Batched Scoring
                 score = _score_candidates_vectorized(
@@ -1693,6 +1718,11 @@ def run_backtest(
                 gap_pct = (open_px - prev_close) / prev_close if prev_close > 0 else 0.0
                 if gap_pct < -0.08:
                     continue
+
+                if is_income:
+                    vix_prev = float(vix_arr[prev_i])
+                    if np_isfinite(vix_prev) and vix_prev > 25.0:
+                        continue
 
                 entry_signal = strat.entry(df, prev_i)
                 if not entry_signal:
@@ -2156,6 +2186,8 @@ def run_backtest(
                     sma200_entry = float(sym_data.sma200[entry_feat_i])
                     vol_entry = float(sym_data.volume[entry_feat_i])
                     vol_ma20_entry = float(sym_data.vol_ma20[entry_feat_i])
+                    vix_entry = float(sym_data.vix[entry_feat_i])
+                    vix_rel20_entry = float(sym_data.vix_rel20[entry_feat_i])
                     rs_ratio_entry = float(sym_data.rs_ratio[entry_feat_i])
                     rs_trend_entry = float(sym_data.rs_trend[entry_feat_i])
                     rs_mom20_entry = float(sym_data.rs_mom20[entry_feat_i])
@@ -2177,6 +2209,8 @@ def run_backtest(
                             "dist_to_sma200": float(dist200),
                             "dist_sma50": float(dist50),
                             "dist_sma200": float(dist200),
+                            "vix": vix_entry,
+                            "vix_rel20": vix_rel20_entry,
                             "rs_ratio": rs_ratio_entry,
                             "rs_trend": rs_trend_entry,
                             "rs_mom20": rs_mom20_entry,
