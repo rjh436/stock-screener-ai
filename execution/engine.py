@@ -332,19 +332,31 @@ class _Candidate:
     size_scalar: float = 1.0
 
 
-def _prob_to_size_scalar(prob: float) -> float:
+def _prob_to_size_scalar(prob: float, role: str = "", is_super_signal: bool = False) -> float:
+    if is_super_signal:
+        return 1.0
     try:
         p = float(prob)
     except (TypeError, ValueError):
         return 0.0
     if not np.isfinite(p):
         return 0.0
-    if p < 0.50:
+
+    role_norm = (role or "").strip().lower()
+    if "income" in role_norm:
+        p0 = 0.35
+    elif "wealth" in role_norm:
+        p0 = 0.45
+    else:
+        p0 = 0.45
+
+    if p <= p0:
         return 0.0
-    if p < 0.60:
-        t = (p - 0.50) / 0.10
-        return 0.25 + (0.75 * t)
-    return 1.0
+
+    size = ((p - p0) / (1.0 - p0)) ** 2
+    if size < 0.10:
+        size = 0.10
+    return min(size, 1.0)
 
 
 def _strategy_role(params: Dict[str, Any]) -> str:
@@ -724,6 +736,7 @@ def _legacy_run_backtest(
         rs_trend_arr = sd.rs_trend
         rs_mom20_arr = sd.rs_mom20
         vix_arr = sd.vix
+        vix_rel20_arr = sd.vix_rel20
         spy_close_arr = sd.spy_close
         spy_sma200_arr = sd.spy_sma200
         spy_regime_arr = sd.spy_regime
@@ -1672,6 +1685,7 @@ def run_backtest(
                         rs_trend_k = float(rs_trend_arr[prev_is[k]])
                         rs_mom20_k = float(rs_mom20_arr[prev_is[k]])
                         spy_regime_k = float(spy_regime_arr[prev_is[k]])
+                        vix_rel20_k = float(vix_rel20_arr[prev_is[k]])
 
                         atr_pct = atr_k / prev_close_k if prev_close_k > 0 else 0.0
                         dist_sma50 = (prev_close_k - sma50_k) / prev_close_k if prev_close_k > 0 else 0.0
@@ -1699,6 +1713,7 @@ def run_backtest(
                                 "rs_trend": rs_trend_k,
                                 "rs_mom20": rs_mom20_k,
                                 "spy_regime": spy_regime_k,
+                                "vix_rel20": vix_rel20_k,
                             }
                         )
                 else:
@@ -1831,6 +1846,7 @@ def run_backtest(
                     rs_trend = float(rs_trend_arr[prev_i])
                     rs_mom20 = float(rs_mom20_arr[prev_i])
                     spy_regime = float(spy_regime_arr[prev_i])
+                    vix_rel20 = float(vix_rel20_arr[prev_i])
 
                     atr_pct = (atr14 / prev_close) if prev_close > 0 else 0.0
                     dist_sma50 = (prev_close - sma50) / prev_close if prev_close > 0 else 0.0
@@ -1858,6 +1874,7 @@ def run_backtest(
                             "rs_trend": rs_trend,
                             "rs_mom20": rs_mom20,
                             "spy_regime": spy_regime,
+                            "vix_rel20": vix_rel20,
                         }
                     )
                     continue
@@ -1905,7 +1922,9 @@ def run_backtest(
                 )
         else:
             for cand, prob in zip(all_pre_ai_candidates, probs):
-                scalar = _prob_to_size_scalar(prob)
+                c_params = getattr(cand.get("strategy_obj"), "params", getattr(cand.get("strategy_obj"), "genome", {})) or {}
+                role = _strategy_role(c_params)
+                scalar = _prob_to_size_scalar(prob, role=role)
                 if scalar <= 0.0:
                     continue
                 candidates_by_day[cand["day_idx"]].append(
@@ -1954,19 +1973,20 @@ def run_backtest(
             for sym in super_syms:
                 w_cand = wealth_by_sym[sym]
                 i_cand = income_by_sym[sym]
-                super_candidates.append(
-                    _Candidate(
-                        sym=sym,
-                        entry_px=w_cand.entry_px,
-                        stop_px=w_cand.stop_px,
-                        score=max(w_cand.score, i_cand.score),
-                        strategy_name=SUPER_SIGNAL_NAME,
-                        strategy_obj=w_cand.strategy_obj,
-                        entry_i=w_cand.entry_i,
-                        signal_i=w_cand.signal_i,
-                        is_super_signal=True,
-                    )
+            super_candidates.append(
+                _Candidate(
+                    sym=sym,
+                    entry_px=w_cand.entry_px,
+                    stop_px=w_cand.stop_px,
+                    score=max(w_cand.score, i_cand.score),
+                    strategy_name=SUPER_SIGNAL_NAME,
+                    strategy_obj=w_cand.strategy_obj,
+                    entry_i=w_cand.entry_i,
+                    signal_i=w_cand.signal_i,
+                    is_super_signal=True,
+                    size_scalar=1.0,
                 )
+            )
 
             if super_signal_only:
                 candidates_by_day[day_idx] = super_candidates
