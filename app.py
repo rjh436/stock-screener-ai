@@ -36,7 +36,6 @@ def load_strategy_configs():
             return json.load(f)
     return []
 
-@st.cache_resource
 def load_ai_model():
     if os.path.exists(MODEL_PATH):
         try:
