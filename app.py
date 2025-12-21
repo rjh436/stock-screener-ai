@@ -18,6 +18,7 @@ from execution.engine import (
     DEFAULT_SCORING_WEIGHTS,
     MIN_ENTRY_SCORE,
     _compute_indicators,
+    _prob_to_size_scalar,
     calculate_backtest_quality_score,
     prepare_backtest_data,
     run_backtest,
@@ -30,10 +31,17 @@ MODEL_PATH = "models/apex_neural_v6.pkl"
 st.set_page_config(page_title="Apex Sniper AI", layout="wide", page_icon="🎯")
 
 # --- HELPERS ---
+def _is_wealth_strategy(config: dict) -> bool:
+    name = str(config.get("name", "")).lower()
+    strat_type = str(config.get("type", "")).lower()
+    return "wealth" in strat_type or "wealth" in name
+
 def load_strategy_configs():
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "r") as f:
-            return json.load(f)
+            payload = json.load(f)
+        if isinstance(payload, list):
+            return [s for s in payload if isinstance(s, dict) and _is_wealth_strategy(s)]
     return []
 
 def load_ai_model():
@@ -45,8 +53,8 @@ def load_ai_model():
             # we get thread oversubscription (Deadlock/Slowdown).
             # Setting n_jobs=1 makes it faster by eliminating overhead.
             model.n_jobs = 1 
-            st.toast("🎯 V6 Alpha Scaler Brain Deployed")
-            st.sidebar.success("🏆 APEX V7 MEDALLION: WEALTH-ONLY ACTIVE")
+            st.toast("🎯 V8 Pure Alpha Brain Deployed")
+            st.sidebar.success("👑 APEX V8 MEDALLION: PURE ALPHA ACTIVE")
             return model
         except Exception as e:
             print(f"⚠️ Failed to load AI model: {e}")
@@ -178,8 +186,7 @@ with st.sidebar:
     if strategies_list:
         for i, s in enumerate(strategies_list):
             strat_name = s.get("name", "")
-            default_on = "income" not in str(strat_name).lower()
-            use = st.checkbox(strat_name, value=default_on, key=f"chk_{strat_name}_{i}")
+            use = st.checkbox(strat_name, value=True, key=f"chk_{strat_name}_{i}")
             if use: selected_strategies.append(s)
             
             with st.expander(f"📘 Strategy Guide: {s.get('name', 'Strategy')}"):
@@ -251,11 +258,6 @@ if mode == "Live Screener":
     col1, col2 = st.columns([1, 4])
     with col1:
         universe = st.selectbox("Universe", ["S&P 500", "S&P 100", "S&P 1500"], index=2)
-        super_only = st.checkbox(
-            "⭐ Super Signal ONLY",
-            value=False,
-            help="Only show tickers where both Wealth and Income triggered.",
-        )
         run_btn = st.button("RUN SCAN", type="primary")
     
     if run_btn:
@@ -266,7 +268,6 @@ if mode == "Live Screener":
             g_data = fetch_data_pack(["SPY"], days=base_days + 200) or {}
             spy_df = g_data.get("SPY")
             results = []
-            triggered_types = {}
             
             if not selected_strategies:
                 st.warning("No strategies selected!")
@@ -294,17 +295,6 @@ if mode == "Live Screener":
                             s_conf = strat.params or {}
                             if not strat.entry(df_ind, signal_i):
                                 continue
-
-                            s_type = str(s_conf.get("type", "") or "").lower()
-                            if not s_type:
-                                name = str(s_conf.get("name", "") or "").lower()
-                                if "wealth" in name:
-                                    s_type = "wealth"
-                                elif "income" in name:
-                                    s_type = "income"
-                                else:
-                                    s_type = "other"
-                            triggered_types.setdefault(sym, set()).add(s_type)
 
                             atr = row_signal.get("atr14", row_signal["close"] * 0.02)
                             stop_mult = float(s_conf.get("stop_loss_atr", 3.0))
@@ -380,6 +370,7 @@ if mode == "Live Screener":
                                 except Exception:
                                     ai_prob = 0.0
 
+                            size_mult = _prob_to_size_scalar(ai_prob)
                             results.append(
                                 {
                                     "Symbol": sym,
@@ -389,6 +380,7 @@ if mode == "Live Screener":
                                     "Target": target_txt,
                                     "Score": score,
                                     "AI Confidence": ai_prob,
+                                    "AI Size Multiplier": size_mult,
                                 }
                             )
                     except Exception:
@@ -396,20 +388,9 @@ if mode == "Live Screener":
                 status.empty()
                 progress_bar.empty()
                 
-                confluence_syms = {
-                    sym for sym, types in triggered_types.items() if "wealth" in types and "income" in types
-                }
-                for row in results:
-                    row["Conviction"] = (
-                        "🔥 SUPER SIGNAL: Both Wealth and Income triggered."
-                        if row.get("Symbol") in confluence_syms
-                        else "✅ STANDARD: Only one triggered."
-                    )
-
                 if results:
                     results.sort(
                         key=lambda x: (
-                            x.get("Symbol") in confluence_syms,
                             x.get("AI Confidence", 0.0),
                             x.get("Score", 0.0),
                         ),
@@ -419,8 +400,6 @@ if mode == "Live Screener":
 
     if st.session_state.scan_results is not None:
         df = st.session_state.scan_results
-        if isinstance(df, pd.DataFrame) and super_only and "Conviction" in df.columns:
-            df = df[df["Conviction"].astype(str).str.startswith("🔥")].copy()
 
         if df.empty:
             st.info("No signals found today.")
@@ -436,7 +415,8 @@ if mode == "Live Screener":
                     "Price": "${:.2f}", 
                     "Stop Loss": "${:.2f}",
                     "Score": "{:.1f}",
-                    "AI Confidence": "{:.1%}"
+                    "AI Confidence": "{:.1%}",
+                    "AI Size Multiplier": "{:.2f}x",
                 }).background_gradient(subset=["AI Confidence"], cmap="Greens", vmin=0.5, vmax=0.8), 
                 use_container_width=True
             )
@@ -463,12 +443,6 @@ elif mode == "Backtest":
         "🧠 Apply AI Filter (Conf > 60%)",
         value=False,
         help="Only take trades where Neural Net predicts >60% win probability.",
-    )
-    run_super_signal = st.checkbox(
-        "⭐ Run Super Signal Confluence",
-        value=False,
-        key="run_super_signal",
-        help="Adds a third backtest that trades only when BOTH Wealth + Income trigger on the same symbol/day.",
     )
     export_ml = st.checkbox(
         "🧠 Export ML Training Data",
@@ -529,31 +503,6 @@ elif mode == "Backtest":
                 results_map = {}
                 run_strategies = load_strategies(selected_strategies)
 
-                super_signal_pair = None
-                if run_super_signal:
-                    wealth_strat = next(
-                        (
-                            s
-                            for s in run_strategies
-                            if str(getattr(s, "params", {}).get("type", "")).lower() == "wealth"
-                            or "wealth" in s.name.lower()
-                        ),
-                        None,
-                    )
-                    income_strat = next(
-                        (
-                            s
-                            for s in run_strategies
-                            if str(getattr(s, "params", {}).get("type", "")).lower() == "income"
-                            or "income" in s.name.lower()
-                        ),
-                        None,
-                    )
-                    if wealth_strat is None or income_strat is None:
-                        st.warning("⭐ Super Signal requires BOTH a Wealth and Income strategy selected.")
-                    else:
-                        super_signal_pair = (wealth_strat, income_strat)
-
                 # Optimized Parallelism: 6 workers for AI, 12 for standard runs.
                 max_workers = 6 if use_ai else 12
 
@@ -570,20 +519,6 @@ elif mode == "Backtest":
                         ): strat.name
                         for strat in run_strategies
                     }
-                    if super_signal_pair is not None:
-                        wealth_strat, income_strat = super_signal_pair
-                        future_map[
-                            executor.submit(
-                                run_backtest,
-                                [wealth_strat, income_strat],
-                                prepared,
-                                start_cash=100000.0,
-                                start_date=None,
-                                export_ml_data=export_ml,
-                                ai_model=ai_model_obj,
-                                super_signal_only=True,
-                            )
-                        ] = "SUPER SIGNAL (Wealth + Income)"
 
                     progress_bar = st.progress(0)
                     status_text = st.empty()

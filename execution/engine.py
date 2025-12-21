@@ -333,24 +333,21 @@ class _Candidate:
 
 
 def _prob_to_size_scalar(prob: float, role: str = "", is_super_signal: bool = False) -> float:
+    """V8 Pure Alpha: AI is for UPSIZING only. Never downsize below baseline 1.0x."""
     try:
         p = float(prob)
-    except (TypeError, ValueError):
+    except Exception:
         return 1.0
     if not np.isfinite(p):
         return 1.0
 
-    if p < 0.45:
-        return 0.75
-    if p <= 0.65:
+    # BASELINE: No punitive downsizing. p < 0.65 stays at 1.0x baseline.
+    if p < 0.65:
         return 1.0
 
+    # ALPHA MULTIPLIER: Scale 1.0x up to 1.5x for probabilities between 0.65 and 1.0
     t = (p - 0.65) / 0.35
-    if t < 0.0:
-        t = 0.0
-    if t > 1.0:
-        t = 1.0
-    return 1.25 + (0.25 * t)
+    return 1.0 + (0.50 * max(0.0, min(1.0, t)))
 
 
 def _strategy_role(params: Dict[str, Any]) -> str:
@@ -1931,7 +1928,8 @@ def run_backtest(
                     )
                 )
 
-    # VIX scaling: neutralize regime by adjusting size instead of vetoing trades.
+    # V8 WEALTH-ONLY: VIX scaling disabled to prevent momentum drag.
+    # Crash protection is already handled by the SPY SMA200 Regime Filter.
     for day_idx, day_list in enumerate(candidates_by_day):
         if not day_list:
             continue
@@ -1954,9 +1952,9 @@ def run_backtest(
                 continue
 
             if vix_prev > 0:
-                base_size = float(getattr(cand, "size_scalar", 1.0) or 1.0)
-                vix_scalar = max(0.6, min(1.1, 20.0 / vix_prev))
-                cand.size_scalar = base_size * vix_scalar
+                # V8 WEALTH-ONLY: VIX scaling disabled to prevent momentum drag.
+                # crash protection is already handled by the SPY SMA200 Regime Filter.
+                pass
 
             filtered.append(cand)
 
