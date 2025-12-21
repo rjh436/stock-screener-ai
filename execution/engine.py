@@ -109,11 +109,15 @@ def _compute_indicators(df: pd.DataFrame, spy_df: pd.DataFrame | None = None) ->
             df["rs_trend"] = df["rs_ratio"] - df["rs_sma20"]
             df["spy_close"] = spy_aligned
             df["spy_sma200"] = spy_aligned.rolling(200).mean()
+            df["rs_mom20"] = (df["rs_ratio"] / df["rs_ratio"].shift(20)) - 1.0
+            df["spy_regime"] = (df["spy_close"] > df["spy_sma200"]).astype(int)
         else:
             df["rs_ratio"] = 1.0
             df["rs_trend"] = 0.0
             df["spy_close"] = np.nan
             df["spy_sma200"] = np.nan
+            df["rs_mom20"] = 0.0
+            df["spy_regime"] = 0.0
 
         return df
     except Exception:
@@ -285,9 +289,11 @@ class _SymbolArrays:
     bb_upper: np.ndarray
     rs_ratio: np.ndarray
     rs_trend: np.ndarray
+    rs_mom20: np.ndarray
     vix: np.ndarray
     spy_close: np.ndarray
     spy_sma200: np.ndarray
+    spy_regime: np.ndarray
 
 
 @dataclass(slots=True)
@@ -489,9 +495,11 @@ def prepare_backtest_data(
                 bb_upper=_get_np_col(df, "bb_upper", np.nan, length=n),
                 rs_ratio=_get_np_col(df, "rs_ratio", 1.0, length=n),
                 rs_trend=_get_np_col(df, "rs_trend", 0.0, length=n),
+                rs_mom20=_get_np_col(df, "rs_mom20", 0.0, length=n),
                 vix=_get_np_col(df, "vix", 20.0, length=n),
                 spy_close=_get_np_col(df, "spy_close", np.nan, length=n),
                 spy_sma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
+                spy_regime=_get_np_col(df, "spy_regime", 0.0, length=n),
             )
         except Exception:
             continue
@@ -553,12 +561,14 @@ def _legacy_run_backtest(
             return sector_map[sym_up]
         return get_sector(sym_up)
 
-    ml_feature_cols = ["rsi2", "adx", "atr_pct", "dist_sma50", "dist_sma200", "vol_rel"]
+    DEFAULT_ML_FEATURE_COLS = ["rsi2", "adx", "atr_pct", "dist_sma50", "dist_sma200", "vol_rel"]
     if ai_model is not None and hasattr(ai_model, "feature_names_in_"):
         try:
-            ml_feature_cols = [str(c) for c in ai_model.feature_names_in_]
+            ml_feature_cols = list(ai_model.feature_names_in_)
         except Exception:
-            pass
+            ml_feature_cols = DEFAULT_ML_FEATURE_COLS
+    else:
+        ml_feature_cols = DEFAULT_ML_FEATURE_COLS
 
     symbols = list(data_dict.keys())
     if symbol_universe:
@@ -631,9 +641,11 @@ def _legacy_run_backtest(
                 bb_upper=_get_np_col(df, "bb_upper", np.nan, length=n),
                 rs_ratio=_get_np_col(df, "rs_ratio", 1.0, length=n),
                 rs_trend=_get_np_col(df, "rs_trend", 0.0, length=n),
+                rs_mom20=_get_np_col(df, "rs_mom20", 0.0, length=n),
                 vix=_get_np_col(df, "vix", 20.0, length=n),
                 spy_close=_get_np_col(df, "spy_close", np.nan, length=n),
                 spy_sma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
+                spy_regime=_get_np_col(df, "spy_regime", 0.0, length=n),
             )
         except Exception:
             continue
@@ -686,8 +698,12 @@ def _legacy_run_backtest(
         sma200_arr = sd.sma200
         cci_arr = sd.cci
         bb_width_arr = sd.bb_width
+        rs_ratio_arr = sd.rs_ratio
+        rs_trend_arr = sd.rs_trend
+        rs_mom20_arr = sd.rs_mom20
         spy_close_arr = sd.spy_close
         spy_sma200_arr = sd.spy_sma200
+        spy_regime_arr = sd.spy_regime
 
         n = len(idx)
         if n <= MIN_BARS + 1:
@@ -741,22 +757,38 @@ def _legacy_run_backtest(
                         sma200 = float(sma200_arr[prev_i])
                         vol = float(volume_arr[prev_i])
                         vol_ma20 = float(vol_ma20_arr[prev_i])
+                        rs_ratio = float(rs_ratio_arr[prev_i])
+                        rs_trend = float(rs_trend_arr[prev_i])
+                        rs_mom20 = float(rs_mom20_arr[prev_i])
+                        spy_regime = float(spy_regime_arr[prev_i])
 
                         atr_pct = (atr14 / prev_close) if prev_close > 0 else 0.0
                         dist_sma50 = (prev_close - sma50) / prev_close if prev_close > 0 else 0.0
                         dist_sma200 = (prev_close - sma200) / prev_close if prev_close > 0 else 0.0
                         vol_rel = vol / (vol_ma20 + 1.0)
 
+                        features_dict = {
+                            "rsi2": rsi2,
+                            "adx": adx,
+                            "atr_pct": atr_pct,
+                            "dist_sma50": dist_sma50,
+                            "dist_sma200": dist_sma200,
+                            "vol_rel": vol_rel,
+                            "rs_ratio": rs_ratio,
+                            "rs_trend": rs_trend,
+                            "rs_mom20": rs_mom20,
+                            "spy_regime": spy_regime,
+                        }
                         features = np.array(
-                            [[rsi2, adx, atr_pct, dist_sma50, dist_sma200, vol_rel]],
+                            [[features_dict.get(col, 0.0) for col in ml_feature_cols]],
                             dtype=float,
                         )
-                        if np.all(np_isfinite(features)):
-                            features_df = pd.DataFrame(features, columns=ml_feature_cols)
-                            with threadpool_limits(limits=1):
-                                prob = ai_model.predict_proba(features_df)[0][1]
-                            if prob < ai_threshold:
-                                continue
+                        features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+                        features_df = pd.DataFrame(features, columns=ml_feature_cols)
+                        with threadpool_limits(limits=1):
+                            prob = ai_model.predict_proba(features_df)[0][1]
+                        if prob < ai_threshold:
+                            continue
                     except Exception:
                         pass
 
@@ -992,6 +1024,10 @@ def _legacy_run_backtest(
                     sma200_entry = float(sym_data.sma200[entry_feat_i])
                     vol_entry = float(sym_data.volume[entry_feat_i])
                     vol_ma20_entry = float(sym_data.vol_ma20[entry_feat_i])
+                    rs_ratio_entry = float(sym_data.rs_ratio[entry_feat_i])
+                    rs_trend_entry = float(sym_data.rs_trend[entry_feat_i])
+                    rs_mom20_entry = float(sym_data.rs_mom20[entry_feat_i])
+                    spy_regime_entry = float(sym_data.spy_regime[entry_feat_i])
 
                     dist50 = (close_entry - sma50_entry) / close_entry if close_entry else 0.0
                     dist200 = (close_entry - sma200_entry) / close_entry if close_entry else 0.0
@@ -1009,6 +1045,10 @@ def _legacy_run_backtest(
                             "dist_to_sma200": float(dist200),
                             "dist_sma50": float(dist50),
                             "dist_sma200": float(dist200),
+                            "rs_ratio": rs_ratio_entry,
+                            "rs_trend": rs_trend_entry,
+                            "rs_mom20": rs_mom20_entry,
+                            "spy_regime": spy_regime_entry,
                             "profit_pct": float(pct),
                             "outcome": 1 if pct > 0 else 0,
                         }
@@ -1445,12 +1485,14 @@ def run_backtest(
             return sector_map[sym_up]
         return get_sector(sym_up)
 
-    ml_feature_cols = ["rsi2", "adx", "atr_pct", "dist_sma50", "dist_sma200", "vol_rel"]
+    DEFAULT_ML_FEATURE_COLS = ["rsi2", "adx", "atr_pct", "dist_sma50", "dist_sma200", "vol_rel"]
     if ai_model is not None and hasattr(ai_model, "feature_names_in_"):
         try:
-            ml_feature_cols = [str(c) for c in ai_model.feature_names_in_]
+            ml_feature_cols = list(ai_model.feature_names_in_)
         except Exception:
-            pass
+            ml_feature_cols = DEFAULT_ML_FEATURE_COLS
+    else:
+        ml_feature_cols = DEFAULT_ML_FEATURE_COLS
 
     if isinstance(data, PreparedBacktestData):
         prepared = data
@@ -1519,8 +1561,12 @@ def run_backtest(
         sma200_arr = sd.sma200
         cci_arr = sd.cci
         bb_width_arr = sd.bb_width
+        rs_ratio_arr = sd.rs_ratio
+        rs_trend_arr = sd.rs_trend
+        rs_mom20_arr = sd.rs_mom20
         spy_close_arr = sd.spy_close
         spy_sma200_arr = sd.spy_sma200
+        spy_regime_arr = sd.spy_regime
 
         for strat, w, params, gap_ratio, regime_filter, base_stop_mult in compiled_strategies:
             # Vectorized entry for base GenericStrategy genomes (optimizer hot path)
@@ -1577,6 +1623,10 @@ def run_backtest(
                         sma200_k = float(sma200_arr[prev_is[k]])
                         vol_k = float(volume_arr[prev_is[k]])
                         vol_ma20_k = float(vol_ma20_arr[prev_is[k]])
+                        rs_ratio_k = float(rs_ratio_arr[prev_is[k]])
+                        rs_trend_k = float(rs_trend_arr[prev_is[k]])
+                        rs_mom20_k = float(rs_mom20_arr[prev_is[k]])
+                        spy_regime_k = float(spy_regime_arr[prev_is[k]])
 
                         atr_pct = atr_k / prev_close_k if prev_close_k > 0 else 0.0
                         dist_sma50 = (prev_close_k - sma50_k) / prev_close_k if prev_close_k > 0 else 0.0
@@ -1600,6 +1650,10 @@ def run_backtest(
                                 "dist_sma50": dist_sma50,
                                 "dist_sma200": dist_sma200,
                                 "vol_rel": vol_rel,
+                                "rs_ratio": rs_ratio_k,
+                                "rs_trend": rs_trend_k,
+                                "rs_mom20": rs_mom20_k,
+                                "spy_regime": spy_regime_k,
                             }
                         )
                 else:
@@ -1723,6 +1777,10 @@ def run_backtest(
                     sma200 = float(sma200_arr[prev_i])
                     vol = float(volume_arr[prev_i])
                     vol_ma20 = float(vol_ma20_arr[prev_i])
+                    rs_ratio = float(rs_ratio_arr[prev_i])
+                    rs_trend = float(rs_trend_arr[prev_i])
+                    rs_mom20 = float(rs_mom20_arr[prev_i])
+                    spy_regime = float(spy_regime_arr[prev_i])
 
                     atr_pct = (atr14 / prev_close) if prev_close > 0 else 0.0
                     dist_sma50 = (prev_close - sma50) / prev_close if prev_close > 0 else 0.0
@@ -1746,6 +1804,10 @@ def run_backtest(
                             "dist_sma50": dist_sma50,
                             "dist_sma200": dist_sma200,
                             "vol_rel": vol_rel,
+                            "rs_ratio": rs_ratio,
+                            "rs_trend": rs_trend,
+                            "rs_mom20": rs_mom20,
+                            "spy_regime": spy_regime,
                         }
                     )
                     continue
@@ -1767,17 +1829,7 @@ def run_backtest(
         probs = None
         try:
             features = np.array(
-                [
-                    [
-                        cand["rsi2"],
-                        cand["adx"],
-                        cand["atr_pct"],
-                        cand["dist_sma50"],
-                        cand["dist_sma200"],
-                        cand["vol_rel"],
-                    ]
-                    for cand in all_pre_ai_candidates
-                ],
+                [[cand.get(col, 0.0) for col in ml_feature_cols] for cand in all_pre_ai_candidates],
                 dtype=float,
             )
             features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
