@@ -11,7 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data.indices import get_index_symbols
 from data.loader import fetch_data_pack
-from execution.engine import PreparedBacktestData, prepare_backtest_data, run_backtest
+from execution.engine import DEFAULT_SCORING_WEIGHTS, PreparedBacktestData, prepare_backtest_data, run_backtest
 from optimization.evolution import EvolutionEngine
 from strategies.generic import GenericStrategy
 
@@ -168,7 +168,7 @@ def _evaluate_population(
                 100000.0,
                 None,
                 global_context,
-                genome.get("scoring_weights"),
+                scoring_weights=genome.get("scoring_weights") or DEFAULT_SCORING_WEIGHTS,
             ): genome
             for genome in population
         }

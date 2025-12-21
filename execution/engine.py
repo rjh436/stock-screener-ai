@@ -574,7 +574,19 @@ def _legacy_run_backtest(
             return sector_map[sym_up]
         return get_sector(sym_up)
 
-    DEFAULT_ML_FEATURE_COLS = ["rsi2", "adx", "atr_pct", "dist_sma50", "dist_sma200", "vol_rel"]
+    DEFAULT_ML_FEATURE_COLS = [
+        "rsi2",
+        "adx",
+        "atr_pct",
+        "dist_sma50",
+        "dist_sma200",
+        "vol_rel",
+        "rs_ratio",
+        "rs_trend",
+        "rs_mom20",
+        "spy_regime",
+        "vix_rel20",
+    ]
     if ai_model is not None and hasattr(ai_model, "feature_names_in_"):
         try:
             ml_feature_cols = list(ai_model.feature_names_in_)
@@ -1500,7 +1512,19 @@ def run_backtest(
             return sector_map[sym_up]
         return get_sector(sym_up)
 
-    DEFAULT_ML_FEATURE_COLS = ["rsi2", "adx", "atr_pct", "dist_sma50", "dist_sma200", "vol_rel"]
+    DEFAULT_ML_FEATURE_COLS = [
+        "rsi2",
+        "adx",
+        "atr_pct",
+        "dist_sma50",
+        "dist_sma200",
+        "vol_rel",
+        "rs_ratio",
+        "rs_trend",
+        "rs_mom20",
+        "spy_regime",
+        "vix_rel20",
+    ]
     if ai_model is not None and hasattr(ai_model, "feature_names_in_"):
         try:
             ml_feature_cols = list(ai_model.feature_names_in_)
@@ -1607,7 +1631,7 @@ def run_backtest(
                 signal_atr = atr14_arr[prev_is]
                 valid &= np.isfinite(signal_atr) & (signal_atr > 0)
 
-                if is_income:
+                if is_income and not confluence_possible:
                     vix_prev = vix_arr[prev_is]
                     valid &= (~np.isfinite(vix_prev)) | (vix_prev <= 25.0)
 
@@ -1720,7 +1744,7 @@ def run_backtest(
                 if gap_pct < -0.08:
                     continue
 
-                if is_income:
+                if is_income and not confluence_possible:
                     vix_prev = float(vix_arr[prev_i])
                     if np_isfinite(vix_prev) and vix_prev > 25.0:
                         continue
@@ -1950,6 +1974,36 @@ def run_backtest(
                 kept = [c for c in day_list if c.sym not in super_syms]
                 kept.extend(super_candidates)
                 candidates_by_day[day_idx] = kept
+
+    # VIX gate for standalone income signals; allow super-signal confluence to bypass.
+    for day_idx, day_list in enumerate(candidates_by_day):
+        if not day_list:
+            continue
+
+        filtered: List[_Candidate] = []
+        for cand in day_list:
+            if cand.is_super_signal:
+                filtered.append(cand)
+                continue
+
+            c_params = getattr(cand.strategy_obj, "params", getattr(cand.strategy_obj, "genome", {})) or {}
+            if _strategy_role(c_params) != "income":
+                filtered.append(cand)
+                continue
+
+            sym_data = enriched.get(cand.sym)
+            if sym_data is None:
+                filtered.append(cand)
+                continue
+
+            sig_i = cand.signal_i
+            vix_prev = float(sym_data.vix[sig_i]) if 0 <= sig_i < sym_data.vix.size else float("nan")
+            if np_isfinite(vix_prev) and vix_prev > 25.0:
+                continue
+
+            filtered.append(cand)
+
+        candidates_by_day[day_idx] = filtered
 
     for day_list in candidates_by_day:
         if len(day_list) > 1:

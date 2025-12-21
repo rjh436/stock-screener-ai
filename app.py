@@ -338,10 +338,41 @@ if mode == "Live Screener":
                                     f_vol = row_signal.get("volume", 0)
                                     f_vol20 = row_signal.get("vol_ma20", 1)
                                     f_vol_rel = f_vol / (f_vol20 + 1)
-                                    
+                                    f_rs_ratio = row_signal.get("rs_ratio", 1.0)
+                                    f_rs_trend = row_signal.get("rs_trend", 0.0)
+                                    f_rs_mom20 = row_signal.get("rs_mom20", 0.0)
+                                    f_spy_regime = row_signal.get("spy_regime", 0.0)
+                                    f_vix_rel20 = row_signal.get("vix_rel20", 0.0)
+
                                     features = pd.DataFrame(
-                                        [[f_rsi2, f_adx, f_atr_pct, f_dist50, f_dist200, f_vol_rel]],
-                                        columns=["rsi2", "adx", "atr_pct", "dist_sma50", "dist_sma200", "vol_rel"],
+                                        [
+                                            [
+                                                f_rsi2,
+                                                f_adx,
+                                                f_atr_pct,
+                                                f_dist50,
+                                                f_dist200,
+                                                f_vol_rel,
+                                                f_rs_ratio,
+                                                f_rs_trend,
+                                                f_rs_mom20,
+                                                f_spy_regime,
+                                                f_vix_rel20,
+                                            ]
+                                        ],
+                                        columns=[
+                                            "rsi2",
+                                            "adx",
+                                            "atr_pct",
+                                            "dist_sma50",
+                                            "dist_sma200",
+                                            "vol_rel",
+                                            "rs_ratio",
+                                            "rs_trend",
+                                            "rs_mom20",
+                                            "spy_regime",
+                                            "vix_rel20",
+                                        ],
                                     )
                                     ai_prob = ai_model.predict_proba(features)[0][1]
                                 except Exception:
