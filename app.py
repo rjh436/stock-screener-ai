@@ -435,6 +435,11 @@ elif mode == "Backtest":
         value=False,
         help="Adds a third backtest that trades only when BOTH Wealth + Income trigger on the same symbol/day.",
     )
+    export_ml = st.checkbox(
+        "🧠 Export ML Training Data",
+        value=False,
+        help="Saves trade features and outcomes to ml_training_data.csv for AI training.",
+    )
 
     bt_duration = st.session_state.bt_duration
     days = dur_map.get(bt_duration, 1260)
@@ -526,7 +531,7 @@ elif mode == "Backtest":
                             prepared,
                             start_cash=100000.0,
                             start_date=None,
-                            export_ml_data=False,
+                            export_ml_data=export_ml,
                             ai_model=ai_model_obj,
                         ): strat.name
                         for strat in run_strategies
@@ -540,7 +545,7 @@ elif mode == "Backtest":
                                 prepared,
                                 start_cash=100000.0,
                                 start_date=None,
-                                export_ml_data=False,
+                                export_ml_data=export_ml,
                                 ai_model=ai_model_obj,
                                 super_signal_only=True,
                             )

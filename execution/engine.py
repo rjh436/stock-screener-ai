@@ -323,12 +323,7 @@ def _prob_to_size_scalar(prob: float) -> float:
     if p < 0.60:
         t = (p - 0.50) / 0.10
         return 0.25 + (0.75 * t)
-    t = (p - 0.60) / 0.40
-    if t < 0.0:
-        t = 0.0
-    elif t > 1.0:
-        t = 1.0
-    return 1.0 + (0.25 * t)
+    return 1.0
 
 
 def _strategy_role(params: Dict[str, Any]) -> str:
@@ -1937,9 +1932,8 @@ def run_backtest(
     trades_list: List[Dict[str, Any]] = []
     ml_data: Optional[List[Dict[str, Any]]] = [] if export_ml_data else None
 
-    pos_fraction = 0.20
-    max_positions = 5
-    max_risk_per_trade = 0.02
+    MAX_POSITIONS = 5
+    REBALANCE_TO_SLOTS = True
 
     for day_idx, current_dt in enumerate(all_dates):
         sector_exposure: Dict[str, float] = {}
@@ -1960,39 +1954,100 @@ def run_backtest(
             sector_exposure[sec] = sector_exposure.get(sec, 0.0) + float(val)
 
         daily_candidates = candidates_by_day[day_idx]
+        if len(daily_candidates) > 1:
+            daily_candidates.sort(key=lambda c: (c.score, c.ai_prob), reverse=True)
 
         current_sector_equity = float(sum(sector_exposure.values()))
+        current_equity = cash + current_sector_equity
+        if current_equity <= 0:
+            continue
+
+        slot_value = current_equity / MAX_POSITIONS if MAX_POSITIONS else 0.0
+        open_slots = MAX_POSITIONS - len(positions)
+
         for cand in daily_candidates:
+            if open_slots <= 0:
+                break
             if cand.score < MIN_ENTRY_SCORE:
                 break
             if cand.sym in positions:
                 continue
-            if not export_ml_data and len(positions) >= max_positions:
-                break
-
-            current_equity = cash + current_sector_equity
-            if current_equity <= 0:
+            if cand.entry_px <= 0 or slot_value <= 0:
                 continue
 
-            risk_amt = current_equity * max_risk_per_trade
-            risk_per_share = cand.entry_px - cand.stop_px
-            if risk_per_share <= cand.entry_px * 0.01:
-                risk_per_share = cand.entry_px * 0.01
+            target_entry_value = slot_value * cand.size_scalar
+            if target_entry_value <= 0:
+                continue
 
-            shares_risk = int(risk_amt / risk_per_share) if risk_per_share > 0 else 0
-            val_cap = current_equity * pos_fraction
-            shares_val = int(val_cap / cand.entry_px) if cand.entry_px > 0 else 0
-            shares = min(shares_risk, shares_val)
-            shares = int(shares * cand.size_scalar)
+            shares = int(target_entry_value / cand.entry_px)
             if shares <= 0:
                 continue
 
             cost = shares * cand.entry_px
-            if export_ml_data and cash < cost:
-                shares = 100
-                cost = 0.0
-            elif cash < cost:
-                continue
+            if cost > cash and REBALANCE_TO_SLOTS:
+                needed_cash = cost - cash
+                if needed_cash > 0:
+                    trim_list = []
+                    for sym, pos in positions.items():
+                        sym_data = enriched.get(sym)
+                        if sym_data is None:
+                            px = float(pos["entry_price"])
+                        else:
+                            loc = int(np.searchsorted(sym_data.index, current_dt))
+                            if 0 <= loc < len(sym_data.index) and sym_data.index[loc] == current_dt:
+                                px = float(sym_data.close[loc])
+                                if not np_isfinite(px):
+                                    px = float(pos["entry_price"])
+                            else:
+                                px = float(pos["entry_price"])
+                        if not np_isfinite(px) or px <= 0:
+                            continue
+                        pos_val = float(pos.get("shares", 0)) * px
+                        excess = pos_val - slot_value
+                        if excess > 0:
+                            trim_list.append((excess, sym, px))
+
+                    trim_list.sort(key=lambda t: t[0], reverse=True)
+                    for excess, sym, px in trim_list:
+                        if needed_cash <= 0:
+                            break
+                        pos = positions.get(sym)
+                        if pos is None:
+                            continue
+                        shares_avail = int(pos.get("shares", 0))
+                        if shares_avail <= 0:
+                            continue
+                        trim_value = min(excess, needed_cash)
+                        shares_to_sell = int(trim_value / px)
+                        if shares_to_sell <= 0:
+                            continue
+                        if shares_to_sell > shares_avail:
+                            shares_to_sell = shares_avail
+                        sale_proceeds = shares_to_sell * px
+                        pos["shares"] = shares_avail - shares_to_sell
+                        cash += sale_proceeds
+                        needed_cash -= sale_proceeds
+
+                        cand_sec = resolve_sector(sym)
+                        sector_exposure[cand_sec] = max(0.0, sector_exposure.get(cand_sec, 0.0) - sale_proceeds)
+                        current_sector_equity = max(0.0, current_sector_equity - sale_proceeds)
+                        if pos["shares"] <= 0:
+                            del positions[sym]
+
+                current_equity = cash + current_sector_equity
+                slot_value = current_equity / MAX_POSITIONS if MAX_POSITIONS else 0.0
+                open_slots = MAX_POSITIONS - len(positions)
+
+            if cost > cash:
+                affordable_shares = int(cash / cand.entry_px) if cand.entry_px > 0 else 0
+                if export_ml_data and (affordable_shares <= 0 or cash < cost):
+                    shares = 100
+                    cost = 0.0
+                else:
+                    if affordable_shares <= 0:
+                        continue
+                    shares = min(shares, affordable_shares)
+                    cost = shares * cand.entry_px
 
             cand_sec = resolve_sector(cand.sym)
             projected_exp = (sector_exposure.get(cand_sec, 0.0) + cost) / current_equity if current_equity > 0 else 1.0
@@ -2012,6 +2067,7 @@ def run_backtest(
             }
             sector_exposure[cand_sec] = sector_exposure.get(cand_sec, 0.0) + cost
             current_sector_equity += cost
+            open_slots -= 1
 
         for sym in list(positions.keys()):
             sym_data = enriched.get(sym)
@@ -2100,6 +2156,10 @@ def run_backtest(
                     sma200_entry = float(sym_data.sma200[entry_feat_i])
                     vol_entry = float(sym_data.volume[entry_feat_i])
                     vol_ma20_entry = float(sym_data.vol_ma20[entry_feat_i])
+                    rs_ratio_entry = float(sym_data.rs_ratio[entry_feat_i])
+                    rs_trend_entry = float(sym_data.rs_trend[entry_feat_i])
+                    rs_mom20_entry = float(sym_data.rs_mom20[entry_feat_i])
+                    spy_regime_entry = float(sym_data.spy_regime[entry_feat_i])
 
                     dist50 = (close_entry - sma50_entry) / close_entry if close_entry else 0.0
                     dist200 = (close_entry - sma200_entry) / close_entry if close_entry else 0.0
@@ -2117,6 +2177,10 @@ def run_backtest(
                             "dist_to_sma200": float(dist200),
                             "dist_sma50": float(dist50),
                             "dist_sma200": float(dist200),
+                            "rs_ratio": rs_ratio_entry,
+                            "rs_trend": rs_trend_entry,
+                            "rs_mom20": rs_mom20_entry,
+                            "spy_regime": spy_regime_entry,
                             "profit_pct": float(pct),
                             "outcome": 1 if pct > 0 else 0,
                         }
