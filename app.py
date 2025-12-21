@@ -438,7 +438,6 @@ elif mode == "Backtest":
     export_ml = st.checkbox(
         "🧠 Export ML Training Data",
         value=False,
-        help="Saves trade features and outcomes to ml_training_data.csv for AI training.",
     )
 
     bt_duration = st.session_state.bt_duration
