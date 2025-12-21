@@ -332,24 +332,6 @@ class _Candidate:
     size_scalar: float = 1.0
 
 
-def _prob_to_size_scalar(prob: float, role: str = "", is_super_signal: bool = False) -> float:
-    """V8 Pure Alpha: AI is for UPSIZING only. Never downsize below baseline 1.0x."""
-    try:
-        p = float(prob)
-    except Exception:
-        return 1.0
-    if not np.isfinite(p):
-        return 1.0
-
-    # BASELINE: No punitive downsizing. p < 0.65 stays at 1.0x baseline.
-    if p < 0.65:
-        return 1.0
-
-    # ALPHA MULTIPLIER: Scale 1.0x up to 1.5x for probabilities between 0.65 and 1.0
-    t = (p - 0.65) / 0.35
-    return 1.0 + (0.50 * max(0.0, min(1.0, t)))
-
-
 def _strategy_role(params: Dict[str, Any]) -> str:
     raw_type = params.get("type")
     if isinstance(raw_type, str):
@@ -577,27 +559,6 @@ def _legacy_run_backtest(
             return sector_map[sym_up]
         return get_sector(sym_up)
 
-    DEFAULT_ML_FEATURE_COLS = [
-        "rsi2",
-        "adx",
-        "atr_pct",
-        "dist_sma50",
-        "dist_sma200",
-        "vol_rel",
-        "rs_ratio",
-        "rs_trend",
-        "rs_mom20",
-        "spy_regime",
-        "vix_rel20",
-    ]
-    if ai_model is not None and hasattr(ai_model, "feature_names_in_"):
-        try:
-            ml_feature_cols = list(ai_model.feature_names_in_)
-        except Exception:
-            ml_feature_cols = DEFAULT_ML_FEATURE_COLS
-    else:
-        ml_feature_cols = DEFAULT_ML_FEATURE_COLS
-
     symbols = list(data_dict.keys())
     if symbol_universe:
         universe_set = set(symbol_universe)
@@ -775,55 +736,6 @@ def _legacy_run_backtest(
                     if open_px < prev_close * gap_ratio:
                         continue
 
-                ai_prob = 0.0
-                size_scalar = 1.0
-                if ai_model is not None:
-                    try:
-                        rsi2 = float(rsi2_arr[prev_i])
-                        adx = float(adx_arr[prev_i])
-                        atr14 = float(atr14_arr[prev_i])
-                        sma50 = float(sma50_arr[prev_i])
-                        sma200 = float(sma200_arr[prev_i])
-                        vol = float(volume_arr[prev_i])
-                        vol_ma20 = float(vol_ma20_arr[prev_i])
-                        rs_ratio = float(rs_ratio_arr[prev_i])
-                        rs_trend = float(rs_trend_arr[prev_i])
-                        rs_mom20 = float(rs_mom20_arr[prev_i])
-                        spy_regime = float(spy_regime_arr[prev_i])
-
-                        atr_pct = (atr14 / prev_close) if prev_close > 0 else 0.0
-                        dist_sma50 = (prev_close - sma50) / prev_close if prev_close > 0 else 0.0
-                        dist_sma200 = (prev_close - sma200) / prev_close if prev_close > 0 else 0.0
-                        vol_rel = vol / (vol_ma20 + 1.0)
-
-                        features_dict = {
-                            "rsi2": rsi2,
-                            "adx": adx,
-                            "atr_pct": atr_pct,
-                            "dist_sma50": dist_sma50,
-                            "dist_sma200": dist_sma200,
-                            "vol_rel": vol_rel,
-                            "rs_ratio": rs_ratio,
-                            "rs_trend": rs_trend,
-                            "rs_mom20": rs_mom20,
-                            "spy_regime": spy_regime,
-                        }
-                        features = np.array(
-                            [[features_dict.get(col, 0.0) for col in ml_feature_cols]],
-                            dtype=float,
-                        )
-                        features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
-                        features_df = pd.DataFrame(features, columns=ml_feature_cols)
-                        with threadpool_limits(limits=1):
-                            prob = ai_model.predict_proba(features_df)[0][1]
-                        scalar = _prob_to_size_scalar(prob, role=_strategy_role(params))
-                        if scalar <= 0.0:
-                            continue
-                        ai_prob = float(prob)
-                        size_scalar = float(scalar)
-                    except Exception:
-                        pass
-
                 signal_atr = float(atr14_arr[prev_i])
                 if not np_isfinite(signal_atr) or signal_atr <= 0:
                     continue
@@ -889,8 +801,8 @@ def _legacy_run_backtest(
                         strategy_obj=strat,
                         entry_i=i,
                         signal_i=prev_i,
-                        ai_prob=ai_prob,
-                        size_scalar=size_scalar,
+                        ai_prob=0.0,
+                        size_scalar=1.0,
                     )
                 )
 
@@ -1471,9 +1383,7 @@ def _generic_exit_decision(
 
 
 def _can_vectorize_entry(strategy_obj: Any, params: Dict[str, Any], ai_model: Any) -> bool:
-    # UNBLOCK: Allow vectorized path even with AI, provided it supports batched prediction
-    if ai_model is not None and not hasattr(ai_model, "predict_proba"):
-        return False
+    # Vectorized path for base GenericStrategy genomes (optimizer hot path).
     if not isinstance(strategy_obj, GenericStrategy):
         return False
     if strategy_obj.__class__.entry is not GenericStrategy.entry:
@@ -1523,27 +1433,6 @@ def run_backtest(
             return sector_map[sym_up]
         return get_sector(sym_up)
 
-    DEFAULT_ML_FEATURE_COLS = [
-        "rsi2",
-        "adx",
-        "atr_pct",
-        "dist_sma50",
-        "dist_sma200",
-        "vol_rel",
-        "rs_ratio",
-        "rs_trend",
-        "rs_mom20",
-        "spy_regime",
-        "vix_rel20",
-    ]
-    if ai_model is not None and hasattr(ai_model, "feature_names_in_"):
-        try:
-            ml_feature_cols = list(ai_model.feature_names_in_)
-        except Exception:
-            ml_feature_cols = DEFAULT_ML_FEATURE_COLS
-    else:
-        ml_feature_cols = DEFAULT_ML_FEATURE_COLS
-
     if isinstance(data, PreparedBacktestData):
         prepared = data
     else:
@@ -1561,9 +1450,6 @@ def run_backtest(
 
     date_to_idx = {dt: i for i, dt in enumerate(all_dates)}
     candidates_by_day: List[List[_Candidate]] = [[] for _ in range(len(all_dates))]
-    use_global_ai = ai_model is not None and hasattr(ai_model, "predict_proba")
-    all_pre_ai_candidates: List[Dict[str, Any]] = []
-
     compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float]] = []
     for strat in strategies:
         raw_params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
@@ -1604,24 +1490,16 @@ def run_backtest(
 
         volume_arr = sd.volume
         rsi2_arr = sd.rsi2
-        adx_arr = sd.adx
         atr14_arr = sd.atr14
         vol_ma20_arr = sd.vol_ma20
-        sma50_arr = sd.sma50
         sma200_arr = sd.sma200
         cci_arr = sd.cci
         bb_width_arr = sd.bb_width
-        rs_ratio_arr = sd.rs_ratio
-        rs_trend_arr = sd.rs_trend
-        rs_mom20_arr = sd.rs_mom20
         vix_arr = sd.vix
-        vix_rel20_arr = sd.vix_rel20
         spy_close_arr = sd.spy_close
         spy_sma200_arr = sd.spy_sma200
-        spy_regime_arr = sd.spy_regime
 
         for strat, w, params, gap_ratio, regime_filter, base_stop_mult in compiled_strategies:
-            is_income = _strategy_role(params) == "income"
             # Vectorized entry for base GenericStrategy genomes (optimizer hot path)
             if _can_vectorize_entry(strat, params, ai_model):
                 warmup = max(int(params.get("warmup_bars", MIN_BARS) or MIN_BARS), MIN_BARS)
@@ -1660,77 +1538,27 @@ def run_backtest(
                     continue
 
                 cand_k = np.flatnonzero(valid)
-                if use_global_ai:
-                    for k in cand_k:
-                        day_idx = int(sd.gidx[entry_is[k]]) if sd.gidx.size else date_to_idx.get(idx[entry_is[k]])
-                        if day_idx is None:
-                            continue
-                        prev_close_k = float(prev_close[k])
-                        if prev_close_k <= 0:
-                            continue
-
-                        rsi2_k = float(rsi2_arr[prev_is[k]])
-                        adx_k = float(adx_arr[prev_is[k]])
-                        atr_k = float(signal_atr[k])
-                        sma50_k = float(sma50_arr[prev_is[k]])
-                        sma200_k = float(sma200_arr[prev_is[k]])
-                        vol_k = float(volume_arr[prev_is[k]])
-                        vol_ma20_k = float(vol_ma20_arr[prev_is[k]])
-                        rs_ratio_k = float(rs_ratio_arr[prev_is[k]])
-                        rs_trend_k = float(rs_trend_arr[prev_is[k]])
-                        rs_mom20_k = float(rs_mom20_arr[prev_is[k]])
-                        spy_regime_k = float(spy_regime_arr[prev_is[k]])
-                        vix_rel20_k = float(vix_rel20_arr[prev_is[k]])
-
-                        atr_pct = atr_k / prev_close_k if prev_close_k > 0 else 0.0
-                        dist_sma50 = (prev_close_k - sma50_k) / prev_close_k if prev_close_k > 0 else 0.0
-                        dist_sma200 = (prev_close_k - sma200_k) / prev_close_k if prev_close_k > 0 else 0.0
-                        vol_rel = vol_k / (vol_ma20_k + 1.0)
-
-                        all_pre_ai_candidates.append(
-                            {
-                                "day_idx": day_idx,
-                                "sym": sym,
-                                "entry_px": float(open_px[k]),
-                                "stop_px": float(open_px[k] * 0.97),
-                                "score": float(score[k]),
-                                "strategy_name": strat.name,
-                                "strategy_obj": strat,
-                                "entry_i": int(entry_is[k]),
-                                "signal_i": int(prev_is[k]),
-                                "rsi2": rsi2_k,
-                                "adx": adx_k,
-                                "atr_pct": atr_pct,
-                                "dist_sma50": dist_sma50,
-                                "dist_sma200": dist_sma200,
-                                "vol_rel": vol_rel,
-                                "rs_ratio": rs_ratio_k,
-                                "rs_trend": rs_trend_k,
-                                "rs_mom20": rs_mom20_k,
-                                "spy_regime": spy_regime_k,
-                                "vix_rel20": vix_rel20_k,
-                            }
+                for k in cand_k:
+                    day_idx = int(sd.gidx[entry_is[k]]) if sd.gidx.size else date_to_idx.get(idx[entry_is[k]])
+                    if day_idx is None:
+                        continue
+                    candidates_by_day[day_idx].append(
+                        _Candidate(
+                            sym=sym,
+                            entry_px=float(open_px[k]),
+                            stop_px=float(open_px[k] * 0.97),
+                            score=float(score[k]),
+                            strategy_name=strat.name,
+                            strategy_obj=strat,
+                            entry_i=int(entry_is[k]),
+                            signal_i=int(prev_is[k]),
+                            ai_prob=0.0,
+                            size_scalar=1.0,
                         )
-                else:
-                    for k in cand_k:
-                        day_idx = int(sd.gidx[entry_is[k]]) if sd.gidx.size else date_to_idx.get(idx[entry_is[k]])
-                        if day_idx is None:
-                            continue
-                        candidates_by_day[day_idx].append(
-                            _Candidate(
-                                sym=sym,
-                                entry_px=float(open_px[k]),
-                                stop_px=float(open_px[k] * 0.97),
-                                score=float(score[k]),
-                                strategy_name=strat.name,
-                                strategy_obj=strat,
-                                entry_i=int(entry_is[k]),
-                                signal_i=int(prev_is[k]),
-                            )
-                        )
+                    )
                 continue
 
-            # Fallback path (supports custom strategy.entry / AI filtering)
+            # Fallback path (supports custom strategy.entry)
             for i in range(MIN_BARS + 1, n):
                 day_idx = date_to_idx.get(idx[i])
                 if day_idx is None:
@@ -1824,51 +1652,6 @@ def run_backtest(
                 if score < MIN_ENTRY_SCORE:
                     continue
 
-                if use_global_ai:
-                    rsi2 = float(rsi2_arr[prev_i])
-                    adx = float(adx_arr[prev_i])
-                    atr14 = float(atr14_arr[prev_i])
-                    sma50 = float(sma50_arr[prev_i])
-                    sma200 = float(sma200_arr[prev_i])
-                    vol = float(volume_arr[prev_i])
-                    vol_ma20 = float(vol_ma20_arr[prev_i])
-                    rs_ratio = float(rs_ratio_arr[prev_i])
-                    rs_trend = float(rs_trend_arr[prev_i])
-                    rs_mom20 = float(rs_mom20_arr[prev_i])
-                    spy_regime = float(spy_regime_arr[prev_i])
-                    vix_rel20 = float(vix_rel20_arr[prev_i])
-
-                    atr_pct = (atr14 / prev_close) if prev_close > 0 else 0.0
-                    dist_sma50 = (prev_close - sma50) / prev_close if prev_close > 0 else 0.0
-                    dist_sma200 = (prev_close - sma200) / prev_close if prev_close > 0 else 0.0
-                    vol_rel = vol / (vol_ma20 + 1.0)
-
-                    all_pre_ai_candidates.append(
-                        {
-                            "day_idx": day_idx,
-                            "sym": sym,
-                            "entry_px": float(entry_px),
-                            "stop_px": float(stop_price),
-                            "score": float(score),
-                            "strategy_name": strat.name,
-                            "strategy_obj": strat,
-                            "entry_i": i,
-                            "signal_i": prev_i,
-                            "rsi2": rsi2,
-                            "adx": adx,
-                            "atr_pct": atr_pct,
-                            "dist_sma50": dist_sma50,
-                            "dist_sma200": dist_sma200,
-                            "vol_rel": vol_rel,
-                            "rs_ratio": rs_ratio,
-                            "rs_trend": rs_trend,
-                            "rs_mom20": rs_mom20,
-                            "spy_regime": spy_regime,
-                            "vix_rel20": vix_rel20,
-                        }
-                    )
-                    continue
-
                 candidates_by_day[day_idx].append(
                     _Candidate(
                         sym=sym,
@@ -1879,59 +1662,8 @@ def run_backtest(
                         strategy_obj=strat,
                         entry_i=i,
                         signal_i=prev_i,
-                    )
-                )
-
-    if use_global_ai and all_pre_ai_candidates:
-        probs = None
-        try:
-            features = np.array(
-                [[cand.get(col, 0.0) for col in ml_feature_cols] for cand in all_pre_ai_candidates],
-                dtype=np.float32,
-            )
-            features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
-            if hasattr(ai_model, "feature_names_in_"):
-                features_input = pd.DataFrame(features, columns=ml_feature_cols)
-            else:
-                features_input = features
-            with threadpool_limits(limits=1):
-                probs = ai_model.predict_proba(features_input)[:, 1]
-        except Exception:
-            probs = None
-
-        if probs is None or len(probs) != len(all_pre_ai_candidates):
-            for cand in all_pre_ai_candidates:
-                candidates_by_day[cand["day_idx"]].append(
-                    _Candidate(
-                        sym=cand["sym"],
-                        entry_px=cand["entry_px"],
-                        stop_px=cand["stop_px"],
-                        score=cand["score"],
-                        strategy_name=cand["strategy_name"],
-                        strategy_obj=cand["strategy_obj"],
-                        entry_i=cand["entry_i"],
-                        signal_i=cand["signal_i"],
-                    )
-                )
-        else:
-            for cand, prob in zip(all_pre_ai_candidates, probs):
-                c_params = getattr(cand.get("strategy_obj"), "params", getattr(cand.get("strategy_obj"), "genome", {})) or {}
-                role = _strategy_role(c_params)
-                scalar = _prob_to_size_scalar(prob, role=role)
-                if scalar <= 0.0:
-                    continue
-                candidates_by_day[cand["day_idx"]].append(
-                    _Candidate(
-                        sym=cand["sym"],
-                        entry_px=cand["entry_px"],
-                        stop_px=cand["stop_px"],
-                        score=cand["score"],
-                        strategy_name=cand["strategy_name"],
-                        strategy_obj=cand["strategy_obj"],
-                        entry_i=cand["entry_i"],
-                        signal_i=cand["signal_i"],
-                        ai_prob=float(prob),
-                        size_scalar=float(scalar),
+                        ai_prob=0.0,
+                        size_scalar=1.0,
                     )
                 )
 
@@ -2002,7 +1734,7 @@ def run_backtest(
 
         daily_candidates = candidates_by_day[day_idx]
         if len(daily_candidates) > 1:
-            daily_candidates.sort(key=lambda c: (c.score, c.ai_prob), reverse=True)
+            daily_candidates.sort(key=lambda c: c.score, reverse=True)
 
         current_sector_equity = float(sum(sector_exposure.values()))
         current_equity = cash + current_sector_equity

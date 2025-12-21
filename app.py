@@ -4,7 +4,6 @@ import concurrent.futures
 import sys
 import os
 import json
-import joblib
 import time
 from datetime import datetime, timedelta
 
@@ -18,7 +17,6 @@ from execution.engine import (
     DEFAULT_SCORING_WEIGHTS,
     MIN_ENTRY_SCORE,
     _compute_indicators,
-    _prob_to_size_scalar,
     calculate_backtest_quality_score,
     prepare_backtest_data,
     run_backtest,
@@ -27,7 +25,6 @@ from simulation.paper_trader import PaperTrader
 from strategies.strategy_loader import load_strategies
 
 CONFIG_PATH = "config/generated_strategies.json"
-MODEL_PATH = "models/apex_neural_v6.pkl"
 st.set_page_config(page_title="Apex Sniper AI", layout="wide", page_icon="🎯")
 
 # --- HELPERS ---
@@ -43,23 +40,6 @@ def load_strategy_configs():
         if isinstance(payload, list):
             return [s for s in payload if isinstance(s, dict) and _is_wealth_strategy(s)]
     return []
-
-def load_ai_model():
-    if os.path.exists(MODEL_PATH):
-        try:
-            model = joblib.load(MODEL_PATH)
-            # CRITICAL PERFORMANCE FIX: Force model to run in serial mode.
-            # The Backtester is already parallel (up to 12 workers). If the AI also tries to be parallel,
-            # we get thread oversubscription (Deadlock/Slowdown).
-            # Setting n_jobs=1 makes it faster by eliminating overhead.
-            model.n_jobs = 1 
-            st.toast("🎯 V8 Pure Alpha Brain Deployed")
-            st.sidebar.success("👑 APEX V8 MEDALLION: PURE ALPHA ACTIVE")
-            return model
-        except Exception as e:
-            print(f"⚠️ Failed to load AI model: {e}")
-            return None
-    return None
 
 def format_rule(r):
     return f"{r.get('col')} {r.get('op')} {r.get('val', r.get('ref'))}"
@@ -176,6 +156,7 @@ with st.sidebar:
     st.title("🎯 Apex Sniper")
     st.caption("Institutional Grade Algo System")
     st.markdown("---")
+    st.success("🏆 APEX V9 MEDALLION: RAW ALPHA ACTIVE")
     mode = st.radio("Select Mode", ["Live Screener", "Backtest", "Simulator"])
     
     st.markdown("### 📘 Active Strategies")
@@ -245,13 +226,6 @@ with st.sidebar:
 # --- 1. LIVE SCREENER ---
 if mode == "Live Screener":
     st.header("🚀 Daily Opportunity Scanner")
-    ai_model = load_ai_model()
-    
-    if ai_model:
-        st.success("🧠 AI Neural Brain Loaded: filtering for high-probability setups.")
-    else:
-        st.warning("⚠️ AI Model not found. Showing raw signals only.")
-
     if "scan_results" not in st.session_state:
         st.session_state.scan_results = None
 
@@ -315,62 +289,6 @@ if mode == "Live Screener":
 
                             estimated_entry = row_current["close"]
 
-                            # AI Logic
-                            ai_prob = 0.0
-                            if ai_model:
-                                try:
-                                    f_rsi2 = row_signal.get("rsi2", 50)
-                                    f_adx = row_signal.get("adx", 0)
-                                    f_close = row_signal.get("close", 1.0)
-                                    f_atr_pct = (row_signal.get("atr14", 0) / f_close) if f_close > 0 else 0
-                                    f_sma50 = row_signal.get("sma50", f_close)
-                                    f_sma200 = row_signal.get("sma200", f_close)
-                                    f_dist50 = (f_close - f_sma50) / f_close
-                                    f_dist200 = (f_close - f_sma200) / f_close
-                                    f_vol = row_signal.get("volume", 0)
-                                    f_vol20 = row_signal.get("vol_ma20", 1)
-                                    f_vol_rel = f_vol / (f_vol20 + 1)
-                                    f_rs_ratio = row_signal.get("rs_ratio", 1.0)
-                                    f_rs_trend = row_signal.get("rs_trend", 0.0)
-                                    f_rs_mom20 = row_signal.get("rs_mom20", 0.0)
-                                    f_spy_regime = row_signal.get("spy_regime", 0.0)
-                                    f_vix_rel20 = row_signal.get("vix_rel20", 0.0)
-
-                                    features = pd.DataFrame(
-                                        [
-                                            [
-                                                f_rsi2,
-                                                f_adx,
-                                                f_atr_pct,
-                                                f_dist50,
-                                                f_dist200,
-                                                f_vol_rel,
-                                                f_rs_ratio,
-                                                f_rs_trend,
-                                                f_rs_mom20,
-                                                f_spy_regime,
-                                                f_vix_rel20,
-                                            ]
-                                        ],
-                                        columns=[
-                                            "rsi2",
-                                            "adx",
-                                            "atr_pct",
-                                            "dist_sma50",
-                                            "dist_sma200",
-                                            "vol_rel",
-                                            "rs_ratio",
-                                            "rs_trend",
-                                            "rs_mom20",
-                                            "spy_regime",
-                                            "vix_rel20",
-                                        ],
-                                    )
-                                    ai_prob = ai_model.predict_proba(features)[0][1]
-                                except Exception:
-                                    ai_prob = 0.0
-
-                            size_mult = _prob_to_size_scalar(ai_prob)
                             results.append(
                                 {
                                     "Symbol": sym,
@@ -379,8 +297,6 @@ if mode == "Live Screener":
                                     "Stop Loss": estimated_entry - (atr * stop_mult),
                                     "Target": target_txt,
                                     "Score": score,
-                                    "AI Confidence": ai_prob,
-                                    "AI Size Multiplier": size_mult,
                                 }
                             )
                     except Exception:
@@ -390,10 +306,7 @@ if mode == "Live Screener":
                 
                 if results:
                     results.sort(
-                        key=lambda x: (
-                            x.get("AI Confidence", 0.0),
-                            x.get("Score", 0.0),
-                        ),
+                        key=lambda x: x.get("Score", 0.0),
                         reverse=True,
                     )
                 st.session_state.scan_results = pd.DataFrame(results)
@@ -406,8 +319,8 @@ if mode == "Live Screener":
         else:
             c1, c2, c3 = st.columns(3)
             c1.metric("Total Signals", len(df))
-            top_ai = df["AI Confidence"].max()
-            c2.metric("Top AI Confidence", f"{top_ai:.1%}")
+            top_score = df["Score"].max()
+            c2.metric("Top Score", f"{top_score:.1f}")
             c3.metric("Top Strategy", df.iloc[0]["Strategy"])
             
             st.dataframe(
@@ -415,9 +328,7 @@ if mode == "Live Screener":
                     "Price": "${:.2f}", 
                     "Stop Loss": "${:.2f}",
                     "Score": "{:.1f}",
-                    "AI Confidence": "{:.1%}",
-                    "AI Size Multiplier": "{:.2f}x",
-                }).background_gradient(subset=["AI Confidence"], cmap="Greens", vmin=0.5, vmax=0.8), 
+                }), 
                 use_container_width=True
             )
 
@@ -439,11 +350,6 @@ elif mode == "Backtest":
             if c1.button(label) if label=="1 Year" else c2.button(label) if label=="5 Years" else c3.button(label) if label=="10 Years" else c4.button(label) if label=="20 Years" else c5.button(label):
                 st.session_state.bt_duration = label
     
-    use_ai = st.checkbox(
-        "🧠 Apply AI Filter (Conf > 60%)",
-        value=False,
-        help="Only take trades where Neural Net predicts >60% win probability.",
-    )
     export_ml = st.checkbox(
         "🧠 Export ML Training Data",
         value=False,
@@ -455,20 +361,12 @@ elif mode == "Backtest":
     if "backtest_cache" not in st.session_state:
         st.session_state.backtest_cache = {}
 
-    st.info(f"Settings: **{bt_universe}** for **{bt_duration}** | AI Filter: **{'ON' if use_ai else 'OFF'}**")
+    st.info(f"Settings: **{bt_universe}** for **{bt_duration}**")
 
     if st.button("🚀 RUN BACKTEST", type="primary"):
         if not selected_strategies:
             st.error("Please select at least one strategy.")
         else:
-            ai_model_obj = None
-            if use_ai:
-                ai_model_obj = load_ai_model()
-                if not ai_model_obj:
-                    st.warning("⚠️ AI Model not found! Running raw backtest.")
-            else:
-                ai_model_obj = None
-
             cache = st.session_state.backtest_cache
             prepared = cache.get(cache_key)
             cache_hit = prepared is not None
@@ -503,8 +401,8 @@ elif mode == "Backtest":
                 results_map = {}
                 run_strategies = load_strategies(selected_strategies)
 
-                # Optimized Parallelism: 6 workers for AI, 12 for standard runs.
-                max_workers = 6 if use_ai else 12
+                # Optimized Parallelism: 12 workers for standard runs.
+                max_workers = 12
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_map = {
@@ -515,7 +413,6 @@ elif mode == "Backtest":
                             start_cash=100000.0,
                             start_date=None,
                             export_ml_data=export_ml,
-                            ai_model=ai_model_obj,
                         ): strat.name
                         for strat in run_strategies
                     }
