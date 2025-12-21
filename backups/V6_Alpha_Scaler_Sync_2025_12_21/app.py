@@ -46,7 +46,7 @@ def load_ai_model():
             # Setting n_jobs=1 makes it faster by eliminating overhead.
             model.n_jobs = 1 
             st.toast("🎯 V6 Alpha Scaler Brain Deployed")
-            st.sidebar.success("🏆 APEX V7 MEDALLION: WEALTH-ONLY ACTIVE")
+            st.sidebar.success("🚀 APEX V6 ALPHA SCALER ACTIVE")
             return model
         except Exception as e:
             print(f"⚠️ Failed to load AI model: {e}")
@@ -177,9 +177,7 @@ with st.sidebar:
     selected_strategies = []
     if strategies_list:
         for i, s in enumerate(strategies_list):
-            strat_name = s.get("name", "")
-            default_on = "income" not in str(strat_name).lower()
-            use = st.checkbox(strat_name, value=default_on, key=f"chk_{strat_name}_{i}")
+            use = st.checkbox(s.get('name'), value=True, key=f"chk_{s.get('name')}_{i}")
             if use: selected_strategies.append(s)
             
             with st.expander(f"📘 Strategy Guide: {s.get('name', 'Strategy')}"):
@@ -467,7 +465,6 @@ elif mode == "Backtest":
     run_super_signal = st.checkbox(
         "⭐ Run Super Signal Confluence",
         value=False,
-        key="run_super_signal",
         help="Adds a third backtest that trades only when BOTH Wealth + Income trigger on the same symbol/day.",
     )
     export_ml = st.checkbox(
@@ -554,8 +551,8 @@ elif mode == "Backtest":
                     else:
                         super_signal_pair = (wealth_strat, income_strat)
 
-                # Optimized Parallelism: 6 workers for AI, 12 for standard runs.
-                max_workers = 6 if use_ai else 12
+                # Optimized Parallelism: 6 workers for AI, 10 for standard runs.
+                max_workers = 6 if use_ai else 10
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_map = {

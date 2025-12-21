@@ -333,6 +333,10 @@ class _Candidate:
 
 
 def _prob_to_size_scalar(prob: float, role: str = "", is_super_signal: bool = False) -> float:
+    # Super Signal Confluence always gets max size.
+    if is_super_signal:
+        return 1.5
+
     try:
         p = float(prob)
     except (TypeError, ValueError):
@@ -1931,6 +1935,59 @@ def run_backtest(
                     )
                 )
 
+    # --- Super Signal Confluence (Wealth + Income on same symbol/day) ---
+    if confluence_possible:
+        for day_idx, day_list in enumerate(candidates_by_day):
+            if not day_list:
+                continue
+
+            wealth_by_sym: Dict[str, _Candidate] = {}
+            income_by_sym: Dict[str, _Candidate] = {}
+
+            for cand in day_list:
+                c_params = getattr(cand.strategy_obj, "params", getattr(cand.strategy_obj, "genome", {})) or {}
+                role = _strategy_role(c_params or {})
+                if role == "wealth":
+                    best = wealth_by_sym.get(cand.sym)
+                    if best is None or cand.score > best.score:
+                        wealth_by_sym[cand.sym] = cand
+                elif role == "income":
+                    best = income_by_sym.get(cand.sym)
+                    if best is None or cand.score > best.score:
+                        income_by_sym[cand.sym] = cand
+
+            super_syms = set(wealth_by_sym).intersection(income_by_sym)
+            if not super_syms:
+                if super_signal_only:
+                    candidates_by_day[day_idx] = []
+                continue
+
+            super_candidates: List[_Candidate] = []
+            for sym in super_syms:
+                w_cand = wealth_by_sym[sym]
+                i_cand = income_by_sym[sym]
+            super_candidates.append(
+                _Candidate(
+                    sym=sym,
+                    entry_px=w_cand.entry_px,
+                    stop_px=w_cand.stop_px,
+                    score=max(w_cand.score, i_cand.score),
+                    strategy_name=SUPER_SIGNAL_NAME,
+                    strategy_obj=w_cand.strategy_obj,
+                    entry_i=w_cand.entry_i,
+                    signal_i=w_cand.signal_i,
+                    is_super_signal=True,
+                    size_scalar=1.5,
+                )
+            )
+
+            if super_signal_only:
+                candidates_by_day[day_idx] = super_candidates
+            else:
+                kept = [c for c in day_list if c.sym not in super_syms]
+                kept.extend(super_candidates)
+                candidates_by_day[day_idx] = kept
+
     # VIX scaling: neutralize regime by adjusting size instead of vetoing trades.
     for day_idx, day_list in enumerate(candidates_by_day):
         if not day_list:
@@ -1955,8 +2012,7 @@ def run_backtest(
 
             if vix_prev > 0:
                 base_size = float(getattr(cand, "size_scalar", 1.0) or 1.0)
-                vix_scalar = max(0.6, min(1.1, 20.0 / vix_prev))
-                cand.size_scalar = base_size * vix_scalar
+                cand.size_scalar = base_size * (20.0 / vix_prev)
 
             filtered.append(cand)
 
