@@ -241,8 +241,22 @@ if mode == "Live Screener":
         with st.spinner(f"Scanning {universe}..."):
             symbols = get_index_symbols(universe)
             base_days = 400
-            data = fetch_data_pack(symbols, days=base_days, max_workers=12)
-            g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=600, max_workers=12) or {}
+            data = fetch_data_pack(
+                symbols,
+                days=base_days,
+                max_workers=12,
+                force_fresh=True,
+                inject_live=True,
+                max_lag_days=0,
+            )
+            g_data = fetch_data_pack(
+                ["SPY", "$VIX", "VIX"],
+                days=600,
+                max_workers=12,
+                force_fresh=True,
+                inject_live=True,
+                max_lag_days=0,
+            ) or {}
             spy_df = g_data.get("SPY")
             vix_df = g_data.get("$VIX")
             if vix_df is None:

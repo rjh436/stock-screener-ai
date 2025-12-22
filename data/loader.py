@@ -1,9 +1,8 @@
 import pandas as pd
 import numpy as np
-import streamlit as st
 import os
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from .schwab_client import sd
 from .cache_manager import DataCache
 from concurrent.futures import ThreadPoolExecutor
@@ -42,23 +41,103 @@ def clean_dataframe(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         return None
 
 
+def _as_price(val) -> Optional[float]:
+    try:
+        val = float(val)
+    except Exception:
+        return None
+    if not np.isfinite(val) or val <= 0:
+        return None
+    return val
+
+
+def _extract_quote_fields(quote: Dict, sym: str) -> Tuple[Optional[float], Optional[float], float]:
+    if not isinstance(quote, dict):
+        return None, None, 0.0
+    sym_data = quote.get(sym) or quote.get(sym.upper())
+    if not isinstance(sym_data, dict):
+        return None, None, 0.0
+    q_data = sym_data.get("quote") if isinstance(sym_data.get("quote"), dict) else sym_data
+    if not isinstance(q_data, dict):
+        return None, None, 0.0
+    open_price = _as_price(q_data.get("openPrice") or q_data.get("open"))
+    last_price = _as_price(
+        q_data.get("lastPrice")
+        or q_data.get("mark")
+        or q_data.get("markPrice")
+        or q_data.get("closePrice")
+    )
+    try:
+        volume = float(q_data.get("totalVolume") or q_data.get("volume") or 0.0)
+    except Exception:
+        volume = 0.0
+    return open_price, last_price, volume
+
+
+def inject_live_quote(df: pd.DataFrame, sym: str) -> pd.DataFrame:
+    """Append a synthetic bar using live quote data when today's bar is missing."""
+    if df is None or df.empty:
+        return df
+    try:
+        q = sd.get_quote(sym)
+    except Exception:
+        return df
+    open_price, last_price, volume = _extract_quote_fields(q, sym)
+    if open_price is None and last_price is None:
+        return df
+
+    try:
+        last_date = df.index.max().date()
+    except Exception:
+        return df
+    today = datetime.now(timezone.utc).date()
+    if last_date == today:
+        return df
+
+    open_val = open_price or last_price
+    close_val = last_price or open_val
+    if open_val is None or close_val is None:
+        return df
+    high_val = max(open_val, close_val)
+    low_val = min(open_val, close_val)
+    row_ts = pd.Timestamp(today)
+    live_row = pd.DataFrame(
+        {
+            "open": [open_val],
+            "high": [high_val],
+            "low": [low_val],
+            "close": [close_val],
+            "volume": [volume],
+        },
+        index=[row_ts],
+    )
+    df = pd.concat([df, live_row])
+    df = df[~df.index.duplicated(keep="last")]
+    return df.sort_index()
+
+
 def fetch_single_symbol(
     sym: str,
     days: int = 1260,
     force_fresh: bool = False,
     *,
     require_fresh: bool = False,
+    inject_live: bool = False,
     max_lag_days: Optional[int] = None,
 ) -> Optional[pd.DataFrame]:
     """
     Fetch data for a single symbol.
     If force_fresh=True, it will ALWAYS ping the API for the latest data and merge it.
+    If inject_live=True, it appends a synthetic bar using live quotes when today's bar is missing.
     """
     if max_lag_days is None:
-        try:
-            max_lag_days = int(os.getenv("DATA_MAX_LAG_DAYS", "4"))
-        except Exception:
-            max_lag_days = 4
+        if inject_live or force_fresh or require_fresh:
+            max_lag_days = 0
+        else:
+            try:
+                max_lag_days = int(os.getenv("DATA_MAX_LAG_DAYS", "4"))
+            except Exception:
+                max_lag_days = 4
     max_lag_days = max(0, int(max_lag_days))
 
     end = datetime.now(timezone.utc)
@@ -85,7 +164,7 @@ def fetch_single_symbol(
         today = end.date()
         if (today - last_date).days <= max_lag_days:
             if df.index.min() <= start_naive:
-                return df[df.index >= start_naive]
+                return inject_live_quote(df[df.index >= start_naive], sym) if inject_live else df[df.index >= start_naive]
 
     try:
         candles = sd.price_daily(sym, start_datetime=fetch_start, end_datetime=end)
@@ -110,7 +189,10 @@ def fetch_single_symbol(
         if require_fresh:
             return None
         # Preserve cached data (even if slightly stale) instead of dropping the symbol.
-        return df[df.index >= start_naive] if df is not None else None
+        if df is None:
+            return None
+        df = df[df.index >= start_naive]
+        return inject_live_quote(df, sym) if inject_live else df
 
     if df is not None:
         if require_fresh:
@@ -121,11 +203,11 @@ def fetch_single_symbol(
                     return None
             except Exception:
                 return None
-        return df[df.index >= start_naive]
+        df = df[df.index >= start_naive]
+        return inject_live_quote(df, sym) if inject_live else df
     return None
 
 
-@st.cache_data(persist="disk", ttl=86400)
 def fetch_data_pack(
     symbols: List[str],
     days: int = 1260,
@@ -134,6 +216,7 @@ def fetch_data_pack(
     require_full_lookback: bool = False,
     force_fresh: bool = False,
     require_fresh: bool = False,
+    inject_live: bool = False,
     max_lag_days: Optional[int] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Bulk fetch for Backtester (Threaded for speed)."""
@@ -155,12 +238,17 @@ def fetch_data_pack(
             max_lag_days = 4
     max_lag_days = max(0, int(max_lag_days))
 
+    if inject_live and len(symbols) > 100:
+        print("⚠️ inject_live disabled for large symbol sets (>100) to avoid rate limits.")
+        inject_live = False
+
     def load(sym: str):
         return sym, fetch_single_symbol(
             sym,
             days,
             force_fresh=force_fresh,
             require_fresh=require_fresh,
+            inject_live=inject_live,
             max_lag_days=max_lag_days,
         )
 
