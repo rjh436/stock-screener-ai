@@ -55,6 +55,13 @@ def _compute_indicators(
         df = df.sort_index().copy()
         df.columns = df.columns.str.lower()
 
+        if spy_df is not None and not spy_df.empty:
+            spy_df = spy_df.copy()
+            spy_df.columns = spy_df.columns.str.lower()
+        if vix_df is not None and not vix_df.empty:
+            vix_df = vix_df.copy()
+            vix_df.columns = vix_df.columns.str.lower()
+
         for p in (10, 20, 50, 200):
             df[f"sma{p}"] = df["close"].rolling(p).mean()
             df[f"ema{p}"] = df["close"].ewm(span=p, adjust=False).mean()

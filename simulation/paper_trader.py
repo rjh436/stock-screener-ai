@@ -560,6 +560,7 @@ class PaperTrader:
         }
 
     def _execute_governor(self, candidates: List[Dict]) -> Dict[str, Any]:
+        assert MIN_ENTRY_SCORE == 120.0
         logs: List[str] = []
         orders: List[Dict] = []
         normalized = []
@@ -576,7 +577,7 @@ class PaperTrader:
         for cand in normalized:
             if len(self.portfolio) + len(self.state.get("pending_orders", [])) >= MAX_POSITIONS:
                 logs.append(f"⚠️ REJECTED {cand['symbol']}: All {MAX_POSITIONS} slots full")
-                break
+                continue
             if cand["symbol"] in self.portfolio:
                 logs.append(f"ℹ️ SKIPPED {cand['symbol']}: Already held")
                 continue
@@ -653,10 +654,11 @@ class PaperTrader:
                 available_cash -= position_val
                 orders.append(order)
                 logs.append(f"⏳ QUEUED {cand['symbol']} x{shares} @ ${cand['price']:.2f} (Stop: ${cand['stop']:.2f})")
-        return {"queued_count": len(orders), "orders": orders, "logs": logs}
+        return {"count": len(orders), "orders": orders, "logs": logs}
 
     def run_daily_scan(self, data_dict: Optional[Dict[str, pd.DataFrame]] = None, global_data: Optional[Dict[str, pd.DataFrame]] = None, scoring_weights: Optional[Dict] = None, progress_callback: Optional[Callable[[int, int], None]] = None) -> Dict[str, Any]:
         # PHASE 3 FIX: REAL-TIME SCANNING (Scan Today, Trade Tomorrow)
+        assert MIN_ENTRY_SCORE == 120.0
         scoring = scoring_weights or self.scoring_weights
         vix_df = global_data.get("VIX") if global_data else None
         spy_df = global_data.get("SPY") if global_data else None
@@ -670,6 +672,7 @@ class PaperTrader:
             print(f"Loaded {len(tickers)} tickers from S&P 1500")
 
         candidates = []
+        scan_logs: List[str] = []
         total_steps = (len(self.strategies) * len(data_dict)) if data_dict else 0
         processed = 0
         for strat in self.strategies:
@@ -708,6 +711,9 @@ class PaperTrader:
                     raw_score = calculate_backtest_quality_score(row_prev, strat.name, weights=scoring)
                     score = raw_score * 1.3 if "wealth" in strat.name.lower() else raw_score
                     if score < MIN_ENTRY_SCORE:
+                        scan_logs.append(
+                            f"⚠️ REJECTED {sym}: Low score {score:.1f} < {MIN_ENTRY_SCORE:.1f}"
+                        )
                         continue
 
                     # Store BOTH yesterday's close AND open
@@ -732,7 +738,9 @@ class PaperTrader:
                     })
                 except: continue
 
-        return self._execute_governor(candidates)
+        result = self._execute_governor(candidates)
+        logs = scan_logs + (result.get("logs") or [])
+        return {"count": result.get("count", 0), "orders": result.get("orders", []), "logs": logs}
 
     def execute_entries(self, candidates: List[Dict]) -> Dict[str, Any]:
         return self._execute_governor(candidates)

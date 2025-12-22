@@ -6,6 +6,7 @@ import os
 import json
 import time
 from datetime import datetime, timedelta
+from typing import List
 
 # Ensure project root is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -21,7 +22,7 @@ from execution.engine import (
     prepare_backtest_data,
     run_backtest,
 )
-from simulation.paper_trader import PaperTrader
+from simulation.paper_trader import PaperTrader, MAX_POSITIONS
 from strategies.strategy_loader import load_strategies
 
 CONFIG_PATH = "config/generated_strategies.json"
@@ -233,14 +234,19 @@ if mode == "Live Screener":
     with col1:
         universe = st.selectbox("Universe", ["S&P 500", "S&P 100", "S&P 1500"], index=2)
         run_btn = st.button("RUN SCAN", type="primary")
+    with col2:
+        show_all_setups = st.checkbox("🔍 Show All Setups", value=True)
     
     if run_btn:
         with st.spinner(f"Scanning {universe}..."):
             symbols = get_index_symbols(universe)
             base_days = 400
-            data = fetch_data_pack(symbols, days=base_days)
-            g_data = fetch_data_pack(["SPY"], days=base_days + 200) or {}
+            data = fetch_data_pack(symbols, days=base_days, max_workers=12)
+            g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=600, max_workers=12) or {}
             spy_df = g_data.get("SPY")
+            vix_df = g_data.get("$VIX")
+            if vix_df is None:
+                vix_df = g_data.get("VIX")
             results = []
             
             if not selected_strategies:
@@ -257,7 +263,7 @@ if mode == "Live Screener":
                     if df is None or df.empty:
                         continue
                     try:
-                        df_ind = _compute_indicators(df.copy(), spy_df=spy_df)
+                        df_ind = _compute_indicators(df.copy(), spy_df=spy_df, vix_df=vix_df)
                         if df_ind.empty or len(df_ind) < 2:
                             continue
 
@@ -267,8 +273,7 @@ if mode == "Live Screener":
 
                         for strat in strat_objects:
                             s_conf = strat.params or {}
-                            if not strat.entry(df_ind, signal_i):
-                                continue
+                            entry_ok = strat.entry(df_ind, signal_i)
 
                             atr = row_signal.get("atr14", row_signal["close"] * 0.02)
                             stop_mult = float(s_conf.get("stop_loss_atr", 3.0))
@@ -278,9 +283,7 @@ if mode == "Live Screener":
                                 s_conf.get("name", ""),
                                 DEFAULT_SCORING_WEIGHTS,
                             )
-                        score = raw_score * 1.3 if "wealth" in str(s_conf.get("name", "")).lower() else raw_score
-                        if score < MIN_ENTRY_SCORE:
-                            continue
+                            score = raw_score * 1.3 if "wealth" in str(s_conf.get("name", "")).lower() else raw_score
 
                             exits = s_conf.get("exit_rules", [])
                             target_txt = (
@@ -299,22 +302,57 @@ if mode == "Live Screener":
                                     "Stop Loss": estimated_entry - (atr * stop_mult),
                                     "Target": target_txt,
                                     "Score": score,
+                                    "Entry_OK": entry_ok,
                                 }
                             )
                     except Exception:
                         continue
                 status.empty()
                 progress_bar.empty()
-                
+
+                held_syms = set()
+                pending_syms = set()
+                available_slots = MAX_POSITIONS
+                if selected_strategies:
+                    pt_state = PaperTrader(configs=selected_strategies).state
+                    held_syms = set(pt_state.get("positions", {}).keys())
+                    pending_syms = {
+                        o.get("symbol")
+                        for o in pt_state.get("pending_orders", [])
+                        if o.get("symbol")
+                    }
+                    available_slots = max(0, MAX_POSITIONS - len(held_syms) - len(pending_syms))
+
                 if results:
                     results.sort(
                         key=lambda x: x.get("Score", 0.0),
                         reverse=True,
                     )
+                    slots_remaining = available_slots
+                    for row in results:
+                        sym = row.get("Symbol")
+                        score_val = row.get("Score", 0.0) or 0.0
+                        entry_ok = bool(row.pop("Entry_OK", False))
+                        if sym in held_syms:
+                            status_txt = "ℹ️ HELD"
+                        elif sym in pending_syms:
+                            status_txt = "⏳ PENDING"
+                        elif not entry_ok:
+                            status_txt = "⚠️ REJECTED: No Signal"
+                        elif score_val < MIN_ENTRY_SCORE:
+                            status_txt = "⚠️ REJECTED: Low Score"
+                        elif slots_remaining <= 0:
+                            status_txt = "⚠️ REJECTED: Slots Full"
+                        else:
+                            status_txt = "✅ TRADABLE"
+                            slots_remaining -= 1
+                        row["Status"] = status_txt
                 st.session_state.scan_results = pd.DataFrame(results)
 
     if st.session_state.scan_results is not None:
         df = st.session_state.scan_results
+        if not show_all_setups and "Status" in df.columns:
+            df = df[df["Status"] == "✅ TRADABLE"]
 
         if df.empty:
             st.info("No signals found today.")
@@ -325,14 +363,30 @@ if mode == "Live Screener":
             c2.metric("Top Score", f"{top_score:.1f}")
             c3.metric("Top Strategy", df.iloc[0]["Strategy"])
             
-            st.dataframe(
+            def _status_style(series: pd.Series) -> List[str]:
+                styles = []
+                for val in series:
+                    if isinstance(val, str) and val.startswith("✅"):
+                        styles.append("background-color: #1a7f37; color: #ffffff; font-weight: 600;")
+                    elif isinstance(val, str) and val.startswith("⏳"):
+                        styles.append("background-color: #f1c232; color: #000000; font-weight: 600;")
+                    elif isinstance(val, str) and val.startswith("ℹ️"):
+                        styles.append("background-color: #0b5394; color: #ffffff; font-weight: 600;")
+                    elif isinstance(val, str) and val.startswith("⚠️"):
+                        styles.append("background-color: #8b0000; color: #ffffff; font-weight: 600;")
+                    else:
+                        styles.append("")
+                return styles
+
+            styled = (
                 df.style.format({
-                    "Price": "${:.2f}", 
+                    "Price": "${:.2f}",
                     "Stop Loss": "${:.2f}",
                     "Score": "{:.1f}",
-                }), 
-                use_container_width=True
+                })
+                .apply(_status_style, subset=["Status"])
             )
+            st.dataframe(styled, use_container_width=True)
 
 # --- 2. BACKTEST ---
 elif mode == "Backtest":
@@ -495,7 +549,7 @@ elif mode == "Simulator":
             symbols = get_index_symbols("S&P 1500")
             base_days = 400
             data_pack = fetch_data_pack(symbols, days=base_days)
-            g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=base_days + 200) or {}
+            g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=600) or {}
             spy_df = g_data.get("SPY")
             vix_df = g_data.get("$VIX")
             if vix_df is None:
@@ -518,7 +572,7 @@ elif mode == "Simulator":
             )
             orders = scan_result.get("orders", []) if scan_result else []
             logs = scan_result.get("logs", []) if scan_result else []
-            queued_count = scan_result.get("queued_count", len(orders)) if scan_result else 0
+            queued_count = scan_result.get("count", len(orders)) if scan_result else 0
             status_text.empty()
             progress_bar.empty()
             
