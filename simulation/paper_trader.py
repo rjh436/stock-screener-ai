@@ -3,7 +3,7 @@ import json
 import os
 import pandas as pd
 import pytz
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 from data.loader import fetch_single_symbol, fetch_data_pack
@@ -342,7 +342,9 @@ class PaperTrader:
 
         today_ny = now_ny.date()
         market_open_time = now_ny.replace(hour=9, minute=30, second=0, microsecond=0)
+        grace_deadline = market_open_time + timedelta(minutes=5)
         is_market_open = now_ny >= market_open_time
+        after_grace = now_ny >= grace_deadline
 
         print(f"🔔 Processing {len(self.state['pending_orders'])} pending orders...")
         print(f"📍 NY Time: {now_ny.strftime('%Y-%m-%d %H:%M:%S')} | Market Open: {is_market_open}")
@@ -353,15 +355,31 @@ class PaperTrader:
             fill_price = 0.0
             
             # 1. Get Fill Price
+            quote_payload = None
+            quote_has_price = False
             try:
                 q = sd.get_quote(sym)
                 if q and sym in q and "quote" in q[sym]:
-                    open_price = float(q[sym]["quote"].get("openPrice", 0))
-                    if open_price > 0: fill_price = open_price
+                    quote_payload = q[sym]["quote"]
             except: pass
             
-            # Fallback
-            if fill_price == 0:
+            if quote_payload:
+                open_price = float(quote_payload.get("openPrice") or 0)
+                last_price = float(quote_payload.get("lastPrice") or 0)
+                mark_price = float(quote_payload.get("markPrice") or quote_payload.get("mark") or 0)
+                quote_has_price = any(p > 0 for p in (open_price, last_price, mark_price))
+
+                if open_price > 0:
+                    fill_price = open_price
+                elif after_grace and last_price > 0:
+                    fill_price = last_price
+                elif last_price > 0:
+                    fill_price = last_price
+                elif mark_price > 0:
+                    fill_price = mark_price
+
+            # Tier 3 Fallback: historical open only if quote is empty
+            if fill_price == 0 and not quote_has_price:
                 df = fetch_single_symbol(sym, days=5, force_fresh=True)
                 if df is not None and not df.empty:
                     last_dt = df.index[-1]
@@ -371,7 +389,12 @@ class PaperTrader:
 
             # WAITING logic
             if fill_price <= 0:
-                reason = "Market not open" if not is_market_open else "No Open Price yet"
+                if not is_market_open:
+                    reason = "Market not open"
+                elif not after_grace:
+                    reason = "Waiting for official open price"
+                else:
+                    reason = "No usable price after grace"
                 fill_log.append(f"⏳ WAITING {sym}: {reason}")
                 remaining_orders.append(order)
                 continue

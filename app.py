@@ -678,6 +678,8 @@ elif mode == "Simulator":
         st.info("Portfolio is empty.")
     
     st.subheader("⏳ Pending Orders (Market-On-Open)")
+    if "pending_fill_logs" not in st.session_state:
+        st.session_state.pending_fill_logs = []
     pending = state.get("pending_orders", [])
     if pending:
         df_pending = pd.DataFrame(pending)
@@ -688,15 +690,20 @@ elif mode == "Simulator":
         if st.button("🔔 Process Pending Orders (Morning Fill)", type="primary"):
             with st.spinner("Executing Market-On-Open orders..."):
                 fill_logs = pt.process_pending_orders()
-            if fill_logs:
-                for log in fill_logs:
-                    if "✅" in log: st.success(log)
-                    else: st.error(log)
-                st.rerun()
-            else:
-                st.info("No orders filled.")
+            st.session_state.pending_fill_logs = fill_logs or ["ℹ️ No orders filled."]
     else:
         st.caption("No orders queued for tomorrow.")
+
+    if st.session_state.pending_fill_logs:
+        for log in st.session_state.pending_fill_logs:
+            if "✅" in log:
+                st.success(log)
+            elif "❌" in log:
+                st.error(log)
+            elif "⏳" in log:
+                st.warning(log)
+            else:
+                st.info(log)
 
     st.subheader("📜 Professional Trade Ledger")
     ledger_path = "data/sim_trade_history.csv"
