@@ -238,140 +238,163 @@ if mode == "Live Screener":
         show_all_setups = st.checkbox("🔍 Show All Setups", value=True)
     
     if run_btn:
-        with st.spinner(f"Scanning {universe}..."):
-            symbols = get_index_symbols(universe)
-            base_days = 400
-            data = fetch_data_pack(
-                symbols,
-                days=base_days,
-                max_workers=12,
-                force_fresh=True,
-                inject_live=True,
-                max_lag_days=0,
-            )
-            g_data = fetch_data_pack(
-                ["SPY", "$VIX", "VIX"],
-                days=600,
-                max_workers=12,
-                force_fresh=True,
-                inject_live=True,
-                max_lag_days=0,
-            ) or {}
-            spy_df = g_data.get("SPY")
-            vix_df = g_data.get("$VIX")
-            if vix_df is None:
-                vix_df = g_data.get("VIX")
-            results = []
-            
-            if not selected_strategies:
-                st.warning("No strategies selected!")
-            else:
-                strat_objects = load_strategies(selected_strategies)
-                total_symbols = len(data)
-                progress_bar = st.progress(0)
-                status_msg = st.empty()
-                timer_msg = st.empty()
-                start_time = time.time()
-                for i, (sym, df) in enumerate(data.items(), start=1):
-                    if total_symbols:
-                        pct = i / total_symbols
-                    else:
-                        pct = 0
-                    elapsed = time.time() - start_time
-                    est_remaining = (elapsed / i) * (total_symbols - i) if i > 0 else 0
+        progress_bar = st.progress(0, text="📡 Initializing Data Engine...")
+        status_msg = st.empty()
+        timer_msg = st.empty()
+        start_time = time.time()
 
-                    progress_bar.progress(pct, text=f"{int(pct*100)}% Complete")
-                    status_msg.write(f"🔍 Analyzing **{sym}** ({i}/{total_symbols})")
-                    timer_msg.caption(f"⏱️ Estimated time remaining: {int(est_remaining)}s")
-                    if df is None or df.empty:
-                        continue
+        status_msg.info("📦 Fetching S&P 1500 Foundation...")
+        progress_bar.progress(0.2, text="20% Complete")
+        symbols = get_index_symbols(universe)
+        base_days = 400
+        data = fetch_data_pack(
+            symbols,
+            days=base_days,
+            max_workers=12,
+            force_fresh=True,
+            inject_live=True,
+            max_lag_days=0,
+        )
+        g_data = fetch_data_pack(
+            ["SPY", "$VIX", "VIX"],
+            days=600,
+            max_workers=12,
+            force_fresh=True,
+            inject_live=True,
+            max_lag_days=0,
+        ) or {}
+        spy_df = g_data.get("SPY")
+        vix_df = g_data.get("$VIX")
+        if vix_df is None:
+            vix_df = g_data.get("VIX")
+        results = []
+        
+        if not selected_strategies:
+            st.warning("No strategies selected!")
+            progress_bar.empty()
+            status_msg.empty()
+            timer_msg.empty()
+        else:
+            strat_objects = load_strategies(selected_strategies)
+            total_symbols = len(data)
+            status_msg.write(f"🔍 Analyzing symbols... (0/{total_symbols})")
+            ema_seconds = None
+            ema_alpha = 0.2
+            timer_msg.caption("⏱️ Calibrating...")
+            for i, (sym, df) in enumerate(data.items(), start=1):
+                symbol_start = time.time()
+                if df is not None and not df.empty:
                     try:
                         df_ind = _compute_indicators(df.copy(), spy_df=spy_df, vix_df=vix_df)
-                        if df_ind.empty or len(df_ind) < 2:
-                            continue
+                        if not df_ind.empty and len(df_ind) >= 2:
+                            signal_i = len(df_ind) - 2
+                            row_signal = df_ind.iloc[signal_i]
+                            row_current = df_ind.iloc[-1]
 
-                        signal_i = len(df_ind) - 2
-                        row_signal = df_ind.iloc[signal_i]
-                        row_current = df_ind.iloc[-1]
+                            for strat in strat_objects:
+                                s_conf = strat.params or {}
+                                entry_ok = strat.entry(df_ind, signal_i)
 
-                        for strat in strat_objects:
-                            s_conf = strat.params or {}
-                            entry_ok = strat.entry(df_ind, signal_i)
+                                atr = row_signal.get("atr14", row_signal["close"] * 0.02)
+                                stop_mult = float(s_conf.get("stop_loss_atr", 3.0))
 
-                            atr = row_signal.get("atr14", row_signal["close"] * 0.02)
-                            stop_mult = float(s_conf.get("stop_loss_atr", 3.0))
+                                raw_score = calculate_backtest_quality_score(
+                                    row_signal,
+                                    s_conf.get("name", ""),
+                                    DEFAULT_SCORING_WEIGHTS,
+                                )
+                                score = raw_score * 1.3 if "wealth" in str(s_conf.get("name", "")).lower() else raw_score
 
-                            raw_score = calculate_backtest_quality_score(
-                                row_signal,
-                                s_conf.get("name", ""),
-                                DEFAULT_SCORING_WEIGHTS,
-                            )
-                            score = raw_score * 1.3 if "wealth" in str(s_conf.get("name", "")).lower() else raw_score
+                                exits = s_conf.get("exit_rules", [])
+                                target_txt = (
+                                    f"${row_signal['close'] * float(exits[0].get('val')):.2f}"
+                                    if exits and exits[0].get("type") == "profit_target"
+                                    else "OPEN"
+                                )
 
-                            exits = s_conf.get("exit_rules", [])
-                            target_txt = (
-                                f"${row_signal['close'] * float(exits[0].get('val')):.2f}"
-                                if exits and exits[0].get("type") == "profit_target"
-                                else "OPEN"
-                            )
+                                estimated_entry = row_current["close"]
 
-                            estimated_entry = row_current["close"]
-
-                            results.append(
-                                {
-                                    "Symbol": sym,
-                                    "Strategy": s_conf.get("name", strat.name),
-                                    "Price": row_current["close"],
-                                    "Stop Loss": estimated_entry - (atr * stop_mult),
-                                    "Target": target_txt,
-                                    "Score": score,
-                                    "Entry_OK": entry_ok,
-                                }
-                            )
+                                results.append(
+                                    {
+                                        "Symbol": sym,
+                                        "Strategy": s_conf.get("name", strat.name),
+                                        "Price": row_current["close"],
+                                        "Stop Loss": estimated_entry - (atr * stop_mult),
+                                        "Target": target_txt,
+                                        "Score": score,
+                                        "Entry_OK": entry_ok,
+                                    }
+                                )
                     except Exception:
-                        continue
-                progress_bar.empty()
-                status_msg.empty()
-                timer_msg.empty()
+                        pass
 
-                held_syms = set()
-                pending_syms = set()
-                available_slots = MAX_POSITIONS
-                if selected_strategies:
-                    pt_state = PaperTrader(configs=selected_strategies).state
-                    held_syms = set(pt_state.get("positions", {}).keys())
-                    pending_syms = {
-                        o.get("symbol")
-                        for o in pt_state.get("pending_orders", [])
-                        if o.get("symbol")
-                    }
-                    available_slots = max(0, MAX_POSITIONS - len(held_syms) - len(pending_syms))
+                step_time = time.time() - symbol_start
+                if ema_seconds is None:
+                    ema_seconds = step_time
+                else:
+                    ema_seconds = (ema_alpha * step_time) + ((1 - ema_alpha) * ema_seconds)
 
-                if results:
-                    results.sort(
-                        key=lambda x: x.get("Score", 0.0),
-                        reverse=True,
+                if total_symbols:
+                    pct = i / total_symbols
+                    progress_pct = 0.2 + (0.8 * pct)
+                else:
+                    progress_pct = 0.2
+
+                if i <= 50:
+                    eta_text = "⏱️ Calibrating..."
+                else:
+                    est_remaining = (total_symbols - i) * (ema_seconds or 0)
+                    eta_text = f"⏱️ Estimated time remaining: {int(est_remaining)}s"
+
+                if i % 15 == 0 or i == total_symbols:
+                    progress_bar.progress(
+                        min(progress_pct, 1.0),
+                        text=f"{int(progress_pct*100)}% Complete",
                     )
-                    slots_remaining = available_slots
-                    for row in results:
-                        sym = row.get("Symbol")
-                        score_val = row.get("Score", 0.0) or 0.0
-                        entry_ok = bool(row.pop("Entry_OK", False))
-                        if sym in held_syms:
-                            status_txt = "ℹ️ HELD"
-                        elif sym in pending_syms:
-                            status_txt = "⏳ PENDING"
-                        elif not entry_ok:
-                            status_txt = "⚠️ REJECTED: No Signal"
-                        elif score_val < MIN_ENTRY_SCORE:
-                            status_txt = "⚠️ REJECTED: Low Score"
-                        elif slots_remaining <= 0:
-                            status_txt = "⚠️ REJECTED: Slots Full"
-                        else:
-                            status_txt = "✅ TRADABLE"
-                            slots_remaining -= 1
-                        row["Status"] = status_txt
-                st.session_state.scan_results = pd.DataFrame(results)
+                    status_msg.write(f"🔍 Analyzing **{sym}** ({i}/{total_symbols})")
+                    timer_msg.caption(eta_text)
+
+            held_syms = set()
+            pending_syms = set()
+            available_slots = MAX_POSITIONS
+            if selected_strategies:
+                pt_state = PaperTrader(configs=selected_strategies).state
+                held_syms = set(pt_state.get("positions", {}).keys())
+                pending_syms = {
+                    o.get("symbol")
+                    for o in pt_state.get("pending_orders", [])
+                    if o.get("symbol")
+                }
+                available_slots = max(0, MAX_POSITIONS - len(held_syms) - len(pending_syms))
+
+            if results:
+                results.sort(
+                    key=lambda x: x.get("Score", 0.0),
+                    reverse=True,
+                )
+                slots_remaining = available_slots
+                for row in results:
+                    sym = row.get("Symbol")
+                    score_val = row.get("Score", 0.0) or 0.0
+                    entry_ok = bool(row.pop("Entry_OK", False))
+                    if sym in held_syms:
+                        status_txt = "ℹ️ HELD"
+                    elif sym in pending_syms:
+                        status_txt = "⏳ PENDING"
+                    elif not entry_ok:
+                        status_txt = "⚠️ REJECTED: No Signal"
+                    elif score_val < MIN_ENTRY_SCORE:
+                        status_txt = "⚠️ REJECTED: Low Score"
+                    elif slots_remaining <= 0:
+                        status_txt = "⚠️ REJECTED: Slots Full"
+                    else:
+                        status_txt = "✅ TRADABLE"
+                        slots_remaining -= 1
+                    row["Status"] = status_txt
+            st.session_state.scan_results = pd.DataFrame(results)
+            progress_bar.empty()
+            status_msg.empty()
+            timer_msg.empty()
 
     if st.session_state.scan_results is not None:
         df = st.session_state.scan_results
