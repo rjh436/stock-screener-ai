@@ -632,22 +632,17 @@ elif mode == "Simulator":
     st.subheader("📂 Active Holdings")
     
     if state['positions']:
-        col_widths = [1.2, 1.0, 1.2, 1.2, 1.2, 1.5, 2.5, 1.2]
-        h_cols = st.columns(col_widths)
-        headers = ["Symbol", "Qty", "Entry", "Current", "Stop Loss", "PnL", "Exit Plan", "Action"]
-        for col, h in zip(h_cols, headers): col.markdown(f"**{h}**")
-        st.markdown("---")
-
+        rows = []
         for sym, p in state['positions'].items():
-            c_cols = st.columns(col_widths)
             entry = p['entry_price']
             curr = p.get('current_price', entry)
             stop = p.get('stop_price', 0.0)
             shares = p['shares']
-            pnl_val_trade = (curr - entry) * shares
-            pnl_pct = ((curr - entry) / entry) * 100
+            entry_value = shares * entry
             current_val = shares * curr
-            
+            raw_pnl = current_val - entry_value
+            pnl_pct = ((curr - entry) / entry) * 100 if entry else 0.0
+
             plan = calc_exit_plan(
                 {
                     "Strategy": p.get("strategy_name", ""),
@@ -658,27 +653,71 @@ elif mode == "Simulator":
                 },
                 strategies_map,
             )
+            target_price = None
             if isinstance(plan, str) and plan.startswith("Target:"):
-                target_text = plan.replace("Target:", "").strip()
-            else:
-                target_text = plan or "N/A"
-            
-            c_cols[0].write(f"**{sym}**")
-            c_cols[1].write(f"{shares}")
-            c_cols[2].write(f"${entry:.2f}")
-            c_cols[3].write(f"${curr:.2f}")
-            c_cols[4].markdown(f":red[${stop:.2f}]") 
-            color = "green" if pnl_val_trade >= 0 else "red"
-            c_cols[5].markdown(f":{color}[${pnl_val_trade:,.2f} ({pnl_pct:+.2f}%)]")
-            c_cols[6].caption(f"Target: {target_text} (${current_val:,.2f})")
-            
-            if c_cols[7].button("SELL", key=f"sell_{sym}", use_container_width=True):
+                try:
+                    target_price = float(plan.replace("Target:", "").replace("$", "").strip())
+                except Exception:
+                    target_price = None
+
+            rows.append(
+                {
+                    "Symbol": sym,
+                    "Qty": shares,
+                    "Entry": entry,
+                    "Current": curr,
+                    "Stop Loss": stop,
+                    "PnL": raw_pnl,
+                    "PnL %": pnl_pct,
+                    "Exit Plan": target_price,
+                    "Current Value": current_val,
+                    "Entry_Value": entry_value,
+                    "Raw_PnL": raw_pnl,
+                }
+            )
+
+        def style_valuation(row: pd.Series) -> List[str]:
+            if row["Current Value"] > row["Entry_Value"]:
+                return ["background-color: #1e4620; color: #ffffff;"]
+            if row["Current Value"] < row["Entry_Value"]:
+                return ["background-color: #4a1a1a; color: #ffffff;"]
+            return [""]
+
+        def _fmt_currency(val) -> str:
+            try:
+                if pd.isna(val):
+                    return "—"
+            except Exception:
+                pass
+            return f"${val:,.2f}"
+
+        df_holdings = pd.DataFrame(rows)
+        styled = (
+            df_holdings.style.apply(style_valuation, axis=1, subset=["Current Value"])
+            .format(
+                {
+                    "Entry": _fmt_currency,
+                    "Current": _fmt_currency,
+                    "Stop Loss": _fmt_currency,
+                    "PnL": _fmt_currency,
+                    "PnL %": "{:+.2f}%",
+                    "Exit Plan": _fmt_currency,
+                    "Current Value": _fmt_currency,
+                }
+            )
+            .hide(axis="columns", subset=["Entry_Value", "Raw_PnL"])
+        )
+        st.dataframe(styled, use_container_width=True)
+
+        st.markdown("### ⚙️ Position Actions")
+        for sym in state['positions'].keys():
+            if st.button(f"SELL {sym}", key=f"sell_{sym}", use_container_width=True):
                 success, msg = pt.close_position(sym, reason="Manual")
                 if success:
                     st.toast(f"✅ {msg}")
                     st.rerun()
-                else: st.error(msg)
-            st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+                else:
+                    st.error(msg)
     else:
         st.info("Portfolio is empty.")
     
