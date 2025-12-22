@@ -1,6 +1,6 @@
 {
     "cash": 36725.815,
-    "equity": 102781.13,
+    "equity": 103043.905,
     "history": [
         {
             "symbol": "ZTS",
@@ -56,7 +56,7 @@
         },
         {
             "date": "2025-12-22",
-            "equity": 102781.13
+            "equity": 103043.905
         }
     ],
     "positions": {
@@ -67,9 +67,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-11",
-            "current_price": 297.48,
-            "unrealized_pnl": 2526.75,
-            "unrealized_pct": 12.771522802229043,
+            "current_price": 299.85,
+            "unrealized_pnl": 2704.5,
+            "unrealized_pct": 13.669964744683272,
             "entry_i": 332
         },
         "CEG": {
@@ -79,9 +79,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-19",
-            "current_price": 356.87,
-            "unrealized_pnl": -147.21999999999946,
-            "unrealized_pct": -1.1987818383167177,
+            "current_price": 356.52,
+            "unrealized_pnl": -159.12000000000023,
+            "unrealized_pct": -1.2956810631229256,
             "entry_i": 327
         },
         "AVGO": {
@@ -138,9 +138,9 @@
                 }
             },
             "date": "2025-12-22",
-            "current_price": 337.9,
-            "unrealized_pnl": -292.67999999999984,
-            "unrealized_pct": -2.3495072681559392,
+            "current_price": 343.49,
+            "unrealized_pnl": -91.43999999999869,
+            "unrealized_pct": -0.7340404011212797,
             "entry_i": 324
         },
         "WBD": {
@@ -197,9 +197,9 @@
                 }
             },
             "date": "2025-12-22",
-            "current_price": 28.895,
-            "unrealized_pnl": 33.650000000000475,
-            "unrealized_pct": 0.17334026694401358,
+            "current_price": 28.74,
+            "unrealized_pnl": -70.66500000000029,
+            "unrealized_pct": -0.3640145605824248,
             "entry_i": 344
         }
     },

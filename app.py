@@ -646,6 +646,7 @@ elif mode == "Simulator":
             shares = p['shares']
             pnl_val_trade = (curr - entry) * shares
             pnl_pct = ((curr - entry) / entry) * 100
+            current_val = shares * curr
             
             plan = calc_exit_plan(
                 {
@@ -657,6 +658,10 @@ elif mode == "Simulator":
                 },
                 strategies_map,
             )
+            if isinstance(plan, str) and plan.startswith("Target:"):
+                target_text = plan.replace("Target:", "").strip()
+            else:
+                target_text = plan or "N/A"
             
             c_cols[0].write(f"**{sym}**")
             c_cols[1].write(f"{shares}")
@@ -665,7 +670,7 @@ elif mode == "Simulator":
             c_cols[4].markdown(f":red[${stop:.2f}]") 
             color = "green" if pnl_val_trade >= 0 else "red"
             c_cols[5].markdown(f":{color}[${pnl_val_trade:,.2f} ({pnl_pct:+.2f}%)]")
-            c_cols[6].caption(plan)
+            c_cols[6].caption(f"Target: {target_text} (${current_val:,.2f})")
             
             if c_cols[7].button("SELL", key=f"sell_{sym}", use_container_width=True):
                 success, msg = pt.close_position(sym, reason="Manual")
@@ -682,11 +687,30 @@ elif mode == "Simulator":
         st.session_state.pending_fill_logs = []
     pending = state.get("pending_orders", [])
     if pending:
-        df_pending = pd.DataFrame(pending)
-        if "strategy_obj" in df_pending.columns:
-            df_pending = df_pending.drop(columns=["strategy_obj"])
-        st.dataframe(df_pending)
-        
+        col_widths = [1.2, 0.8, 1.0, 2.2, 1.6, 1.0]
+        h_cols = st.columns(col_widths)
+        headers = ["Symbol", "Shares", "Est Price", "Strategy", "Queued At", "Action"]
+        for col, h in zip(h_cols, headers):
+            col.markdown(f"**{h}**")
+        st.markdown("---")
+
+        for idx, order in enumerate(pending):
+            c_cols = st.columns(col_widths)
+            sym = order.get("symbol", "")
+            shares = order.get("shares", 0)
+            est_price = order.get("order_price_estimate", 0)
+            strat = order.get("strategy_name") or order.get("strategy") or ""
+            queued_at = order.get("queued_at", "")
+            c_cols[0].write(f"**{sym}**")
+            c_cols[1].write(f"{shares}")
+            c_cols[2].write(f"${est_price:.2f}" if est_price else "N/A")
+            c_cols[3].write(strat)
+            c_cols[4].write(queued_at)
+            if c_cols[5].button("CANCEL", key=f"cancel_{sym}_{idx}", use_container_width=True):
+                st.session_state.pending_fill_logs = pt.cancel_pending_order(sym)
+                st.rerun()
+            st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
+
         if st.button("🔔 Process Pending Orders (Morning Fill)", type="primary"):
             with st.spinner("Executing Market-On-Open orders..."):
                 fill_logs = pt.process_pending_orders()

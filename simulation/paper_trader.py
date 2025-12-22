@@ -478,6 +478,17 @@ class PaperTrader:
         self.save_state()
         return fill_log
 
+    def cancel_pending_order(self, symbol: str) -> List[str]:
+        if not symbol:
+            return ["⚠️ CANCEL FAILED: Invalid symbol"]
+        pending = self.state.get("pending_orders", [])
+        remaining = [o for o in pending if o.get("symbol") != symbol]
+        if len(remaining) == len(pending):
+            return [f"⚠️ CANCEL FAILED: {symbol} not found"]
+        self.state["pending_orders"] = remaining
+        self.save_state()
+        return [f"🗑️ CANCELLED: {symbol} order removed"]
+
     def _current_sector_exposure(self) -> Dict[str, float]:
         exposure = {}
         for sym, pos in self.portfolio.items():
