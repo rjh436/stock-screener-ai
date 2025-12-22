@@ -269,11 +269,20 @@ if mode == "Live Screener":
                 strat_objects = load_strategies(selected_strategies)
                 total_symbols = len(data)
                 progress_bar = st.progress(0)
-                status = st.empty()
+                status_msg = st.empty()
+                timer_msg = st.empty()
+                start_time = time.time()
                 for i, (sym, df) in enumerate(data.items(), start=1):
-                    status.write(f"Scanning {sym} ({i}/{total_symbols})")
                     if total_symbols:
-                        progress_bar.progress(min(i / total_symbols, 1.0))
+                        pct = i / total_symbols
+                    else:
+                        pct = 0
+                    elapsed = time.time() - start_time
+                    est_remaining = (elapsed / i) * (total_symbols - i) if i > 0 else 0
+
+                    progress_bar.progress(pct, text=f"{int(pct*100)}% Complete")
+                    status_msg.write(f"🔍 Analyzing **{sym}** ({i}/{total_symbols})")
+                    timer_msg.caption(f"⏱️ Estimated time remaining: {int(est_remaining)}s")
                     if df is None or df.empty:
                         continue
                     try:
@@ -321,8 +330,9 @@ if mode == "Live Screener":
                             )
                     except Exception:
                         continue
-                status.empty()
                 progress_bar.empty()
+                status_msg.empty()
+                timer_msg.empty()
 
                 held_syms = set()
                 pending_syms = set()
