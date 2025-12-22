@@ -319,7 +319,6 @@ if mode == "Live Screener":
                                         "Symbol": sym,
                                         "Strategy": s_conf.get("name", strat.name),
                                         "Price": row_current["close"],
-                                        "RSI2": row_current.get("rsi2"),
                                         "Stop Loss": estimated_entry - (atr * stop_mult),
                                         "Target": target_txt,
                                         "Score": score,
@@ -378,24 +377,14 @@ if mode == "Live Screener":
                     sym = row.get("Symbol")
                     score_val = row.get("Score", 0.0) or 0.0
                     entry_ok = bool(row.pop("Entry_OK", False))
-                    rsi2_val = row.pop("RSI2", None)
-                    rsi2_num = None
-                    try:
-                        if rsi2_val is not None:
-                            rsi2_num = float(rsi2_val)
-                    except Exception:
-                        rsi2_num = None
                     if sym in held_syms:
                         status_txt = "ℹ️ HELD"
                     elif sym in pending_syms:
                         status_txt = "⏳ PENDING"
                     elif not entry_ok:
-                        if rsi2_num is not None and rsi2_num >= 20:
-                            status_txt = f"⚠️ WAIT: RSI2 High ({rsi2_num:.1f})"
-                        else:
-                            status_txt = "⚠️ WAIT: Pattern Incomplete"
+                        status_txt = "⚠️ REJECTED: No Signal"
                     elif score_val < MIN_ENTRY_SCORE:
-                        status_txt = f"⚠️ SKIP: Low Score ({score_val:.1f})"
+                        status_txt = "⚠️ REJECTED: Low Score"
                     elif slots_remaining <= 0:
                         status_txt = "⚠️ REJECTED: Slots Full"
                     else:
@@ -426,8 +415,6 @@ if mode == "Live Screener":
                 for val in series:
                     if isinstance(val, str) and val.startswith("✅"):
                         styles.append("background-color: #1a7f37; color: #ffffff; font-weight: 600;")
-                    elif isinstance(val, str) and val.startswith("⚠️ WAIT"):
-                        styles.append("background-color: #f1c232; color: #000000; font-weight: 600;")
                     elif isinstance(val, str) and val.startswith("⏳"):
                         styles.append("background-color: #f1c232; color: #000000; font-weight: 600;")
                     elif isinstance(val, str) and val.startswith("ℹ️"):
