@@ -278,7 +278,9 @@ if mode == "Live Screener":
                                 s_conf.get("name", ""),
                                 DEFAULT_SCORING_WEIGHTS,
                             )
-                            score = raw_score * 1.3 if "wealth" in str(s_conf.get("name", "")).lower() else raw_score
+                        score = raw_score * 1.3 if "wealth" in str(s_conf.get("name", "")).lower() else raw_score
+                        if score < MIN_ENTRY_SCORE:
+                            continue
 
                             exits = s_conf.get("exit_rules", [])
                             target_txt = (
@@ -491,7 +493,14 @@ elif mode == "Simulator":
             
             status.write("2️⃣ Executing Scan & Governor...")
             symbols = get_index_symbols("S&P 1500")
-            data_pack = fetch_data_pack(symbols, days=400)
+            base_days = 400
+            data_pack = fetch_data_pack(symbols, days=base_days)
+            g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=base_days + 200) or {}
+            spy_df = g_data.get("SPY")
+            vix_df = g_data.get("$VIX")
+            if vix_df is None:
+                vix_df = g_data.get("VIX")
+            global_data = {"SPY": spy_df, "VIX": vix_df}
             progress_bar = st.progress(0)
             status_text = st.empty()
 
@@ -502,21 +511,33 @@ elif mode == "Simulator":
                 else:
                     status_text.text("Scanning...")
 
-            new_trades = pt.run_daily_scan(data_pack, progress_callback=_progress)
+            scan_result = pt.run_daily_scan(
+                data_pack,
+                global_data=global_data,
+                progress_callback=_progress,
+            )
+            orders = scan_result.get("orders", []) if scan_result else []
+            logs = scan_result.get("logs", []) if scan_result else []
+            queued_count = scan_result.get("queued_count", len(orders)) if scan_result else 0
             status_text.empty()
             progress_bar.empty()
             
-            status.write(f"3️⃣ Scan Complete. Orders Queued: {len(new_trades) if new_trades else 0}")
+            status.write(f"3️⃣ Scan Complete. Orders Queued: {queued_count}")
             status.update(label="✅ Simulation Complete", state="complete", expanded=False)
             
-            if new_trades:
-                st.success(f"📝 Queued {len(new_trades)} order(s).")
-                df_orders = pd.DataFrame(new_trades)
+            if orders:
+                st.success(f"📝 Queued {queued_count} order(s).")
+                df_orders = pd.DataFrame(orders)
                 if "strategy_obj" in df_orders.columns:
                     df_orders = df_orders.drop(columns=["strategy_obj"])
                 st.dataframe(df_orders)
             else:
                 st.info("ℹ️ Scan finished. No trades executed.")
+            if logs:
+                rejection_logs = [log for log in logs if "REJECTED" in log or "SKIPPED" in log]
+                if rejection_logs:
+                    with st.expander("📋 Rejection Logs"):
+                        st.text("\n".join(rejection_logs))
         except Exception as e:
             status.update(label="❌ Simulation Failed", state="error")
             st.error(f"Error: {str(e)}")

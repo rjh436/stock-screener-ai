@@ -1495,6 +1495,7 @@ def run_backtest(
         cci_arr = sd.cci
         bb_width_arr = sd.bb_width
         vix_arr = sd.vix
+        vix_rel20_arr = sd.vix_rel20
         spy_close_arr = sd.spy_close
         spy_sma200_arr = sd.spy_sma200
 

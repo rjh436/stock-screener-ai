@@ -4,7 +4,7 @@ import os
 import pandas as pd
 import pytz
 from datetime import datetime
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from data.loader import fetch_single_symbol, fetch_data_pack
 from data.indices import get_index_symbols
@@ -12,6 +12,7 @@ from data.schwab_client import sd
 from execution.engine import (
     _compute_indicators,
     MIN_BARS,
+    MIN_ENTRY_SCORE,
     DEFAULT_SCORING_WEIGHTS,
     calculate_backtest_quality_score,
     get_sector,
@@ -272,12 +273,13 @@ class PaperTrader:
             return float(df.iloc[-1]["close"])
         return 0.0
 
-    def buy(self, symbol: str, price: float, shares: int, stop_price: Optional[float] = None, strategy_obj=None, strategy_name: Optional[str] = None, entry_index: Optional[int] = None, genome: Optional[Dict] = None):
+    def buy(self, symbol: str, price: float, shares: int, stop_price: Optional[float] = None, strategy_obj=None, strategy_name: Optional[str] = None, entry_index: Optional[int] = None, genome: Optional[Dict] = None) -> Optional[Dict]:
         """
         PHASE 3: Queues a Market-On-Open (MOO) order.
         Checks 'Reserved Cash' to prevent overdrafts.
         """
-        if shares <= 0 or price <= 0: return False
+        if shares <= 0 or price <= 0:
+            return None
         
         reserved_cash = sum(o.get('committed_cash', 0) for o in self.state.get('pending_orders', []))
         available_cash = self.state["cash"] - reserved_cash
@@ -286,7 +288,7 @@ class PaperTrader:
         
         if available_cash < estimated_cost:
             print(f"❌ REJECTED {symbol}: Insufficient funds (Need ${estimated_cost:,.0f}, Avail ${available_cash:,.0f})")
-            return False
+            return None
 
         strat_obj = strategy_obj or self._get_strategy_by_name(strategy_name or "")
         strat_name = strategy_name or getattr(strat_obj, "name", "Unknown")
@@ -317,7 +319,7 @@ class PaperTrader:
         
         self.state.setdefault("pending_orders", []).append(order)
         self.save_state()
-        return True
+        return order
 
     def process_pending_orders(self) -> List[str]:
         """
@@ -516,7 +518,7 @@ class PaperTrader:
             print(f"⚠️ Ledger append failed for {symbol}: {e}")
 
         self.state["cash"] += proceeds
-        self.state["history"].append({
+        self.state.setdefault("history", []).append({
             "symbol": symbol, "strategy": pos.get("strategy_name", ""),
             "type": "SELL", "reason": reason, "entry_date": pos["date"],
             "exit_date": str(datetime.now().date()), "entry_price": pos["entry_price"],
@@ -557,8 +559,9 @@ class PaperTrader:
             "entry_i": cand.get("entry_i"),
         }
 
-    def _execute_governor(self, candidates: List[Dict]) -> List[str]:
-        logs = []
+    def _execute_governor(self, candidates: List[Dict]) -> Dict[str, Any]:
+        logs: List[str] = []
+        orders: List[Dict] = []
         normalized = []
         for cand in candidates:
             norm = self._normalize_candidate(cand)
@@ -571,13 +574,23 @@ class PaperTrader:
         available_cash = self.state["cash"] - pending_committed
 
         for cand in normalized:
-            if len(self.portfolio) + len(self.state.get("pending_orders", [])) >= MAX_POSITIONS: break
-            if cand["symbol"] in self.portfolio: continue
-            if any(o['symbol'] == cand['symbol'] for o in self.state.get("pending_orders", [])): continue
+            if len(self.portfolio) + len(self.state.get("pending_orders", [])) >= MAX_POSITIONS:
+                logs.append(f"⚠️ REJECTED {cand['symbol']}: All {MAX_POSITIONS} slots full")
+                break
+            if cand["symbol"] in self.portfolio:
+                logs.append(f"ℹ️ SKIPPED {cand['symbol']}: Already held")
+                continue
+            if any(o['symbol'] == cand['symbol'] for o in self.state.get("pending_orders", [])):
+                logs.append(f"ℹ️ SKIPPED {cand['symbol']}: Already pending")
+                continue
 
             current_equity = self.state["cash"] + sum(sector_exposure.values())
             trade_val = current_equity * POSITION_FRACTION
             if trade_val <= 0 or available_cash < trade_val:
+                logs.append(
+                    f"⚠️ REJECTED {cand['symbol']}: Insufficient cash "
+                    f"(${available_cash:,.2f} < ${trade_val:,.2f})"
+                )
                 continue
 
             # Calculate shares based on RISK, not position size
@@ -585,6 +598,9 @@ class PaperTrader:
             price = cand["price"]
             stop_price = cand["stop"]
             risk_per_share = price - stop_price
+            if risk_per_share <= 0:
+                logs.append(f"⚠️ REJECTED {cand['symbol']}: Invalid stop (stop >= price)")
+                continue
 
             # SAFETY CHECK 1: Minimum risk distance (at least 1% of price)
             min_risk_distance = price * 0.01
@@ -626,19 +642,20 @@ class PaperTrader:
                 logs.append(f"⚠️ REJECTED {cand['symbol']}: Sector {sec} would be {projected_exp*100:.0f}% (limit: {SECTOR_CAP*100:.0f}%)")
                 continue
 
-            success = self.buy(
+            order = self.buy(
                 cand["symbol"], cand["price"], shares, stop_price=cand["stop"],
                 strategy_obj=cand["strategy_obj"], strategy_name=cand["strategy_name"],
                 entry_index=cand.get("entry_i"),
                 genome=cand.get("genome"),
             )
-            if success:
+            if order:
                 sector_exposure[sec] = sector_exposure.get(sec, 0.0) + position_val
                 available_cash -= position_val
+                orders.append(order)
                 logs.append(f"⏳ QUEUED {cand['symbol']} x{shares} @ ${cand['price']:.2f} (Stop: ${cand['stop']:.2f})")
-        return logs
+        return {"queued_count": len(orders), "orders": orders, "logs": logs}
 
-    def run_daily_scan(self, data_dict: Optional[Dict[str, pd.DataFrame]] = None, global_data: Optional[Dict[str, pd.DataFrame]] = None, scoring_weights: Optional[Dict] = None, progress_callback: Optional[Callable[[int, int], None]] = None) -> List[str]:
+    def run_daily_scan(self, data_dict: Optional[Dict[str, pd.DataFrame]] = None, global_data: Optional[Dict[str, pd.DataFrame]] = None, scoring_weights: Optional[Dict] = None, progress_callback: Optional[Callable[[int, int], None]] = None) -> Dict[str, Any]:
         # PHASE 3 FIX: REAL-TIME SCANNING (Scan Today, Trade Tomorrow)
         scoring = scoring_weights or self.scoring_weights
         vix_df = global_data.get("VIX") if global_data else None
@@ -667,23 +684,31 @@ class PaperTrader:
                     progress_callback(processed, total_steps)
                 if df is None or df.empty: continue
                 try:
-                    enriched = _compute_indicators(df.copy(), spy_df=spy_df)
-                    if vix_df is not None: enriched["vix"] = vix_df["close"].reindex(enriched.index).ffill().fillna(20.0)
-                    else: enriched["vix"] = 20.0
+                    df_ind = _compute_indicators(df.copy(), spy_df=spy_df)
+                    # DIAGNOSTIC TRACE
+                    last_row = df_ind.iloc[-1]
+                    print(
+                        f"DEBUG: {sym} | Close: {last_row['close']:.2f} | "
+                        f"SMA200: {last_row['sma200']:.2f} | RSI2: {last_row['rsi2']:.2f}"
+                    )
+                    if vix_df is not None: df_ind["vix"] = vix_df["close"].reindex(df_ind.index).ffill().fillna(20.0)
+                    else: df_ind["vix"] = 20.0
                     
-                    if len(enriched) <= MIN_BARS: continue
+                    if len(df_ind) <= MIN_BARS: continue
 
                     # FIX: SCAN YESTERDAY BAR (matching app.py lookahead fix)
-                    signal_idx = len(enriched) - 2
+                    signal_idx = len(df_ind) - 2
                     if signal_idx < MIN_BARS:
                         continue
                     
-                    if not strat.entry(enriched, signal_idx): continue
+                    if not strat.entry(df_ind, signal_idx): continue
 
                     # Use Yesterday's data for gap protection baseline
-                    row_prev = enriched.iloc[signal_idx]
+                    row_prev = df_ind.iloc[signal_idx]
                     raw_score = calculate_backtest_quality_score(row_prev, strat.name, weights=scoring)
                     score = raw_score * 1.3 if "wealth" in strat.name.lower() else raw_score
+                    if score < MIN_ENTRY_SCORE:
+                        continue
 
                     # Store BOTH yesterday's close AND open
                     signal_close = float(row_prev["close"])
@@ -709,7 +734,7 @@ class PaperTrader:
 
         return self._execute_governor(candidates)
 
-    def execute_entries(self, candidates: List[Dict]) -> List[str]:
+    def execute_entries(self, candidates: List[Dict]) -> Dict[str, Any]:
         return self._execute_governor(candidates)
 
     def process_exits(self, strategies_map=None):
