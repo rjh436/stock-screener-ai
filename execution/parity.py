@@ -2,7 +2,16 @@ from __future__ import annotations
 from typing import Dict, Tuple, Any
 import math
 import pandas as pd
-from execution.engine import DEFAULT_SCORING_WEIGHTS
+
+DEFAULT_SCORING_WEIGHTS = {
+    "rsi_factor": 3.0,
+    "atr_high_bonus": 12.0,
+    "atr_med_bonus": 5.0,
+    "vol_bonus": 11.0,
+    "sniper_bonus": 50.0,
+    "trend_bonus": 40.0,
+    "trend_penalty": -15.0,
+}
 
 def resolve_signal_index(df: pd.DataFrame) -> Tuple[int, int]:
     """

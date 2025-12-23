@@ -22,6 +22,7 @@ from execution.engine import (
     run_backtest,
 )
 from execution.parity import (
+    DEFAULT_SCORING_WEIGHTS,
     resolve_signal_index,
     get_strategy_weights,
     apply_strategy_score_multipliers,
