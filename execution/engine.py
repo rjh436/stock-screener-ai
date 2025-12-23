@@ -1519,7 +1519,8 @@ def run_backtest(
                 low_px = np.where(np.isfinite(low_px), low_px, open_px)
 
                 valid = np.isfinite(prev_close) & (prev_close > 0) & np.isfinite(open_px) & (open_px > 0)
-                valid &= ((open_px - prev_close) / prev_close) >= -0.08
+                gap_pct_arr = (open_px - prev_close) / prev_close
+                valid &= gap_pct_arr >= -0.08
 
                 if regime_filter:
                     valid &= ~(np.isfinite(spy_close_arr[prev_is]) & np.isfinite(spy_sma200_arr[prev_is]) &
@@ -1527,6 +1528,20 @@ def run_backtest(
 
                 signal_atr = atr14_arr[prev_is]
                 valid &= np.isfinite(signal_atr) & (signal_atr > 0)
+
+                # Calculate fill logic (matches fallback path)
+                limit_ratio_val = float(params.get("limit_ratio", 1.0))
+                target_px = prev_close * limit_ratio_val
+                filled = (open_px < target_px) | (low_px < target_px)
+                valid &= filled
+                entry_px_arr = np.where(open_px < target_px, open_px, target_px)
+
+                # Calculate ATR stop (matches fallback path)
+                stop_mult = float(params.get("stop_loss_atr", 3.0))
+                atr_pct = (signal_atr / entry_px_arr) * 100.0
+                adjusted_mult = stop_mult * np.where((gap_pct_arr > -0.03) & (atr_pct > 5.0), 1.2, 1.0)
+                stop_px_arr = entry_px_arr - (signal_atr * adjusted_mult)
+                valid &= np.isfinite(stop_px_arr)
 
                 # Batched Scoring
                 score = _score_candidates_vectorized(
@@ -1552,8 +1567,8 @@ def run_backtest(
                     candidates_by_day[day_idx].append(
                         _Candidate(
                             sym=sym,
-                            entry_px=float(open_px[k]),
-                            stop_px=float(open_px[k] * 0.97),
+                            entry_px=float(entry_px_arr[k]),
+                            stop_px=float(stop_px_arr[k]),
                             score=float(score[k]),
                             strategy_name=strat.name,
                             strategy_obj=strat,
