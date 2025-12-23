@@ -17,6 +17,7 @@ from execution.engine import (
     calculate_backtest_quality_score,
     get_sector,
 )
+from execution.parity import resolve_signal_index, get_strategy_weights, apply_wealth_boost
 from strategies.generic import GenericStrategy
 from strategies.strategy_loader import load_strategies
 
@@ -693,7 +694,6 @@ class PaperTrader:
     def run_daily_scan(self, data_dict: Optional[Dict[str, pd.DataFrame]] = None, global_data: Optional[Dict[str, pd.DataFrame]] = None, scoring_weights: Optional[Dict] = None, progress_callback: Optional[Callable[[int, int], None]] = None) -> Dict[str, Any]:
         # PHASE 3 FIX: REAL-TIME SCANNING (Scan Today, Trade Tomorrow)
         assert MIN_ENTRY_SCORE == 120.0
-        scoring = scoring_weights or self.scoring_weights
         vix_df = global_data.get("VIX") if global_data else None
         spy_df = global_data.get("SPY") if global_data else None
         
@@ -733,8 +733,8 @@ class PaperTrader:
                     
                     if len(df_ind) <= MIN_BARS: continue
 
-                    # FIX: SCAN LIVE BAR (matching app.py live mark alignment)
-                    signal_idx = len(df_ind) - 1
+                    # USE PARITY INDEXING
+                    signal_idx, _current_idx = resolve_signal_index(df_ind)
                     if signal_idx < MIN_BARS:
                         continue
                     
@@ -742,8 +742,9 @@ class PaperTrader:
 
                     # Use signal bar data for baseline
                     row_signal = df_ind.iloc[signal_idx]
-                    raw_score = calculate_backtest_quality_score(row_signal, strat.name, weights=scoring)
-                    score = raw_score * 1.3 if "wealth" in strat.name.lower() else raw_score
+                    weights = get_strategy_weights(getattr(strat, "params", {}) or {})
+                    raw_score = calculate_backtest_quality_score(row_signal, strat.name, weights=weights)
+                    score = apply_wealth_boost(raw_score, strat.name)
                     if score < MIN_ENTRY_SCORE:
                         scan_logs.append(
                             f"⚠️ REJECTED {sym}: Low score {score:.1f} < {MIN_ENTRY_SCORE:.1f}"

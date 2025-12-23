@@ -25,6 +25,8 @@ DEFAULT_SCORING_WEIGHTS: Dict[str, float] = {
     "trend_penalty": -15.0,
 }
 
+from execution.parity import apply_wealth_boost
+
 MIN_BARS = 200
 MIN_ENTRY_SCORE = 120.0
 SUPER_SIGNAL_NAME = "SUPER SIGNAL (Wealth + Income)"
@@ -1529,20 +1531,6 @@ def run_backtest(
                 signal_atr = atr14_arr[prev_is]
                 valid &= np.isfinite(signal_atr) & (signal_atr > 0)
 
-                # Calculate fill logic (matches fallback path)
-                limit_ratio_val = float(params.get("limit_ratio", 1.0))
-                target_px = prev_close * limit_ratio_val
-                filled = (open_px < target_px) | (low_px < target_px)
-                valid &= filled
-                entry_px_arr = np.where(open_px < target_px, open_px, target_px)
-
-                # Calculate ATR stop (matches fallback path)
-                stop_mult = float(params.get("stop_loss_atr", 3.0))
-                atr_pct = (signal_atr / entry_px_arr) * 100.0
-                adjusted_mult = stop_mult * np.where((gap_pct_arr > -0.03) & (atr_pct > 5.0), 1.2, 1.0)
-                stop_px_arr = entry_px_arr - (signal_atr * adjusted_mult)
-                valid &= np.isfinite(stop_px_arr)
-
                 # Batched Scoring
                 score = _score_candidates_vectorized(
                     rsi2_arr[prev_is],
@@ -1555,6 +1543,45 @@ def run_backtest(
                     bb_width_arr[prev_is],
                     w,
                 )
+
+                # FIX 1: Apply Parity Wealth Boost
+                if "wealth" in strat.name.lower():
+                    score = apply_wealth_boost(score, strat.name)
+
+                # FIX 2: Vectorized Limit Entry Logic
+                entry_px_arr = open_px.copy()
+                limit_ratio = params.get("limit_ratio")
+
+                if limit_ratio is not None:
+                    try:
+                        limit_ratio_val = float(limit_ratio)
+                        target_px = prev_close * limit_ratio_val
+                        # Fill if Open < Target OR Low < Target
+                        filled_mask = (open_px < target_px) | (low_px < target_px)
+
+                        # Zero out scores for unfilled trades
+                        score[~filled_mask] = 0.0
+
+                        # Set entry price
+                        entry_px_arr = np.where(open_px < target_px, open_px, target_px)
+                    except (ValueError, TypeError):
+                        pass
+
+                # FIX 3: Vectorized ATR Stop Logic
+                stop_mult = float(params.get("stop_loss_atr", 3.0))
+
+                # Recalculate ATR% based on actual fill price
+                atr_pct = np.zeros_like(entry_px_arr)
+                valid_px = entry_px_arr > 0
+                atr_pct[valid_px] = (signal_atr[valid_px] / entry_px_arr[valid_px]) * 100.0
+
+                # Gap protection
+                gap_pct = (open_px - prev_close) / prev_close
+                adj_mult = np.where((gap_pct > -0.03) & (atr_pct > 5.0), stop_mult * 1.2, stop_mult)
+
+                stop_px_arr = entry_px_arr - (signal_atr * adj_mult)
+
+                # Final Validity Check
                 valid &= score >= MIN_ENTRY_SCORE
                 if not np.any(valid):
                     continue

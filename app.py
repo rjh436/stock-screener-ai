@@ -15,13 +15,13 @@ from data.schwab_client import sd
 from data.loader import fetch_data_pack
 from data.indices import get_index_symbols
 from execution.engine import (
-    DEFAULT_SCORING_WEIGHTS,
     MIN_ENTRY_SCORE,
     _compute_indicators,
     calculate_backtest_quality_score,
     prepare_backtest_data,
     run_backtest,
 )
+from execution.parity import resolve_signal_index, get_strategy_weights, apply_wealth_boost
 from simulation.paper_trader import PaperTrader, MAX_POSITIONS
 from strategies.strategy_loader import load_strategies
 
@@ -286,10 +286,11 @@ if mode == "Live Screener":
                 if df is not None and not df.empty:
                     try:
                         df_ind = _compute_indicators(df.copy(), spy_df=spy_df, vix_df=vix_df)
-                        if not df_ind.empty and len(df_ind) >= 2:
-                            signal_i = len(df_ind) - 1
-                            row_signal = df_ind.iloc[signal_i]
-                            row_current = df_ind.iloc[-1]
+                        signal_i, current_i = resolve_signal_index(df_ind)
+                        if signal_i < 0:
+                            continue
+                        row_signal = df_ind.iloc[signal_i]
+                        row_current = df_ind.iloc[current_i]
 
                             for strat in strat_objects:
                                 s_conf = strat.params or {}
@@ -298,12 +299,13 @@ if mode == "Live Screener":
                                 atr = row_signal.get("atr14", row_signal["close"] * 0.02)
                                 stop_mult = float(s_conf.get("stop_loss_atr", 3.0))
 
+                                weights = get_strategy_weights(s_conf)
                                 raw_score = calculate_backtest_quality_score(
                                     row_signal,
                                     s_conf.get("name", ""),
-                                    DEFAULT_SCORING_WEIGHTS,
+                                    weights,
                                 )
-                                score = raw_score * 1.3 if "wealth" in str(s_conf.get("name", "")).lower() else raw_score
+                                score = apply_wealth_boost(raw_score, s_conf.get("name", ""))
 
                                 exits = s_conf.get("exit_rules", [])
                                 target_txt = (

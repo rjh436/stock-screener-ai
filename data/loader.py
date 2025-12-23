@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional, Tuple
 from .schwab_client import sd
 from .cache_manager import DataCache
@@ -82,6 +83,7 @@ def inject_live_quote(df: pd.DataFrame, sym: str) -> pd.DataFrame:
         q = sd.get_quote(sym)
     except Exception:
         return df
+
     open_price, last_price, volume = _extract_quote_fields(q, sym)
     if open_price is None and last_price is None:
         return df
@@ -90,7 +92,9 @@ def inject_live_quote(df: pd.DataFrame, sym: str) -> pd.DataFrame:
         last_date = df.index.max().date()
     except Exception:
         return df
-    today = datetime.now(timezone.utc).date()
+
+    # FIX: Use NY time to prevent UTC rollover issues
+    today = datetime.now(ZoneInfo("America/New_York")).date()
     if last_date == today:
         return df
 
@@ -98,9 +102,12 @@ def inject_live_quote(df: pd.DataFrame, sym: str) -> pd.DataFrame:
     close_val = last_price or open_val
     if open_val is None or close_val is None:
         return df
+
     high_val = max(open_val, close_val)
     low_val = min(open_val, close_val)
     row_ts = pd.Timestamp(today)
+
+    # FIX: Add is_live_bar flag
     live_row = pd.DataFrame(
         {
             "open": [open_val],
@@ -108,6 +115,7 @@ def inject_live_quote(df: pd.DataFrame, sym: str) -> pd.DataFrame:
             "low": [low_val],
             "close": [close_val],
             "volume": [volume],
+            "is_live_bar": [True]
         },
         index=[row_ts],
     )
