@@ -21,7 +21,13 @@ from execution.engine import (
     prepare_backtest_data,
     run_backtest,
 )
-from execution.parity import resolve_signal_index, get_strategy_weights, apply_wealth_boost
+from execution.parity import (
+    resolve_signal_index,
+    get_strategy_weights,
+    apply_strategy_score_multipliers,
+    apply_gap_atr_stop_penalty,
+    compute_limit_fill,
+)
 from simulation.paper_trader import PaperTrader, MAX_POSITIONS
 from strategies.strategy_loader import load_strategies
 
@@ -250,7 +256,7 @@ if mode == "Live Screener":
         data = fetch_data_pack(
             symbols,
             days=base_days,
-            max_workers=12,
+            max_workers=10,
             force_fresh=True,
             inject_live=True,
             max_lag_days=0,
@@ -258,7 +264,7 @@ if mode == "Live Screener":
         g_data = fetch_data_pack(
             ["SPY", "$VIX", "VIX"],
             days=600,
-            max_workers=12,
+            max_workers=10,
             force_fresh=True,
             inject_live=True,
             max_lag_days=0,
@@ -294,10 +300,37 @@ if mode == "Live Screener":
 
                         for strat in strat_objects:
                             s_conf = strat.params or {}
-                            entry_ok = strat.entry(df_ind, signal_i)
+                            entry_signal = strat.entry(df_ind, signal_i)
+                            entry_ok = bool(entry_signal)
 
-                            atr = row_signal.get("atr14", row_signal["close"] * 0.02)
-                            stop_mult = float(s_conf.get("stop_loss_atr", 3.0))
+                            prev_close = row_signal.get("close", 0.0) or 0.0
+                            open_px = row_current.get("open", row_current.get("close", 0.0)) or 0.0
+                            low_px = row_current.get("low", open_px)
+
+                            limit_ratio = None
+                            if isinstance(entry_signal, dict):
+                                limit_ratio = entry_signal.get("limit_ratio")
+                            if limit_ratio is None:
+                                limit_ratio = s_conf.get("limit_ratio")
+
+                            filled, entry_px = compute_limit_fill(prev_close, open_px, low_px, limit_ratio)
+                            if not (entry_px and entry_px == entry_px):
+                                entry_px = open_px or row_current.get("close", 0.0)
+                            entry_ok = entry_ok and filled and entry_px > 0
+
+                            signal_atr = row_signal.get("atr14", prev_close * 0.02)
+                            if not (signal_atr and signal_atr == signal_atr):
+                                signal_atr = prev_close * 0.02
+
+                            stop_mult = s_conf.get("stop_loss_atr", 3.0)
+                            if isinstance(entry_signal, dict) and "stop_loss_atr" in entry_signal:
+                                stop_mult = entry_signal.get("stop_loss_atr", stop_mult)
+                            stop_mult = float(stop_mult)
+
+                            gap_pct = ((open_px - prev_close) / prev_close) if prev_close > 0 else 0.0
+                            atr_pct = (signal_atr / entry_px) * 100.0 if entry_px > 0 else 0.0
+                            adj_mult = apply_gap_atr_stop_penalty(stop_mult, gap_pct, atr_pct)
+                            stop_price = entry_px - (signal_atr * adj_mult)
 
                             weights = get_strategy_weights(s_conf)
                             raw_score = calculate_backtest_quality_score(
@@ -305,7 +338,7 @@ if mode == "Live Screener":
                                 s_conf.get("name", ""),
                                 weights,
                             )
-                            score = apply_wealth_boost(raw_score, s_conf.get("name", ""))
+                            score = apply_strategy_score_multipliers(raw_score, s_conf)
 
                             exits = s_conf.get("exit_rules", [])
                             target_txt = (
@@ -314,15 +347,14 @@ if mode == "Live Screener":
                                 else "OPEN"
                             )
 
-                            estimated_entry = row_current["close"]
-
                             results.append(
                                 {
                                     "Symbol": sym,
                                     "Strategy": s_conf.get("name", strat.name),
                                     "Price": row_current["close"],
+                                    "EntryPx": entry_px,
                                     "RSI2": row_current.get("rsi2"),
-                                    "Stop Loss": estimated_entry - (atr * stop_mult),
+                                    "Stop Loss": stop_price,
                                     "Target": target_txt,
                                     "Score": score,
                                     "Entry_OK": entry_ok,
@@ -455,6 +487,7 @@ if mode == "Live Screener":
             styled = (
                 df.style.format({
                     "Price": "${:.2f}",
+                    "EntryPx": "${:.2f}",
                     "Stop Loss": "${:.2f}",
                     "Score": "{:.1f}",
                 })

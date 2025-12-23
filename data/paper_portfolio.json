@@ -1,6 +1,6 @@
 {
-    "cash": 36725.815,
-    "equity": 103111.215,
+    "cash": 21822.465000000004,
+    "equity": 103510.32500000001,
     "history": [
         {
             "symbol": "ZTS",
@@ -57,6 +57,10 @@
         {
             "date": "2025-12-22",
             "equity": 103111.215
+        },
+        {
+            "date": "2025-12-23",
+            "equity": 103510.32500000001
         }
     ],
     "positions": {
@@ -67,9 +71,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-11",
-            "current_price": 300.225,
-            "unrealized_pnl": 2732.625,
-            "unrealized_pct": 13.812123279881725,
+            "current_price": 302.165,
+            "unrealized_pnl": 2878.125,
+            "unrealized_pct": 14.54755676864172,
             "entry_i": 332
         },
         "CEG": {
@@ -79,9 +83,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-19",
-            "current_price": 357.295,
-            "unrealized_pnl": -132.76999999999907,
-            "unrealized_pct": -1.081118493909184,
+            "current_price": 361.245,
+            "unrealized_pnl": 1.5300000000005411,
+            "unrealized_pct": 0.012458471760801748,
             "entry_i": 327
         },
         "AVGO": {
@@ -138,9 +142,9 @@
                 }
             },
             "date": "2025-12-22",
-            "current_price": 343.94,
-            "unrealized_pnl": -75.2399999999991,
-            "unrealized_pct": -0.603993873363574,
+            "current_price": 341.68,
+            "unrealized_pnl": -156.59999999999877,
+            "unrealized_pct": -1.257116434991176,
             "entry_i": 324
         },
         "WBD": {
@@ -197,19 +201,15 @@
                 }
             },
             "date": "2025-12-22",
-            "current_price": 28.735,
-            "unrealized_pnl": -74.02999999999962,
-            "unrealized_pct": -0.38134858727682247,
+            "current_price": 28.75,
+            "unrealized_pnl": -63.934999999999235,
+            "unrealized_pct": -0.3293465071936172,
             "entry_i": 344
-        }
-    },
-    "pending_orders": [
-        {
-            "symbol": "HRMY",
+        },
+        "HRMY": {
             "shares": 385,
-            "committed_cash": 14552.999999999998,
-            "order_price_estimate": 37.8,
-            "stop_price": 32.45258571428571,
+            "entry_price": 38.71,
+            "stop_price": 33.31446092592593,
             "strategy": "Apex Sniper Wealth v1.0",
             "strategy_name": "Apex Sniper Wealth v1.0",
             "genome": {
@@ -259,11 +259,12 @@
                     }
                 }
             },
-            "date": "2025-12-22",
-            "type": "BUY_MOO",
-            "status": "PENDING",
-            "entry_i": 343,
-            "queued_at": "2025-12-22T18:45:12.412220"
+            "date": "2025-12-23",
+            "current_price": 39.205,
+            "unrealized_pnl": 190.57499999999902,
+            "unrealized_pct": 1.2787393438387946,
+            "entry_i": 343
         }
-    ]
+    },
+    "pending_orders": []
 }

@@ -14,6 +14,7 @@ from ta.trend import ADXIndicator, CCIIndicator
 
 from strategies.generic import GenericStrategy
 from strategies.strategy_loader import load_strategies
+from execution.parity import apply_strategy_score_multipliers
 
 DEFAULT_SCORING_WEIGHTS: Dict[str, float] = {
     "rsi_factor": 3.0,
@@ -24,8 +25,6 @@ DEFAULT_SCORING_WEIGHTS: Dict[str, float] = {
     "trend_bonus": 40.0,
     "trend_penalty": -15.0,
 }
-
-from execution.parity import apply_wealth_boost
 
 MIN_BARS = 200
 MIN_ENTRY_SCORE = 120.0
@@ -796,6 +795,7 @@ def _legacy_run_backtest(
                     float(bb_width_arr[prev_i]),
                     w,
                 )
+                score = apply_strategy_score_multipliers(score, params)
                 if score < MIN_ENTRY_SCORE:
                     continue
 
@@ -1544,9 +1544,8 @@ def run_backtest(
                     w,
                 )
 
-                # FIX 1: Apply Parity Wealth Boost
-                if "wealth" in strat.name.lower():
-                    score = apply_wealth_boost(score, strat.name)
+                # FIX 1: Apply Parity Strategy Multipliers
+                score = apply_strategy_score_multipliers(score, params)
 
                 # FIX 2: Vectorized Limit Entry Logic
                 entry_px_arr = open_px.copy()

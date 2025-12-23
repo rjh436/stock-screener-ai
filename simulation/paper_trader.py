@@ -17,7 +17,7 @@ from execution.engine import (
     calculate_backtest_quality_score,
     get_sector,
 )
-from execution.parity import resolve_signal_index, get_strategy_weights, apply_wealth_boost
+from execution.parity import resolve_signal_index, get_strategy_weights, apply_strategy_score_multipliers
 from strategies.generic import GenericStrategy
 from strategies.strategy_loader import load_strategies
 
@@ -742,9 +742,10 @@ class PaperTrader:
 
                     # Use signal bar data for baseline
                     row_signal = df_ind.iloc[signal_idx]
-                    weights = get_strategy_weights(getattr(strat, "params", {}) or {})
+                    params = getattr(strat, "params", {}) or {}
+                    weights = get_strategy_weights(params)
                     raw_score = calculate_backtest_quality_score(row_signal, strat.name, weights=weights)
-                    score = apply_wealth_boost(raw_score, strat.name)
+                    score = apply_strategy_score_multipliers(raw_score, params)
                     if score < MIN_ENTRY_SCORE:
                         scan_logs.append(
                             f"⚠️ REJECTED {sym}: Low score {score:.1f} < {MIN_ENTRY_SCORE:.1f}"
