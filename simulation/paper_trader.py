@@ -733,16 +733,16 @@ class PaperTrader:
                     
                     if len(df_ind) <= MIN_BARS: continue
 
-                    # FIX: SCAN YESTERDAY BAR (matching app.py lookahead fix)
-                    signal_idx = len(df_ind) - 2
+                    # FIX: SCAN LIVE BAR (matching app.py live mark alignment)
+                    signal_idx = len(df_ind) - 1
                     if signal_idx < MIN_BARS:
                         continue
                     
                     if not strat.entry(df_ind, signal_idx): continue
 
-                    # Use Yesterday's data for gap protection baseline
-                    row_prev = df_ind.iloc[signal_idx]
-                    raw_score = calculate_backtest_quality_score(row_prev, strat.name, weights=scoring)
+                    # Use signal bar data for baseline
+                    row_signal = df_ind.iloc[signal_idx]
+                    raw_score = calculate_backtest_quality_score(row_signal, strat.name, weights=scoring)
                     score = raw_score * 1.3 if "wealth" in strat.name.lower() else raw_score
                     if score < MIN_ENTRY_SCORE:
                         scan_logs.append(
@@ -750,12 +750,12 @@ class PaperTrader:
                         )
                         continue
 
-                    # Store BOTH yesterday's close AND open
-                    signal_close = float(row_prev["close"])
-                    signal_open = float(row_prev["open"])
+                    # Store BOTH close AND open from the signal bar
+                    signal_close = float(row_signal["close"])
+                    signal_open = float(row_signal["open"])
 
                     # Stop Loss (Estimation only - Recalculated on fill)
-                    atr = float(row_prev.get("atr14", signal_close * 0.02))
+                    atr = float(row_signal.get("atr14", signal_close * 0.02))
                     stop_mult = float(getattr(strat, "params", {}).get("stop_loss_atr", 3.0))
                     stop_price = signal_close - (atr * stop_mult)
 

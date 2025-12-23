@@ -287,7 +287,7 @@ if mode == "Live Screener":
                     try:
                         df_ind = _compute_indicators(df.copy(), spy_df=spy_df, vix_df=vix_df)
                         if not df_ind.empty and len(df_ind) >= 2:
-                            signal_i = len(df_ind) - 2
+                            signal_i = len(df_ind) - 1
                             row_signal = df_ind.iloc[signal_i]
                             row_current = df_ind.iloc[-1]
 
@@ -390,8 +390,8 @@ if mode == "Live Screener":
                     elif sym in pending_syms:
                         status_txt = "⏳ PENDING"
                     elif not entry_ok:
-                        if rsi2_num is not None and rsi2_num >= 20:
-                            status_txt = f"⚠️ WAIT: RSI2 High ({rsi2_num:.1f})"
+                        if rsi2_num is not None and rsi2_num > 20:
+                            status_txt = "⚠️ WAIT: RSI2 High"
                         else:
                             status_txt = "⚠️ WAIT: Pattern Incomplete"
                     elif score_val < MIN_ENTRY_SCORE:
@@ -411,6 +411,20 @@ if mode == "Live Screener":
         df = st.session_state.scan_results
         if not show_all_setups and "Status" in df.columns:
             df = df[df["Status"] == "✅ TRADABLE"]
+        if not df.empty and "Status" in df.columns and "Score" in df.columns:
+            def get_sort_weight(status: str) -> int:
+                if "✅ TRADABLE" in status:
+                    return 0
+                if "⏳ PENDING" in status:
+                    return 1
+                if "ℹ️ HELD" in status:
+                    return 2
+                return 3
+
+            df = df.copy()
+            df["sort_weight"] = df["Status"].apply(get_sort_weight)
+            df = df.sort_values(by=["sort_weight", "Score"], ascending=[True, False])
+            df = df.drop(columns=["sort_weight"])
 
         if df.empty:
             st.info("No signals found today.")
@@ -424,11 +438,9 @@ if mode == "Live Screener":
             def _status_style(series: pd.Series) -> List[str]:
                 styles = []
                 for val in series:
-                    if isinstance(val, str) and val.startswith("✅"):
+                    if isinstance(val, str) and (val.startswith("✅") or val.startswith("⏳")):
                         styles.append("background-color: #1a7f37; color: #ffffff; font-weight: 600;")
                     elif isinstance(val, str) and val.startswith("⚠️ WAIT"):
-                        styles.append("background-color: #f1c232; color: #000000; font-weight: 600;")
-                    elif isinstance(val, str) and val.startswith("⏳"):
                         styles.append("background-color: #f1c232; color: #000000; font-weight: 600;")
                     elif isinstance(val, str) and val.startswith("ℹ️"):
                         styles.append("background-color: #0b5394; color: #ffffff; font-weight: 600;")
@@ -608,8 +620,18 @@ elif mode == "Simulator":
             status.write("2️⃣ Executing Scan & Governor...")
             symbols = get_index_symbols("S&P 1500")
             base_days = 400
-            data_pack = fetch_data_pack(symbols, days=base_days)
-            g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=600) or {}
+            data_pack = fetch_data_pack(
+                symbols,
+                days=base_days,
+                inject_live=True,
+                max_lag_days=0,
+            )
+            g_data = fetch_data_pack(
+                ["SPY", "$VIX", "VIX"],
+                days=600,
+                inject_live=True,
+                max_lag_days=0,
+            ) or {}
             spy_df = g_data.get("SPY")
             vix_df = g_data.get("$VIX")
             if vix_df is None:
