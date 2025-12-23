@@ -292,42 +292,42 @@ if mode == "Live Screener":
                         row_signal = df_ind.iloc[signal_i]
                         row_current = df_ind.iloc[current_i]
 
-                            for strat in strat_objects:
-                                s_conf = strat.params or {}
-                                entry_ok = strat.entry(df_ind, signal_i)
+                        for strat in strat_objects:
+                            s_conf = strat.params or {}
+                            entry_ok = strat.entry(df_ind, signal_i)
 
-                                atr = row_signal.get("atr14", row_signal["close"] * 0.02)
-                                stop_mult = float(s_conf.get("stop_loss_atr", 3.0))
+                            atr = row_signal.get("atr14", row_signal["close"] * 0.02)
+                            stop_mult = float(s_conf.get("stop_loss_atr", 3.0))
 
-                                weights = get_strategy_weights(s_conf)
-                                raw_score = calculate_backtest_quality_score(
-                                    row_signal,
-                                    s_conf.get("name", ""),
-                                    weights,
-                                )
-                                score = apply_wealth_boost(raw_score, s_conf.get("name", ""))
+                            weights = get_strategy_weights(s_conf)
+                            raw_score = calculate_backtest_quality_score(
+                                row_signal,
+                                s_conf.get("name", ""),
+                                weights,
+                            )
+                            score = apply_wealth_boost(raw_score, s_conf.get("name", ""))
 
-                                exits = s_conf.get("exit_rules", [])
-                                target_txt = (
-                                    f"${row_signal['close'] * float(exits[0].get('val')):.2f}"
-                                    if exits and exits[0].get("type") == "profit_target"
-                                    else "OPEN"
-                                )
+                            exits = s_conf.get("exit_rules", [])
+                            target_txt = (
+                                f"${row_signal['close'] * float(exits[0].get('val')):.2f}"
+                                if exits and exits[0].get("type") == "profit_target"
+                                else "OPEN"
+                            )
 
-                                estimated_entry = row_current["close"]
+                            estimated_entry = row_current["close"]
 
-                                results.append(
-                                    {
-                                        "Symbol": sym,
-                                        "Strategy": s_conf.get("name", strat.name),
-                                        "Price": row_current["close"],
-                                        "RSI2": row_current.get("rsi2"),
-                                        "Stop Loss": estimated_entry - (atr * stop_mult),
-                                        "Target": target_txt,
-                                        "Score": score,
-                                        "Entry_OK": entry_ok,
-                                    }
-                                )
+                            results.append(
+                                {
+                                    "Symbol": sym,
+                                    "Strategy": s_conf.get("name", strat.name),
+                                    "Price": row_current["close"],
+                                    "RSI2": row_current.get("rsi2"),
+                                    "Stop Loss": estimated_entry - (atr * stop_mult),
+                                    "Target": target_txt,
+                                    "Score": score,
+                                    "Entry_OK": entry_ok,
+                                }
+                            )
                     except Exception:
                         pass
 
