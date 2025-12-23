@@ -881,6 +881,11 @@ elif mode == "Simulator":
             if history_df.empty:
                 st.caption("No closed trades yet.")
             else:
+                if "Reason" in history_df.columns:
+                    initial_buys = history_df[history_df["Reason"] == "INITIAL_BUY"].tail(10)
+                    if not initial_buys.empty:
+                        st.caption("Latest INITIAL_BUY entries")
+                        st.dataframe(initial_buys, use_container_width=True)
                 st.dataframe(history_df.tail(20), use_container_width=True)
                 csv_data = history_df.to_csv(index=False).encode("utf-8")
                 st.download_button(

@@ -472,6 +472,19 @@ class PaperTrader:
                 "unrealized_pct": 0.0,
                 "entry_i": order.get("entry_i"),
             }
+
+            self._append_trade_ledger(
+                symbol=sym,
+                strategy=s_name,
+                entry_date=str(today_ny),
+                exit_date="OPEN",
+                entry_price=fill_price,
+                exit_price=0.0,
+                shares=shares,
+                pnl=0.0,
+                pnl_pct=0.0,
+                reason="INITIAL_BUY",
+            )
             
             fill_log.append(f"✅ FILLED {sym} @ ${fill_price:.2f} (Stop: ${real_stop_price:.2f})")
 
