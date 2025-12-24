@@ -1,6 +1,6 @@
 {
     "cash": 21822.465000000004,
-    "equity": 102776.13750000001,
+    "equity": 103206.05750000001,
     "history": [
         {
             "symbol": "ZTS",
@@ -64,7 +64,7 @@
         },
         {
             "date": "2025-12-24",
-            "equity": 102776.13750000001
+            "equity": 103206.05750000001
         }
     ],
     "positions": {
@@ -75,9 +75,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-11",
-            "current_price": 292.1075,
-            "unrealized_pnl": 2123.8124999999995,
-            "unrealized_pct": 10.734864854619202,
+            "current_price": 294.14,
+            "unrealized_pnl": 2276.2499999999973,
+            "unrealized_pct": 11.505364115394807,
             "entry_i": 332
         },
         "CEG": {
@@ -87,9 +87,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-19",
-            "current_price": 360.66,
-            "unrealized_pnl": -18.359999999998763,
-            "unrealized_pct": -0.14950166112955804,
+            "current_price": 362.98,
+            "unrealized_pnl": 60.520000000001005,
+            "unrealized_pct": 0.4928017718715475,
             "entry_i": 327
         },
         "AVGO": {
@@ -146,9 +146,9 @@
                 }
             },
             "date": "2025-12-22",
-            "current_price": 347.505,
-            "unrealized_pnl": 53.10000000000082,
-            "unrealized_pct": 0.4262636187613857,
+            "current_price": 350.55,
+            "unrealized_pnl": 162.7200000000014,
+            "unrealized_pct": 1.3062451232552204,
             "entry_i": 324
         },
         "WBD": {
@@ -205,9 +205,9 @@
                 }
             },
             "date": "2025-12-22",
-            "current_price": 29.13,
-            "unrealized_pnl": 191.8050000000001,
-            "unrealized_pct": 0.9880395215808638,
+            "current_price": 29.195,
+            "unrealized_pnl": 235.55000000000095,
+            "unrealized_pct": 1.2133818686080826,
             "entry_i": 344
         },
         "HRMY": {
@@ -264,9 +264,9 @@
                 }
             },
             "date": "2025-12-23",
-            "current_price": 38.1,
-            "unrealized_pnl": -234.8499999999998,
-            "unrealized_pct": -1.5758202014983194,
+            "current_price": 38.2175,
+            "unrealized_pnl": -189.6124999999999,
+            "unrealized_pct": -1.2722810643244633,
             "entry_i": 343
         }
     },

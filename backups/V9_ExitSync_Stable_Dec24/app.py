@@ -5,7 +5,6 @@ import sys
 import os
 import json
 import time
-import numpy as np
 from datetime import datetime, timedelta
 from typing import List
 
@@ -64,27 +63,33 @@ def score_to_rating(score):
     elif score >= 50: return "⚠️ Fair"
     return "❌ Weak"
 
-def _unwrap_genome(value):
-    if value is None:
-        return None
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except Exception:
+def calc_exit_plan(row, strategies_map):
+    def _unwrap_genome(value):
+        if value is None:
             return None
-    if isinstance(value, dict):
-        for _ in range(3):
-            nested = None
-            for key in ("genome", "params", "strategy"):
-                if isinstance(value.get(key), dict):
-                    nested = value.get(key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except Exception:
+                return None
+        if isinstance(value, dict):
+            for _ in range(3):
+                nested = None
+                for key in ("genome", "params", "strategy"):
+                    if isinstance(value.get(key), dict):
+                        nested = value.get(key)
+                        break
+                if nested is None:
                     break
-            if nested is None:
-                break
-            value = nested
-    return value if isinstance(value, dict) else None
+                value = nested
+        return value if isinstance(value, dict) else None
 
-def _resolve_strategy_genome(row, strategies_map):
+    entry_price = row.get("Entry Price", 0) or 0
+    try:
+        entry_price = float(entry_price)
+    except Exception:
+        entry_price = 0.0
+
     genome = _unwrap_genome(
         row.get("genome")
         or row.get("Genome")
@@ -123,213 +128,36 @@ def _resolve_strategy_genome(row, strategies_map):
                         best_key = key_norm
                         best_cfg = cfg
             strat = best_cfg
-    return strat
-
-def _best_profit_target_multiple(exit_rules):
-    best = None
-    for rule in exit_rules or []:
-        if not isinstance(rule, dict):
-            continue
-        if rule.get("type") != "profit_target":
-            continue
-        try:
-            mult = float(rule.get("val", 1.0) or 1.0)
-        except (TypeError, ValueError):
-            continue
-        if not np.isfinite(mult) or mult <= 1.0:
-            continue
-        best = mult if best is None else min(best, mult)
-    return best
-
-def _as_float(value, default=0.0):
-    try:
-        val = float(value)
-    except Exception:
-        return default
-    if not np.isfinite(val):
-        return default
-    return val
-
-def rehydrate_exit_state(row, strategies_map, history_map=None):
-    strat = _resolve_strategy_genome(row, strategies_map)
     if not strat:
-        return {"valid": False, "reason": "missing_strategy"}
-
-    symbol = str(row.get("Symbol") or row.get("symbol") or "").upper()
-    df = None
-    if history_map and symbol:
-        df = history_map.get(symbol)
-        if df is None:
-            df = history_map.get(symbol.upper())
-        if df is None:
-            df = history_map.get(symbol.lower())
-    if df is None or df.empty:
-        return {"valid": False, "reason": "missing_history", "strategy": strat}
-
-    df = _compute_indicators(df)
-    if df is None or df.empty:
-        return {"valid": False, "reason": "missing_indicators", "strategy": strat}
-
-    loc = len(df) - 1
-    if loc < 0:
-        return {"valid": False, "reason": "missing_bars", "strategy": strat}
-
-    entry_price = _as_float(row.get("Entry Price") or row.get("entry_price"))
-    initial_stop = _as_float(row.get("Stop Loss") or row.get("stop_price"))
-
-    row_last = df.iloc[loc]
-    close_px = _as_float(row_last.get("close"), default=entry_price)
-    if close_px <= 0:
-        close_px = entry_price
-    high_px = _as_float(row_last.get("high"), default=close_px)
-    low_px = _as_float(row_last.get("low"), default=close_px)
-
-    if entry_price <= 0:
-        entry_price = close_px
-
-    atr = _as_float(row_last.get("atr14"), default=close_px * 0.02)
-    if atr <= 0:
-        atr = close_px * 0.02
-
-    sma50 = _as_float(row_last.get("sma50"), default=float("nan"))
-
-    entry_idx = loc
-    entry_raw = row.get("Date") or row.get("date") or row.get("Entry Date")
-    if entry_raw is not None:
-        try:
-            entry_ts = pd.to_datetime(entry_raw)
-            if getattr(entry_ts, "tzinfo", None) is not None:
-                entry_ts = entry_ts.tz_localize(None)
-            entry_idx = int(df.index.searchsorted(entry_ts))
-        except Exception:
-            entry_idx = loc
-    else:
-        entry_i = row.get("entry_i")
-        if isinstance(entry_i, (int, np.integer)) and 0 <= int(entry_i) <= loc:
-            entry_idx = int(entry_i)
-    entry_idx = max(0, min(entry_idx, loc))
-
-    days_held = max(0, loc - entry_idx)
-
-    try:
-        peak_val = float(np.nanmax(df["high"].iloc[entry_idx : loc + 1]))
-    except Exception:
-        peak_val = float("nan")
-    peak_high = peak_val if np.isfinite(peak_val) else high_px
-
-    trail_mult_raw = strat.get("trail_atr", strat.get("stop_loss_atr", 3.0))
-    try:
-        trail_mult = float(trail_mult_raw or 3.0)
-    except (TypeError, ValueError):
-        trail_mult = 3.0
-
-    try:
-        act_raw = strat.get("trail_activation", 1.0)
-        trail_activation = float(act_raw or 1.0)
-    except (TypeError, ValueError, AttributeError):
-        trail_activation = 1.0
-    if not np.isfinite(trail_activation) or trail_activation < 1.0:
-        trail_activation = 1.0
-
-    activation_price = entry_price * trail_activation if entry_price > 0 else 0.0
-    trailing_active = (trail_activation <= 1.0) or (entry_price > 0 and peak_high >= activation_price)
-    trailing_stop = float("-inf")
-    if trailing_active and atr > 0:
-        trailing_stop = peak_high - (atr * trail_mult)
-
-    if initial_stop <= 0 and entry_price > 0:
-        initial_stop = entry_price * 0.9
-
-    effective_stop = initial_stop
-    if np.isfinite(trailing_stop):
-        effective_stop = max(effective_stop, float(trailing_stop))
-
-    try:
-        time_stop = int(strat.get("time_stop", 45) or 45)
-    except Exception:
-        time_stop = 45
-    time_stop = max(1, time_stop)
-    days_left = time_stop - days_held
-    time_compression = days_held >= int(time_stop * 0.8)
-
-    stop_breached = bool(effective_stop > 0 and low_px < effective_stop)
-    trend_threat = bool(np.isfinite(sma50) and sma50 > 0 and close_px <= sma50)
-
-    use_bb_exit = bool(strat.get("use_bb_exit", False))
-    target_px = None
-    if not use_bb_exit:
-        mult = _best_profit_target_multiple(strat.get("exit_rules"))
-        if mult is not None and entry_price > 0:
-            target_px = entry_price * mult
-
-    return {
-        "valid": True,
-        "entry_price": entry_price,
-        "close_px": close_px,
-        "low_px": low_px,
-        "high_px": high_px,
-        "atr": atr,
-        "sma50": sma50,
-        "entry_idx": entry_idx,
-        "days_held": days_held,
-        "days_left": days_left,
-        "time_stop": time_stop,
-        "time_compression": time_compression,
-        "peak_high": peak_high,
-        "trail_activation": trail_activation,
-        "activation_price": activation_price,
-        "trailing_active": trailing_active,
-        "trailing_stop": trailing_stop,
-        "effective_stop": effective_stop,
-        "stop_breached": stop_breached,
-        "trend_threat": trend_threat,
-        "target_px": target_px,
-    }
-
-def calc_exit_plan(row, strategies_map, history_map=None):
-    state = rehydrate_exit_state(row, strategies_map, history_map)
-    if not state.get("valid"):
         return "Unknown"
 
-    if state["stop_breached"]:
-        return f"🛑 Stop Breached: ${state['effective_stop']:.2f}"
+    exits = strat.get("exit_rules") or []
+    if isinstance(exits, dict):
+        exits = [exits]
+    for rule in exits:
+        if not isinstance(rule, dict):
+            continue
+        if rule.get("type") == "profit_target":
+            try:
+                target_px = entry_price * float(rule.get("val"))
+                return f"Target: ${target_px:.2f}"
+            except Exception:
+                return "Target: N/A"
 
-    if state["trailing_active"]:
-        stop_px = state["effective_stop"]
-        peak_high = state.get("peak_high")
-        if np.isfinite(peak_high):
-            return f"🛡️ Trailing: ${stop_px:.2f} (Peak ${peak_high:.2f})"
-        return f"🛡️ Trailing: ${stop_px:.2f}"
-
-    if state["time_compression"]:
-        days_left = state.get("days_left")
-        if days_left is None:
-            return "⏱️ Time-Exit Looming"
-        if days_left <= 0:
-            return "⏱️ Time-Exit Due"
-        return f"⏱️ Time-Exit Looming ({days_left}d left)"
-
-    if state["trend_threat"]:
-        sma50 = state.get("sma50")
-        if sma50 is not None and np.isfinite(sma50):
-            return f"📉 Trend Support (SMA50): ${sma50:.2f}"
-        return "📉 Trend Support (SMA50): N/A"
-
-    target_px = state.get("target_px")
-    if target_px is not None and np.isfinite(target_px):
-        return f"🎯 Profit Target: ${target_px:.2f}"
-    return "🎯 Profit Target: N/A"
-
-def _exit_plan_style(val: str) -> str:
-    if not isinstance(val, str):
-        return ""
-    if val.startswith("🛑"):
-        return "background-color: #8b0000; color: #ffffff; font-weight: 600;"
-    if val.startswith("🛡️"):
-        return "background-color: #f39c12; color: #000000; font-weight: 600;"
-    if val.startswith("⏱️"):
-        return "background-color: #f1c232; color: #000000; font-weight: 600;"
-    return ""
+    time_stop = strat.get("time_stop", 70)
+    try:
+        time_stop = int(time_stop)
+    except Exception:
+        time_stop = 70
+    try:
+        entry_date = pd.to_datetime(row.get("Date"))
+        sell_date = entry_date + timedelta(days=time_stop)
+        days_left = (sell_date.date() - datetime.now().date()).days
+        if days_left < 0:
+            return "Time Limit (Sell)"
+        return f"Hold ({days_left}d left)"
+    except Exception:
+        return f"Hold {time_stop}d"
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -645,10 +473,7 @@ if mode == "Live Screener":
             def _status_style(series: pd.Series) -> List[str]:
                 styles = []
                 for val in series:
-                    plan_style = _exit_plan_style(val)
-                    if plan_style:
-                        styles.append(plan_style)
-                    elif isinstance(val, str) and (val.startswith("✅") or val.startswith("⏳")):
+                    if isinstance(val, str) and (val.startswith("✅") or val.startswith("⏳")):
                         styles.append("background-color: #1a7f37; color: #ffffff; font-weight: 600;")
                     elif isinstance(val, str) and val.startswith("⚠️ WAIT"):
                         styles.append("background-color: #f1c232; color: #000000; font-weight: 600;")
@@ -925,8 +750,6 @@ elif mode == "Simulator":
     st.subheader("📂 Active Holdings")
     
     if state['positions']:
-        symbols = list(state["positions"].keys())
-        history_pack = fetch_data_pack(symbols, days=400, inject_live=True) or {}
         col_widths = [1.2, 1.0, 1.2, 1.2, 1.2, 2.5, 1.8, 1.8, 1.2]
         headers = [
             "Symbol",
@@ -934,7 +757,7 @@ elif mode == "Simulator":
             "Entry",
             "Current",
             "Stop Loss",
-            "Exit Plan Mandate",
+            "Exit Plan",
             "PnL",
             "Current Value",
             "Action",
@@ -956,17 +779,13 @@ elif mode == "Simulator":
 
             plan = calc_exit_plan(
                 {
-                    "Symbol": sym,
                     "Strategy": p.get("strategy_name", ""),
                     "Entry Price": entry,
-                    "Stop Loss": stop,
                     "Date": p.get("date", datetime.now()),
                     "genome": p.get("genome"),
                     "strategy_obj": p.get("strategy_obj"),
-                    "entry_i": p.get("entry_i"),
                 },
                 strategies_map,
-                history_pack,
             )
             if not plan:
                 plan = "Unknown"
@@ -977,14 +796,7 @@ elif mode == "Simulator":
             c_cols[2].write(f"${entry:,.2f}")
             c_cols[3].write(f"${curr:,.2f}")
             c_cols[4].write(f"${stop:,.2f}" if stop else "N/A")
-            plan_style = _exit_plan_style(plan)
-            if plan_style:
-                c_cols[5].markdown(
-                    f"<span style='{plan_style} padding: 2px 6px; border-radius: 4px; display: inline-block;'>{plan}</span>",
-                    unsafe_allow_html=True,
-                )
-            else:
-                c_cols[5].write(plan)
+            c_cols[5].write(plan)
 
             pnl_color = "#1a7f37" if pnl_val_trade > 0 else "#b00020" if pnl_val_trade < 0 else "#6b7280"
             pnl_text = f"${pnl_val_trade:,.2f} ({pnl_pct:+.2f}%)"
