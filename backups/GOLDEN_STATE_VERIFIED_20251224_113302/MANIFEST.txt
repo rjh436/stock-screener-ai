@@ -1,0 +1,25 @@
+APEX SNIPER - VERIFIED GOLDEN STATE
+==================================================
+Date: 20251224_113302
+Verification Source: 2025-11-30T22-40_export.csv
+
+STRATEGY 1: THE SHIELD (Gen 12 Sniper)
+   - Performance: 48.96% CAGR
+   - Avg Profit:  18.35%
+   - Trades:      49
+   - Logic:       CCI < 0, BB Width > 0.1 (Deep Value)
+
+STRATEGY 2: THE SWORD (Machine Gun)
+   - Performance: 45.98% CAGR
+   - Avg Profit:  1.61%
+   - Trades:      432
+   - Logic:       ADX < RSI14, Profit Target 1.06 (Velocity)
+
+FILES:
+apex_neural_v6.pkl	1126877	849019cefb3402fb961186940f535ae659ed7076121f06814f9c9a613353b89d
+app.py	44058	8ee059b373d27c5b25f552498ca619dc10d189ce1086d5b9ae450e1d663b53fc
+engine.py	82081	5a21f60b9e29682b2cff8e3cee97170b293fb2f19ffaa7b5860ccdcbd31bcead
+evolution.py	18677	8d548c2a951fd7a1b1626ad09a347a49bc628b3b1007daca1a7fe10192346a81
+generated_strategies.json	2426	f715785d0d8a557df24b650855b35c8f8e8eeaf896b2feec076553c6b5c5026a
+optimizer.py	9594	f487e826332edd63821972d413227299da53981e5af2a2f6b00cd738cc310c33
+paper_portfolio.json	8892	2266a639ede3f4199c8ba60d27b1e5eeee26191f3fe66f4178bc28c3a78dd4e6
