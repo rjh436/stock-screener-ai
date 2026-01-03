@@ -68,41 +68,36 @@ class StrategyApexSniper(BaseStrategy):
         
         # Calculate current profit %
         current_profit_pct = ((row["close"] - entry_price) / entry_price) * 100.0
-        time_stop = int(self.params.get("time_stop", 30) or 30)
-
-        effective_stop = stop_price
-        if current_profit_pct > 3.0 and entry_price > 0:
-            effective_stop = max(effective_stop, entry_price)
         
         # 1. Hard Stop Loss
-        if row["low"] < effective_stop:
-            return True, effective_stop
+        if row["low"] < stop_price:
+            return True
         
-        # 2. Maximum Time Stop
-        if (i - entry_i) >= time_stop:
-            return True, effective_stop
+        # 2. Maximum Time Stop (60 days)
+        if (i - entry_i) >= 60:
+            return True
         
         # 3. MINIMUM PROFIT TARGET GATE (10%)
         if current_profit_pct < 10.0:
             # FIXED: Use EMA200 not EMA50 (we enter on pullbacks!)
             if row["close"] < row.get("ema200", row["sma200"]) and row.get("adx", 30) < 20:
-                return True, effective_stop
+                return True
             if row["rsi2"] > 95:  # Parabolic spike
-                return True, effective_stop
-            return False, effective_stop  # Otherwise HOLD
+                return True
+            return False  # Otherwise HOLD
         
         # 4. TRAILING STOP ABOVE 10%
         if current_profit_pct < 20.0:
             # 10-20%: EMA20 trailing
             if row["close"] < row.get("ema20", row["sma20"]):
-                return True, effective_stop
+                return True
         else:
             # >20%: EMA50 trailing (wider)
             if row["close"] < row.get("ema50", row["sma50"]):
-                return True, effective_stop
+                return True
         
         # 5. Extreme spike exit
         if row["rsi2"] > 98:
-            return True, effective_stop
+            return True
         
-        return False, effective_stop
+        return False

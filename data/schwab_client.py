@@ -91,9 +91,9 @@ class SchwabData:
     @staticmethod
     def _get_rate_limit_concurrency() -> int:
         try:
-            v = int(os.getenv("SCHWAB_API_CONCURRENCY", "2"))
+            v = int(os.getenv("SCHWAB_API_CONCURRENCY", "6"))
         except Exception:
-            v = 2
+            v = 6
         return max(1, min(v, 16))
 
     @staticmethod

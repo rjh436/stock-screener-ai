@@ -849,20 +849,7 @@ class PaperTrader:
                 except: entry_i = current_idx
 
             stop_price = pos.get("stop_price", pos.get("entry_price", 0) * 0.9)
-            exit_result = strat_obj.exit(df, current_idx, entry_i, pos["entry_price"], stop_price)
-            updated_stop = None
-            if isinstance(exit_result, tuple):
-                should_exit = bool(exit_result[0])
-                if len(exit_result) > 1:
-                    updated_stop = exit_result[1]
-            else:
-                should_exit = bool(exit_result)
-            if updated_stop is not None and pd.notna(updated_stop):
-                updated_stop = float(updated_stop)
-                stop_price = max(stop_price, updated_stop)
-                pos["stop_price"] = stop_price
-
-            if should_exit:
+            if strat_obj.exit(df, current_idx, entry_i, pos["entry_price"], stop_price):
                 exit_price = float(df.iloc[-1]["close"])
                 if df.iloc[-1]["low"] < stop_price: exit_price = stop_price
 

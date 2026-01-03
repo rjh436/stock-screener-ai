@@ -18,7 +18,8 @@ class BaseStrategy(ABC):
     def exit(self, df: pd.DataFrame, i: int, entry_i: int, entry_price: float, stop_price: float) -> bool:
         """
         Check exit conditions for the bar at index `i`.
-        Returns True if the position should be closed.
+        Returns True if the position should be closed. Strategies may also return
+        (should_exit, updated_stop_price) to tighten stops dynamically.
         """
         pass
 

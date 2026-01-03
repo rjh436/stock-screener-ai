@@ -925,18 +925,8 @@ def _legacy_run_backtest(
                         initial_stop,
                     )
                 else:
-                    exit_result = active_strat.exit(sym_data.df, loc, entry_i, entry_price, initial_stop)
-                    updated_stop = None
-                    if isinstance(exit_result, tuple):
-                        should_exit = bool(exit_result[0])
-                        if len(exit_result) > 1:
-                            updated_stop = exit_result[1]
-                    else:
-                        should_exit = bool(exit_result)
-                    if updated_stop is not None and np_isfinite(updated_stop):
-                        updated_stop = float(updated_stop)
-                        pos["stop_price"] = max(float(pos["stop_price"]), updated_stop)
-                    effective_stop = float(pos["stop_price"])
+                    should_exit = bool(active_strat.exit(sym_data.df, loc, entry_i, entry_price, initial_stop))
+                    effective_stop = initial_stop
                     target_px = None
             except Exception:
                 should_exit = False
@@ -1805,26 +1795,11 @@ def run_backtest(
             if cand.entry_px <= 0 or slot_value <= 0:
                 continue
 
-            sizing_mode = "slot"
-            strat_params = getattr(cand.strategy_obj, "params", getattr(cand.strategy_obj, "genome", {})) or {}
-            if isinstance(strat_params, dict):
-                sizing_mode = str(strat_params.get("sizing_mode", "slot")).lower()
+            target_entry_value = slot_value * cand.size_scalar
+            if target_entry_value <= 0:
+                continue
 
-            if sizing_mode == "risk":
-                risk_per_trade = current_equity * 0.02
-                risk_per_share = cand.entry_px - cand.stop_px
-                if risk_per_share > 0:
-                    shares = int(risk_per_trade / risk_per_share)
-                else:
-                    shares = int((current_equity * 0.20) / cand.entry_px) if cand.entry_px > 0 else 0
-
-                max_shares_by_value = int((current_equity * 0.25) / cand.entry_px) if cand.entry_px > 0 else 0
-                shares = min(shares, max_shares_by_value)
-            else:
-                target_entry_value = slot_value * cand.size_scalar
-                if target_entry_value <= 0:
-                    continue
-                shares = int(target_entry_value / cand.entry_px)
+            shares = int(target_entry_value / cand.entry_px)
             if shares <= 0:
                 continue
 
@@ -1954,17 +1929,7 @@ def run_backtest(
                         float(pos["stop_price"]),
                     )
                 else:
-                    exit_result = active_strat.exit(sym_data.df, loc, entry_i, pos["entry_price"], pos["stop_price"])
-                    updated_stop = None
-                    if isinstance(exit_result, tuple):
-                        should_exit = bool(exit_result[0])
-                        if len(exit_result) > 1:
-                            updated_stop = exit_result[1]
-                    else:
-                        should_exit = bool(exit_result)
-                    if updated_stop is not None and np_isfinite(updated_stop):
-                        updated_stop = float(updated_stop)
-                        pos["stop_price"] = max(float(pos["stop_price"]), updated_stop)
+                    should_exit = bool(active_strat.exit(sym_data.df, loc, entry_i, pos["entry_price"], pos["stop_price"]))
                     effective_stop = float(pos["stop_price"])
                     target_px = None
             except Exception:
