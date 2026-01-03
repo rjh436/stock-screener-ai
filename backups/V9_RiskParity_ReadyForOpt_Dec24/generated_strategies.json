@@ -20,8 +20,8 @@
                 "val": 1.27
             }
         ],
-        "stop_loss_atr": 2.13,
-        "time_stop": 32,
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
         "scoring_weights": {
             "sniper_bonus": 41.76,
             "rsi_factor": 4.12,
@@ -44,9 +44,7 @@
                 "avg_profit": 0.054,
                 "win_rate": 0.658
             }
-        },
-        "breakeven_pct": 0.083,
-        "sizing_mode": "risk"
+        }
     },
     {
         "name": "Apex Sniper Income v1.0",

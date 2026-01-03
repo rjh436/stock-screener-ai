@@ -9,10 +9,14 @@ _WEALTH_TYPE = "wealth"
 _INCOME_TYPES = {"income", "hybrid"}
 
 # Exit parameter ranges (Sniper mode)
-_PROFIT_TARGET_MIN = 1.05
-_PROFIT_TARGET_MAX = 1.30
+_PROFIT_TARGET_MIN = 1.10
+_PROFIT_TARGET_MAX = 1.50
 _TIME_STOP_MIN = 20
-_TIME_STOP_MAX = 90
+_TIME_STOP_MAX = 80
+_STOP_LOSS_ATR_MIN = 2.0
+_STOP_LOSS_ATR_MAX = 5.0
+_BREAKEVEN_PCT_MIN = 0.02
+_BREAKEVEN_PCT_MAX = 0.10
 _TRAIL_ACTIVATION_MIN = 1.15
 _TRAIL_ACTIVATION_MAX = 1.40
 
@@ -126,7 +130,7 @@ class EvolutionEngine:
 
         exit_rules = g.get("exit_rules")
         if not isinstance(exit_rules, list) or not exit_rules:
-            exit_rules = [{"type": "profit_target", "val": 1.08}]
+            exit_rules = [{"type": "profit_target", "val": _PROFIT_TARGET_MIN}]
 
         normalized_exit_rules: List[Dict] = []
         has_profit_target = False
@@ -137,23 +141,34 @@ class EvolutionEngine:
             if r.get("type") == "profit_target":
                 has_profit_target = True
                 try:
-                    val = float(r.get("val", 1.08) or 1.08)
+                    val = float(r.get("val", _PROFIT_TARGET_MIN) or _PROFIT_TARGET_MIN)
                 except (TypeError, ValueError):
-                    val = 1.08
+                    val = _PROFIT_TARGET_MIN
                 r["val"] = round(_clamp(val, _PROFIT_TARGET_MIN, _PROFIT_TARGET_MAX), 2)
             normalized_exit_rules.append(r)
 
         if not has_profit_target:
-            normalized_exit_rules.append({"type": "profit_target", "val": 1.08})
+            normalized_exit_rules.append({"type": "profit_target", "val": _PROFIT_TARGET_MIN})
 
         g["exit_rules"] = normalized_exit_rules
 
-        g["stop_loss_atr"] = float(g.get("stop_loss_atr", 5.0) or 5.0)
+        try:
+            stop_loss_atr = float(g.get("stop_loss_atr", _STOP_LOSS_ATR_MAX) or _STOP_LOSS_ATR_MAX)
+        except (TypeError, ValueError):
+            stop_loss_atr = _STOP_LOSS_ATR_MAX
+        g["stop_loss_atr"] = round(_clamp(stop_loss_atr, _STOP_LOSS_ATR_MIN, _STOP_LOSS_ATR_MAX), 2)
         try:
             time_stop = int(g.get("time_stop", 45) or 45)
         except Exception:
             time_stop = 45
         g["time_stop"] = int(_clamp(float(time_stop), float(_TIME_STOP_MIN), float(_TIME_STOP_MAX)))
+
+        if "breakeven_pct" in g:
+            try:
+                breakeven_pct = float(g.get("breakeven_pct", _BREAKEVEN_PCT_MIN) or _BREAKEVEN_PCT_MIN)
+            except (TypeError, ValueError):
+                breakeven_pct = _BREAKEVEN_PCT_MIN
+            g["breakeven_pct"] = round(_clamp(breakeven_pct, _BREAKEVEN_PCT_MIN, _BREAKEVEN_PCT_MAX), 3)
 
         scoring = g.get("scoring_weights")
         if not isinstance(scoring, dict) or not scoring:
@@ -193,8 +208,9 @@ class EvolutionEngine:
             "type": strategy_type_norm,
             "entry_rules": [self._random_rule() for _ in range(random.randint(2, 4))],
             "exit_rules": [{"type": "profit_target", "val": round(random.uniform(_PROFIT_TARGET_MIN, _PROFIT_TARGET_MAX), 2)}],
-            "stop_loss_atr": round(random.uniform(3.0, 7.0), 1),
+            "stop_loss_atr": round(random.uniform(_STOP_LOSS_ATR_MIN, _STOP_LOSS_ATR_MAX), 2),
             "time_stop": random.randint(_TIME_STOP_MIN, _TIME_STOP_MAX),
+            "breakeven_pct": round(random.uniform(_BREAKEVEN_PCT_MIN, _BREAKEVEN_PCT_MAX), 3),
             "scoring_weights": self._random_scoring_weights(),
             # GEN 16.1 PARAMETERS
             "adx_threshold": 25.0,
@@ -284,7 +300,7 @@ class EvolutionEngine:
 
         # Mutation bucket probabilities:
         # - 25%: entry/filters
-        # - 35%: exit knobs (profit_target/time_stop/trail_activation)
+        # - 35%: exit knobs (profit_target/time_stop/trail_activation/breakeven_pct)
         # - 15%: stop-loss ATR
         # - 25%: scoring weights
         if r < 0.25:
@@ -304,7 +320,7 @@ class EvolutionEngine:
 
         elif r < 0.60:
             # Exit knobs (sniper selection)
-            trait = random.choice(["profit_target", "time_stop", "trail_activation"])
+            trait = random.choice(["profit_target", "time_stop", "trail_activation", "breakeven_pct"])
 
             if trait == "profit_target":
                 exit_rules = mutant.get("exit_rules")
@@ -317,13 +333,13 @@ class EvolutionEngine:
                         pt_rule = rule
                         break
                 if pt_rule is None:
-                    pt_rule = {"type": "profit_target", "val": 1.08}
+                    pt_rule = {"type": "profit_target", "val": _PROFIT_TARGET_MIN}
                     exit_rules.append(pt_rule)
 
                 try:
-                    cur = float(pt_rule.get("val", 1.08) or 1.08)
+                    cur = float(pt_rule.get("val", _PROFIT_TARGET_MIN) or _PROFIT_TARGET_MIN)
                 except (TypeError, ValueError):
-                    cur = 1.08
+                    cur = _PROFIT_TARGET_MIN
 
                 # Upward bias: push exits toward larger targets.
                 if self.generation_count < 25:
@@ -346,6 +362,17 @@ class EvolutionEngine:
                     new_val = int(round(cur * random.uniform(0.85, 1.15)))
                     mutant["time_stop"] = max(_TIME_STOP_MIN, min(_TIME_STOP_MAX, new_val))
 
+            elif trait == "breakeven_pct":
+                if self.generation_count < 25:
+                    base = random.uniform(_BREAKEVEN_PCT_MIN, _BREAKEVEN_PCT_MAX)
+                else:
+                    try:
+                        cur = float(mutant.get("breakeven_pct", _BREAKEVEN_PCT_MIN) or _BREAKEVEN_PCT_MIN)
+                    except (TypeError, ValueError):
+                        cur = _BREAKEVEN_PCT_MIN
+                    base = cur + random.uniform(-0.01, 0.01)
+                mutant["breakeven_pct"] = round(_clamp(float(base), _BREAKEVEN_PCT_MIN, _BREAKEVEN_PCT_MAX), 3)
+
             else:
                 # trail_activation
                 if self.generation_count < 25:
@@ -362,7 +389,7 @@ class EvolutionEngine:
                 mutant["trail_activation"] = round(_clamp(float(new_val), _TRAIL_ACTIVATION_MIN, _TRAIL_ACTIVATION_MAX), 3)
 
         elif r < 0.75:
-            mutant["stop_loss_atr"] = round(random.uniform(2.5, 6.0), 1)
+            mutant["stop_loss_atr"] = round(random.uniform(_STOP_LOSS_ATR_MIN, _STOP_LOSS_ATR_MAX), 2)
 
         else:
             scoring = copy.deepcopy(mutant.get("scoring_weights") or {})

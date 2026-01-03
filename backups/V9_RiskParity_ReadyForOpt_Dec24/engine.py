@@ -1294,17 +1294,6 @@ def _generic_exit_decision(
     if np_isfinite(trailing_stop):
         effective_stop = max(effective_stop, float(trailing_stop))
 
-    breakeven_raw = genome.get("breakeven_pct") if isinstance(genome, dict) else None
-    if breakeven_raw is not None and entry_price > 0:
-        try:
-            breakeven_val = float(breakeven_raw)
-        except (TypeError, ValueError):
-            breakeven_val = 0.0
-        if breakeven_val > 0:
-            breakeven_thresh = breakeven_val if breakeven_val > 1.0 else breakeven_val * 100.0
-            if pnl_pct >= breakeven_thresh:
-                effective_stop = max(effective_stop, float(entry_price))
-
     # 1. STOP LOSS CHECK
     if low_px < effective_stop:
         return True, effective_stop, None

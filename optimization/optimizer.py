@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
+import random
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -66,43 +68,242 @@ def _threshold_multiplier(value: float, target: float, *, power_below: float) ->
 
 def calculate_fitness(result: Dict) -> float:
     """
-    Fitness uses fractional units (strategic mandates):
-    - CAGR target: 0.40 (already fractional, e.g. 0.42 == 42%)
-    - Avg profit target: 0.05 (avg trade return fraction, e.g. 0.055 == 5.5%)
-    - Win rate target: 0.60 (fraction, e.g. 0.63 == 63%)
-
-    Fitness is a "sniper" objective:
-    - Avg profit per trade has a quartic penalty below mandate and a linear reward above it.
-    - Win rate has a quadratic penalty below mandate and a linear reward above it.
-    - CAGR has a linear penalty below mandate and a linear reward above it.
-    - Calmar is capped so ultra-low drawdowns can't dominate selection.
+    Fitness objective:
+    - Primary: CAGR
+    - Constraint: max drawdown must be < 25%
+    - Tie-breaker: win rate
     """
     cagr = _to_float(result.get("cagr", 0.0) or 0.0)
     win_rate = _to_float(result.get("hit_rate", 0.0) or 0.0) / 100.0
-    avg_profit = _to_float(result.get("avg_profit_pct", 0.0) or 0.0) / 100.0
     max_dd_pct = _to_float(result.get("max_drawdown_pct", 0.0) or 0.0)
 
-    dd_abs = abs(max_dd_pct)
-    dd_frac = dd_abs / 100.0
-    calmar_raw = (cagr / dd_frac) if dd_frac > 0.0 else 0.0
-    calmar_capped = min(max(calmar_raw, 0.0), 20.0)
+    if abs(max_dd_pct) >= 25.0:
+        return 0.0
 
-    # Strategic multipliers (always a gradient, even above mandates)
-    profit_multiplier = _threshold_multiplier(avg_profit, MANDATE_PROFIT_TARGET, power_below=4.0)
-    win_multiplier = _threshold_multiplier(win_rate, MANDATE_WIN_TARGET, power_below=2.0)
-    cagr_multiplier = _threshold_multiplier(cagr, MANDATE_CAGR_TARGET, power_below=1.0)
+    if cagr <= 0:
+        return 0.0
 
-    # Calmar bonus is deliberately modest; can't dominate profit.
-    calmar_bonus = 1.0 + (calmar_capped / 40.0)  # max 1.5x
+    return float((cagr * 1000.0) + win_rate)
 
-    fitness = 1000.0 * calmar_bonus * profit_multiplier * win_multiplier * cagr_multiplier
 
-    # Fitness kick: create a cliff below 2.5% avg profit/trade to break the 1% local optimum.
-    if avg_profit < 0.025:
-        kick = (avg_profit / 0.025) ** 2.0
-        fitness *= float(kick)
+class Optimizer:
+    def __init__(
+        self,
+        strategy_name: str,
+        population_size: int = 30,
+        generations: int = 10,
+        n_jobs: int = 10,
+        universe: str = "S&P 1500",
+        days: int = 1260,
+    ) -> None:
+        self.strategy_name = str(strategy_name)
+        self.population_size = max(2, int(population_size or 0))
+        self.generations = max(1, int(generations or 0))
+        self.n_jobs = max(1, min(int(n_jobs or 1), MAX_WORKERS))
+        self.universe = universe
+        self.days = int(days or 0)
+        self.gene_ranges: Dict[str, Tuple[float, float, Any]] = {}
+        self.elite_fraction = 0.20
 
-    return float(max(fitness, 0.0))
+    def set_gene_range(self, gene: str, min_val: float, max_val: float, value_type: Any) -> None:
+        if min_val > max_val:
+            min_val, max_val = max_val, min_val
+        self.gene_ranges[str(gene)] = (float(min_val), float(max_val), value_type)
+
+    def _load_base_genome(self) -> Dict:
+        parents = _read_parent_strategies(GEN_CONFIG)
+        if not parents:
+            raise RuntimeError(f"Unable to read strategies from {GEN_CONFIG}")
+
+        for g in parents:
+            if str(g.get("name")) == self.strategy_name:
+                return dict(g)
+        raise RuntimeError(f"Strategy '{self.strategy_name}' not found in {GEN_CONFIG}")
+
+    def _sample_value(self, gene: str, lo: float, hi: float, value_type: Any) -> Any:
+        if value_type is int:
+            return int(random.randint(int(lo), int(hi)))
+        val = float(random.uniform(float(lo), float(hi)))
+        if gene == "breakeven_pct":
+            return round(val, 3)
+        if gene in {"profit_target", "stop_loss_atr"}:
+            return round(val, 2)
+        return val
+
+    def _clamp_value(self, gene: str, value: Any, lo: float, hi: float, value_type: Any) -> Any:
+        if value_type is int:
+            try:
+                val = int(round(float(value)))
+            except Exception:
+                val = int(lo)
+            return max(int(lo), min(int(hi), val))
+
+        try:
+            val = float(value)
+        except Exception:
+            val = float(lo)
+        val = max(float(lo), min(float(hi), val))
+        if gene == "breakeven_pct":
+            return round(val, 3)
+        if gene in {"profit_target", "stop_loss_atr"}:
+            return round(val, 2)
+        return val
+
+    @staticmethod
+    def _get_profit_target(genome: Dict) -> Optional[float]:
+        exit_rules = genome.get("exit_rules")
+        if not isinstance(exit_rules, list):
+            return None
+        for rule in exit_rules:
+            if isinstance(rule, dict) and rule.get("type") == "profit_target":
+                try:
+                    return float(rule.get("val"))
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    @staticmethod
+    def _set_profit_target(genome: Dict, value: float) -> None:
+        exit_rules = genome.get("exit_rules")
+        if not isinstance(exit_rules, list):
+            exit_rules = []
+
+        rule = None
+        for item in exit_rules:
+            if isinstance(item, dict) and item.get("type") == "profit_target":
+                rule = item
+                break
+
+        if rule is None:
+            rule = {"type": "profit_target", "val": value}
+            exit_rules.append(rule)
+        else:
+            rule["val"] = value
+
+        genome["exit_rules"] = exit_rules
+
+    def _apply_gene_ranges(self, genome: Dict, *, randomize: bool) -> Dict:
+        for gene, (lo, hi, value_type) in self.gene_ranges.items():
+            if gene == "profit_target":
+                if randomize:
+                    val = self._sample_value(gene, lo, hi, value_type)
+                else:
+                    cur = self._get_profit_target(genome)
+                    val = self._clamp_value(gene, cur, lo, hi, value_type)
+                self._set_profit_target(genome, val)
+                continue
+
+            if randomize:
+                val = self._sample_value(gene, lo, hi, value_type)
+            else:
+                val = self._clamp_value(gene, genome.get(gene), lo, hi, value_type)
+            genome[gene] = val
+
+        genome["sizing_mode"] = "risk"
+        return genome
+
+    def _mutate(self, genome: Dict) -> Dict:
+        child = copy.deepcopy(genome)
+        if not self.gene_ranges:
+            return child
+        gene = random.choice(list(self.gene_ranges.keys()))
+        lo, hi, value_type = self.gene_ranges[gene]
+        val = self._sample_value(gene, lo, hi, value_type)
+        if gene == "profit_target":
+            self._set_profit_target(child, val)
+        else:
+            child[gene] = val
+        return self._apply_gene_ranges(child, randomize=False)
+
+    def _evaluate_population(
+        self,
+        population: Sequence[Dict],
+        prepared_data: PreparedBacktestData,
+        global_context: Dict,
+    ) -> Tuple[List[Dict], List[Dict]]:
+        results: List[Dict] = []
+        failures: List[Dict] = []
+
+        with ThreadPoolExecutor(max_workers=self.n_jobs) as ex:
+            future_to_genome = {
+                ex.submit(
+                    run_backtest,
+                    GenericStrategy(genome),
+                    prepared_data,
+                    None,
+                    100000.0,
+                    None,
+                    global_context,
+                    scoring_weights=genome.get("scoring_weights") or DEFAULT_SCORING_WEIGHTS,
+                ): genome
+                for genome in population
+            }
+
+            for fut in as_completed(future_to_genome):
+                genome = future_to_genome[fut]
+                g_name = str(genome.get("name") or "unknown")
+                g_type = str(genome.get("type") or "income").lower()
+                try:
+                    stats = fut.result()
+                    score = calculate_fitness(stats)
+                    results.append({"genome": genome, "score": score, "stats": stats})
+                except Exception as e:
+                    failures.append({"name": g_name, "type": g_type, "error": str(e)})
+                    logger.exception("Backtest failed for %s [%s]", g_name, g_type)
+                    results.append({"genome": genome, "score": 0.0, "stats": {"strategy": g_name, "cagr": 0.0, "avg_profit_pct": 0.0, "hit_rate": 0.0}})
+
+        return results, failures
+
+    def run(self) -> Dict:
+        base_genome = self._load_base_genome()
+        base_genome = self._apply_gene_ranges(base_genome, randomize=False)
+
+        data_map, global_context = load_optimization_data(self.universe, days=self.days)
+        if not data_map:
+            raise RuntimeError("Data load failed; aborting optimization.")
+
+        prepared_data = prepare_backtest_data(
+            data_map,
+            symbol_universe=None,
+            start_date=None,
+            global_data=global_context,
+        )
+
+        population: List[Dict] = []
+        for i in range(self.population_size):
+            genome = copy.deepcopy(base_genome)
+            population.append(self._apply_gene_ranges(genome, randomize=(i != 0)))
+
+        best_genome = base_genome
+        for gen in range(self.generations):
+            print(f"\n🧬 Generation {gen + 1}/{self.generations} (pop={len(population)})")
+            pop_res, failures = self._evaluate_population(population, prepared_data, global_context)
+            ranked = sorted(pop_res, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)
+
+            if failures:
+                by_type = {}
+                for f in failures:
+                    by_type[f["type"]] = by_type.get(f["type"], 0) + 1
+                logger.warning("Backtest failures: %d (by type=%s)", len(failures), by_type)
+
+            top = ranked[0] if ranked else None
+            if top is not None:
+                best_genome = dict(top.get("genome") or best_genome)
+                print(_format_top_line(top.get("stats") or {}, top.get("genome") or {}, float(top.get("score") or 0.0)))
+
+            elite_count = max(2, int(self.population_size * self.elite_fraction))
+            elites = [r.get("genome") for r in ranked[:elite_count] if isinstance(r.get("genome"), dict)]
+            if not elites:
+                elites = [base_genome]
+
+            next_population = [copy.deepcopy(g) for g in elites]
+            while len(next_population) < self.population_size:
+                parent = random.choice(elites)
+                next_population.append(self._mutate(parent))
+
+            population = next_population
+
+        return best_genome
 
 
 def load_optimization_data(universe: str = "S&P 1500", days: int = 1260):

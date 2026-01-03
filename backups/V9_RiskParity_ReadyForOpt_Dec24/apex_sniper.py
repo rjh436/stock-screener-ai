@@ -16,8 +16,7 @@ class StrategyApexSniper(BaseStrategy):
         self.params = {
             "rsi_entry": 5,
             "stop_loss_atr": 4.0,
-            "time_stop": 30,
-            "breakeven_pct": 0.03
+            "time_stop": 30
         }
         if params:
             self.params.update(params)
@@ -68,16 +67,12 @@ class StrategyApexSniper(BaseStrategy):
         row = df.iloc[i]
         
         # Calculate current profit %
-        current_profit_frac = ((row["close"] - entry_price) / entry_price) if entry_price else 0.0
-        current_profit_pct = current_profit_frac * 100.0
+        current_profit_pct = ((row["close"] - entry_price) / entry_price) * 100.0
         time_stop = int(self.params.get("time_stop", 30) or 30)
-        breakeven_pct = float(self.params.get("breakeven_pct", 0.03) or 0.03)
 
         effective_stop = stop_price
-        if breakeven_pct > 0 and entry_price > 0:
-            breakeven_thresh = breakeven_pct / 100.0 if breakeven_pct > 1.0 else breakeven_pct
-            if current_profit_frac > breakeven_thresh:
-                effective_stop = max(effective_stop, entry_price)
+        if current_profit_pct > 3.0 and entry_price > 0:
+            effective_stop = max(effective_stop, entry_price)
         
         # 1. Hard Stop Loss
         if row["low"] < effective_stop:
