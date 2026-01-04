@@ -64,50 +64,47 @@ class StrategyApexSniper(BaseStrategy):
             "time_stop": self.params["time_stop"]
         }
         
-    def exit(self, df: pd.DataFrame, i: int, entry_i: int, entry_price: float, stop_price: float) -> bool:
+    def exit(self, df: pd.DataFrame, i: int, entry_i: int, entry_price: float, stop_price: float) -> tuple:
         row = df.iloc[i]
-        
-        # Calculate current profit %
-        current_profit_frac = ((row["close"] - entry_price) / entry_price) if entry_price else 0.0
-        current_profit_pct = current_profit_frac * 100.0
-        time_stop = int(self.params.get("time_stop", 30) or 30)
-        breakeven_pct = float(self.params.get("breakeven_pct", 0.03) or 0.03)
 
+        # 1. Configurable Parameters (The "Winning DNA")
+        # These now override hardcoded defaults
+        profit_target_mult = float(self.params.get("profit_target", 1.27))
+        # Support generic "exit_rules" parsing if needed, but prioritize direct param
+        if not profit_target_mult or profit_target_mult < 1.0:
+            # Fallback to exit_rules parsing if explicit param missing
+            for rule in self.params.get("exit_rules", []) or []:
+                if rule.get("type") == "profit_target":
+                    profit_target_mult = float(rule.get("val", 1.27))
+                    break
+
+        time_stop = int(self.params.get("time_stop", 32))
+        breakeven_pct = float(self.params.get("breakeven_pct", 0.083))
+
+        # 2. Profit Target Execution (CRITICAL FIX)
+        if profit_target_mult > 1.0 and entry_price > 0:
+            target_px = entry_price * profit_target_mult
+            # If the high hit the target, we claim the target price
+            if row.get("high", row["close"]) >= target_px:
+                return True, stop_price, target_px
+
+        # 3. Breakeven / Stop Logic
+        current_profit_pct = ((row["close"] - entry_price) / entry_price) if entry_price else 0.0
         effective_stop = stop_price
-        if breakeven_pct > 0 and entry_price > 0:
-            breakeven_thresh = breakeven_pct / 100.0 if breakeven_pct > 1.0 else breakeven_pct
-            if current_profit_frac > breakeven_thresh:
-                effective_stop = max(effective_stop, entry_price)
-        
-        # 1. Hard Stop Loss
+
+        if breakeven_pct > 0 and current_profit_pct > breakeven_pct:
+            effective_stop = max(effective_stop, entry_price)
+
         if row["low"] < effective_stop:
-            return True, effective_stop
-        
-        # 2. Maximum Time Stop
+            return True, effective_stop, None
+
+        # 4. Time Stop
         if (i - entry_i) >= time_stop:
-            return True, effective_stop
-        
-        # 3. MINIMUM PROFIT TARGET GATE (10%)
-        if current_profit_pct < 10.0:
-            # FIXED: Use EMA200 not EMA50 (we enter on pullbacks!)
-            if row["close"] < row.get("ema200", row["sma200"]) and row.get("adx", 30) < 20:
-                return True, effective_stop
-            if row["rsi2"] > 95:  # Parabolic spike
-                return True, effective_stop
-            return False, effective_stop  # Otherwise HOLD
-        
-        # 4. TRAILING STOP ABOVE 10%
-        if current_profit_pct < 20.0:
-            # 10-20%: EMA20 trailing
-            if row["close"] < row.get("ema20", row["sma20"]):
-                return True, effective_stop
-        else:
-            # >20%: EMA50 trailing (wider)
-            if row["close"] < row.get("ema50", row["sma50"]):
-                return True, effective_stop
-        
-        # 5. Extreme spike exit
-        if row["rsi2"] > 98:
-            return True, effective_stop
-        
-        return False, effective_stop
+            return True, effective_stop, None
+
+        # 5. Panic Exit (Only extreme conditions)
+        if row.get("rsi2", 50) > 98:
+            return True, effective_stop, None
+
+        # Remove legacy EMA choke holds
+        return False, effective_stop, None

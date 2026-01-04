@@ -927,17 +927,19 @@ def _legacy_run_backtest(
                 else:
                     exit_result = active_strat.exit(sym_data.df, loc, entry_i, entry_price, initial_stop)
                     updated_stop = None
+                    target_px = None
                     if isinstance(exit_result, tuple):
                         should_exit = bool(exit_result[0])
                         if len(exit_result) > 1:
                             updated_stop = exit_result[1]
+                        if len(exit_result) > 2:
+                            target_px = exit_result[2]
                     else:
                         should_exit = bool(exit_result)
                     if updated_stop is not None and np_isfinite(updated_stop):
                         updated_stop = float(updated_stop)
                         pos["stop_price"] = max(float(pos["stop_price"]), updated_stop)
                     effective_stop = float(pos["stop_price"])
-                    target_px = None
             except Exception:
                 should_exit = False
                 effective_stop = float(pos["stop_price"])
@@ -1967,17 +1969,19 @@ def run_backtest(
                 else:
                     exit_result = active_strat.exit(sym_data.df, loc, entry_i, pos["entry_price"], pos["stop_price"])
                     updated_stop = None
+                    target_px = None
                     if isinstance(exit_result, tuple):
                         should_exit = bool(exit_result[0])
                         if len(exit_result) > 1:
                             updated_stop = exit_result[1]
+                        if len(exit_result) > 2:
+                            target_px = exit_result[2]
                     else:
                         should_exit = bool(exit_result)
                     if updated_stop is not None and np_isfinite(updated_stop):
                         updated_stop = float(updated_stop)
                         pos["stop_price"] = max(float(pos["stop_price"]), updated_stop)
                     effective_stop = float(pos["stop_price"])
-                    target_px = None
             except Exception:
                 should_exit = False
                 effective_stop = float(pos["stop_price"])
