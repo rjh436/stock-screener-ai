@@ -1,6 +1,6 @@
 {
     "cash": 21822.465000000004,
-    "equity": 102324.345,
+    "equity": 103916.33,
     "history": [
         {
             "symbol": "ZTS",
@@ -89,6 +89,10 @@
         {
             "date": "2026-01-02",
             "equity": 102324.345
+        },
+        {
+            "date": "2026-01-05",
+            "equity": 103916.33
         }
     ],
     "positions": {
@@ -99,9 +103,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-11",
-            "current_price": 283.26,
-            "unrealized_pnl": 1460.2499999999977,
-            "unrealized_pct": 7.380871147503684,
+            "current_price": 300.74,
+            "unrealized_pnl": 2771.249999999999,
+            "unrealized_pct": 14.007354334887594,
             "entry_i": 332
         },
         "CEG": {
@@ -170,9 +174,9 @@
                 }
             },
             "date": "2025-12-22",
-            "current_price": 347.4,
-            "unrealized_pnl": 49.320000000000164,
-            "unrealized_pct": 0.3959194289512484,
+            "current_price": 343.895,
+            "unrealized_pnl": -76.85999999999967,
+            "unrealized_pct": -0.6169985261393495,
             "entry_i": 324
         },
         "WBD": {
@@ -229,9 +233,9 @@
                 }
             },
             "date": "2025-12-22",
-            "current_price": 28.51,
-            "unrealized_pnl": -225.4549999999982,
-            "unrealized_pct": -1.1613797885248651,
+            "current_price": 29.115,
+            "unrealized_pnl": 181.70999999999972,
+            "unrealized_pct": 0.9360374414976586,
             "entry_i": 344
         },
         "HRMY": {
