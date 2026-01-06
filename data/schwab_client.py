@@ -300,7 +300,7 @@ class SchwabData:
             for attempt in range(1, max_tries + 1):
                 try:
                     with self._rate_limited():
-                        r = self._cli.get_quotes(chunk)
+                        r = self._cli.quote(chunk)
 
                     status = getattr(r, "status_code", None)
                     if status == 429:

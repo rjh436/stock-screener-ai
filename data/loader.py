@@ -309,8 +309,14 @@ def fetch_data_pack(
             max_workers = 10
     max_workers = max(1, min(int(max_workers), 32))
 
+    count = 0
+    total = len(symbols)
+    print(f"📉 Starting History Download for {total} symbols...")
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for sym, df in executor.map(load, symbols):
+            count += 1
+            if count % 50 == 0:
+                print(f"   ⏳ Downloaded {count}/{total} symbols ({(count/total)*100:.1f}%)")
             if df is not None and not df.empty:
                 # Guardrail: don't silently accept "short" cached series when a longer lookback
                 # was requested (common when caches were built with fewer days).
