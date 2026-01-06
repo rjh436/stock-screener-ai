@@ -285,6 +285,9 @@ def fetch_data_pack(
             print("⚠️ Disabling Live Injection to prevent deadlock.")
             live_map = {}
             inject_live = False
+        if inject_live and not live_map:
+            print("⚠️ WARNING: Batch fetch returned 0 quotes. Disabling Live Injection to prevent deadlock.")
+            inject_live = False
         print(f"🚀 Batch fetched {len(live_map)} live quotes.")
 
     def load(sym: str):
