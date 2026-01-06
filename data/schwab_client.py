@@ -287,10 +287,11 @@ class SchwabData:
             return {}
 
         results = {}
-        chunk_size = 250
+        chunk_size = 150
         max_tries = self._get_max_retries()
         backoff_max = self._get_backoff_max_s()
 
+        print(f"📡 Fetching {len(symbols)} quotes in chunks of {chunk_size}...")
         for i in range(0, len(symbols), chunk_size):
             chunk = [s for s in symbols[i : i + chunk_size] if s]
             if not chunk:
