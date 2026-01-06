@@ -147,8 +147,18 @@ def fetch_single_symbol(
     If inject_live=True, it appends a synthetic bar using live quotes when today's bar is missing.
     """
     if cache_only:
-        df = DataCache.get_cached_data(sym, allow_stale=True)
-        return clean_dataframe(df)
+        df = DataCache.get_cached_data(sym, allow_stale=True, validate=False)
+        df = clean_dataframe(df)
+
+        # FIX: Slice the data to the requested 'days' (e.g. 5 years)
+        if df is not None and not df.empty:
+            start_cutoff = datetime.now(timezone.utc) - timedelta(days=days + 20) # +20 buffer
+            start_naive = start_cutoff.replace(tzinfo=None)
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            df = df[df.index >= start_naive]
+
+        return df if (df is not None and not df.empty) else None
 
     if max_lag_days is None:
         if inject_live or force_fresh or require_fresh:
