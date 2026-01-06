@@ -280,8 +280,11 @@ def fetch_data_pack(
     if inject_live:
         try:
             live_map = sd.get_quotes(symbols)
-        except Exception:
+        except Exception as e:
+            print(f"❌ CRITICAL: Batch Quote Fetch Failed! {e}")
+            print("⚠️ Disabling Live Injection to prevent deadlock.")
             live_map = {}
+            inject_live = False
         print(f"🚀 Batch fetched {len(live_map)} live quotes.")
 
     def load(sym: str):

@@ -59,34 +59,22 @@ class SchwabData:
     def _ensure(self):
         if self._cli is not None:
             return
-        errors = []
-        def _try(fn, label):
-            try:
-                cli = fn()
-                self.signature_used = label
-                return cli
-            except Exception as e:
-                errors.append(f"{label}: {e}")
-                return None
 
-        self._cli = _try(
-            lambda: easy_client(
-                api_key=self.cid, client_secret=self.ck, redirect_uri=self.redir,
-                credentials_path=self.creds, token_path=self._tok,
-                make_webdriver=lambda: None, headless=True, port=self.port,
-            ), "v1:new-keywords")
-        if self._cli is None:
-            self._cli = _try(
-                lambda: easy_client(
-                    app_key=self.cid, app_secret=self.ck, callback_url=self.redir,
-                    creds_path=self.creds), "v2:classic-kw")
-        if self._cli is None:
-            self._cli = _try(
-                lambda: easy_client(self.cid, self.ck, self.redir, self.creds),
-                "v4:positional")
-
-        if self._cli is None:
-            raise RuntimeError(f"Schwab Auth Failed. Errors: {errors}")
+        # STRICT MODE: Only allow project-level token path
+        # This prevents "Ghost Tokens" from being created in ~/.schwab
+        print(f"🔐 Authenticating with token at: {self._tok}")
+        try:
+            self._cli = easy_client(
+                api_key=self.cid,
+                app_secret=self.ck,
+                callback_url=self.redir,
+                token_path=self._tok
+            )
+            self.signature_used = "strict_kwargs"
+        except Exception as e:
+            print(f"❌ AUTHENTICATION FAILED: {e}")
+            print(f"👉 Please run 'python3 Reset_Auth_Final.py' to fix this.")
+            raise e
 
     @staticmethod
     def _get_rate_limit_concurrency() -> int:
