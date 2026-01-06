@@ -3,7 +3,9 @@ import json
 import os
 import pandas as pd
 import pytz
+import numpy as np
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
 from data.loader import fetch_single_symbol, fetch_data_pack
@@ -18,6 +20,7 @@ from execution.engine import (
     get_sector,
 )
 from execution.parity import resolve_signal_index, get_strategy_weights, apply_strategy_score_multipliers
+from execution.shared_logic import _generic_exit_decision
 from strategies.generic import GenericStrategy
 from strategies.strategy_loader import load_strategies
 
@@ -751,6 +754,28 @@ class PaperTrader:
 
         candidates = []
         scan_logs: List[str] = []
+
+        if spy_df is not None and not spy_df.empty:
+            regime_required = False
+            for strat in self.strategies:
+                params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
+                if bool(params.get("regime_filter", False)):
+                    regime_required = True
+                    break
+            if regime_required:
+                try:
+                    spy_ind = _compute_indicators(spy_df.copy())
+                    last_spy = spy_ind.iloc[-1]
+                    spy_close = float(last_spy.get("close", 0) or 0)
+                    spy_sma200 = float(last_spy.get("sma200", np.nan))
+                except Exception:
+                    spy_close = np.nan
+                    spy_sma200 = np.nan
+                if np.isfinite(spy_close) and np.isfinite(spy_sma200) and spy_close < spy_sma200:
+                    msg = "⚠️ Market in Downtrend (Regime Filter). No new buys."
+                    scan_logs.append(msg)
+                    return {"count": 0, "orders": [], "logs": scan_logs}
+
         total_steps = (len(self.strategies) * len(data_dict)) if data_dict else 0
         processed = 0
         for strat in self.strategies:
@@ -827,6 +852,24 @@ class PaperTrader:
 
     def process_exits(self, strategies_map=None):
         exits = []
+
+        def _build_exit_arrays(frame: pd.DataFrame) -> SimpleNamespace:
+            def _col(name: str) -> np.ndarray:
+                if name in frame.columns:
+                    return frame[name].to_numpy(dtype=float, copy=False)
+                return np.full(len(frame), np.nan, dtype=float)
+
+            return SimpleNamespace(
+                df=frame,
+                close=_col("close"),
+                high=_col("high"),
+                low=_col("low"),
+                atr14=_col("atr14"),
+                sma20=_col("sma20"),
+                sma50=_col("sma50"),
+                bb_upper=_col("bb_upper"),
+            )
+
         for sym, pos in list(self.portfolio.items()):
             strat_obj = pos.get("strategy_obj") or self._get_strategy_by_name(pos.get("strategy_name"))
             if strat_obj is None: strat_obj = self.strategies[0]
@@ -849,22 +892,48 @@ class PaperTrader:
                 except: entry_i = current_idx
 
             stop_price = pos.get("stop_price", pos.get("entry_price", 0) * 0.9)
-            exit_result = strat_obj.exit(df, current_idx, entry_i, pos["entry_price"], stop_price)
-            updated_stop = None
-            if isinstance(exit_result, tuple):
-                should_exit = bool(exit_result[0])
-                if len(exit_result) > 1:
-                    updated_stop = exit_result[1]
+            target_px = None
+            effective_stop = stop_price
+            if isinstance(strat_obj, GenericStrategy) and strat_obj.__class__.exit is GenericStrategy.exit:
+                genome = getattr(strat_obj, "params", getattr(strat_obj, "genome", {})) or {}
+                sd_arrays = _build_exit_arrays(df)
+                should_exit, effective_stop, target_px = _generic_exit_decision(
+                    genome,
+                    sd_arrays,
+                    current_idx,
+                    entry_i,
+                    float(pos["entry_price"]),
+                    float(stop_price),
+                )
             else:
-                should_exit = bool(exit_result)
-            if updated_stop is not None and pd.notna(updated_stop):
-                updated_stop = float(updated_stop)
-                stop_price = max(stop_price, updated_stop)
-                pos["stop_price"] = stop_price
+                exit_result = strat_obj.exit(df, current_idx, entry_i, pos["entry_price"], stop_price)
+                updated_stop = None
+                if isinstance(exit_result, tuple):
+                    should_exit = bool(exit_result[0])
+                    if len(exit_result) > 1:
+                        updated_stop = exit_result[1]
+                    if len(exit_result) > 2:
+                        target_px = exit_result[2]
+                else:
+                    should_exit = bool(exit_result)
+                if updated_stop is not None and pd.notna(updated_stop):
+                    updated_stop = float(updated_stop)
+                    stop_price = max(stop_price, updated_stop)
+                    pos["stop_price"] = stop_price
+                effective_stop = stop_price
 
             if should_exit:
                 exit_price = float(df.iloc[-1]["close"])
-                if df.iloc[-1]["low"] < stop_price: exit_price = stop_price
+                low_px = float(df.iloc[-1]["low"])
+                high_px = float(df.iloc[-1]["high"])
+                if pd.isna(low_px):
+                    low_px = exit_price
+                if pd.isna(high_px):
+                    high_px = exit_price
+                if pd.notna(effective_stop) and low_px < effective_stop:
+                    exit_price = effective_stop
+                elif target_px is not None and pd.notna(target_px) and high_px >= target_px:
+                    exit_price = float(target_px)
 
                 proceeds = exit_price * pos["shares"]
                 pnl = proceeds - (pos["entry_price"] * pos["shares"])
