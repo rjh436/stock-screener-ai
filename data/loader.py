@@ -75,14 +75,20 @@ def _extract_quote_fields(quote: Dict, sym: str) -> Tuple[Optional[float], Optio
     return open_price, last_price, volume
 
 
-def inject_live_quote(df: pd.DataFrame, sym: str) -> pd.DataFrame:
+def inject_live_quote(df: pd.DataFrame, sym: str, prefetched_quote: Optional[Dict] = None) -> pd.DataFrame:
     """Append a synthetic bar using live quote data when today's bar is missing."""
     if df is None or df.empty:
         return df
-    try:
-        q = sd.get_quote(sym)
-    except Exception:
+    q = prefetched_quote
+    if q is None:
+        try:
+            q = sd.get_quote(sym)
+        except Exception:
+            return df
+    if q is None:
         return df
+    if isinstance(q, dict) and sym not in q and sym.upper() not in q:
+        q = {sym: q}
 
     open_price, last_price, volume = _extract_quote_fields(q, sym)
     if open_price is None and last_price is None:
@@ -129,8 +135,10 @@ def fetch_single_symbol(
     days: int = 1260,
     force_fresh: bool = False,
     *,
+    cache_only: bool = False,
     require_fresh: bool = False,
     inject_live: bool = False,
+    prefetched_quote: Optional[Dict] = None,
     max_lag_days: Optional[int] = None,
 ) -> Optional[pd.DataFrame]:
     """
@@ -138,6 +146,10 @@ def fetch_single_symbol(
     If force_fresh=True, it will ALWAYS ping the API for the latest data and merge it.
     If inject_live=True, it appends a synthetic bar using live quotes when today's bar is missing.
     """
+    if cache_only:
+        df = DataCache.get_cached_data(sym, allow_stale=True)
+        return clean_dataframe(df)
+
     if max_lag_days is None:
         if inject_live or force_fresh or require_fresh:
             max_lag_days = 0
@@ -172,7 +184,7 @@ def fetch_single_symbol(
         today = end.date()
         if (today - last_date).days <= max_lag_days:
             if df.index.min() <= start_naive:
-                return inject_live_quote(df[df.index >= start_naive], sym) if inject_live else df[df.index >= start_naive]
+                return inject_live_quote(df[df.index >= start_naive], sym, prefetched_quote=prefetched_quote) if inject_live else df[df.index >= start_naive]
 
     try:
         candles = sd.price_daily(sym, start_datetime=fetch_start, end_datetime=end)
@@ -200,7 +212,7 @@ def fetch_single_symbol(
         if df is None:
             return None
         df = df[df.index >= start_naive]
-        return inject_live_quote(df, sym) if inject_live else df
+        return inject_live_quote(df, sym, prefetched_quote=prefetched_quote) if inject_live else df
 
     if df is not None:
         if require_fresh:
@@ -212,7 +224,7 @@ def fetch_single_symbol(
             except Exception:
                 return None
         df = df[df.index >= start_naive]
-        return inject_live_quote(df, sym) if inject_live else df
+        return inject_live_quote(df, sym, prefetched_quote=prefetched_quote) if inject_live else df
     return None
 
 
@@ -225,6 +237,7 @@ def fetch_data_pack(
     force_fresh: bool = False,
     require_fresh: bool = False,
     inject_live: bool = False,
+    backtest_mode: bool = False,
     max_lag_days: Optional[int] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Bulk fetch for Backtester (Threaded for speed)."""
@@ -239,6 +252,12 @@ def fetch_data_pack(
     min_history_start = start_naive + timedelta(days=10)  # weekend/holiday tolerance
     today = end.date()
 
+    if backtest_mode:
+        force_fresh = False
+        require_fresh = False
+        inject_live = False
+        max_lag_days = 99999
+
     if max_lag_days is None:
         try:
             max_lag_days = int(os.getenv("DATA_MAX_LAG_DAYS", "4"))
@@ -246,17 +265,26 @@ def fetch_data_pack(
             max_lag_days = 4
     max_lag_days = max(0, int(max_lag_days))
 
-    if inject_live and len(symbols) > 100:
-        print("⚠️ inject_live disabled for large symbol sets (>100) to avoid rate limits.")
-        inject_live = False
+    live_map: Dict[str, Dict] = {}
+    if inject_live:
+        try:
+            live_map = sd.get_quotes(symbols)
+        except Exception:
+            live_map = {}
+        print(f"🚀 Batch fetched {len(live_map)} live quotes.")
 
     def load(sym: str):
+        quote = None
+        if inject_live and live_map:
+            quote = live_map.get(sym) or live_map.get(sym.upper())
         return sym, fetch_single_symbol(
             sym,
             days,
             force_fresh=force_fresh,
+            cache_only=backtest_mode,
             require_fresh=require_fresh,
             inject_live=inject_live,
+            prefetched_quote=quote,
             max_lag_days=max_lag_days,
         )
 

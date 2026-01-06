@@ -710,10 +710,10 @@ elif mode == "Backtest":
             with st.spinner("Simulating..."):
                 if not cache_hit:
                     symbols = get_index_symbols(bt_universe)
-                    data = fetch_data_pack(symbols, days=days + 200) or {}
+                    data = fetch_data_pack(symbols, days=days + 200, backtest_mode=True) or {}
 
                     # Fetch global context once (required for RS + VIX overlays in the engine)
-                    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days + 200) or {}
+                    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days + 200, backtest_mode=True) or {}
                     spy_df = g_data.get("SPY")
                     vix_df = g_data.get("$VIX")
                     if vix_df is None:

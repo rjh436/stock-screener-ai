@@ -218,6 +218,32 @@ class DataCache:
                 return False
         
         return True
+
+    @staticmethod
+    def validate_manifest(symbols, min_bars: int = 200) -> list:
+        """
+        Fast manifest validation using parquet metadata only.
+
+        Returns a list of symbols that are missing, corrupt, or have insufficient history.
+        """
+        if not symbols:
+            return []
+
+        bad = []
+        for sym in symbols:
+            if not sym:
+                continue
+            path = os.path.join(CACHE_DIR, f"{sym}.parquet")
+            if not os.path.exists(path):
+                bad.append(sym)
+                continue
+            try:
+                meta = pq.read_metadata(path)
+                if meta is None or meta.num_rows < int(min_bars):
+                    bad.append(sym)
+            except Exception:
+                bad.append(sym)
+        return bad
     
     @staticmethod
     def clear_cache(symbol: str = None):

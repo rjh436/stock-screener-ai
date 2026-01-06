@@ -292,6 +292,69 @@ class SchwabData:
 
         raise RuntimeError(f"Schwab quote failed for {symbol} after {max_tries} attempts: {last_exc}")
 
+    def get_quotes(self, symbols: list) -> dict:
+        """Fetch real-time quotes for a list of symbols in batches."""
+        self._ensure()
+        if not symbols:
+            return {}
+
+        results = {}
+        chunk_size = 250
+        max_tries = self._get_max_retries()
+        backoff_max = self._get_backoff_max_s()
+
+        for i in range(0, len(symbols), chunk_size):
+            chunk = [s for s in symbols[i : i + chunk_size] if s]
+            if not chunk:
+                continue
+
+            for attempt in range(1, max_tries + 1):
+                try:
+                    with self._rate_limited():
+                        r = self._cli.get_quotes(chunk)
+
+                    status = getattr(r, "status_code", None)
+                    if status == 429:
+                        self._note_rate_limit()
+                        time.sleep(self._retry_sleep_s(attempt, max_s=backoff_max))
+                        continue
+
+                    if isinstance(status, int) and status >= 500:
+                        time.sleep(self._retry_sleep_s(attempt, max_s=backoff_max))
+                        continue
+
+                    j = r.json()
+                    if isinstance(j, dict) and self._looks_rate_limited(j):
+                        self._note_rate_limit()
+                        time.sleep(self._retry_sleep_s(attempt, max_s=backoff_max))
+                        continue
+
+                    if isinstance(j, dict):
+                        results.update(j)
+                    elif isinstance(j, list):
+                        for item in j:
+                            if not isinstance(item, dict):
+                                continue
+                            key = item.get("symbol") or item.get("symbolId") or item.get("key")
+                            if key:
+                                results[str(key)] = item
+
+                    self._note_success()
+                    break
+
+                except Exception as e:
+                    if attempt >= max_tries:
+                        break
+
+                    if self._looks_rate_limited(e):
+                        self._note_rate_limit()
+                        time.sleep(self._retry_sleep_s(attempt, max_s=backoff_max))
+                        continue
+
+                    time.sleep(min(1.0, backoff_max))
+
+        return results
+
     def health_check(self, symbol="VOO"):
         try:
             self._ensure()
