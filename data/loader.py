@@ -215,7 +215,8 @@ def fetch_single_symbol(
             if df is not None:
                 DataCache.save_to_cache(sym, df)
 
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ API Fetch failed for {sym}: {e}")
         if require_fresh:
             return None
         # Preserve cached data (even if slightly stale) instead of dropping the symbol.
