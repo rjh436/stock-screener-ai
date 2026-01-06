@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 from datetime import datetime, timedelta, timezone
+import pytz
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional, Tuple
 from .schwab_client import sd
@@ -146,19 +147,31 @@ def fetch_single_symbol(
     If force_fresh=True, it will ALWAYS ping the API for the latest data and merge it.
     If inject_live=True, it appends a synthetic bar using live quotes when today's bar is missing.
     """
+    # --- SMART TURBO MODE ---
     if cache_only:
-        df = DataCache.get_cached_data(sym, allow_stale=True, validate=False)
-        df = clean_dataframe(df)
+        try:
+            df = DataCache.get_cached_data(sym, allow_stale=True, validate=False)
+            df = clean_dataframe(df)
 
-        # FIX: Slice the data to the requested 'days' (e.g. 5 years)
-        if df is not None and not df.empty:
-            start_cutoff = datetime.now(timezone.utc) - timedelta(days=days + 20) # +20 buffer
-            start_naive = start_cutoff.replace(tzinfo=None)
-            if df.index.tz is not None:
-                df.index = df.index.tz_localize(None)
-            df = df[df.index >= start_naive]
+            if df is not None and not df.empty:
+                # Cache Hit! Perform date slicing and return
+                # Convert trading days to calendar days (1.6 safety multiplier)
+                calendar_days = int(days * 1.6)
+                start_cutoff = datetime.now(timezone.utc) - timedelta(days=calendar_days)
+                start_naive = start_cutoff.replace(tzinfo=None)
 
-        return df if (df is not None and not df.empty) else None
+                if df.index.tz is not None:
+                    df.index = df.index.tz_localize(None)
+
+                df = df[df.index >= start_naive]
+                return df
+
+            # Cache Miss! Log it and allow fall-through to download logic
+            print(f"⚠️ Cache missing for {sym} (Turbo Mode). Auto-switching to Download.")
+
+        except Exception as e:
+            print(f"❌ Cache read error {sym}: {e}")
+            # Do NOT return None; let it fall through to download
 
     if max_lag_days is None:
         if inject_live or force_fresh or require_fresh:
