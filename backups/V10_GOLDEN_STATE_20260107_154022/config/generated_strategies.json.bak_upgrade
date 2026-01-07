@@ -1,0 +1,26 @@
+[
+    {
+        "name": "Strategy_Apex_Alpha_MachineGun",
+        "type": "hybrid",
+        "entry_rules": [
+            {
+                "col": "adx",
+                "op": "<",
+                "ref": "rsi14"
+            },
+            {
+                "col": "volume",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "sma50",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [],
+        "stop_loss_atr": 4.3,
+        "time_stop": 70
+    }
+]

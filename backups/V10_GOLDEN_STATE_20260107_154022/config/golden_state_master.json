@@ -1,0 +1,707 @@
+[
+    {
+        "name": "Apex Sniper Wealth v1.0",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 41.76,
+            "rsi_factor": 4.12,
+            "trend_bonus": 70.0,
+            "vol_bonus": 17.89,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -25.8
+        },
+        "adx_threshold": 28.0,
+        "rsi_strong": 35.0,
+        "rsi_weak": 11.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.4,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Wealth Sniper Candidate 2",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 41.76,
+            "rsi_factor": 4.12,
+            "trend_bonus": 66.02,
+            "vol_bonus": 24.36,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -40.0
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 35.0,
+        "rsi_weak": 16.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.4,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Wealth Sniper Candidate 3",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 41.76,
+            "rsi_factor": 4.12,
+            "trend_bonus": 70.0,
+            "vol_bonus": 17.89,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -25.8
+        },
+        "adx_threshold": 19.0,
+        "rsi_strong": 54.0,
+        "rsi_weak": 11.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.395,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Wealth Sniper Candidate 4",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 40.0,
+            "rsi_factor": 4.12,
+            "trend_bonus": 70.0,
+            "vol_bonus": 17.89,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -25.8
+        },
+        "adx_threshold": 28.0,
+        "rsi_strong": 35.0,
+        "rsi_weak": 11.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.4,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Wealth Sniper Candidate 5",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 41.76,
+            "rsi_factor": 4.12,
+            "trend_bonus": 70.0,
+            "vol_bonus": 17.89,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -25.8
+        },
+        "adx_threshold": 34.0,
+        "rsi_strong": 35.0,
+        "rsi_weak": 11.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.395,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Wealth Sniper Candidate 6",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 41.76,
+            "rsi_factor": 4.12,
+            "trend_bonus": 67.55,
+            "vol_bonus": 20.95,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -35.57
+        },
+        "adx_threshold": 31.0,
+        "rsi_strong": 35.0,
+        "rsi_weak": 16.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.4,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Wealth Sniper Candidate 7",
+        "type": "wealth",
+        "entry_rules": [
+            {
+                "col": "rsi2",
+                "op": ">",
+                "val": 15
+            },
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.27
+            }
+        ],
+        "stop_loss_atr": 3.8,
+        "time_stop": 42,
+        "scoring_weights": {
+            "sniper_bonus": 41.76,
+            "rsi_factor": 4.12,
+            "trend_bonus": 67.55,
+            "vol_bonus": 24.36,
+            "atr_high_bonus": 30.14,
+            "atr_med_bonus": 17.04,
+            "trend_penalty": -35.57
+        },
+        "adx_threshold": 31.0,
+        "rsi_strong": 30.0,
+        "rsi_weak": 16.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 2.5,
+        "trail_activation": 1.4,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Sniper Income v1.0",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 8.0,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 13.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.3,
+        "trail_activation": 1.327,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Income Sniper Candidate 2",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.0,
+            "vol_bonus": 8.0,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 13.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.327,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Income Sniper Candidate 3",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 8.0,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 12.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.266,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Income Sniper Candidate 4",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 9.94,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 22.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 19.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.377,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Income Sniper Candidate 5",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 9.94,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 17.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 19.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.377,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Income Sniper Candidate 6",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 9.94,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 15.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.298,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Income Sniper Candidate 7",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 9.94,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 15.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.343,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    },
+    {
+        "name": "Apex Income Sniper Candidate 8",
+        "type": "income",
+        "entry_rules": [
+            {
+                "col": "rs_trend",
+                "op": ">",
+                "val": 0
+            },
+            {
+                "col": "cci",
+                "op": "<",
+                "val": 100
+            }
+        ],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.28
+            }
+        ],
+        "stop_loss_atr": 3.3,
+        "time_stop": 31,
+        "scoring_weights": {
+            "sniper_bonus": 53.11,
+            "rsi_factor": 4.36,
+            "trend_bonus": 30.66,
+            "vol_bonus": 9.94,
+            "atr_high_bonus": 24.11,
+            "atr_med_bonus": 13.3,
+            "trend_penalty": -17.35
+        },
+        "adx_threshold": 21.0,
+        "rsi_strong": 40.0,
+        "rsi_weak": 19.0,
+        "limit_ratio": 0.98,
+        "trail_atr": 5.9,
+        "trail_activation": 1.377,
+        "version_info": {
+            "status": "Golden State",
+            "validated_metrics": {
+                "cagr": 0.433,
+                "avg_profit": 0.054,
+                "win_rate": 0.658
+            }
+        }
+    }
+]

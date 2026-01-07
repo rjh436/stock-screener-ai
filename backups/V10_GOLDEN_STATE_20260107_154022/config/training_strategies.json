@@ -1,0 +1,28 @@
+[
+    {
+        "name": "Apex Wealth (Jackpot Mode)",
+        "type": "wealth",
+        "entry_rules": [],
+        "exit_rules": [
+            {
+                "type": "profit_target",
+                "val": 1.25
+            }
+        ],
+        "stop_loss_atr": 3.0,
+        "time_stop": 60,
+        "adx_threshold": 10.0,
+        "rsi_strong": 30.0,
+        "rsi_weak": 55.0,
+        "limit_ratio": 1.0,
+        "trail_atr": 4.0,
+        "trail_activation": 1.03,
+        "scoring_weights": {
+            "sniper_bonus": 100.0,
+            "rsi_factor": 100.0,
+            "trend_bonus": 100.0,
+            "vol_bonus": 100.0,
+            "atr_high_bonus": 100.0
+        }
+    }
+]
