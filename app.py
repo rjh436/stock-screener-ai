@@ -797,18 +797,24 @@ elif mode == "Backtest":
                 st.line_chart(res["equity_curve"])
                 
                 # --- DOWNLOAD BUTTON RESTORED ---
+                # Safe data extraction
                 equity_curve = res.get("equity_curve")
+                strat_name = res.get("strategy_name", "Unknown_Strategy")
+
                 if equity_curve is not None and not isinstance(equity_curve, list) and not equity_curve.empty:
-                    csv_data = equity_curve.to_csv().encode('utf-8')
-                    st.download_button(
-                        label="📥 Export Result (CSV)",
-                        data=csv_data,
-                        file_name=f"{res['strategy_name']}_backtest.csv",
-                        mime="text/csv",
-                        key=f"dl_{res['strategy_name']}_{i}"
-                    )
+                    try:
+                        csv_data = equity_curve.to_csv().encode('utf-8')
+                        st.download_button(
+                            label="📥 Export Result (CSV)",
+                            data=csv_data,
+                            file_name=f"{strat_name}_backtest.csv",
+                            mime="text/csv",
+                            key=f"dl_{strat_name}_{i}"  # Ensure 'i' comes from the loop variable
+                        )
+                    except Exception as e:
+                        st.error(f"⚠️ Export failed for {strat_name}: {e}")
                 else:
-                    st.error(f"⚠️ No equity data for {res['strategy_name']}. (Signals: {res.get('total_signals', 0)})")
+                    st.warning(f"⚠️ No equity data for {strat_name}")
 
 # --- 3. SIMULATOR (PRO MODE) ---
 elif mode == "Simulator":
