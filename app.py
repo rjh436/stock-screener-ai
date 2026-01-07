@@ -385,63 +385,81 @@ if mode == "Live Screener":
                 (df["Score"] >= 140)
             ].sort_values("Score", ascending=False).head(15)
 
-            # Bucket 3: Smart Swap Opportunities (Advisory)
-            # Find weakest holding vs strongest blocked candidate
+            # --- LOGIC FIX: DECOUPLED SWAP ANALYSIS ---
+            # 1. Identify Stagnant Holdings (Always Run This)
             pt = PaperTrader(configs=selected_strategies)
             pt_state = pt.state
             current_positions = pt_state.get("positions", {})
-            swap_candidates = []
 
+            stagnant_candidates = []
+            for sym, pos in current_positions.items():
+                # Calculate metrics
+                entry_date = pd.to_datetime(pos["date"]).date()
+                days_held = (datetime.now().date() - entry_date).days
+                pnl_pct = pos.get("unrealized_pct", 0.0)
+
+                # Stagnation Criteria: Held > 10 days AND PnL < 2.0%
+                if days_held > 10 and pnl_pct < 2.0:
+                    stagnant_candidates.append({
+                        "Sell": sym,
+                        "Days": days_held,
+                        "PnL": f"{pnl_pct:.1f}%",
+                        "Strategy": pos.get("strategy_name", "")
+                    })
+
+            # 2. Identify Buy Target (If Available)
+            best_buy = None
             if not targets.empty:
-                best_candidate = targets.iloc[0]
-                for sym, pos in current_positions.items():
-                    # Calculate retention score (decaying over time)
-                    entry_date = pd.to_datetime(pos["date"]).date()
-                    days_held = (datetime.now().date() - entry_date).days
-                    pnl_pct = pos.get("unrealized_pct", 0.0)
+                best_buy = targets.iloc[0]
 
-                    # Swap Logic: Held > 10 days, PnL < 3%, and New Score is > 1.4x higher than holding (implied low score)
-                    # Note: We use a simplified check since we don't have live scores for holdings in this DF yet.
-                    if days_held > 10 and pnl_pct < 2.0:
-                        swap_candidates.append({
-                            "Sell": sym,
-                            "Days": days_held,
-                            "PnL": f"{pnl_pct:.1f}%",
-                            "Buy": best_candidate["Symbol"],
-                            "Upgrade_Score": f"{best_candidate['Score']:.1f}",
-                            "Action": "Analyze"
-                        })
+            # 3. Build Advisory List
+            swap_recommendations = []
+            for item in stagnant_candidates:
+                rec = item.copy()
+                if best_buy is not None:
+                    # Scenario A: Full Swap
+                    rec["Action"] = "🔄 SWAP"
+                    rec["Buy"] = best_buy["Symbol"]
+                    rec["Upgrade_Score"] = f"{best_buy['Score']:.1f}"
+                else:
+                    # Scenario B: Liquidate to Cash
+                    rec["Action"] = "💰 LIQUIDATE"
+                    rec["Buy"] = "CASH / WAIT"
+                    rec["Upgrade_Score"] = "-"
+                swap_recommendations.append(rec)
 
-            # --- LAYOUT ---
+            # --- UI LAYOUT ---
             st.markdown("### 🛸 Apex Command Center")
 
-            # Top Metrics Row
+            # Metrics
             m1, m2, m3 = st.columns(3)
             m1.metric("Alpha Targets", len(targets))
             m2.metric("Watchtower Alerts", len(watchtower))
-            m3.metric("Swap Opps", len(swap_candidates))
+            m3.metric("Actionable Swaps", len(swap_recommendations))
 
             col1, col2 = st.columns([2, 1])
 
             with col1:
                 st.subheader("🎯 Alpha Targets (Buy Now)")
                 if not targets.empty:
-                    # Apply custom styling to the Score column
                     st.dataframe(
                         targets[["Symbol", "Strategy", "Score", "Price", "Stop Loss", "Target"]],
                         use_container_width=True,
                         hide_index=True
                     )
                 else:
-                    st.info("No Alpha Targets found. Market may be quiet.")
+                    st.info("No Alpha Targets found. Market may be quiet or slot-constrained.")
 
             with col2:
                 st.subheader("🔄 Smart Swaps (Advisory)")
-                if swap_candidates:
-                    st.dataframe(pd.DataFrame(swap_candidates), use_container_width=True, hide_index=True)
-                    st.caption("⚠️ Discretionary: Use your judgment.")
+                if swap_recommendations:
+                    st.dataframe(pd.DataFrame(swap_recommendations), use_container_width=True, hide_index=True)
+                    if best_buy is None:
+                        st.warning("⚠️ No Buy Targets. Recommendation: Raise Cash.")
+                    else:
+                        st.caption("⚠️ Discretionary: Swap into higher velocity setups.")
                 else:
-                    st.success("🛡️ Portfolio Optimized.")
+                    st.success("🛡️ Portfolio Optimized. No stagnant holdings.")
 
                 st.subheader("🔭 Watchtower (High IQ)")
                 if not watchtower.empty:
@@ -449,12 +467,10 @@ if mode == "Live Screener":
                 else:
                     st.caption("No elite setups waiting.")
 
-            # --- SECTOR RADAR ---
+            # --- SECTOR RADAR (Preserved) ---
             with st.expander("📊 Sector Risk Radar"):
-                # Calculate sector exposure from PaperTrader state
                 exposure = pt._current_sector_exposure()
                 total_equity = pt_state["equity"]
-
                 cols = st.columns(4)
                 for i, (sec, val) in enumerate(exposure.items()):
                     pct = val / total_equity
@@ -462,7 +478,6 @@ if mode == "Live Screener":
                         st.metric(sec, f"{pct:.1%}")
                         st.progress(min(pct / 0.60, 1.0))
 
-            # --- RAW FEED (Hidden) ---
             with st.expander("📂 View Full Raw Feed"):
                 st.dataframe(df)
 
