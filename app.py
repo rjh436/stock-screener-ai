@@ -799,7 +799,12 @@ elif mode == "Backtest":
                 # --- DOWNLOAD BUTTON RESTORED ---
                 # Safe data extraction
                 equity_curve = res.get("equity_curve")
-                strat_name = res.get("strategy_name", "Unknown_Strategy")
+                # Fallback chain to ensure we never get "Unknown" if the key exists
+                strategy_name = res.get("strategy_name") or res.get("strategy") or name or "Backtest_Result"
+                # Sanitize filename (remove special chars)
+                safe_name = "".join(
+                    [c for c in strategy_name if c.isalnum() or c in (" ", "_", "-")]
+                ).strip()
 
                 if equity_curve is not None and not isinstance(equity_curve, list) and not equity_curve.empty:
                     try:
@@ -807,14 +812,14 @@ elif mode == "Backtest":
                         st.download_button(
                             label="📥 Export Result (CSV)",
                             data=csv_data,
-                            file_name=f"{strat_name}_backtest.csv",
+                            file_name=f"{safe_name}_backtest.csv",
                             mime="text/csv",
-                            key=f"dl_{strat_name}_{i}"  # Ensure 'i' comes from the loop variable
+                            key=f"dl_{safe_name}_{i}"  # Ensure 'i' comes from the loop variable
                         )
                     except Exception as e:
-                        st.error(f"⚠️ Export failed for {strat_name}: {e}")
+                        st.error(f"⚠️ Export failed for {strategy_name}: {e}")
                 else:
-                    st.warning(f"⚠️ No equity data for {strat_name}")
+                    st.warning(f"⚠️ No equity data for {strategy_name}")
 
 # --- 3. SIMULATOR (PRO MODE) ---
 elif mode == "Simulator":

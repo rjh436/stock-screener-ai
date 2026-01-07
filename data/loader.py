@@ -147,31 +147,43 @@ def fetch_single_symbol(
     If force_fresh=True, it will ALWAYS ping the API for the latest data and merge it.
     If inject_live=True, it appends a synthetic bar using live quotes when today's bar is missing.
     """
-    # --- SMART TURBO MODE ---
+    # --- SMART TURBO MODE (Auto-Backfill) ---
     if cache_only:
         try:
+            # 1. Attempt load
             df = DataCache.get_cached_data(sym, allow_stale=True, validate=False)
             df = clean_dataframe(df)
 
+            # 2. Calculate Required Start Date (Trading Days -> Calendar Days)
+            calendar_days = int(days * 1.6)
+            start_cutoff = datetime.now(timezone.utc) - timedelta(days=calendar_days)
+            start_naive = start_cutoff.replace(tzinfo=None)
+
             if df is not None and not df.empty:
-                # Cache Hit! Perform date slicing and return
-                # Convert trading days to calendar days (1.6 safety multiplier)
-                calendar_days = int(days * 1.6)
-                start_cutoff = datetime.now(timezone.utc) - timedelta(days=calendar_days)
-                start_naive = start_cutoff.replace(tzinfo=None)
+                # 3. DEPTH CHECK: Does cache go back far enough?
+                # We allow a 30-day buffer. If cache starts AFTER the required date, it's a miss.
+                first_date = df.index.min()
+                if first_date > (start_naive + timedelta(days=30)):
+                    print(
+                        f"⚠️ Cache shallow for {sym} (Starts {first_date.date()}, "
+                        f"Need {start_naive.date()}). Auto-downloading..."
+                    )
+                    # IMPORTANT: Set df to None so we fall through to the download logic below
+                    df = None
+                else:
+                    # Cache is good! Slice and return.
+                    if df.index.tz is not None:
+                        df.index = df.index.tz_localize(None)
+                    df = df[df.index >= start_naive]
+                    return df
 
-                if df.index.tz is not None:
-                    df.index = df.index.tz_localize(None)
-
-                df = df[df.index >= start_naive]
-                return df
-
-            # Cache Miss! Log it and allow fall-through to download logic
-            print(f"⚠️ Cache missing for {sym} (Turbo Mode). Auto-switching to Download.")
+            # If we get here, df is None (either missing or rejected for depth).
+            # We explicitly PASS to allow the function to continue to the 'sd.price_daily' download block.
 
         except Exception as e:
-            print(f"❌ Cache read error {sym}: {e}")
-            # Do NOT return None; let it fall through to download
+            print(f"❌ Cache read error ({sym}): {e}")
+            df = None
+            # Fall through to download
 
     if max_lag_days is None:
         if inject_live or force_fresh or require_fresh:
