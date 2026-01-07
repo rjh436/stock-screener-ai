@@ -348,9 +348,13 @@ if mode == "Live Screener":
             timer_msg.empty()
 
     if st.session_state.scan_results is not None:
-        df = st.session_state.scan_results
+        # --- DATA PREP ---
+        # Create safe copy of results
+        df = st.session_state.scan_results.copy()
+
         if not show_all_setups and "Status" in df.columns:
             df = df[df["Status"] == "✅ TRADABLE"]
+
         if not df.empty and "Status" in df.columns and "Score" in df.columns:
             def get_sort_weight(status: str) -> int:
                 if "✅ TRADABLE" in status:
@@ -369,40 +373,98 @@ if mode == "Live Screener":
         if df.empty:
             st.info("No signals found today.")
         else:
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Total Signals", len(df))
-            top_score = df["Score"].max()
-            c2.metric("Top Score", f"{top_score:.1f}")
-            c3.metric("Top Strategy", df.iloc[0]["Strategy"])
-            
-            def _status_style(series: pd.Series) -> List[str]:
-                styles = []
-                for val in series:
-                    plan_style = _exit_plan_style(val)
-                    if plan_style:
-                        styles.append(plan_style)
-                    elif isinstance(val, str) and (val.startswith("✅") or val.startswith("⏳")):
-                        styles.append("background-color: #1a7f37; color: #ffffff; font-weight: 600;")
-                    elif isinstance(val, str) and val.startswith("⚠️ WAIT"):
-                        styles.append("background-color: #f1c232; color: #000000; font-weight: 600;")
-                    elif isinstance(val, str) and val.startswith("ℹ️"):
-                        styles.append("background-color: #0b5394; color: #ffffff; font-weight: 600;")
-                    elif isinstance(val, str) and val.startswith("⚠️"):
-                        styles.append("background-color: #8b0000; color: #ffffff; font-weight: 600;")
-                    else:
-                        styles.append("")
-                return styles
+            # Bucket 1: Alpha Targets (Tradable, High Score)
+            targets = df[
+                (df["Status"].str.contains("✅ TRADABLE", na=False)) &
+                (df["Score"] >= MIN_ENTRY_SCORE)
+            ].sort_values("Score", ascending=False).head(15)
 
-            styled = (
-                df.style.format({
-                    "Price": "${:.2f}",
-                    "EntryPx": "${:.2f}",
-                    "Stop Loss": "${:.2f}",
-                    "Score": "{:.1f}",
-                })
-                .apply(_status_style, subset=["Status"])
-            )
-            st.dataframe(styled, use_container_width=True)
+            # Bucket 2: Watchtower (High Score, Waiting)
+            watchtower = df[
+                (df["Status"].str.contains("WAIT", na=False) | df["Status"].str.contains("REJECTED", na=False)) &
+                (df["Score"] >= 140)
+            ].sort_values("Score", ascending=False).head(15)
+
+            # Bucket 3: Smart Swap Opportunities (Advisory)
+            # Find weakest holding vs strongest blocked candidate
+            pt = PaperTrader(configs=selected_strategies)
+            pt_state = pt.state
+            current_positions = pt_state.get("positions", {})
+            swap_candidates = []
+
+            if not targets.empty:
+                best_candidate = targets.iloc[0]
+                for sym, pos in current_positions.items():
+                    # Calculate retention score (decaying over time)
+                    entry_date = pd.to_datetime(pos["date"]).date()
+                    days_held = (datetime.now().date() - entry_date).days
+                    pnl_pct = pos.get("unrealized_pct", 0.0)
+
+                    # Swap Logic: Held > 10 days, PnL < 3%, and New Score is > 1.4x higher than holding (implied low score)
+                    # Note: We use a simplified check since we don't have live scores for holdings in this DF yet.
+                    if days_held > 10 and pnl_pct < 2.0:
+                        swap_candidates.append({
+                            "Sell": sym,
+                            "Days": days_held,
+                            "PnL": f"{pnl_pct:.1f}%",
+                            "Buy": best_candidate["Symbol"],
+                            "Upgrade_Score": f"{best_candidate['Score']:.1f}",
+                            "Action": "Analyze"
+                        })
+
+            # --- LAYOUT ---
+            st.markdown("### 🛸 Apex Command Center")
+
+            # Top Metrics Row
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Alpha Targets", len(targets))
+            m2.metric("Watchtower Alerts", len(watchtower))
+            m3.metric("Swap Opps", len(swap_candidates))
+
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                st.subheader("🎯 Alpha Targets (Buy Now)")
+                if not targets.empty:
+                    # Apply custom styling to the Score column
+                    st.dataframe(
+                        targets[["Symbol", "Strategy", "Score", "Price", "Stop Loss", "Target"]],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.info("No Alpha Targets found. Market may be quiet.")
+
+            with col2:
+                st.subheader("🔄 Smart Swaps (Advisory)")
+                if swap_candidates:
+                    st.dataframe(pd.DataFrame(swap_candidates), use_container_width=True, hide_index=True)
+                    st.caption("⚠️ Discretionary: Use your judgment.")
+                else:
+                    st.success("🛡️ Portfolio Optimized.")
+
+                st.subheader("🔭 Watchtower (High IQ)")
+                if not watchtower.empty:
+                    st.dataframe(watchtower[["Symbol", "Score", "Status"]], use_container_width=True, hide_index=True)
+                else:
+                    st.caption("No elite setups waiting.")
+
+            # --- SECTOR RADAR ---
+            with st.expander("📊 Sector Risk Radar"):
+                # Calculate sector exposure from PaperTrader state
+                exposure = pt._current_sector_exposure()
+                total_equity = pt_state["equity"]
+
+                cols = st.columns(4)
+                for i, (sec, val) in enumerate(exposure.items()):
+                    pct = val / total_equity
+                    with cols[i % 4]:
+                        st.metric(sec, f"{pct:.1%}")
+                        st.progress(min(pct / 0.60, 1.0))
+
+            # --- RAW FEED (Hidden) ---
+            with st.expander("📂 View Full Raw Feed"):
+                st.dataframe(df)
 
 # --- 2. BACKTEST ---
 elif mode == "Backtest":
