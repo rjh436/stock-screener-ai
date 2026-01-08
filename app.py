@@ -426,35 +426,36 @@ if mode == "Live Screener":
                 swap_recommendations.append(rec)
 
             st.markdown("### 🛸 Apex Command Center")
-            # --- COMMAND CENTER DISPLAY LOGIC ---
+            # --- COMMAND CENTER DISPLAY LOGIC (Updated) ---
 
-            # 1. PREPARE DATA (Type Safety Fix)
-            # Extract just the symbols (Strings) for the backend to prevent TypeError
+            # 1. PREPARE DATA (Robust Filter)
+            # Capture ALL items that have a valid "Sell" symbol (covers both SWAP and LIQUIDATE)
             liquidation_list = [
                 item for item in swap_recommendations 
-                if "LIQUIDATE" in str(item.get("Action", "")).upper()
+                if item.get("Sell")
             ]
             liquidation_symbols = [item["Sell"] for item in liquidation_list]
 
             # 2. GLOBAL ACTION BUTTON (Full Width - Above Columns)
             if liquidation_symbols:
                 st.warning(f"⚠️ Action Required: {len(liquidation_symbols)} positions are stagnant.")
-    
+                
                 # Layout: Button on left, Summary on right
                 b_col1, b_col2 = st.columns([1, 4])
                 with b_col1:
+                    # Updated Label: Clarifies that this handles Sells for both Swaps and Liquidations
                     if st.button(
-                        f"💸 Flash Liquidate ({len(liquidation_symbols)})", 
+                        f"💸 Flash Sell / Liquidate ({len(liquidation_symbols)})", 
                         type="primary", 
                         use_container_width=True,
                         key="btn_flash_liq"
                     ):
                         with st.spinner(f"Liquidating {', '.join(liquidation_symbols)}..."):
-                            # Force Fresh State (Critical for Atomic Ops)
+                            # Force Fresh State (Critical)
                             pt = PaperTrader(configs=selected_strategies)
                             logs = pt.liquidate_stagnant_holdings(liquidation_symbols)
-                
-                        # Display Results via Toasts (Non-blocking)
+                            
+                        # Display Results
                         for log in logs:
                             if "✅" in log:
                                 st.toast(log, icon="✅")
@@ -462,13 +463,14 @@ if mode == "Live Screener":
                                 st.toast(log, icon="⏳")
                             else:
                                 st.error(log)
-            
-                        time.sleep(1.5) # Short pause to read toasts
+                        
+                        time.sleep(1.5)
                         st.rerun()
-    
+                
                 with b_col2:
-                    st.caption(f"**Queued for Exit:** {', '.join(liquidation_symbols)}")
-        
+                    # Added Context: Remind user that Swaps require a manual buy step
+                    st.caption(f"**Queued for Exit:** {', '.join(liquidation_symbols)}. (Note: Swap entries must be queued manually).")
+                    
             st.divider()
 
             # 3. PANELS LAYOUT
