@@ -687,6 +687,7 @@ def _legacy_run_backtest(
         adx_arr = sd.adx
         atr14_arr = sd.atr14
         vol_ma20_arr = sd.vol_ma20
+        sma20_arr = sd.sma20
         sma50_arr = sd.sma50
         sma200_arr = sd.sma200
         cci_arr = sd.cci
@@ -767,7 +768,13 @@ def _legacy_run_backtest(
                     if limit_ratio_val is not None:
                         if vix_limit_scaling:
                             vix_prev = float(vix_arr[prev_i])
-                            if np_isfinite(vix_prev) and vix_prev > 25.0:
+                            sma20_prev = float(sma20_arr[prev_i])
+                            if (
+                                np_isfinite(vix_prev)
+                                and vix_prev > 25.0
+                                and np_isfinite(sma20_prev)
+                                and prev_close < sma20_prev
+                            ):
                                 limit_ratio_val *= 0.98
                         target_px = prev_close * limit_ratio_val
                         if open_px < target_px:
@@ -889,7 +896,15 @@ def _legacy_run_backtest(
                         sig_i = int(cand.signal_i)
                         if 0 <= sig_i < sym_data.vix.size:
                             vix_prev = float(sym_data.vix[sig_i])
-                            if np_isfinite(vix_prev) and vix_prev > 25.0:
+                            close_prev = float(sym_data.close[sig_i])
+                            sma20_prev = float(sym_data.sma20[sig_i])
+                            if (
+                                np_isfinite(vix_prev)
+                                and vix_prev > 25.0
+                                and np_isfinite(close_prev)
+                                and np_isfinite(sma20_prev)
+                                and close_prev < sma20_prev
+                            ):
                                 shares = int(shares * 0.5)
 
             cost = shares * cand.entry_px
@@ -1341,6 +1356,7 @@ def run_backtest(
         adx_arr = sd.adx
         atr14_arr = sd.atr14
         vol_ma20_arr = sd.vol_ma20
+        sma20_arr = sd.sma20
         sma200_arr = sd.sma200
         cci_arr = sd.cci
         bb_width_arr = sd.bb_width
@@ -1402,7 +1418,16 @@ def run_backtest(
                         target_px = prev_close * limit_ratio_val
                         if vix_limit_scaling:
                             vix_prev = vix_arr[prev_is]
-                            scale = np.where(np.isfinite(vix_prev) & (vix_prev > 25.0), 0.98, 1.0)
+                            sma20_prev = sma20_arr[prev_is]
+                            scale = np.where(
+                                np.isfinite(vix_prev)
+                                & (vix_prev > 25.0)
+                                & np.isfinite(prev_close)
+                                & np.isfinite(sma20_prev)
+                                & (prev_close < sma20_prev),
+                                0.98,
+                                1.0,
+                            )
                             target_px = target_px * scale
                         # Fill if Open < Target OR Low < Target
                         filled_mask = (open_px < target_px) | (low_px < target_px)
@@ -1518,7 +1543,13 @@ def run_backtest(
                     if limit_ratio_val is not None:
                         if vix_limit_scaling:
                             vix_prev = float(vix_arr[prev_i])
-                            if np_isfinite(vix_prev) and vix_prev > 25.0:
+                            sma20_prev = float(sma20_arr[prev_i])
+                            if (
+                                np_isfinite(vix_prev)
+                                and vix_prev > 25.0
+                                and np_isfinite(sma20_prev)
+                                and prev_close < sma20_prev
+                            ):
                                 limit_ratio_val *= 0.98
                         target_px = prev_close * limit_ratio_val
                         if open_px < target_px:
@@ -1689,7 +1720,15 @@ def run_backtest(
                     sig_i = int(cand.signal_i)
                     if 0 <= sig_i < sym_data.vix.size:
                         vix_prev = float(sym_data.vix[sig_i])
-                        if np_isfinite(vix_prev) and vix_prev > 25.0:
+                        close_prev = float(sym_data.close[sig_i])
+                        sma20_prev = float(sym_data.sma20[sig_i])
+                        if (
+                            np.isfinite(vix_prev)
+                            and vix_prev > 25.0
+                            and np.isfinite(close_prev)
+                            and np.isfinite(sma20_prev)
+                            and close_prev < sma20_prev
+                        ):
                             shares = int(shares * 0.5)
             if shares <= 0:
                 continue

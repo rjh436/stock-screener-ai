@@ -806,6 +806,8 @@ class PaperTrader:
             "entry_i": cand.get("entry_i"),
             "atr": cand.get("atr"),
             "vix": cand.get("vix", 0),
+            "close": cand.get("close", price),
+            "sma20": cand.get("sma20", 0),
         }
 
     def _execute_governor(self, candidates: List[Dict]) -> Dict[str, Any]:
@@ -879,14 +881,18 @@ class PaperTrader:
             shares = min(shares, max_shares_by_value)
 
             vix_val = cand.get("vix", 0)
-            try:
-                vix_val = float(vix_val)
-            except (TypeError, ValueError):
-                vix_val = 0.0
+            close_val = cand.get("close", 0)
+            sma20_val = cand.get("sma20", 0)
+
+            # Check if VIX sizing is enabled in the genome
             vix_sizing_enabled = (cand.get("genome", {}) or {}).get("vix_position_sizing", False)
-            if vix_sizing_enabled and vix_val > 25.0:
+
+            # Only cut shares if VIX > 25 AND Price < SMA20
+            if vix_sizing_enabled and vix_val > 25.0 and close_val < sma20_val:
                 shares = int(shares * 0.5)
-                logs.append(f"🛡️ VIX Sizing Active ({vix_val:.1f} > 25): {cand['symbol']} size reduced by 50%.")
+                logs.append(
+                    f"🛡️ VIX Safety Active: {cand['symbol']} size halved (Price {close_val} < SMA {sma20_val})"
+                )
 
             # SAFETY CHECK 5: Minimum viable position
             if shares < 1:
@@ -1011,10 +1017,12 @@ class PaperTrader:
                     candidates.append({
                         "symbol": sym,
                         "price": signal_close,
+                        "close": float(row_signal.get("close", 0)),
                         "signal_open": signal_open,
                         "stop": stop_price,
                         "atr": atr,
                         "vix": float(row_signal.get("vix", 0)),
+                        "sma20": float(row_signal.get("sma20", 0)),
                         "strategy_name": strat.name,
                         "strategy_obj": strat,
                         "genome": strat_genome,
