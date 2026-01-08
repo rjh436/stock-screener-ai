@@ -656,7 +656,7 @@ def _legacy_run_backtest(
     date_to_idx = {dt: i for i, dt in enumerate(all_dates)}
     candidates_by_day: List[List[_Candidate]] = [[] for _ in range(len(all_dates))]
 
-    compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float]] = []
+    compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float, float, bool]] = []
     for strat in strategies:
         raw_params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
         params = _unwrap_genome(raw_params)
@@ -664,8 +664,15 @@ def _legacy_run_backtest(
         w = _compile_scoring_weights(scoring_weights, strat_weights)
         gap_ratio = _resolve_gap_protection_ratio(params)
         regime_filter = bool(params.get("regime_filter", False))
+        try:
+            min_adx = float(params.get("min_adx", 0) or 0)
+        except (TypeError, ValueError):
+            min_adx = 0.0
+        if min_adx <= 0:
+            min_adx = 0.0
+        vix_limit_scaling = bool(params.get("vix_limit_scaling", False))
         base_stop_mult = float(params.get("stop_loss_atr", 3.0) or 3.0)
-        compiled_strategies.append((strat, w, params, gap_ratio, regime_filter, base_stop_mult))
+        compiled_strategies.append((strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling))
 
     np_isfinite = np.isfinite
 
@@ -720,7 +727,7 @@ def _legacy_run_backtest(
             if gap_pct < -0.08:
                 continue
 
-            for strat, w, params, gap_ratio, regime_filter, base_stop_mult in compiled_strategies:
+            for strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling in compiled_strategies:
                 entry_signal = strat.entry(df, prev_i)
                 if not entry_signal:
                     continue
@@ -731,6 +738,11 @@ def _legacy_run_backtest(
                     if np_isfinite(spy_close_prev) and np_isfinite(spy_sma200_prev):
                         if spy_close_prev < spy_sma200_prev:
                             continue
+
+                if min_adx > 0:
+                    adx_prev = float(adx_arr[prev_i])
+                    if not np_isfinite(adx_prev) or adx_prev < min_adx:
+                        continue
 
                 if gap_ratio > 0 and prev_close > 0:
                     if open_px < prev_close * gap_ratio:
@@ -753,6 +765,10 @@ def _legacy_run_backtest(
                     except (TypeError, ValueError):
                         limit_ratio_val = None
                     if limit_ratio_val is not None:
+                        if vix_limit_scaling:
+                            vix_prev = float(vix_arr[prev_i])
+                            if np_isfinite(vix_prev) and vix_prev > 25.0:
+                                limit_ratio_val *= 0.98
                         target_px = prev_close * limit_ratio_val
                         if open_px < target_px:
                             entry_px = open_px
@@ -864,6 +880,17 @@ def _legacy_run_backtest(
             val_cap = current_equity * pos_fraction
             shares_val = int(val_cap / cand.entry_px) if cand.entry_px > 0 else 0
             shares = min(shares_risk, shares_val)
+
+            if shares > 0:
+                strat_params = getattr(cand.strategy_obj, "params", getattr(cand.strategy_obj, "genome", {})) or {}
+                if isinstance(strat_params, dict) and bool(strat_params.get("vix_position_sizing", False)):
+                    sym_data = enriched.get(cand.sym)
+                    if sym_data is not None:
+                        sig_i = int(cand.signal_i)
+                        if 0 <= sig_i < sym_data.vix.size:
+                            vix_prev = float(sym_data.vix[sig_i])
+                            if np_isfinite(vix_prev) and vix_prev > 25.0:
+                                shares = int(shares * 0.5)
 
             cost = shares * cand.entry_px
             if export_ml_data and (shares <= 0 or cash < cost):
@@ -1264,7 +1291,7 @@ def run_backtest(
 
     date_to_idx = {dt: i for i, dt in enumerate(all_dates)}
     candidates_by_day: List[List[_Candidate]] = [[] for _ in range(len(all_dates))]
-    compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float]] = []
+    compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float, float, bool]] = []
     for strat in strategies:
         raw_params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
         params = _unwrap_genome(raw_params)
@@ -1272,16 +1299,23 @@ def run_backtest(
         w = _compile_scoring_weights(scoring_weights, strat_weights)
         gap_ratio = _resolve_gap_protection_ratio(params)
         regime_filter = bool(params.get("regime_filter", False))
+        try:
+            min_adx = float(params.get("min_adx", 0) or 0)
+        except (TypeError, ValueError):
+            min_adx = 0.0
+        if min_adx <= 0:
+            min_adx = 0.0
+        vix_limit_scaling = bool(params.get("vix_limit_scaling", False))
         base_stop_mult = float(params.get("stop_loss_atr", 3.0) or 3.0)
-        compiled_strategies.append((strat, w, params, gap_ratio, regime_filter, base_stop_mult))
+        compiled_strategies.append((strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling))
 
     # Diagnostic: verify trail_activation is flowing from JSON -> strategy.params -> engine.
-    for strat, _w, params, _gap_ratio, _regime_filter, _base_stop_mult in compiled_strategies:
+    for strat, _w, params, _gap_ratio, _regime_filter, _base_stop_mult, _min_adx, _vix_limit_scaling in compiled_strategies:
         if _DEBUG_TRAIL_ACTIVATION or (isinstance(params.get("version_info"), dict) and params["version_info"].get("status") == "Golden State"):
             print(f"DEBUG: {strat.name} using activation: {params.get('trail_activation')}")
 
-    wealth_present = any(_strategy_role(params) == "wealth" for _s, _w, params, _g, _r, _b in compiled_strategies)
-    income_present = any(_strategy_role(params) == "income" for _s, _w, params, _g, _r, _b in compiled_strategies)
+    wealth_present = any(_strategy_role(params) == "wealth" for _s, _w, params, _g, _r, _b, _m, _v in compiled_strategies)
+    income_present = any(_strategy_role(params) == "income" for _s, _w, params, _g, _r, _b, _m, _v in compiled_strategies)
     confluence_possible = wealth_present and income_present
     if super_signal_only and not confluence_possible:
         return _empty_result(SUPER_SIGNAL_NAME, float(start_cash), strategies[0].params if strategies else {})
@@ -1304,6 +1338,7 @@ def run_backtest(
 
         volume_arr = sd.volume
         rsi2_arr = sd.rsi2
+        adx_arr = sd.adx
         atr14_arr = sd.atr14
         vol_ma20_arr = sd.vol_ma20
         sma200_arr = sd.sma200
@@ -1314,7 +1349,7 @@ def run_backtest(
         spy_close_arr = sd.spy_close
         spy_sma200_arr = sd.spy_sma200
 
-        for strat, w, params, gap_ratio, regime_filter, base_stop_mult in compiled_strategies:
+        for strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling in compiled_strategies:
             # Vectorized entry for base GenericStrategy genomes (optimizer hot path)
             if _can_vectorize_entry(strat, params, ai_model):
                 warmup = max(int(params.get("warmup_bars", MIN_BARS) or MIN_BARS), MIN_BARS)
@@ -1333,6 +1368,10 @@ def run_backtest(
                 if regime_filter:
                     valid &= ~(np.isfinite(spy_close_arr[prev_is]) & np.isfinite(spy_sma200_arr[prev_is]) &
                                (spy_close_arr[prev_is] < spy_sma200_arr[prev_is]))
+
+                if min_adx > 0:
+                    adx_prev = adx_arr[prev_is]
+                    valid &= np.isfinite(adx_prev) & (adx_prev >= min_adx)
 
                 signal_atr = atr14_arr[prev_is]
                 valid &= np.isfinite(signal_atr) & (signal_atr > 0)
@@ -1361,6 +1400,10 @@ def run_backtest(
                     try:
                         limit_ratio_val = float(limit_ratio)
                         target_px = prev_close * limit_ratio_val
+                        if vix_limit_scaling:
+                            vix_prev = vix_arr[prev_is]
+                            scale = np.where(np.isfinite(vix_prev) & (vix_prev > 25.0), 0.98, 1.0)
+                            target_px = target_px * scale
                         # Fill if Open < Target OR Low < Target
                         filled_mask = (open_px < target_px) | (low_px < target_px)
 
@@ -1447,6 +1490,11 @@ def run_backtest(
                         if spy_close_prev < spy_sma200_prev:
                             continue
 
+                if min_adx > 0:
+                    adx_prev = float(adx_arr[prev_i])
+                    if not np_isfinite(adx_prev) or adx_prev < min_adx:
+                        continue
+
                 if gap_ratio > 0 and prev_close > 0:
                     if open_px < prev_close * gap_ratio:
                         continue
@@ -1468,6 +1516,10 @@ def run_backtest(
                     except (TypeError, ValueError):
                         limit_ratio_val = None
                     if limit_ratio_val is not None:
+                        if vix_limit_scaling:
+                            vix_prev = float(vix_arr[prev_i])
+                            if np_isfinite(vix_prev) and vix_prev > 25.0:
+                                limit_ratio_val *= 0.98
                         target_px = prev_close * limit_ratio_val
                         if open_px < target_px:
                             entry_px = open_px
@@ -1628,6 +1680,17 @@ def run_backtest(
                 if target_entry_value <= 0:
                     continue
                 shares = int(target_entry_value / cand.entry_px)
+            if shares <= 0:
+                continue
+
+            if isinstance(strat_params, dict) and bool(strat_params.get("vix_position_sizing", False)):
+                sym_data = enriched.get(cand.sym)
+                if sym_data is not None:
+                    sig_i = int(cand.signal_i)
+                    if 0 <= sig_i < sym_data.vix.size:
+                        vix_prev = float(sym_data.vix[sig_i])
+                        if np_isfinite(vix_prev) and vix_prev > 25.0:
+                            shares = int(shares * 0.5)
             if shares <= 0:
                 continue
 
