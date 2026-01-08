@@ -425,19 +425,57 @@ if mode == "Live Screener":
                     rec["Upgrade_Score"] = "-"
                 swap_recommendations.append(rec)
 
-            # --- UI LAYOUT ---
             st.markdown("### 🛸 Apex Command Center")
+            # --- COMMAND CENTER DISPLAY LOGIC ---
 
-            # Metrics
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Alpha Targets", len(targets))
-            m2.metric("Watchtower Alerts", len(watchtower))
-            m3.metric("Actionable Swaps", len(swap_recommendations))
+            # 1. PREPARE DATA (Type Safety Fix)
+            # Extract just the symbols (Strings) for the backend to prevent TypeError
+            liquidation_list = [
+                item for item in swap_recommendations 
+                if "LIQUIDATE" in str(item.get("Action", "")).upper()
+            ]
+            liquidation_symbols = [item["Sell"] for item in liquidation_list]
 
+            # 2. GLOBAL ACTION BUTTON (Full Width - Above Columns)
+            if liquidation_symbols:
+                st.warning(f"⚠️ Action Required: {len(liquidation_symbols)} positions are stagnant.")
+    
+                # Layout: Button on left, Summary on right
+                b_col1, b_col2 = st.columns([1, 4])
+                with b_col1:
+                    if st.button(
+                        f"💸 Flash Liquidate ({len(liquidation_symbols)})", 
+                        type="primary", 
+                        use_container_width=True,
+                        key="btn_flash_liq"
+                    ):
+                        with st.spinner(f"Liquidating {', '.join(liquidation_symbols)}..."):
+                            # Force Fresh State (Critical for Atomic Ops)
+                            pt = PaperTrader(configs=selected_strategies)
+                            logs = pt.liquidate_stagnant_holdings(liquidation_symbols)
+                
+                        # Display Results via Toasts (Non-blocking)
+                        for log in logs:
+                            if "✅" in log:
+                                st.toast(log, icon="✅")
+                            elif "⏳" in log:
+                                st.toast(log, icon="⏳")
+                            else:
+                                st.error(log)
+            
+                        time.sleep(1.5) # Short pause to read toasts
+                        st.rerun()
+    
+                with b_col2:
+                    st.caption(f"**Queued for Exit:** {', '.join(liquidation_symbols)}")
+        
+            st.divider()
+
+            # 3. PANELS LAYOUT
             col1, col2 = st.columns([2, 1])
 
             with col1:
-                st.subheader("🎯 Alpha Targets (Buy Now)")
+                st.subheader("🎯 Alpha Targets")
                 if not targets.empty:
                     st.dataframe(
                         targets[["Symbol", "Strategy", "Score", "Price", "Stop Loss", "Target"]],
@@ -445,24 +483,22 @@ if mode == "Live Screener":
                         hide_index=True
                     )
                 else:
-                    st.info("No Alpha Targets found. Market may be quiet or slot-constrained.")
+                    st.info("No Alpha Targets. Market quiet or slots full.")
 
             with col2:
                 st.subheader("🔄 Smart Swaps (Advisory)")
                 if swap_recommendations:
                     st.dataframe(pd.DataFrame(swap_recommendations), use_container_width=True, hide_index=True)
                     if best_buy is None:
-                        st.warning("⚠️ No Buy Targets. Recommendation: Raise Cash.")
+                        st.caption("Strategy: Raise Cash (No Buys Available)")
                     else:
-                        st.caption("⚠️ Discretionary: Swap into higher velocity setups.")
+                        st.caption("Strategy: Swap to Upgrade")
                 else:
-                    st.success("🛡️ Portfolio Optimized. No stagnant holdings.")
-
-                st.subheader("🔭 Watchtower (High IQ)")
+                    st.success("🛡️ Portfolio Optimized")
+        
+                st.subheader("🔭 Watchtower")
                 if not watchtower.empty:
                     st.dataframe(watchtower[["Symbol", "Score", "Status"]], use_container_width=True, hide_index=True)
-                else:
-                    st.caption("No elite setups waiting.")
 
             # --- SECTOR RADAR (Preserved) ---
             with st.expander("📊 Sector Risk Radar"):

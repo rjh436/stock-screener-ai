@@ -403,58 +403,6 @@ class PaperTrader:
 
         for order in self.state.get("pending_orders", []):
             sym = order["symbol"]
-            order_type = order.get("type", "BUY_MOO")
-            if order_type == "SELL_MOO":
-                if not is_market_open:
-                    fill_log.append(f"⏳ WAITING {sym}: Market not open")
-                    remaining_orders.append(order)
-                    continue
-                snapshot = order.get("snapshot")
-                if not isinstance(snapshot, dict):
-                    fill_log.append(f"❌ FAILED {sym}: Missing snapshot")
-                    remaining_orders.append(order)
-                    continue
-                exit_price = self.get_realtime_price(sym)
-                if exit_price <= 0:
-                    fill_log.append(f"❌ FAILED {sym}: Could not fetch valid price")
-                    remaining_orders.append(order)
-                    continue
-
-                shares = snapshot.get("shares", 0)
-                entry_price = snapshot.get("entry_price", 0)
-                proceeds = exit_price * shares
-                pnl = proceeds - (entry_price * shares)
-                pnl_pct = ((exit_price - entry_price) / entry_price) * 100 if entry_price else 0.0
-
-                self.state["cash"] += proceeds
-                self.state.setdefault("history", []).append({
-                    "symbol": sym, "strategy": snapshot.get("strategy_name", ""),
-                    "type": "SELL", "reason": order.get("reason", "SELL_MOO"),
-                    "entry_date": snapshot.get("date", ""),
-                    "exit_date": str(datetime.now().date()),
-                    "entry_price": entry_price, "exit_price": exit_price,
-                    "shares": shares, "pnl": pnl, "return_pct": pnl_pct,
-                })
-
-                try:
-                    self._append_trade_ledger(
-                        symbol=sym,
-                        strategy=snapshot.get("strategy_name", ""),
-                        entry_date=snapshot.get("date", ""),
-                        exit_date=str(datetime.now().date()),
-                        entry_price=entry_price,
-                        exit_price=exit_price,
-                        shares=shares,
-                        pnl=pnl,
-                        pnl_pct=pnl_pct,
-                        reason=order.get("reason", "SELL_MOO"),
-                    )
-                except Exception as e:
-                    print(f"⚠️ Ledger append failed for {sym}: {e}")
-
-                fill_log.append(f"✅ SOLD {sym} @ ${exit_price:.2f} (PnL: ${pnl:.2f})")
-                continue
-
             est_price = order.get("order_price_estimate", 0)
             fill_price = 0.0
             
@@ -596,28 +544,12 @@ class PaperTrader:
         if not symbol:
             return ["⚠️ CANCEL FAILED: Invalid symbol"]
         pending = self.state.get("pending_orders", [])
-        logs: List[str] = []
-        remaining: List[Dict] = []
-        restored = False
-        for order in pending:
-            if order.get("symbol") != symbol:
-                remaining.append(order)
-                continue
-            if order.get("type") == "SELL_MOO" and not restored:
-                snapshot = order.get("snapshot")
-                if isinstance(snapshot, dict):
-                    restored_pos = dict(snapshot)
-                    s_name = restored_pos.get("strategy_name") or restored_pos.get("strategy")
-                    restored_pos["strategy_obj"] = self._get_strategy_by_name(s_name)
-                    self.portfolio[symbol] = restored_pos
-                    logs.append("↩️ Restored position from snapshot.")
-                    restored = True
+        remaining = [o for o in pending if o.get("symbol") != symbol]
         if len(remaining) == len(pending):
             return [f"⚠️ CANCEL FAILED: {symbol} not found"]
         self.state["pending_orders"] = remaining
         self.save_state()
-        logs.append(f"🗑️ CANCELLED: {symbol} order removed")
-        return logs
+        return [f"🗑️ CANCELLED: {symbol} order removed"]
 
     def _current_sector_exposure(self) -> Dict[str, float]:
         exposure = {}
@@ -655,27 +587,15 @@ class PaperTrader:
         self.save_state()
         return self.state, fill_logs
 
-    def _execute_sell_immediate(self, symbol, reason):
-        if symbol not in self.portfolio:
-            return False, "Position not found"
+    def close_position(self, symbol, reason="Manual"):
+        if symbol not in self.portfolio: return False, "Position not found"
         pos = self.portfolio[symbol]
         exit_price = self.get_realtime_price(symbol)
-        if exit_price <= 0:
-            return False, "Could not fetch valid price"
+        if exit_price <= 0: return False, "Could not fetch valid price"
 
         proceeds = exit_price * pos["shares"]
         pnl = proceeds - (pos["entry_price"] * pos["shares"])
         pnl_pct = ((exit_price - pos["entry_price"]) / pos["entry_price"]) * 100
-
-        del self.portfolio[symbol]
-        self.state["cash"] += proceeds
-        self.state.setdefault("history", []).append({
-            "symbol": symbol, "strategy": pos.get("strategy_name", ""),
-            "type": "SELL", "reason": reason, "entry_date": pos.get("date", ""),
-            "exit_date": str(datetime.now().date()), "entry_price": pos["entry_price"],
-            "exit_price": exit_price, "shares": pos["shares"], "pnl": pnl, "return_pct": pnl_pct,
-        })
-        self.save_state()
 
         try:
             self._append_trade_ledger(
@@ -693,87 +613,16 @@ class PaperTrader:
         except Exception as e:
             print(f"⚠️ Ledger append failed for {symbol}: {e}")
 
-        return True, f"Sold {symbol} at ${exit_price:.2f} (PnL: ${pnl:.2f})"
-
-    def _queue_sell_moo(self, symbol, reason):
-        if symbol not in self.portfolio:
-            return "Position not found"
-        pos = self.portfolio[symbol]
-        snapshot = pos.copy()
-        if "strategy_obj" in snapshot:
-            del snapshot["strategy_obj"]
-
-        strat_name = pos.get("strategy_name") or pos.get("strategy") or ""
-        order = {
-            "symbol": symbol,
-            "shares": pos.get("shares", 0),
-            "order_price_estimate": pos.get("current_price", pos.get("entry_price", 0)),
-            "strategy": strat_name,
-            "strategy_name": strat_name,
-            "date": str(datetime.now().date()),
-            "type": "SELL_MOO",
-            "status": "PENDING",
-            "reason": reason,
-            "queued_at": datetime.now().isoformat(),
-            "snapshot": snapshot,
-        }
-        self.state.setdefault("pending_orders", []).append(order)
+        self.state["cash"] += proceeds
+        self.state.setdefault("history", []).append({
+            "symbol": symbol, "strategy": pos.get("strategy_name", ""),
+            "type": "SELL", "reason": reason, "entry_date": pos["date"],
+            "exit_date": str(datetime.now().date()), "entry_price": pos["entry_price"],
+            "exit_price": exit_price, "shares": pos["shares"], "pnl": pnl, "return_pct": pnl_pct,
+        })
         del self.portfolio[symbol]
-        self.save_state()
-        return "⏳ Market Closed. Queued SELL_MOO (Position moved to Pending)."
-
-    def close_position(self, symbol, reason="Manual"):
-        if symbol not in self.portfolio:
-            return False, "Position not found"
-        try:
-            ny_tz = pytz.timezone('America/New_York')
-            now_ny = datetime.now(ny_tz)
-        except Exception:
-            now_ny = datetime.now()
-            print("⚠️ pytz not found, using server time")
-
-        is_weekday = now_ny.weekday() < 5
-        market_open_time = now_ny.replace(hour=9, minute=30, second=0, microsecond=0)
-        market_close_time = now_ny.replace(hour=16, minute=0, second=0, microsecond=0)
-        is_market_open = is_weekday and market_open_time <= now_ny <= market_close_time
-
-        if not is_market_open:
-            msg = self._queue_sell_moo(symbol, reason)
-            return True, msg
-
-        return self._execute_sell_immediate(symbol, reason)
-
-    def liquidate_stagnant_holdings(self, symbols: List[str]) -> List[str]:
-        """
-        Efficiently processes multiple sells.
-        symbols: List of ticker strings ['AAPL', 'MSFT']
-        """
-        logs = []
-        # Process each symbol
-        for sym in symbols:
-            # 1. Safety Check: Handle potential dict input gracefully (backward compatibility)
-            if isinstance(sym, dict):
-                sym = sym.get("Sell") or sym.get("Symbol")
-
-            if not sym:
-                continue
-
-            # 2. Execute Close (Atomic)
-            # Use a specific reason tag so we can track these later in the CSV
-            success, msg = self.close_position(sym, reason="Smart Swap / Liquidate")
-
-            # 3. Format Log for UI Parsing
-            # Add emojis so the frontend knows how to display the toast/alert
-            if "Queued" in msg:
-                status_icon = "⏳"  # Warning/Pending
-            elif success:
-                status_icon = "✅"  # Success
-            else:
-                status_icon = "❌"  # Error
-
-            logs.append(f"{status_icon} {msg}")
-
-        return logs
+        self.update_valuations()
+        return True, f"Sold {symbol} at ${exit_price:.2f} (PnL: ${pnl:.2f})"
 
     def _normalize_candidate(self, cand: Dict) -> Optional[Dict]:
         sym = cand.get("symbol") or cand.get("Symbol")
