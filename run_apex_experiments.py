@@ -61,7 +61,9 @@ def main() -> None:
     data = fetch_data_pack(symbols, days=DAYS + 200, backtest_mode=True) or {}
     g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=DAYS + 200, backtest_mode=True) or {}
     spy_df = g_data.get("SPY")
-    vix_df = g_data.get("$VIX") or g_data.get("VIX")
+    vix_df = g_data.get("$VIX")
+    if vix_df is None:
+        vix_df = g_data.get("VIX")
     global_data = {"SPY": spy_df, "VIX": vix_df}
 
     prepared = engine.prepare_backtest_data(

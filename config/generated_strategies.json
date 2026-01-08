@@ -1,6 +1,6 @@
 [
     {
-        "name": "Apex Sniper Wealth v1.0",
+        "name": "Apex Sniper Wealth v2.1 (Dynamic)",
         "type": "wealth",
         "entry_rules": [
             {
@@ -20,7 +20,7 @@
                 "val": 1.27
             }
         ],
-        "stop_loss_atr": 2.13,
+        "stop_loss_atr": 2.25,
         "time_stop": 32,
         "scoring_weights": {
             "sniper_bonus": 41.76,
@@ -35,6 +35,8 @@
         "rsi_strong": 35.0,
         "rsi_weak": 11.0,
         "limit_ratio": 0.98,
+        "vix_limit_scaling": true,
+        "vix_position_sizing": true,
         "trail_atr": 2.5,
         "trail_activation": 1.4,
         "version_info": {

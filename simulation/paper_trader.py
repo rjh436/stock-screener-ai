@@ -805,6 +805,7 @@ class PaperTrader:
             "strategy_name": strat_obj.name, "strategy_obj": strat_obj, "score": score, "genome": genome,
             "entry_i": cand.get("entry_i"),
             "atr": cand.get("atr"),
+            "vix": cand.get("vix", 0),
         }
 
     def _execute_governor(self, candidates: List[Dict]) -> Dict[str, Any]:
@@ -876,6 +877,16 @@ class PaperTrader:
             # SAFETY CHECK 4: Cap total position value at 20% equity
             max_shares_by_value = int((current_equity * POSITION_FRACTION) / price)
             shares = min(shares, max_shares_by_value)
+
+            vix_val = cand.get("vix", 0)
+            try:
+                vix_val = float(vix_val)
+            except (TypeError, ValueError):
+                vix_val = 0.0
+            vix_sizing_enabled = (cand.get("genome", {}) or {}).get("vix_position_sizing", False)
+            if vix_sizing_enabled and vix_val > 25.0:
+                shares = int(shares * 0.5)
+                logs.append(f"🛡️ VIX Sizing Active ({vix_val:.1f} > 25): {cand['symbol']} size reduced by 50%.")
 
             # SAFETY CHECK 5: Minimum viable position
             if shares < 1:
@@ -1003,6 +1014,7 @@ class PaperTrader:
                         "signal_open": signal_open,
                         "stop": stop_price,
                         "atr": atr,
+                        "vix": float(row_signal.get("vix", 0)),
                         "strategy_name": strat.name,
                         "strategy_obj": strat,
                         "genome": strat_genome,
