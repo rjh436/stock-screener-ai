@@ -349,51 +349,44 @@ if mode == "Live Screener":
 
     if st.session_state.scan_results is not None:
         # --- DATA PREP ---
-        # Create safe copy of results
         df = st.session_state.scan_results.copy()
-
-        if not show_all_setups and "Status" in df.columns:
-            df = df[df["Status"] == "✅ TRADABLE"]
-
-        if not df.empty and "Status" in df.columns and "Score" in df.columns:
-            def get_sort_weight(status: str) -> int:
-                if "✅ TRADABLE" in status:
-                    return 0
-                if "PENDING" in status:
-                    return 1
-                if "ℹ️ HELD" in status:
-                    return 2
-                return 3
-
-            df = df.copy()
-            df["sort_weight"] = df["Status"].apply(get_sort_weight)
-            df = df.sort_values(by=["sort_weight", "Score"], ascending=[True, False])
-            df = df.drop(columns=["sort_weight"])
 
         if df.empty:
             st.info("No signals found today.")
         else:
-            # Bucket 1: Alpha Targets (Tradable, High Score)
+            # Bucket 1: Alpha Targets (Strictly Tradable)
+            # Used for the Left Panel ("Buy Now")
             targets = df[
                 (df["Status"].str.contains("✅ TRADABLE", na=False)) &
                 (df["Score"] >= MIN_ENTRY_SCORE)
             ].sort_values("Score", ascending=False).head(15)
 
-            # Bucket 2: Watchtower (High Score, Waiting)
+            # Bucket 2: Swap Pool (Tradable OR Blocked by Slots)
+            # Used for the Middle Panel ("Smart Swaps")
+            # CRITICAL: We include candidates blocked by 'Slots Full', but EXCLUDE 'Sector Cap' or 'Risk' blocks.
+            swap_pool = df[
+                (
+                    df["Status"].str.contains("✅ TRADABLE", na=False) |
+                    df["Status"].str.contains("REJECTED: Slots Full", na=False)
+                ) &
+                (df["Score"] >= MIN_ENTRY_SCORE)
+            ].sort_values("Score", ascending=False)
+
+            # Bucket 3: Watchtower
             watchtower = df[
                 (df["Status"].str.contains("WAIT", na=False) | df["Status"].str.contains("REJECTED", na=False)) &
+                (~df["Status"].str.contains("Slots Full", na=False)) &
                 (df["Score"] >= 140)
             ].sort_values("Score", ascending=False).head(15)
 
-            # --- LOGIC FIX: DECOUPLED SWAP ANALYSIS ---
-            # 1. Identify Stagnant Holdings (Always Run This)
+            # --- LOGIC: SMART SWAPS ---
+            # 1. Identify Stagnant Holdings
             pt = PaperTrader(configs=selected_strategies)
             pt_state = pt.state
             current_positions = pt_state.get("positions", {})
 
             stagnant_candidates = []
             for sym, pos in current_positions.items():
-                # Calculate metrics
                 entry_date = pd.to_datetime(pos["date"]).date()
                 days_held = (datetime.now().date() - entry_date).days
                 pnl_pct = pos.get("unrealized_pct", 0.0)
@@ -407,22 +400,26 @@ if mode == "Live Screener":
                         "Strategy": pos.get("strategy_name", "")
                     })
 
-            # 2. Identify Buy Target (If Available)
+            # 2. Identify Best Swap Target (from the broader Swap Pool)
             best_buy = None
-            if not targets.empty:
-                best_buy = targets.iloc[0]
+            if not swap_pool.empty:
+                best_buy = swap_pool.iloc[0]
 
-            # 3. Build Advisory List
+            # 3. Build Recommendations
             swap_recommendations = []
             for item in stagnant_candidates:
                 rec = item.copy()
                 if best_buy is not None:
-                    # Scenario A: Full Swap
+                    # Scenario A: Swap into the waiting "Monster Setup"
                     rec["Action"] = "🔄 SWAP"
                     rec["Buy"] = best_buy["Symbol"]
                     rec["Upgrade_Score"] = f"{best_buy['Score']:.1f}"
+
+                    # Context: Is the buy target currently blocked?
+                    if "Slots Full" in str(best_buy["Status"]):
+                        rec["Buy"] += " (Queue)"
                 else:
-                    # Scenario B: Liquidate to Cash
+                    # Scenario B: No valid targets -> Cash is King
                     rec["Action"] = "💰 LIQUIDATE"
                     rec["Buy"] = "CASH / WAIT"
                     rec["Upgrade_Score"] = "-"
