@@ -1,6 +1,6 @@
 {
-    "cash": 21822.465000000004,
-    "equity": 101949.53499999999,
+    "cash": 48596.975000000006,
+    "equity": 101574.42340000001,
     "history": [
         {
             "symbol": "ZTS",
@@ -27,6 +27,32 @@
             "shares": 548,
             "pnl": 16.44000000000233,
             "return_pct": 0.05582433941198574
+        },
+        {
+            "symbol": "HRMY",
+            "strategy": "Apex Sniper Wealth v1.0",
+            "type": "SELL",
+            "reason": "Manual",
+            "entry_date": "2025-12-23",
+            "exit_date": "2026-01-07",
+            "entry_price": 38.71,
+            "exit_price": 37.55,
+            "shares": 385,
+            "pnl": -446.6000000000022,
+            "return_pct": -2.996641694652554
+        },
+        {
+            "symbol": "AVGO",
+            "strategy": "Apex Sniper Wealth v1.0",
+            "type": "SELL",
+            "reason": "Manual",
+            "entry_date": "2025-12-22",
+            "exit_date": "2026-01-08",
+            "entry_price": 346.03,
+            "exit_price": 342.16,
+            "shares": 36,
+            "pnl": -139.3199999999979,
+            "return_pct": -1.1184001387162812
         }
     ],
     "equity_curve": [
@@ -100,7 +126,11 @@
         },
         {
             "date": "2026-01-07",
-            "equity": 101949.53499999999
+            "equity": 101717.2157
+        },
+        {
+            "date": "2026-01-08",
+            "equity": 101574.42340000001
         }
     ],
     "positions": {
@@ -111,9 +141,9 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-11",
-            "current_price": 302.05,
-            "unrealized_pnl": 2869.499999999999,
-            "unrealized_pct": 14.50396148451419,
+            "current_price": 297.85,
+            "unrealized_pnl": 2554.5,
+            "unrealized_pct": 12.911785890291519,
             "entry_i": 332
         },
         "CEG": {
@@ -123,69 +153,10 @@
             "strategy": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "strategy_name": "Apex Wealth (Gen 16.2)_mut_mut_mut",
             "date": "2025-12-19",
-            "current_price": 335.3,
-            "unrealized_pnl": -880.5999999999992,
-            "unrealized_pct": -7.170542635658908,
+            "current_price": 336.99,
+            "unrealized_pnl": -823.1399999999993,
+            "unrealized_pct": -6.702657807308965,
             "entry_i": 327
-        },
-        "AVGO": {
-            "shares": 36,
-            "entry_price": 346.03,
-            "stop_price": 279.2694757868991,
-            "strategy": "Apex Sniper Wealth v1.0",
-            "strategy_name": "Apex Sniper Wealth v1.0",
-            "genome": {
-                "name": "Apex Sniper Wealth v1.0",
-                "type": "wealth",
-                "entry_rules": [
-                    {
-                        "col": "rsi2",
-                        "op": ">",
-                        "val": 15
-                    },
-                    {
-                        "col": "rs_trend",
-                        "op": ">",
-                        "val": 0
-                    }
-                ],
-                "exit_rules": [
-                    {
-                        "type": "profit_target",
-                        "val": 1.27
-                    }
-                ],
-                "stop_loss_atr": 3.8,
-                "time_stop": 42,
-                "scoring_weights": {
-                    "sniper_bonus": 41.76,
-                    "rsi_factor": 4.12,
-                    "trend_bonus": 70.0,
-                    "vol_bonus": 17.89,
-                    "atr_high_bonus": 30.14,
-                    "atr_med_bonus": 17.04,
-                    "trend_penalty": -25.8
-                },
-                "adx_threshold": 28.0,
-                "rsi_strong": 35.0,
-                "rsi_weak": 11.0,
-                "limit_ratio": 0.98,
-                "trail_atr": 2.5,
-                "trail_activation": 1.4,
-                "version_info": {
-                    "status": "Golden State",
-                    "validated_metrics": {
-                        "cagr": 0.433,
-                        "avg_profit": 0.054,
-                        "win_rate": 0.658
-                    }
-                }
-            },
-            "date": "2025-12-22",
-            "current_price": 344.64,
-            "unrealized_pnl": -50.03999999999951,
-            "unrealized_pct": -0.4016992746293635,
-            "entry_i": 324
         },
         "WBD": {
             "shares": 673,
@@ -241,69 +212,10 @@
                 }
             },
             "date": "2025-12-22",
-            "current_price": 28.56,
-            "unrealized_pnl": -191.8050000000001,
-            "unrealized_pct": -0.9880395215808638,
+            "current_price": 28.5008,
+            "unrealized_pnl": -231.6465999999981,
+            "unrealized_pct": -1.1932743976425626,
             "entry_i": 344
-        },
-        "HRMY": {
-            "shares": 385,
-            "entry_price": 38.71,
-            "stop_price": 33.31446092592593,
-            "strategy": "Apex Sniper Wealth v1.0",
-            "strategy_name": "Apex Sniper Wealth v1.0",
-            "genome": {
-                "name": "Apex Sniper Wealth v1.0",
-                "type": "wealth",
-                "entry_rules": [
-                    {
-                        "col": "rsi2",
-                        "op": ">",
-                        "val": 15
-                    },
-                    {
-                        "col": "rs_trend",
-                        "op": ">",
-                        "val": 0
-                    }
-                ],
-                "exit_rules": [
-                    {
-                        "type": "profit_target",
-                        "val": 1.27
-                    }
-                ],
-                "stop_loss_atr": 3.8,
-                "time_stop": 42,
-                "scoring_weights": {
-                    "sniper_bonus": 41.76,
-                    "rsi_factor": 4.12,
-                    "trend_bonus": 70.0,
-                    "vol_bonus": 17.89,
-                    "atr_high_bonus": 30.14,
-                    "atr_med_bonus": 17.04,
-                    "trend_penalty": -25.8
-                },
-                "adx_threshold": 28.0,
-                "rsi_strong": 35.0,
-                "rsi_weak": 11.0,
-                "limit_ratio": 0.98,
-                "trail_atr": 2.5,
-                "trail_activation": 1.4,
-                "version_info": {
-                    "status": "Golden State",
-                    "validated_metrics": {
-                        "cagr": 0.433,
-                        "avg_profit": 0.054,
-                        "win_rate": 0.658
-                    }
-                }
-            },
-            "date": "2025-12-23",
-            "current_price": 37.52,
-            "unrealized_pnl": -458.1499999999991,
-            "unrealized_pct": -3.074141048824587,
-            "entry_i": 343
         }
     },
     "pending_orders": []
