@@ -23,16 +23,21 @@ UNIVERSE = "S&P 1500"
 DAYS = 10000
 START_CASH = 100000.0
 
-CONFIGS = [
-    {"vix_threshold": 25, "max_positions": 5},  # Baseline
-    {"vix_threshold": 30, "max_positions": 5},
-    {"vix_threshold": 35, "max_positions": 5},
-    {"vix_threshold": 25, "max_positions": 7},
-    {"vix_threshold": 30, "max_positions": 7},  # Target?
-    {"vix_threshold": 35, "max_positions": 7},
-    {"vix_threshold": 30, "max_positions": 8},
-    {"vix_threshold": 35, "max_positions": 8},
-]
+configs = []
+targets = [1.08, 1.10, 1.12, 1.15]
+time_stops = [5, 7, 10]
+adx_vals = [20, 25, 30]
+
+for t in targets:
+    for d in time_stops:
+        for a in adx_vals:
+            configs.append(
+                {
+                    "profit_target": t,
+                    "time_stop": d,
+                    "min_adx": float(a),
+                }
+            )
 
 
 def _profit_factor(trades_list):
@@ -86,13 +91,14 @@ def main():
     )
 
     rows = []
-    for cfg in CONFIGS:
-        variant = f"vix{cfg['vix_threshold']}_max{cfg['max_positions']}"
-        strat_cfg = dict(base_config)
-        strat_cfg["vix_threshold"] = cfg["vix_threshold"]
-        strat_cfg["max_positions"] = cfg["max_positions"]
+    for config in configs:
+        variant = f"pt{config['profit_target']}_ts{config['time_stop']}_adx{config['min_adx']}"
+        params = dict(base_config)
+        params["exit_rules"] = [{"type": "profit_target", "val": config["profit_target"]}]
+        params["time_stop"] = config["time_stop"]
+        params["min_adx"] = config["min_adx"]
 
-        strategies = load_strategies([strat_cfg])
+        strategies = load_strategies([params])
         result = run_backtest(
             strategies,
             prepared,
@@ -104,8 +110,9 @@ def main():
         rows.append(
             {
                 "Variant": variant,
-                "VIX_Threshold": cfg["vix_threshold"],
-                "Max_Positions": cfg["max_positions"],
+                "ProfitTarget": config["profit_target"],
+                "TimeStop": config["time_stop"],
+                "MinADX": config["min_adx"],
                 "CAGR": float(result.get("cagr", 0.0) or 0.0) * 100.0,
                 "MaxDD": float(result.get("max_drawdown_pct", 0.0) or 0.0),
                 "ProfitFactor": _profit_factor(trades_list),
