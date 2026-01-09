@@ -822,12 +822,26 @@ class PaperTrader:
         normalized.sort(key=lambda x: x.get("score", 0), reverse=True)
         sector_exposure = self._current_sector_exposure()
 
+        genome = normalized[0].get("genome", {}) if normalized else {}
+        if not isinstance(genome, dict):
+            genome = {}
+        try:
+            dyn_max_pos = int(genome.get("max_positions", 5))
+        except (TypeError, ValueError):
+            dyn_max_pos = 5
+        dyn_max_pos = max(1, dyn_max_pos)
+        dyn_pos_fraction = 1.0 / dyn_max_pos if dyn_max_pos > 0 else 0.20
+        try:
+            dyn_vix_threshold = float(genome.get("vix_threshold", 25.0))
+        except (TypeError, ValueError):
+            dyn_vix_threshold = 25.0
+
         pending_committed = sum(o.get("committed_cash", 0) for o in self.state.get("pending_orders", []))
         available_cash = self.state["cash"] - pending_committed
 
         for cand in normalized:
-            if len(self.portfolio) + len(self.state.get("pending_orders", [])) >= MAX_POSITIONS:
-                logs.append(f"⚠️ REJECTED {cand['symbol']}: All {MAX_POSITIONS} slots full")
+            if len(self.portfolio) + len(self.state.get("pending_orders", [])) >= dyn_max_pos:
+                logs.append(f"⚠️ REJECTED {cand['symbol']}: All {dyn_max_pos} slots full")
                 continue
             if cand["symbol"] in self.portfolio:
                 logs.append(f"ℹ️ SKIPPED {cand['symbol']}: Already held")
@@ -837,7 +851,7 @@ class PaperTrader:
                 continue
 
             current_equity = self.state["cash"] + sum(sector_exposure.values())
-            trade_val = current_equity * POSITION_FRACTION
+            trade_val = current_equity * dyn_pos_fraction
             if trade_val <= 0 or available_cash < trade_val:
                 logs.append(
                     f"⚠️ REJECTED {cand['symbol']}: Insufficient cash "
@@ -877,22 +891,15 @@ class PaperTrader:
                 shares = MAX_SHARES_PER_POSITION
 
             # SAFETY CHECK 4: Cap total position value at 20% equity
-            max_shares_by_value = int((current_equity * POSITION_FRACTION) / price)
+            max_shares_by_value = int((current_equity * dyn_pos_fraction) / price)
             shares = min(shares, max_shares_by_value)
 
             vix_val = cand.get("vix", 0)
-            close_val = cand.get("close", 0)
-            sma20_val = cand.get("sma20", 0)
-
-            # Check if VIX sizing is enabled in the genome
             vix_sizing_enabled = (cand.get("genome", {}) or {}).get("vix_position_sizing", False)
 
-            # Only cut shares if VIX > 25 AND Price < SMA20
-            if vix_sizing_enabled and vix_val > 25.0 and close_val < sma20_val:
+            if vix_sizing_enabled and vix_val > dyn_vix_threshold:
                 shares = int(shares * 0.5)
-                logs.append(
-                    f"🛡️ VIX Safety Active: {cand['symbol']} size halved (Price {close_val} < SMA {sma20_val})"
-                )
+                logs.append(f"🛡️ VIX Safety Active: {cand['symbol']} size halved (VIX {vix_val:.1f} > {dyn_vix_threshold:.1f}).")
 
             # SAFETY CHECK 5: Minimum viable position
             if shares < 1:

@@ -405,6 +405,14 @@ def _resolve_gap_protection_ratio(params: Dict[str, Any]) -> float:
     return ratio if ratio > 0 else 0.0
 
 
+def _get_param(params: Dict[str, Any], key: str, default: float, min_val: float, max_val: float) -> float:
+    try:
+        val = float(params.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return max(min_val, min(val, max_val))
+
+
 def _get_np_col(df: pd.DataFrame, col: str, fallback: float, *, length: int) -> np.ndarray:
     if col in df.columns:
         return df[col].to_numpy(dtype=np.float64, copy=False)
@@ -768,13 +776,7 @@ def _legacy_run_backtest(
                     if limit_ratio_val is not None:
                         if vix_limit_scaling:
                             vix_prev = float(vix_arr[prev_i])
-                            sma20_prev = float(sma20_arr[prev_i])
-                            if (
-                                np_isfinite(vix_prev)
-                                and vix_prev > 25.0
-                                and np_isfinite(sma20_prev)
-                                and prev_close < sma20_prev
-                            ):
+                            if np_isfinite(vix_prev) and vix_prev > 25.0:
                                 limit_ratio_val *= 0.98
                         target_px = prev_close * limit_ratio_val
                         if open_px < target_px:
@@ -896,15 +898,7 @@ def _legacy_run_backtest(
                         sig_i = int(cand.signal_i)
                         if 0 <= sig_i < sym_data.vix.size:
                             vix_prev = float(sym_data.vix[sig_i])
-                            close_prev = float(sym_data.close[sig_i])
-                            sma20_prev = float(sym_data.sma20[sig_i])
-                            if (
-                                np_isfinite(vix_prev)
-                                and vix_prev > 25.0
-                                and np_isfinite(close_prev)
-                                and np_isfinite(sma20_prev)
-                                and close_prev < sma20_prev
-                            ):
+                            if np_isfinite(vix_prev) and vix_prev > 25.0:
                                 shares = int(shares * 0.5)
 
             cost = shares * cand.entry_px
@@ -1366,6 +1360,7 @@ def run_backtest(
         spy_sma200_arr = sd.spy_sma200
 
         for strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling in compiled_strategies:
+            vix_threshold = _get_param(params, "vix_threshold", 25.0, 10.0, 60.0)
             # Vectorized entry for base GenericStrategy genomes (optimizer hot path)
             if _can_vectorize_entry(strat, params, ai_model):
                 warmup = max(int(params.get("warmup_bars", MIN_BARS) or MIN_BARS), MIN_BARS)
@@ -1418,13 +1413,8 @@ def run_backtest(
                         target_px = prev_close * limit_ratio_val
                         if vix_limit_scaling:
                             vix_prev = vix_arr[prev_is]
-                            sma20_prev = sma20_arr[prev_is]
                             scale = np.where(
-                                np.isfinite(vix_prev)
-                                & (vix_prev > 25.0)
-                                & np.isfinite(prev_close)
-                                & np.isfinite(sma20_prev)
-                                & (prev_close < sma20_prev),
+                                np.isfinite(vix_prev) & (vix_prev > vix_threshold),
                                 0.98,
                                 1.0,
                             )
@@ -1543,13 +1533,7 @@ def run_backtest(
                     if limit_ratio_val is not None:
                         if vix_limit_scaling:
                             vix_prev = float(vix_arr[prev_i])
-                            sma20_prev = float(sma20_arr[prev_i])
-                            if (
-                                np_isfinite(vix_prev)
-                                and vix_prev > 25.0
-                                and np_isfinite(sma20_prev)
-                                and prev_close < sma20_prev
-                            ):
+                            if np_isfinite(vix_prev) and vix_prev > vix_threshold:
                                 limit_ratio_val *= 0.98
                         target_px = prev_close * limit_ratio_val
                         if open_px < target_px:
@@ -1648,7 +1632,13 @@ def run_backtest(
     trades_list: List[Dict[str, Any]] = []
     ml_data: Optional[List[Dict[str, Any]]] = [] if export_ml_data else None
 
-    MAX_POSITIONS = 5
+    main_params = strategies[0].params if strategies else {}
+    if not isinstance(main_params, dict):
+        main_params = {}
+    dyn_max_pos = int(_get_param(main_params, "max_positions", 5, 1, 20))
+    dyn_pos_fraction = 1.0 / dyn_max_pos
+
+    MAX_POSITIONS = dyn_max_pos
     REBALANCE_TO_SLOTS = True
 
     for day_idx, current_dt in enumerate(all_dates):
@@ -1702,9 +1692,9 @@ def run_backtest(
                 if risk_per_share > 0:
                     shares = int(risk_per_trade / risk_per_share)
                 else:
-                    shares = int((current_equity * 0.20) / cand.entry_px) if cand.entry_px > 0 else 0
+                    shares = int((current_equity * dyn_pos_fraction) / cand.entry_px) if cand.entry_px > 0 else 0
 
-                max_shares_by_value = int((current_equity * 0.25) / cand.entry_px) if cand.entry_px > 0 else 0
+                max_shares_by_value = int((current_equity * (dyn_pos_fraction * 1.25)) / cand.entry_px) if cand.entry_px > 0 else 0
                 shares = min(shares, max_shares_by_value)
             else:
                 target_entry_value = slot_value * cand.size_scalar
@@ -1720,15 +1710,8 @@ def run_backtest(
                     sig_i = int(cand.signal_i)
                     if 0 <= sig_i < sym_data.vix.size:
                         vix_prev = float(sym_data.vix[sig_i])
-                        close_prev = float(sym_data.close[sig_i])
-                        sma20_prev = float(sym_data.sma20[sig_i])
-                        if (
-                            np.isfinite(vix_prev)
-                            and vix_prev > 25.0
-                            and np.isfinite(close_prev)
-                            and np.isfinite(sma20_prev)
-                            and close_prev < sma20_prev
-                        ):
+                        vix_threshold = _get_param(strat_params, "vix_threshold", 25.0, 10.0, 60.0)
+                        if np.isfinite(vix_prev) and vix_prev > vix_threshold:
                             shares = int(shares * 0.5)
             if shares <= 0:
                 continue
