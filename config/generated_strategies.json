@@ -5,7 +5,7 @@
         "entry_rules": [
             {
                 "col": "rsi2",
-                "op": ">",
+                "op": "<",
                 "val": 15
             },
             {
@@ -17,11 +17,11 @@
         "exit_rules": [
             {
                 "type": "profit_target",
-                "val": 1.27
+                "val": 1.10
             }
         ],
         "stop_loss_atr": 2.25,
-        "time_stop": 32,
+        "time_stop": 7,
         "scoring_weights": {
             "sniper_bonus": 41.76,
             "rsi_factor": 4.12,
@@ -38,7 +38,7 @@
         "vix_limit_scaling": true,
         "vix_position_sizing": true,
         "trail_atr": 2.5,
-        "trail_activation": 1.4,
+        "trail_activation": 1.05,
         "version_info": {
             "status": "Golden State",
             "validated_metrics": {

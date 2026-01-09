@@ -1444,8 +1444,17 @@ def run_backtest(
 
                 stop_px_arr = entry_px_arr - (signal_atr * adj_mult)
 
+                spy_close_prev = spy_close_arr[prev_is]
+                spy_sma200_prev = spy_sma200_arr[prev_is]
+                is_bull_regime = (
+                    np_isfinite(spy_close_prev)
+                    & np_isfinite(spy_sma200_prev)
+                    & (spy_close_prev > spy_sma200_prev)
+                )
+                dynamic_min_score = np.where(is_bull_regime, 100.0, MIN_ENTRY_SCORE)
+
                 # Final Validity Check
-                valid &= score >= MIN_ENTRY_SCORE
+                valid &= score >= dynamic_min_score
                 if not np.any(valid):
                     continue
 
@@ -1570,7 +1579,15 @@ def run_backtest(
                     float(bb_width_arr[prev_i]),
                     w,
                 )
-                if score < MIN_ENTRY_SCORE:
+                spy_close_prev = float(spy_close_arr[prev_i])
+                spy_sma200_prev = float(spy_sma200_arr[prev_i])
+                is_bull_regime = (
+                    np_isfinite(spy_close_prev)
+                    and np_isfinite(spy_sma200_prev)
+                    and spy_close_prev > spy_sma200_prev
+                )
+                dynamic_min_score = 100.0 if is_bull_regime else MIN_ENTRY_SCORE
+                if score < dynamic_min_score:
                     continue
 
                 candidates_by_day[day_idx].append(
@@ -1641,7 +1658,42 @@ def run_backtest(
     MAX_POSITIONS = dyn_max_pos
     REBALANCE_TO_SLOTS = True
 
+    spy_close_by_day = None
+    spy_sma200_by_day = None
+    spy_data = enriched.get("SPY")
+    if spy_data is not None:
+        spy_close_by_day = pd.Series(spy_data.close, index=pd.Index(spy_data.index))
+        spy_sma200_by_day = pd.Series(spy_data.sma200, index=pd.Index(spy_data.index))
+    elif global_data and "SPY" in global_data and not global_data["SPY"].empty:
+        spy_df = global_data["SPY"].copy()
+        spy_df = spy_df.sort_index()
+        spy_df.columns = spy_df.columns.str.lower()
+        if "close" in spy_df.columns:
+            if "sma200" not in spy_df.columns:
+                spy_df["sma200"] = spy_df["close"].rolling(200).mean()
+            spy_close_by_day = spy_df["close"]
+            spy_sma200_by_day = spy_df["sma200"]
+
+    if spy_close_by_day is not None:
+        all_dates_index = pd.Index(all_dates)
+        spy_close_by_day = spy_close_by_day.reindex(all_dates_index).ffill().bfill().to_numpy()
+        spy_sma200_by_day = spy_sma200_by_day.reindex(all_dates_index).ffill().bfill().to_numpy()
+
     for day_idx, current_dt in enumerate(all_dates):
+        prev_day_idx = day_idx - 1
+        is_bull = False
+        if spy_close_by_day is not None and prev_day_idx >= 0:
+            spy_close_prev = float(spy_close_by_day[prev_day_idx])
+            spy_sma200_prev = float(spy_sma200_by_day[prev_day_idx])
+            is_bull = np_isfinite(spy_close_prev) and np_isfinite(spy_sma200_prev) and spy_close_prev > spy_sma200_prev
+
+        if is_bull:
+            current_max_pos = 4
+            current_pos_frac = 0.25
+        else:
+            current_max_pos = 7
+            current_pos_frac = 0.14
+
         sector_exposure: Dict[str, float] = {}
         for sym, pos in positions.items():
             sym_data = enriched.get(sym)
@@ -1668,13 +1720,29 @@ def run_backtest(
         if current_equity <= 0:
             continue
 
-        slot_value = current_equity / MAX_POSITIONS if MAX_POSITIONS else 0.0
-        open_slots = MAX_POSITIONS - len(positions)
+        slot_value = current_equity * current_pos_frac
+        open_slots = current_max_pos - len(positions)
+        if open_slots < 0:
+            open_slots = 0
+
+        dynamic_min_score = MIN_ENTRY_SCORE
+        for cand in daily_candidates:
+            sym_data = enriched.get(cand.sym)
+            if sym_data is None:
+                continue
+            sig_i = int(cand.signal_i)
+            if 0 <= sig_i < sym_data.spy_close.size and 0 <= sig_i < sym_data.spy_sma200.size:
+                spy_close_prev = float(sym_data.spy_close[sig_i])
+                spy_sma200_prev = float(sym_data.spy_sma200[sig_i])
+                if np_isfinite(spy_close_prev) and np_isfinite(spy_sma200_prev):
+                    if spy_close_prev > spy_sma200_prev:
+                        dynamic_min_score = 100.0
+                    break
 
         for cand in daily_candidates:
             if open_slots <= 0:
                 break
-            if cand.score < MIN_ENTRY_SCORE:
+            if cand.score < dynamic_min_score:
                 break
             if cand.sym in positions:
                 continue
@@ -1692,9 +1760,9 @@ def run_backtest(
                 if risk_per_share > 0:
                     shares = int(risk_per_trade / risk_per_share)
                 else:
-                    shares = int((current_equity * dyn_pos_fraction) / cand.entry_px) if cand.entry_px > 0 else 0
+                    shares = int((current_equity * current_pos_frac) / cand.entry_px) if cand.entry_px > 0 else 0
 
-                max_shares_by_value = int((current_equity * (dyn_pos_fraction * 1.25)) / cand.entry_px) if cand.entry_px > 0 else 0
+                max_shares_by_value = int((current_equity * (current_pos_frac * 1.25)) / cand.entry_px) if cand.entry_px > 0 else 0
                 shares = min(shares, max_shares_by_value)
             else:
                 target_entry_value = slot_value * cand.size_scalar
@@ -1768,8 +1836,10 @@ def run_backtest(
                             del positions[sym]
 
                 current_equity = cash + current_sector_equity
-                slot_value = current_equity / MAX_POSITIONS if MAX_POSITIONS else 0.0
-                open_slots = MAX_POSITIONS - len(positions)
+                slot_value = current_equity * current_pos_frac
+                open_slots = current_max_pos - len(positions)
+                if open_slots < 0:
+                    open_slots = 0
 
             if cost > cash:
                 affordable_shares = int(cash / cand.entry_px) if cand.entry_px > 0 else 0
