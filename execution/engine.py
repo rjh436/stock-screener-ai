@@ -1358,6 +1358,13 @@ def run_backtest(
         vix_rel20_arr = sd.vix_rel20
         spy_close_arr = sd.spy_close
         spy_sma200_arr = sd.spy_sma200
+        gate_atr_arr = atr14_arr
+        if not np.any(np.isfinite(gate_atr_arr) & (gate_atr_arr > 0)):
+            hl_range = high_arr - low_arr
+            if hl_range.size >= 14:
+                gate_atr_arr = pd.Series(hl_range, index=idx).rolling(14).mean().to_numpy()
+            else:
+                gate_atr_arr = hl_range
 
         for strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling in compiled_strategies:
             vix_threshold = _get_param(params, "vix_threshold", 25.0, 10.0, 60.0)
@@ -1373,8 +1380,30 @@ def run_backtest(
                 low_px = np.where(np.isfinite(low_px), low_px, open_px)
 
                 valid = np.isfinite(prev_close) & (prev_close > 0) & np.isfinite(open_px) & (open_px > 0)
+
+                # --- Dynamic Universe Gatekeeper ---
+                close_val = close_arr[entry_is]
+                valid &= np.isfinite(close_val) & (close_val >= 10.0)
+
+                sma200_val = sma200_arr[entry_is]
+                valid &= np.isfinite(sma200_val) & (close_val >= sma200_val)
+
+                vol_val = volume_arr[entry_is]
+                valid &= np.isfinite(vol_val) & ((close_val * vol_val) >= 25_000_000)
+
+                atr_val = gate_atr_arr[entry_is]
+                natr = np.zeros_like(close_val)
+                natr_mask = (
+                    np.isfinite(atr_val)
+                    & (atr_val > 0)
+                    & np.isfinite(close_val)
+                    & (close_val > 0)
+                )
+                natr[natr_mask] = (atr_val[natr_mask] / close_val[natr_mask]) * 100.0
+                valid &= natr_mask & (natr >= 2.0)
+
                 gap_pct_arr = (open_px - prev_close) / prev_close
-                valid &= gap_pct_arr >= -0.08
+                valid &= gap_pct_arr >= -0.15
 
                 if regime_filter:
                     valid &= ~(np.isfinite(spy_close_arr[prev_is]) & np.isfinite(spy_sma200_arr[prev_is]) &
@@ -1499,8 +1528,29 @@ def run_backtest(
                 if not np_isfinite(low_px):
                     low_px = open_px
 
+                # --- Dynamic Universe Gatekeeper ---
+                curr_i = i
+                close_val = float(close_arr[curr_i])
+                if not np_isfinite(close_val) or close_val < 10.0:
+                    continue
+
+                sma200_val = float(sma200_arr[curr_i])
+                if not np_isfinite(sma200_val) or close_val < sma200_val:
+                    continue
+
+                vol_val = float(volume_arr[curr_i])
+                if not np_isfinite(vol_val) or (close_val * vol_val) < 25_000_000:
+                    continue
+
+                atr_val = float(gate_atr_arr[curr_i])
+                if not np_isfinite(atr_val) or atr_val <= 0:
+                    continue
+                natr = (atr_val / close_val) * 100.0
+                if natr < 2.0:
+                    continue
+
                 gap_pct = (open_px - prev_close) / prev_close if prev_close > 0 else 0.0
-                if gap_pct < -0.08:
+                if gap_pct < -0.15:
                     continue
 
                 entry_signal = strat.entry(df, prev_i)

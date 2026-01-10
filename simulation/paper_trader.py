@@ -937,7 +937,13 @@ class PaperTrader:
         
         if data_dict is None:
             tickers = get_index_symbols("S&P 1500")
-            print(f"Loaded {len(tickers)} tickers from S&P 1500")
+            universe_label = "S&P 1500"
+            if not tickers:
+                sp500 = get_index_symbols("S&P 500") or []
+                nasdaq100 = get_index_symbols("Nasdaq 100") or []
+                tickers = sorted(set(sp500 + nasdaq100))
+                universe_label = "S&P 500 + Nasdaq 100"
+            print(f"Loaded {len(tickers)} tickers from {universe_label}")
             data_dict = fetch_data_pack(tickers, days=400)
         else:
             tickers = list(data_dict.keys())
@@ -997,11 +1003,17 @@ class PaperTrader:
                     signal_idx, _current_idx = resolve_signal_index(df_ind)
                     if signal_idx < MIN_BARS:
                         continue
-                    
-                    if not strat.entry(df_ind, signal_idx): continue
 
                     # Use signal bar data for baseline
                     row_signal = df_ind.iloc[signal_idx]
+                    signal_close = float(row_signal.get("close", 0) or 0)
+                    signal_sma200 = float(row_signal.get("sma200", np.nan))
+                    if not np.isfinite(signal_close) or signal_close < 10.0:
+                        continue
+                    if not np.isfinite(signal_sma200) or signal_close < signal_sma200:
+                        continue
+
+                    if not strat.entry(df_ind, signal_idx): continue
                     params = getattr(strat, "params", {}) or {}
                     weights = get_strategy_weights(params)
                     raw_score = calculate_backtest_quality_score(row_signal, strat.name, weights=weights)
