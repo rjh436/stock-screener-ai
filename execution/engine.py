@@ -138,6 +138,22 @@ def _compute_indicators(
         mask = vix_sma20 > 0
         df.loc[mask, "vix_rel20"] = (df.loc[mask, "vix"] / vix_sma20[mask]) - 1.0
 
+        # --- BREAKOUT INDICATORS ---
+        # Donchian Channel (20-Day High of PREVIOUS 20 days). Shift by 1 is critical.
+        df["donchian_20"] = df["high"].rolling(window=20).max().shift(1)
+
+        # Volume Moving Average (20-day)
+        df["vol_ma20"] = df["volume"].rolling(window=20).mean()
+
+        # Trend SMAs (10, 20, 50)
+        df["sma10"] = df["close"].rolling(window=10).mean()
+        df["sma20"] = df["close"].rolling(window=20).mean()
+        df["sma50"] = df["close"].rolling(window=50).mean()
+
+        # Extension (Distance from SMA20) - Used for VCP checks (don't buy if extended > 15%)
+        # Protects against dividing by zero if sma20 is NaN
+        df["extension_20"] = (df["close"] / df["sma20"]) - 1.0
+
         return df
     except Exception:
         return df
@@ -1781,7 +1797,7 @@ def run_backtest(
                     candidates_scan.append((sym, roc_126))
 
             candidates_scan.sort(key=lambda x: x[1], reverse=True)
-            universe_whitelist = {c[0] for c in candidates_scan[:50]}
+            universe_whitelist = {c[0] for c in candidates_scan[:100]}
             last_rebalance_week = current_week
 
         is_bull = False

@@ -1,43 +1,45 @@
 [
   {
-    "name": "Apex Velocity 3.0 (Golden State)",
+    "name": "Apex Breakout (Qullamaggie)",
     "type": "wealth",
     "entry_rules": [
       {
-        "col": "rsi2",
-        "op": "<",
-        "val": 15
+        "col": "close",
+        "op": ">",
+        "ref": "donchian_20"
       },
       {
-        "col": "adx",
+        "col": "volume",
         "op": ">",
-        "val": 25
+        "ref": "vol_ma20",
+        "mult": 1.5
+      },
+      {
+        "col": "extension_20",
+        "op": "<",
+        "val": 0.15
+      },
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "sma50"
       }
     ],
     "exit_rules": [
       {
-        "type": "profit_target",
-        "val": 1.12
+        "type": "rule",
+        "col": "close",
+        "op": "<",
+        "ref": "sma20"
       }
     ],
-    "time_stop": 7,
-    "stop_loss_atr": 2.25,
+    "time_stop": 45,
+    "stop_loss_atr": 1.5,
     "trail_atr": 0,
     "trail_activation": 1.05,
-    "adx_threshold": 25.0,
-    "limit_ratio": 0.98,
+    "limit_ratio": 1.01,
+    "sizing_mode": "risk",
     "vix_limit_scaling": true,
-    "vix_position_sizing": true,
-    "version_info": {
-      "status": "Golden State",
-      "audit_verdict": "Deploy Variant B",
-      "risk_profile": "S&P 1500 Dynamic Filter (NATR>2.0)",
-      "validated_metrics": {
-        "cagr": "18.49%",
-        "max_dd": "-30.19%",
-        "profit_factor": 1.14
-      }
-    },
-    "sizing_mode": "risk"
+    "vix_position_sizing": true
   }
 ]
