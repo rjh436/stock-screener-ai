@@ -164,6 +164,8 @@ def _compute_indicators(
         df["std_20"] = df["close"].rolling(20).std()
         df["bb_width"] = (4 * df["std_20"]) / (df["close"].rolling(20).mean() + 1e-9)
         df["rs_score"] = df["close"].pct_change(126)
+        df["donchian20"] = df["highest20_1"]
+        df["donchian_20"] = df["highest20_1"]
 
         return df
     except Exception:
@@ -327,9 +329,12 @@ class _SymbolArrays:
     atr14: np.ndarray
     vol_ma20: np.ndarray
     sma20: np.ndarray
+    sma10: np.ndarray
     sma50: np.ndarray
+    sma150: np.ndarray
     sma200: np.ndarray
     donchian_20: np.ndarray
+    donchian20: np.ndarray
     sma200_slope: np.ndarray
     high_52w: np.ndarray
     low_52w: np.ndarray
@@ -522,9 +527,12 @@ def prepare_backtest_data(
                 atr14=_get_np_col(df, "atr14", 0.0, length=n),
                 vol_ma20=_get_np_col(df, "vol_ma20", 1.0, length=n),
                 sma20=_get_np_col(df, "sma20", np.nan, length=n),
+                sma10=_get_np_col(df, "sma10", np.nan, length=n),
                 sma50=_get_np_col(df, "sma50", np.nan, length=n),
+                sma150=_get_np_col(df, "sma150", np.nan, length=n),
                 sma200=_get_np_col(df, "sma200", np.nan, length=n),
                 donchian_20=_get_np_col(df, "donchian_20", np.nan, length=n),
+                donchian20=_get_np_col(df, "donchian20", np.nan, length=n),
                 sma200_slope=_get_np_col(df, "sma200_slope", np.nan, length=n),
                 high_52w=_get_np_col(df, "high_52w", np.nan, length=n),
                 low_52w=_get_np_col(df, "low_52w", np.nan, length=n),
@@ -660,9 +668,12 @@ def _legacy_run_backtest(
                 atr14=_get_np_col(df, "atr14", 0.0, length=n),
                 vol_ma20=_get_np_col(df, "vol_ma20", 1.0, length=n),
                 sma20=_get_np_col(df, "sma20", np.nan, length=n),
+                sma10=_get_np_col(df, "sma10", np.nan, length=n),
                 sma50=_get_np_col(df, "sma50", np.nan, length=n),
+                sma150=_get_np_col(df, "sma150", np.nan, length=n),
                 sma200=_get_np_col(df, "sma200", np.nan, length=n),
                 donchian_20=_get_np_col(df, "donchian_20", np.nan, length=n),
+                donchian20=_get_np_col(df, "donchian20", np.nan, length=n),
                 sma200_slope=_get_np_col(df, "sma200_slope", np.nan, length=n),
                 high_52w=_get_np_col(df, "high_52w", np.nan, length=n),
                 low_52w=_get_np_col(df, "low_52w", np.nan, length=n),
