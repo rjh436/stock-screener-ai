@@ -138,22 +138,6 @@ def _compute_indicators(
         mask = vix_sma20 > 0
         df.loc[mask, "vix_rel20"] = (df.loc[mask, "vix"] / vix_sma20[mask]) - 1.0
 
-        # --- BREAKOUT INDICATORS ---
-        # Donchian Channel (20-Day High of PREVIOUS 20 days). Shift by 1 is critical.
-        df["donchian_20"] = df["high"].rolling(window=20).max().shift(1)
-
-        # Volume Moving Average (20-day)
-        df["vol_ma20"] = df["volume"].rolling(window=20).mean()
-
-        # Trend SMAs (10, 20, 50)
-        df["sma10"] = df["close"].rolling(window=10).mean()
-        df["sma20"] = df["close"].rolling(window=20).mean()
-        df["sma50"] = df["close"].rolling(window=50).mean()
-
-        # Extension (Distance from SMA20) - Used for VCP checks (don't buy if extended > 15%)
-        # Protects against dividing by zero if sma20 is NaN
-        df["extension_20"] = (df["close"] / df["sma20"]) - 1.0
-
         return df
     except Exception:
         return df
@@ -1314,7 +1298,6 @@ def run_backtest(
     if not enriched or all_dates.size == 0:
         return _empty_result(strategy_label, float(start_cash), strategies[0].params if strategies else {})
 
-    symbols = list(enriched.keys())
     date_to_idx = {dt: i for i, dt in enumerate(all_dates)}
     candidates_by_day: List[List[_Candidate]] = [[] for _ in range(len(all_dates))]
     compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float, float, bool]] = []
@@ -1746,60 +1729,8 @@ def run_backtest(
         spy_close_by_day = spy_close_by_day.reindex(all_dates_index).ffill().bfill().to_numpy()
         spy_sma200_by_day = spy_sma200_by_day.reindex(all_dates_index).ffill().bfill().to_numpy()
 
-    universe_whitelist = set()
-    last_rebalance_week = -1
-
     for day_idx, current_dt in enumerate(all_dates):
         prev_day_idx = day_idx - 1
-        current_week = pd.Timestamp(current_dt).isocalendar().week
-        if current_week != last_rebalance_week:
-            # --- WEEKLY REBALANCE (Monday Morning) ---
-            candidates_scan = []
-            if prev_day_idx >= 0:
-                for sym in symbols:
-                    s_data = enriched.get(sym)
-                    if s_data is None:
-                        continue
-
-                    prev_i = int(np.searchsorted(s_data.gidx, prev_day_idx))
-                    if prev_i >= s_data.gidx.size or s_data.gidx[prev_i] != prev_day_idx:
-                        continue
-                    if prev_i < 126:
-                        continue
-
-                    close_val = float(s_data.close[prev_i])
-                    if not np_isfinite(close_val) or close_val < 10.0:
-                        continue
-
-                    sma200_val = float(s_data.sma200[prev_i])
-                    if not np_isfinite(sma200_val) or close_val < sma200_val:
-                        continue
-
-                    vol_val = float(s_data.volume[prev_i])
-                    if not np_isfinite(vol_val) or (close_val * vol_val) < 25_000_000:
-                        continue
-
-                    atr_val = float(s_data.atr14[prev_i])
-                    if not np_isfinite(atr_val) or atr_val <= 0:
-                        continue
-
-                    natr = (atr_val / close_val) * 100.0
-                    if natr < 2.5:
-                        continue
-
-                    price_6m = float(s_data.close[prev_i - 126])
-                    if not np_isfinite(price_6m) or price_6m <= 0:
-                        continue
-                    roc_126 = (close_val - price_6m) / price_6m
-                    if roc_126 <= 0:
-                        continue
-
-                    candidates_scan.append((sym, roc_126))
-
-            candidates_scan.sort(key=lambda x: x[1], reverse=True)
-            universe_whitelist = {c[0] for c in candidates_scan[:100]}
-            last_rebalance_week = current_week
-
         is_bull = False
         if spy_close_by_day is not None and prev_day_idx >= 0:
             spy_close_prev = float(spy_close_by_day[prev_day_idx])
@@ -1831,15 +1762,6 @@ def run_backtest(
             sector_exposure[sec] = sector_exposure.get(sec, 0.0) + float(val)
 
         daily_candidates = candidates_by_day[day_idx]
-        if not universe_whitelist:
-            daily_candidates = []
-        else:
-            cand_by_sym = {}
-            for cand in daily_candidates:
-                cand_by_sym.setdefault(cand.sym, []).append(cand)
-            daily_candidates = []
-            for sym in universe_whitelist:
-                daily_candidates.extend(cand_by_sym.get(sym, []))
         if len(daily_candidates) > 1:
             daily_candidates.sort(key=lambda c: c.score, reverse=True)
 
