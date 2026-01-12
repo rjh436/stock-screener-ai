@@ -717,6 +717,7 @@ def _legacy_run_backtest(
         close_arr = sd.close
         volume_arr = sd.volume
         rsi2_arr = sd.rsi2
+        rsi14_arr = sd.rsi14
         adx_arr = sd.adx
         atr14_arr = sd.atr14
         vol_ma20_arr = sd.vol_ma20
@@ -1218,6 +1219,7 @@ def _vectorized_entry_indices(sd: _SymbolArrays, entry_rules: Sequence[Dict[str,
 
 def _score_candidates_vectorized(
     rsi2: np.ndarray,
+    rsi14: np.ndarray,
     close_px: np.ndarray,
     atr14: np.ndarray,
     volume: np.ndarray,
@@ -1226,34 +1228,38 @@ def _score_candidates_vectorized(
     cci: np.ndarray,
     bb_width: np.ndarray,
     w: _ScoreWeights,
+    scoring_type: str = "mean_reversion",
 ) -> np.ndarray:
-    # SAFEGUARD: Clean data before matrix math
-    rsi2 = np.nan_to_num(rsi2, nan=50.0, posinf=50.0, neginf=50.0)
-    close_px = np.nan_to_num(close_px, nan=0.0, posinf=0.0, neginf=0.0)
-    atr14 = np.nan_to_num(atr14, nan=0.0, posinf=0.0, neginf=0.0)
-    volume = np.nan_to_num(volume, nan=0.0, posinf=0.0, neginf=0.0)
-    vol_ma20 = np.nan_to_num(vol_ma20, nan=0.0, posinf=0.0, neginf=0.0)
-    sma200 = np.nan_to_num(sma200, nan=0.0, posinf=0.0, neginf=0.0)
-    cci = np.nan_to_num(cci, nan=0.0, posinf=0.0, neginf=0.0)
-    bb_width = np.nan_to_num(bb_width, nan=0.0, posinf=0.0, neginf=0.0)
+    close_px = np.nan_to_num(close_px, nan=0.0)
+    rsi2 = np.nan_to_num(rsi2, nan=50.0)
+    rsi14 = np.nan_to_num(rsi14, nan=50.0)
+    bb_width = np.nan_to_num(bb_width, nan=1.0)
 
-    sniper_ok = (cci < 0) & (bb_width > _SNIPER_BB_WIDTH_THRESH)
-    base = (100.0 - rsi2) * float(w.rsi_factor)
-    base = np.clip(base, 0.0, 100.0)
-    score = base.astype(np.float64, copy=True)
+    if scoring_type == "breakout":
+        base = rsi14 * float(w.rsi_factor)
+        base = np.clip(base, 0.0, 100.0)
+        score = base.astype(np.float64, copy=True)
 
-    atr_pct = np.zeros_like(score)
-    atr_ok = (close_px > 0) & (atr14 > 0)
-    atr_pct[atr_ok] = (atr14[atr_ok] / close_px[atr_ok]) * 100.0
+        vcp_ok = (bb_width < 0.15)
+        score += np.where(vcp_ok, float(w.sniper_bonus), 0.0)
+    else:
+        base = (100.0 - rsi2) * float(w.rsi_factor)
+        base = np.clip(base, 0.0, 100.0)
+        score = base.astype(np.float64, copy=True)
 
-    score += np.where(atr_pct >= _ATR_HIGH_THRESH_PCT, float(w.atr_high_bonus),
-             np.where(atr_pct >= _ATR_MED_THRESH_PCT, float(w.atr_med_bonus), 0.0))
+        sniper_ok = (cci < 0) & (bb_width > 0.17)
+        score += np.where(sniper_ok, float(w.sniper_bonus), 0.0)
+
     vol_rel = volume / (vol_ma20 + 1.0)
-    score += np.where(vol_rel >= _VOL_REL_THRESH, float(w.vol_bonus), 0.0)
+    score += np.where(vol_rel >= 1.5, float(w.vol_bonus), 0.0)
+
     trend_ok = (close_px > 0) & (sma200 > 0)
-    score += np.where(trend_ok & (close_px > sma200), float(w.trend_bonus),
-             np.where(trend_ok, float(w.trend_penalty), 0.0))
-    score += np.where(sniper_ok, float(w.sniper_bonus), 0.0)
+    score += np.where(
+        trend_ok & (close_px > sma200),
+        float(w.trend_bonus),
+        np.where(trend_ok, float(w.trend_penalty), 0.0),
+    )
+
     return np.maximum(score, 0.0)
 
 
@@ -1453,8 +1459,10 @@ def run_backtest(
                 valid &= np.isfinite(signal_atr) & (signal_atr > 0)
 
                 # Batched Scoring
+                scoring_type = params.get("scoring_type", "mean_reversion")
                 score = _score_candidates_vectorized(
                     rsi2_arr[prev_is],
+                    rsi14_arr[prev_is],
                     prev_close,
                     signal_atr,
                     volume_arr[prev_is],
@@ -1463,6 +1471,7 @@ def run_backtest(
                     cci_arr[prev_is],
                     bb_width_arr[prev_is],
                     w,
+                    scoring_type=scoring_type,
                 )
 
                 # FIX 1: Apply Parity Strategy Multipliers
