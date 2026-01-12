@@ -96,6 +96,7 @@ def _compute_indicators(
 
         df["highest20"] = df["high"].rolling(20).max()
         df["highest20_1"] = df["highest20"].shift(1)
+        df["donchian_20"] = df["highest20_1"]
         df["highest55"] = df["high"].rolling(55).max()
         df["highest55_1"] = df["highest55"].shift(1)
         df["lowest5"] = df["low"].rolling(5).min()
@@ -327,6 +328,10 @@ class _SymbolArrays:
     sma20: np.ndarray
     sma50: np.ndarray
     sma200: np.ndarray
+    donchian_20: np.ndarray
+    sma200_slope: np.ndarray
+    high_52w: np.ndarray
+    low_52w: np.ndarray
     cci: np.ndarray
     bb_width: np.ndarray
     bb_lower: np.ndarray
@@ -518,6 +523,10 @@ def prepare_backtest_data(
                 sma20=_get_np_col(df, "sma20", np.nan, length=n),
                 sma50=_get_np_col(df, "sma50", np.nan, length=n),
                 sma200=_get_np_col(df, "sma200", np.nan, length=n),
+                donchian_20=_get_np_col(df, "donchian_20", np.nan, length=n),
+                sma200_slope=_get_np_col(df, "sma200_slope", np.nan, length=n),
+                high_52w=_get_np_col(df, "high_52w", np.nan, length=n),
+                low_52w=_get_np_col(df, "low_52w", np.nan, length=n),
                 cci=_get_np_col(df, "cci", 0.0, length=n),
                 bb_width=_get_np_col(df, "bb_width", 0.0, length=n),
                 bb_lower=_get_np_col(df, "bb_lower", np.nan, length=n),
@@ -652,6 +661,10 @@ def _legacy_run_backtest(
                 sma20=_get_np_col(df, "sma20", np.nan, length=n),
                 sma50=_get_np_col(df, "sma50", np.nan, length=n),
                 sma200=_get_np_col(df, "sma200", np.nan, length=n),
+                donchian_20=_get_np_col(df, "donchian_20", np.nan, length=n),
+                sma200_slope=_get_np_col(df, "sma200_slope", np.nan, length=n),
+                high_52w=_get_np_col(df, "high_52w", np.nan, length=n),
+                low_52w=_get_np_col(df, "low_52w", np.nan, length=n),
                 cci=_get_np_col(df, "cci", 0.0, length=n),
                 bb_width=_get_np_col(df, "bb_width", 0.0, length=n),
                 bb_lower=_get_np_col(df, "bb_lower", np.nan, length=n),
