@@ -1404,6 +1404,10 @@ def run_backtest(
                 prev_close, open_px, low_px = close_arr[prev_is], open_arr[entry_is], low_arr[entry_is]
                 low_px = np.where(np.isfinite(low_px), low_px, open_px)
 
+                debug_positions = None
+                if not super_signal_only:
+                    debug_positions = np.flatnonzero(entry_is == (n - 1))
+
                 valid = np.isfinite(prev_close) & (prev_close > 0) & np.isfinite(open_px) & (open_px > 0)
 
                 # --- Dynamic Universe Gatekeeper ---
@@ -1436,7 +1440,14 @@ def run_backtest(
 
                 if min_adx > 0:
                     adx_prev = adx_arr[prev_is]
-                    valid &= np.isfinite(adx_prev) & (adx_prev >= min_adx)
+                    adx_ok = np.isfinite(adx_prev) & (adx_prev >= min_adx)
+                    if debug_positions is not None and debug_positions.size > 0:
+                        fail_mask = valid[debug_positions] & ~adx_ok[debug_positions]
+                        for pos in debug_positions[fail_mask]:
+                            adx_val = adx_prev[pos]
+                            adx_str = f"{adx_val:.1f}" if np.isfinite(adx_val) else "nan"
+                            print(f"DEBUG: {sym} REJECTED: ADX {adx_str} < {min_adx:.1f}")
+                    valid &= adx_ok
 
                 signal_atr = atr14_arr[prev_is]
                 valid &= np.isfinite(signal_atr) & (signal_atr > 0)
@@ -1508,7 +1519,16 @@ def run_backtest(
                 dynamic_min_score = np.where(is_bull_regime, 100.0, MIN_ENTRY_SCORE)
 
                 # Final Validity Check
-                valid &= score >= dynamic_min_score
+                score_ok = score >= dynamic_min_score
+                if debug_positions is not None and debug_positions.size > 0:
+                    fail_mask = valid[debug_positions] & ~score_ok[debug_positions]
+                    for pos in debug_positions[fail_mask]:
+                        score_val = score[pos]
+                        min_score_val = dynamic_min_score[pos]
+                        score_str = f"{score_val:.1f}" if np.isfinite(score_val) else "nan"
+                        min_score_str = f"{min_score_val:.1f}" if np.isfinite(min_score_val) else "nan"
+                        print(f"DEBUG: {sym} REJECTED: SCORE {score_str} < {min_score_str}")
+                valid &= score_ok
                 if not np.any(valid):
                     continue
 
@@ -1534,12 +1554,14 @@ def run_backtest(
                 continue
 
             # Fallback path (supports custom strategy.entry)
+            debug_last_bar = (not super_signal_only) and (n > 0)
             for i in range(MIN_BARS + 1, n):
                 day_idx = date_to_idx.get(idx[i])
                 if day_idx is None:
                     continue
 
                 prev_i = i - 1
+                debug_reject = debug_last_bar and i == (n - 1)
 
                 prev_close = float(close_arr[prev_i])
                 if not np_isfinite(prev_close) or prev_close <= 0:
@@ -1592,6 +1614,9 @@ def run_backtest(
                 if min_adx > 0:
                     adx_prev = float(adx_arr[prev_i])
                     if not np_isfinite(adx_prev) or adx_prev < min_adx:
+                        if debug_reject:
+                            adx_str = f"{adx_prev:.1f}" if np_isfinite(adx_prev) else "nan"
+                            print(f"DEBUG: {sym} REJECTED: ADX {adx_str} < {min_adx:.1f}")
                         continue
 
                 if gap_ratio > 0 and prev_close > 0:
@@ -1663,6 +1688,8 @@ def run_backtest(
                 )
                 dynamic_min_score = 100.0 if is_bull_regime else MIN_ENTRY_SCORE
                 if score < dynamic_min_score:
+                    if debug_reject:
+                        print(f"DEBUG: {sym} REJECTED: SCORE {score:.1f} < {dynamic_min_score:.1f}")
                     continue
 
                 candidates_by_day[day_idx].append(

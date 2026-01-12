@@ -1,0 +1,238 @@
+{
+    "cash": 100000.0,
+    "equity": 100000.0,
+    "history": [],
+    "equity_curve": [
+        {
+            "date": "2026-01-12",
+            "equity": 100000.0
+        }
+    ],
+    "positions": {},
+    "pending_orders": [
+        {
+            "symbol": "COHR",
+            "shares": 82,
+            "committed_cash": 14338.52,
+            "order_price_estimate": 174.86,
+            "stop_price": 150.57600714285715,
+            "atr": 10.792885714285712,
+            "strategy": "Apex Velocity 3.0 (Golden State)",
+            "strategy_name": "Apex Velocity 3.0 (Golden State)",
+            "genome": {
+                "name": "Apex Velocity 3.0 (Golden State)",
+                "type": "wealth",
+                "entry_rules": [
+                    {
+                        "col": "rsi2",
+                        "op": "<",
+                        "val": 15
+                    },
+                    {
+                        "col": "adx",
+                        "op": ">",
+                        "val": 25
+                    }
+                ],
+                "exit_rules": [
+                    {
+                        "type": "profit_target",
+                        "val": 1.12
+                    }
+                ],
+                "time_stop": 7,
+                "stop_loss_atr": 2.25,
+                "trail_atr": 0,
+                "trail_activation": 1.05,
+                "adx_threshold": 25.0,
+                "limit_ratio": 0.98,
+                "vix_limit_scaling": true,
+                "vix_position_sizing": true,
+                "version_info": {
+                    "status": "Golden State",
+                    "audit_verdict": "Deploy Variant B",
+                    "risk_profile": "S&P 1500 Dynamic Filter (NATR>2.0)",
+                    "validated_metrics": {
+                        "cagr": "18.49%",
+                        "max_dd": "-30.19%",
+                        "profit_factor": 1.14
+                    }
+                },
+                "sizing_mode": "risk"
+            },
+            "date": "2026-01-12",
+            "type": "BUY_MOO",
+            "status": "PENDING",
+            "entry_i": 272,
+            "queued_at": "2026-01-12T12:17:18.174387"
+        },
+        {
+            "symbol": "PLAB",
+            "shares": 657,
+            "committed_cash": 21010.86,
+            "order_price_estimate": 31.98,
+            "stop_price": 28.50005357142857,
+            "atr": 1.5466428571428583,
+            "strategy": "Apex Velocity 3.0 (Golden State)",
+            "strategy_name": "Apex Velocity 3.0 (Golden State)",
+            "genome": {
+                "name": "Apex Velocity 3.0 (Golden State)",
+                "type": "wealth",
+                "entry_rules": [
+                    {
+                        "col": "rsi2",
+                        "op": "<",
+                        "val": 15
+                    },
+                    {
+                        "col": "adx",
+                        "op": ">",
+                        "val": 25
+                    }
+                ],
+                "exit_rules": [
+                    {
+                        "type": "profit_target",
+                        "val": 1.12
+                    }
+                ],
+                "time_stop": 7,
+                "stop_loss_atr": 2.25,
+                "trail_atr": 0,
+                "trail_activation": 1.05,
+                "adx_threshold": 25.0,
+                "limit_ratio": 0.98,
+                "vix_limit_scaling": true,
+                "vix_position_sizing": true,
+                "version_info": {
+                    "status": "Golden State",
+                    "audit_verdict": "Deploy Variant B",
+                    "risk_profile": "S&P 1500 Dynamic Filter (NATR>2.0)",
+                    "validated_metrics": {
+                        "cagr": "18.49%",
+                        "max_dd": "-30.19%",
+                        "profit_factor": 1.14
+                    }
+                },
+                "sizing_mode": "risk"
+            },
+            "date": "2026-01-12",
+            "type": "BUY_MOO",
+            "status": "PENDING",
+            "entry_i": 272,
+            "queued_at": "2026-01-12T12:17:18.174760"
+        },
+        {
+            "symbol": "BMRN",
+            "shares": 469,
+            "committed_cash": 27014.4,
+            "order_price_estimate": 57.6,
+            "stop_price": 54.48786428571428,
+            "atr": 1.3831714285714298,
+            "strategy": "Apex Velocity 3.0 (Golden State)",
+            "strategy_name": "Apex Velocity 3.0 (Golden State)",
+            "genome": {
+                "name": "Apex Velocity 3.0 (Golden State)",
+                "type": "wealth",
+                "entry_rules": [
+                    {
+                        "col": "rsi2",
+                        "op": "<",
+                        "val": 15
+                    },
+                    {
+                        "col": "adx",
+                        "op": ">",
+                        "val": 25
+                    }
+                ],
+                "exit_rules": [
+                    {
+                        "type": "profit_target",
+                        "val": 1.12
+                    }
+                ],
+                "time_stop": 7,
+                "stop_loss_atr": 2.25,
+                "trail_atr": 0,
+                "trail_activation": 1.05,
+                "adx_threshold": 25.0,
+                "limit_ratio": 0.98,
+                "vix_limit_scaling": true,
+                "vix_position_sizing": true,
+                "version_info": {
+                    "status": "Golden State",
+                    "audit_verdict": "Deploy Variant B",
+                    "risk_profile": "S&P 1500 Dynamic Filter (NATR>2.0)",
+                    "validated_metrics": {
+                        "cagr": "18.49%",
+                        "max_dd": "-30.19%",
+                        "profit_factor": 1.14
+                    }
+                },
+                "sizing_mode": "risk"
+            },
+            "date": "2026-01-12",
+            "type": "BUY_MOO",
+            "status": "PENDING",
+            "entry_i": 276,
+            "queued_at": "2026-01-12T12:17:18.175248"
+        },
+        {
+            "symbol": "BFH",
+            "shares": 450,
+            "committed_cash": 32457.375,
+            "order_price_estimate": 72.1275,
+            "stop_price": 65.93164285714286,
+            "atr": 2.7537142857142842,
+            "strategy": "Apex Velocity 3.0 (Golden State)",
+            "strategy_name": "Apex Velocity 3.0 (Golden State)",
+            "genome": {
+                "name": "Apex Velocity 3.0 (Golden State)",
+                "type": "wealth",
+                "entry_rules": [
+                    {
+                        "col": "rsi2",
+                        "op": "<",
+                        "val": 15
+                    },
+                    {
+                        "col": "adx",
+                        "op": ">",
+                        "val": 25
+                    }
+                ],
+                "exit_rules": [
+                    {
+                        "type": "profit_target",
+                        "val": 1.12
+                    }
+                ],
+                "time_stop": 7,
+                "stop_loss_atr": 2.25,
+                "trail_atr": 0,
+                "trail_activation": 1.05,
+                "adx_threshold": 25.0,
+                "limit_ratio": 0.98,
+                "vix_limit_scaling": true,
+                "vix_position_sizing": true,
+                "version_info": {
+                    "status": "Golden State",
+                    "audit_verdict": "Deploy Variant B",
+                    "risk_profile": "S&P 1500 Dynamic Filter (NATR>2.0)",
+                    "validated_metrics": {
+                        "cagr": "18.49%",
+                        "max_dd": "-30.19%",
+                        "profit_factor": 1.14
+                    }
+                },
+                "sizing_mode": "risk"
+            },
+            "date": "2026-01-12",
+            "type": "BUY_MOO",
+            "status": "PENDING",
+            "entry_i": 277,
+            "queued_at": "2026-01-12T12:17:18.175436"
+        }
+    ]
+}

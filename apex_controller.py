@@ -24,6 +24,14 @@ def run_apex(mode: str, universe_name: str, strategies: Optional[Iterable] = Non
     if mode_key == "BACKTEST":
         data = fetch_data_pack(symbols, days=5000)
         strategy_objs = load_strategies(selected_configs)
+        if len(strategy_objs) > 1:
+            print("\n🏆 TOURNAMENT MODE")
+            for strat in strategy_objs:
+                result = engine.run_backtest([strat], data, symbol_universe=symbols)
+                print(f"\nRESULTS: {strat.name}")
+                _print_performance_summary(result)
+            print("\n🤝 COMBINED RUN")
+
         result = engine.run_backtest(strategy_objs, data, symbol_universe=symbols)
         _print_performance_summary(result)
         return result

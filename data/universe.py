@@ -117,13 +117,25 @@ def _fetch_sp1500() -> List[str]:
 
 
 def _fetch_russell_3000() -> List[str]:
-    symbols = _fetch_from_indices("Russell 3000")
-    if symbols:
-        return symbols
-
-    cached = _load_cached_symbols("russell_3000.json")
-    if cached:
-        return cached
+    csv_path = os.path.join("data", "russell3000.csv")
+    if os.path.exists(csv_path):
+        print(f"   └── Loading from local file: {csv_path}")
+        try:
+            with open(csv_path, "r", newline="") as handle:
+                reader = csv.DictReader(handle)
+                fieldnames = reader.fieldnames or []
+                field_map = {name.strip().lower(): name for name in fieldnames if name}
+                col = field_map.get("ticker") or field_map.get("symbol")
+                symbols = []
+                if col:
+                    for row in reader:
+                        raw = row.get(col) or ""
+                        sym = str(raw).strip().upper()
+                        if sym:
+                            symbols.append(sym)
+                return _normalize_symbols(symbols)
+        except Exception as exc:
+            print(f"   ⚠️ WARNING: Failed to read {csv_path}: {exc}")
 
     try:
         resp = requests.get(
@@ -132,10 +144,15 @@ def _fetch_russell_3000() -> List[str]:
             timeout=30,
         )
         resp.raise_for_status()
+        return _parse_ishares_csv(resp.text)
     except Exception:
-        return []
+        pass
 
-    return _parse_ishares_csv(resp.text)
+    print("   ⚠️ WARNING: Russell 3000 download failed. Using Synthetic Proxy (SP1500 + NASDAQ100).")
+    sp1500 = _fetch_sp1500()
+    nasdaq = _fetch_from_indices("NASDAQ 100")
+    combined = list(set(sp1500 + nasdaq))
+    return combined
 
 
 def _parse_ishares_csv(text: str) -> List[str]:
