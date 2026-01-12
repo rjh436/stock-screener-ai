@@ -39,5 +39,31 @@
       }
     },
     "sizing_mode": "risk"
+  },
+  {
+    "name": "Apex Kinetic VCP (Strategy B)",
+    "type": "breakout",
+    "entry_rules": [
+      { "col": "close", "op": ">", "ref": "sma50" },
+      { "col": "sma50", "op": ">", "ref": "sma150" },
+      { "col": "sma150", "op": ">", "ref": "sma200" },
+      { "col": "sma200_slope", "op": ">", "val": 0 },
+      { "col": "close", "op": ">", "ref": "low_52w", "mult": 1.3 },
+      { "col": "close", "op": ">", "ref": "high_52w", "mult": 0.75 },
+      { "col": "bb_width", "op": "<", "val": 0.15 },
+      { "col": "close", "op": ">", "ref": "donchian_20" }
+    ],
+    "exit_rules": [
+      { "type": "rule", "col": "close", "op": "<", "ref": "sma10" }
+    ],
+    "time_stop": 25,
+    "stop_loss_atr": 0,
+    "use_breakout_stop": true,
+    "trail_atr": 0,
+    "trail_activation": 1.10,
+    "limit_ratio": 1.005,
+    "sizing_mode": "risk_1pct",
+    "max_pos_size": 0.25,
+    "regime_filter": true
   }
 ]

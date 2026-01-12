@@ -40,6 +40,21 @@ def get_sector(symbol: str) -> str:
     return "Unknown"
 
 
+def simulate_breakout_fill(open_px: float, high_px: float, trigger_px: float, limit_px: float | None = None) -> float | None:
+    """
+    Conservatively simulates a Buy Stop Limit order on Daily Data.
+    Rejects trades if Open > Limit (Gap Up).
+    """
+    if high_px < trigger_px:
+        return None
+
+    if limit_px is not None and open_px > limit_px:
+        return None
+
+    fill_px = max(open_px, trigger_px)
+    return fill_px * 1.001
+
+
 def _compute_indicators(
     df: pd.DataFrame,
     spy_df: pd.DataFrame | None = None,
@@ -137,6 +152,16 @@ def _compute_indicators(
         vix_sma20 = df["vix_sma20"]
         mask = vix_sma20 > 0
         df.loc[mask, "vix_rel20"] = (df.loc[mask, "vix"] / vix_sma20[mask]) - 1.0
+
+        df["sma50"] = df["close"].rolling(50).mean()
+        df["sma150"] = df["close"].rolling(150).mean()
+        df["sma200"] = df["close"].rolling(200).mean()
+        df["high_52w"] = df["high"].rolling(252).max()
+        df["low_52w"] = df["low"].rolling(252).min()
+        df["sma200_slope"] = df["sma200"].diff(22)
+        df["std_20"] = df["close"].rolling(20).std()
+        df["bb_width"] = (4 * df["std_20"]) / (df["close"].rolling(20).mean() + 1e-9)
+        df["rs_score"] = df["close"].pct_change(126)
 
         return df
     except Exception:
