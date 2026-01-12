@@ -97,6 +97,7 @@ def _compute_indicators(
         df["highest20"] = df["high"].rolling(20).max()
         df["highest20_1"] = df["highest20"].shift(1)
         df["donchian_20"] = df["highest20_1"]
+        df["donchian20"] = df["donchian_20"]
         df["highest55"] = df["high"].rolling(55).max()
         df["highest55_1"] = df["highest55"].shift(1)
         df["lowest5"] = df["low"].rolling(5).min()
