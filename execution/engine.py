@@ -325,32 +325,31 @@ class _SymbolArrays:
     rsi2: np.ndarray
     rsi14: np.ndarray
     adx: np.ndarray
-    stoch_k: np.ndarray
+    stochk: np.ndarray
     atr14: np.ndarray
-    vol_ma20: np.ndarray
-    sma20: np.ndarray
+    volma20: np.ndarray
     sma10: np.ndarray
+    sma20: np.ndarray
     sma50: np.ndarray
     sma150: np.ndarray
     sma200: np.ndarray
-    donchian_20: np.ndarray
     donchian20: np.ndarray
-    sma200_slope: np.ndarray
-    high_52w: np.ndarray
-    low_52w: np.ndarray
+    sma200slope: np.ndarray
+    high52w: np.ndarray
+    low52w: np.ndarray
     cci: np.ndarray
-    bb_width: np.ndarray
-    bb_lower: np.ndarray
-    bb_upper: np.ndarray
-    rs_ratio: np.ndarray
-    rs_trend: np.ndarray
-    rs_mom20: np.ndarray
+    bbwidth: np.ndarray
+    bblower: np.ndarray
+    bbupper: np.ndarray
+    rsratio: np.ndarray
+    rstrend: np.ndarray
+    rsmom20: np.ndarray
     vix: np.ndarray
-    vix_sma20: np.ndarray
-    vix_rel20: np.ndarray
-    spy_close: np.ndarray
-    spy_sma200: np.ndarray
-    spy_regime: np.ndarray
+    vixsma20: np.ndarray
+    vixrel20: np.ndarray
+    spyclose: np.ndarray
+    spysma200: np.ndarray
+    spyregime: np.ndarray
 
 
 @dataclass(slots=True)
@@ -523,32 +522,31 @@ def prepare_backtest_data(
                 rsi2=_get_np_col(df, "rsi2", 50.0, length=n),
                 rsi14=_get_np_col(df, "rsi14", 50.0, length=n),
                 adx=_get_np_col(df, "adx", 0.0, length=n),
-                stoch_k=_get_np_col(df, "stoch_k", 0.0, length=n),
+                stochk=_get_np_col(df, "stoch_k", 0.0, length=n),
                 atr14=_get_np_col(df, "atr14", 0.0, length=n),
-                vol_ma20=_get_np_col(df, "vol_ma20", 1.0, length=n),
-                sma20=_get_np_col(df, "sma20", np.nan, length=n),
                 sma10=_get_np_col(df, "sma10", np.nan, length=n),
+                volma20=_get_np_col(df, "vol_ma20", 1.0, length=n),
+                sma20=_get_np_col(df, "sma20", np.nan, length=n),
                 sma50=_get_np_col(df, "sma50", np.nan, length=n),
                 sma150=_get_np_col(df, "sma150", np.nan, length=n),
                 sma200=_get_np_col(df, "sma200", np.nan, length=n),
-                donchian_20=_get_np_col(df, "donchian_20", np.nan, length=n),
                 donchian20=_get_np_col(df, "donchian20", np.nan, length=n),
-                sma200_slope=_get_np_col(df, "sma200_slope", np.nan, length=n),
-                high_52w=_get_np_col(df, "high_52w", np.nan, length=n),
-                low_52w=_get_np_col(df, "low_52w", np.nan, length=n),
+                sma200slope=_get_np_col(df, "sma200_slope", np.nan, length=n),
+                high52w=_get_np_col(df, "high_52w", np.nan, length=n),
+                low52w=_get_np_col(df, "low_52w", np.nan, length=n),
                 cci=_get_np_col(df, "cci", 0.0, length=n),
-                bb_width=_get_np_col(df, "bb_width", 0.0, length=n),
-                bb_lower=_get_np_col(df, "bb_lower", np.nan, length=n),
-                bb_upper=_get_np_col(df, "bb_upper", np.nan, length=n),
-                rs_ratio=_get_np_col(df, "rs_ratio", 1.0, length=n),
-                rs_trend=_get_np_col(df, "rs_trend", 0.0, length=n),
-                rs_mom20=_get_np_col(df, "rs_mom20", 0.0, length=n),
+                bbwidth=_get_np_col(df, "bb_width", 0.0, length=n),
+                bblower=_get_np_col(df, "bb_lower", np.nan, length=n),
+                bbupper=_get_np_col(df, "bb_upper", np.nan, length=n),
+                rsratio=_get_np_col(df, "rs_ratio", 1.0, length=n),
+                rstrend=_get_np_col(df, "rs_trend", 0.0, length=n),
+                rsmom20=_get_np_col(df, "rs_mom20", 0.0, length=n),
                 vix=_get_np_col(df, "vix", 20.0, length=n),
-                vix_sma20=_get_np_col(df, "vix_sma20", 20.0, length=n),
-                vix_rel20=_get_np_col(df, "vix_rel20", 0.0, length=n),
-                spy_close=_get_np_col(df, "spy_close", np.nan, length=n),
-                spy_sma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
-                spy_regime=_get_np_col(df, "spy_regime", 0.0, length=n),
+                vixsma20=_get_np_col(df, "vix_sma20", 20.0, length=n),
+                vixrel20=_get_np_col(df, "vix_rel20", 0.0, length=n),
+                spyclose=_get_np_col(df, "spy_close", np.nan, length=n),
+                spysma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
+                spyregime=_get_np_col(df, "spy_regime", 0.0, length=n),
             )
         except Exception:
             continue
@@ -664,32 +662,31 @@ def _legacy_run_backtest(
                 rsi2=_get_np_col(df, "rsi2", 50.0, length=n),
                 rsi14=_get_np_col(df, "rsi14", 50.0, length=n),
                 adx=_get_np_col(df, "adx", 0.0, length=n),
-                stoch_k=_get_np_col(df, "stoch_k", 0.0, length=n),
+                stochk=_get_np_col(df, "stoch_k", 0.0, length=n),
                 atr14=_get_np_col(df, "atr14", 0.0, length=n),
-                vol_ma20=_get_np_col(df, "vol_ma20", 1.0, length=n),
-                sma20=_get_np_col(df, "sma20", np.nan, length=n),
                 sma10=_get_np_col(df, "sma10", np.nan, length=n),
+                volma20=_get_np_col(df, "vol_ma20", 1.0, length=n),
+                sma20=_get_np_col(df, "sma20", np.nan, length=n),
                 sma50=_get_np_col(df, "sma50", np.nan, length=n),
                 sma150=_get_np_col(df, "sma150", np.nan, length=n),
                 sma200=_get_np_col(df, "sma200", np.nan, length=n),
-                donchian_20=_get_np_col(df, "donchian_20", np.nan, length=n),
                 donchian20=_get_np_col(df, "donchian20", np.nan, length=n),
-                sma200_slope=_get_np_col(df, "sma200_slope", np.nan, length=n),
-                high_52w=_get_np_col(df, "high_52w", np.nan, length=n),
-                low_52w=_get_np_col(df, "low_52w", np.nan, length=n),
+                sma200slope=_get_np_col(df, "sma200_slope", np.nan, length=n),
+                high52w=_get_np_col(df, "high_52w", np.nan, length=n),
+                low52w=_get_np_col(df, "low_52w", np.nan, length=n),
                 cci=_get_np_col(df, "cci", 0.0, length=n),
-                bb_width=_get_np_col(df, "bb_width", 0.0, length=n),
-                bb_lower=_get_np_col(df, "bb_lower", np.nan, length=n),
-                bb_upper=_get_np_col(df, "bb_upper", np.nan, length=n),
-                rs_ratio=_get_np_col(df, "rs_ratio", 1.0, length=n),
-                rs_trend=_get_np_col(df, "rs_trend", 0.0, length=n),
-                rs_mom20=_get_np_col(df, "rs_mom20", 0.0, length=n),
+                bbwidth=_get_np_col(df, "bb_width", 0.0, length=n),
+                bblower=_get_np_col(df, "bb_lower", np.nan, length=n),
+                bbupper=_get_np_col(df, "bb_upper", np.nan, length=n),
+                rsratio=_get_np_col(df, "rs_ratio", 1.0, length=n),
+                rstrend=_get_np_col(df, "rs_trend", 0.0, length=n),
+                rsmom20=_get_np_col(df, "rs_mom20", 0.0, length=n),
                 vix=_get_np_col(df, "vix", 20.0, length=n),
-                vix_sma20=_get_np_col(df, "vix_sma20", 20.0, length=n),
-                vix_rel20=_get_np_col(df, "vix_rel20", 0.0, length=n),
-                spy_close=_get_np_col(df, "spy_close", np.nan, length=n),
-                spy_sma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
-                spy_regime=_get_np_col(df, "spy_regime", 0.0, length=n),
+                vixsma20=_get_np_col(df, "vix_sma20", 20.0, length=n),
+                vixrel20=_get_np_col(df, "vix_rel20", 0.0, length=n),
+                spyclose=_get_np_col(df, "spy_close", np.nan, length=n),
+                spysma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
+                spyregime=_get_np_col(df, "spy_regime", 0.0, length=n),
             )
         except Exception:
             continue
@@ -745,20 +742,20 @@ def _legacy_run_backtest(
         rsi14_arr = sd.rsi14
         adx_arr = sd.adx
         atr14_arr = sd.atr14
-        vol_ma20_arr = sd.vol_ma20
+        vol_ma20_arr = sd.volma20
         sma20_arr = sd.sma20
         sma50_arr = sd.sma50
         sma200_arr = sd.sma200
         cci_arr = sd.cci
-        bb_width_arr = sd.bb_width
-        rs_ratio_arr = sd.rs_ratio
-        rs_trend_arr = sd.rs_trend
-        rs_mom20_arr = sd.rs_mom20
+        bb_width_arr = sd.bbwidth
+        rs_ratio_arr = sd.rsratio
+        rs_trend_arr = sd.rstrend
+        rs_mom20_arr = sd.rsmom20
         vix_arr = sd.vix
-        vix_rel20_arr = sd.vix_rel20
-        spy_close_arr = sd.spy_close
-        spy_sma200_arr = sd.spy_sma200
-        spy_regime_arr = sd.spy_regime
+        vix_rel20_arr = sd.vixrel20
+        spy_close_arr = sd.spyclose
+        spy_sma200_arr = sd.spysma200
+        spy_regime_arr = sd.spyregime
 
         n = len(idx)
         if n <= MIN_BARS + 1:
@@ -1069,13 +1066,13 @@ def _legacy_run_backtest(
                     sma50_entry = float(sym_data.sma50[entry_feat_i])
                     sma200_entry = float(sym_data.sma200[entry_feat_i])
                     vol_entry = float(sym_data.volume[entry_feat_i])
-                    vol_ma20_entry = float(sym_data.vol_ma20[entry_feat_i])
+                    vol_ma20_entry = float(sym_data.volma20[entry_feat_i])
                     vix_entry = float(sym_data.vix[entry_feat_i])
-                    vix_rel20_entry = float(sym_data.vix_rel20[entry_feat_i])
-                    rs_ratio_entry = float(sym_data.rs_ratio[entry_feat_i])
-                    rs_trend_entry = float(sym_data.rs_trend[entry_feat_i])
-                    rs_mom20_entry = float(sym_data.rs_mom20[entry_feat_i])
-                    spy_regime_entry = float(sym_data.spy_regime[entry_feat_i])
+                    vix_rel20_entry = float(sym_data.vixrel20[entry_feat_i])
+                    rs_ratio_entry = float(sym_data.rsratio[entry_feat_i])
+                    rs_trend_entry = float(sym_data.rstrend[entry_feat_i])
+                    rs_mom20_entry = float(sym_data.rsmom20[entry_feat_i])
+                    spy_regime_entry = float(sym_data.spyregime[entry_feat_i])
 
                     dist50 = (close_entry - sma50_entry) / close_entry if close_entry else 0.0
                     dist200 = (close_entry - sma200_entry) / close_entry if close_entry else 0.0
@@ -1229,6 +1226,12 @@ def _vectorized_entry_indices(sd: _SymbolArrays, entry_rules: Sequence[Dict[str,
                     right = sd.df[ref].to_numpy(dtype=np.float64, copy=False)
                 else:
                     return np.array([], dtype=np.int32)
+            if "mult" in rule:
+                try:
+                    mult = float(rule["mult"])
+                    right = right * mult
+                except (ValueError, TypeError):
+                    pass
             rule_mask = op_fn(left, right) & np.isfinite(left) & np.isfinite(right)
         else:
             return np.array([], dtype=np.int32)
@@ -1405,15 +1408,15 @@ def run_backtest(
         rsi2_arr = sd.rsi2
         adx_arr = sd.adx
         atr14_arr = sd.atr14
-        vol_ma20_arr = sd.vol_ma20
+        vol_ma20_arr = sd.volma20
         sma20_arr = sd.sma20
         sma200_arr = sd.sma200
         cci_arr = sd.cci
-        bb_width_arr = sd.bb_width
+        bb_width_arr = sd.bbwidth
         vix_arr = sd.vix
-        vix_rel20_arr = sd.vix_rel20
-        spy_close_arr = sd.spy_close
-        spy_sma200_arr = sd.spy_sma200
+        vix_rel20_arr = sd.vixrel20
+        spy_close_arr = sd.spyclose
+        spy_sma200_arr = sd.spysma200
         gate_atr_arr = atr14_arr
         if not np.any(np.isfinite(gate_atr_arr) & (gate_atr_arr > 0)):
             hl_range = high_arr - low_arr
@@ -1867,9 +1870,9 @@ def run_backtest(
             if sym_data is None:
                 continue
             sig_i = int(cand.signal_i)
-            if 0 <= sig_i < sym_data.spy_close.size and 0 <= sig_i < sym_data.spy_sma200.size:
-                spy_close_prev = float(sym_data.spy_close[sig_i])
-                spy_sma200_prev = float(sym_data.spy_sma200[sig_i])
+            if 0 <= sig_i < sym_data.spyclose.size and 0 <= sig_i < sym_data.spysma200.size:
+                spy_close_prev = float(sym_data.spyclose[sig_i])
+                spy_sma200_prev = float(sym_data.spysma200[sig_i])
                 if np_isfinite(spy_close_prev) and np_isfinite(spy_sma200_prev):
                     if spy_close_prev > spy_sma200_prev:
                         dynamic_min_score = 100.0
@@ -2106,13 +2109,13 @@ def run_backtest(
                     sma50_entry = float(sym_data.sma50[entry_feat_i])
                     sma200_entry = float(sym_data.sma200[entry_feat_i])
                     vol_entry = float(sym_data.volume[entry_feat_i])
-                    vol_ma20_entry = float(sym_data.vol_ma20[entry_feat_i])
+                    vol_ma20_entry = float(sym_data.volma20[entry_feat_i])
                     vix_entry = float(sym_data.vix[entry_feat_i])
-                    vix_rel20_entry = float(sym_data.vix_rel20[entry_feat_i])
-                    rs_ratio_entry = float(sym_data.rs_ratio[entry_feat_i])
-                    rs_trend_entry = float(sym_data.rs_trend[entry_feat_i])
-                    rs_mom20_entry = float(sym_data.rs_mom20[entry_feat_i])
-                    spy_regime_entry = float(sym_data.spy_regime[entry_feat_i])
+                    vix_rel20_entry = float(sym_data.vixrel20[entry_feat_i])
+                    rs_ratio_entry = float(sym_data.rsratio[entry_feat_i])
+                    rs_trend_entry = float(sym_data.rstrend[entry_feat_i])
+                    rs_mom20_entry = float(sym_data.rsmom20[entry_feat_i])
+                    spy_regime_entry = float(sym_data.spyregime[entry_feat_i])
 
                     dist50 = (close_entry - sma50_entry) / close_entry if close_entry else 0.0
                     dist200 = (close_entry - sma200_entry) / close_entry if close_entry else 0.0
