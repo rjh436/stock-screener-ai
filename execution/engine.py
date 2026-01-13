@@ -1406,6 +1406,7 @@ def run_backtest(
 
         volume_arr = sd.volume
         rsi2_arr = sd.rsi2
+        rsi14_arr = sd.rsi14
         adx_arr = sd.adx
         atr14_arr = sd.atr14
         vol_ma20_arr = sd.volma20
