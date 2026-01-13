@@ -68,17 +68,12 @@
       {
         "col": "bb_width",
         "op": "<",
-        "val": 0.15
+        "val": 0.25
       },
       {
         "col": "adx",
         "op": ">",
         "val": 25
-      },
-      {
-        "col": "rsi14",
-        "op": ">",
-        "val": 60
       },
       {
         "col": "close",
