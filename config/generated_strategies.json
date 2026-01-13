@@ -44,34 +44,71 @@
     "name": "Apex Kinetic VCP (Strategy B)",
     "type": "breakout",
     "entry_rules": [
-      { "col": "close", "op": ">", "ref": "sma50" },
-      { "col": "sma50", "op": ">", "ref": "sma150" },
-      { "col": "sma150", "op": ">", "ref": "sma200" },
-      { "col": "sma200_slope", "op": ">", "val": 0 },
-      { "col": "close", "op": ">", "ref": "low_52w", "mult": 1.3 },
-      { "col": "close", "op": ">", "ref": "high_52w", "mult": 0.85 },
-      { "col": "bb_width", "op": "<", "val": 0.12 },
-      { "col": "close", "op": ">", "ref": "donchian_20" }
-      ,
-      { "col": "volume", "op": ">", "ref": "vol_ma20", "mult": 1.5 },
-      { "col": "adx", "op": ">", "val": 25 },
-      { "col": "rsi14", "op": ">", "val": 55 }
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "sma50"
+      },
+      {
+        "col": "sma50",
+        "op": ">",
+        "ref": "sma150"
+      },
+      {
+        "col": "sma150",
+        "op": ">",
+        "ref": "sma200"
+      },
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "high_52w",
+        "mult": 0.85
+      },
+      {
+        "col": "adx",
+        "op": ">",
+        "val": 30
+      },
+      {
+        "col": "bb_width",
+        "op": "<",
+        "val": 0.10
+      },
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "donchian_20"
+      },
+      {
+        "col": "volume",
+        "op": ">",
+        "ref": "vol_ma20",
+        "mult": 1.5
+      }
     ],
     "exit_rules": [
-      { "type": "rule", "col": "close", "op": "<", "ref": "sma10" }
+      {
+        "type": "rule",
+        "col": "close",
+        "op": "<",
+        "ref": "sma10"
+      }
     ],
-    "time_stop": 25,
-    "stop_loss_atr": 1.5,
+    "min_entry_score": 0.0,
+    "bypass_regime_scoring": true,
+    "time_stop": 5,
+    "stop_loss_atr": 0.85,
     "trail_atr": 0,
-    "trail_activation": 1.10,
+    "trail_activation": 1.05,
     "scoring_type": "breakout",
     "scoring_weights": {
-      "rsi_factor": 2.0,
-      "sniper_bonus": 80.0,
+      "rsi_factor": 2.5,
+      "sniper_bonus": 100.0,
       "trend_bonus": 40.0,
-      "vol_bonus": 30.0
+      "vol_bonus": 40.0
     },
-    "limit_ratio": 1.005,
+    "limit_ratio": 1.01,
     "sizing_mode": "risk_1pct",
     "max_pos_size": 0.25,
     "regime_filter": true

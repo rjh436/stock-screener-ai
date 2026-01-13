@@ -862,7 +862,8 @@ def _legacy_run_backtest(
                     w,
                 )
                 score = apply_strategy_score_multipliers(score, params)
-                if score < MIN_ENTRY_SCORE:
+                strat_min_score = float(params.get("min_entry_score", MIN_ENTRY_SCORE))
+                if score < strat_min_score:
                     continue
 
                 candidates_by_day[day_idx].append(
@@ -917,8 +918,13 @@ def _legacy_run_backtest(
 
         current_sector_equity = float(sum(sector_exposure.values()))
         for cand in daily_candidates:
-            if cand.score < MIN_ENTRY_SCORE:
-                break
+            strat_params = getattr(cand.strategy_obj, "params", getattr(cand.strategy_obj, "genome", {})) or {}
+            if isinstance(strat_params, dict):
+                strat_min_score = float(strat_params.get("min_entry_score", MIN_ENTRY_SCORE))
+            else:
+                strat_min_score = MIN_ENTRY_SCORE
+            if cand.score < strat_min_score:
+                continue
             if cand.sym in positions:
                 continue
             if not export_ml_data and len(positions) >= max_positions:
@@ -1554,7 +1560,9 @@ def run_backtest(
                     & np_isfinite(spy_sma200_prev)
                     & (spy_close_prev > spy_sma200_prev)
                 )
-                dynamic_min_score = np.where(is_bull_regime, 100.0, MIN_ENTRY_SCORE)
+                strat_min_score = float(params.get("min_entry_score", MIN_ENTRY_SCORE))
+                bull_min_score = min(strat_min_score, 100.0)
+                dynamic_min_score = np.where(is_bull_regime, bull_min_score, strat_min_score)
 
                 # Final Validity Check
                 score_ok = score >= dynamic_min_score
@@ -1724,10 +1732,12 @@ def run_backtest(
                     and np_isfinite(spy_sma200_prev)
                     and spy_close_prev > spy_sma200_prev
                 )
-                dynamic_min_score = 100.0 if is_bull_regime else MIN_ENTRY_SCORE
-                if score < dynamic_min_score:
+                strat_min_score = float(params.get("min_entry_score", MIN_ENTRY_SCORE))
+                if is_bull_regime:
+                    strat_min_score = min(strat_min_score, 100.0)
+                if score < strat_min_score:
                     if debug_reject:
-                        print(f"DEBUG: {sym} REJECTED: SCORE {score:.1f} < {dynamic_min_score:.1f}")
+                        print(f"DEBUG: {sym} REJECTED: SCORE {score:.1f} < {strat_min_score:.1f}")
                     continue
 
                 candidates_by_day[day_idx].append(
@@ -1865,7 +1875,7 @@ def run_backtest(
         if open_slots < 0:
             open_slots = 0
 
-        dynamic_min_score = MIN_ENTRY_SCORE
+        is_bull_regime = False
         for cand in daily_candidates:
             sym_data = enriched.get(cand.sym)
             if sym_data is None:
@@ -1875,14 +1885,25 @@ def run_backtest(
                 spy_close_prev = float(sym_data.spyclose[sig_i])
                 spy_sma200_prev = float(sym_data.spysma200[sig_i])
                 if np_isfinite(spy_close_prev) and np_isfinite(spy_sma200_prev):
-                    if spy_close_prev > spy_sma200_prev:
-                        dynamic_min_score = 100.0
-                    break
+                    is_bull_regime = spy_close_prev > spy_sma200_prev
+                break
+
+        min_score_floor = None
+        for cand in daily_candidates:
+            strat_params = getattr(cand.strategy_obj, "params", getattr(cand.strategy_obj, "genome", {})) or {}
+            if isinstance(strat_params, dict):
+                strat_min_score = float(strat_params.get("min_entry_score", MIN_ENTRY_SCORE))
+            else:
+                strat_min_score = MIN_ENTRY_SCORE
+            if is_bull_regime:
+                strat_min_score = min(strat_min_score, 100.0)
+            if min_score_floor is None or strat_min_score < min_score_floor:
+                min_score_floor = strat_min_score
 
         for cand in daily_candidates:
             if open_slots <= 0:
                 break
-            if cand.score < dynamic_min_score:
+            if min_score_floor is not None and cand.score < min_score_floor:
                 break
             if cand.sym in positions:
                 continue
@@ -1892,7 +1913,14 @@ def run_backtest(
             sizing_mode = "slot"
             strat_params = getattr(cand.strategy_obj, "params", getattr(cand.strategy_obj, "genome", {})) or {}
             if isinstance(strat_params, dict):
+                strat_min_score = float(strat_params.get("min_entry_score", MIN_ENTRY_SCORE))
                 sizing_mode = str(strat_params.get("sizing_mode", "slot")).lower()
+            else:
+                strat_min_score = MIN_ENTRY_SCORE
+            if is_bull_regime:
+                strat_min_score = min(strat_min_score, 100.0)
+            if cand.score < strat_min_score:
+                continue
 
             if sizing_mode == "risk":
                 risk_per_trade = current_equity * 0.02
