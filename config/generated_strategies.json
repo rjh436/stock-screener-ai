@@ -66,14 +66,19 @@
         "mult": 0.85
       },
       {
-        "col": "adx",
-        "op": ">",
-        "val": 30
-      },
-      {
         "col": "bb_width",
         "op": "<",
-        "val": 0.10
+        "val": 0.15
+      },
+      {
+        "col": "adx",
+        "op": ">",
+        "val": 25
+      },
+      {
+        "col": "rsi14",
+        "op": ">",
+        "val": 60
       },
       {
         "col": "close",
@@ -97,16 +102,16 @@
     ],
     "min_entry_score": 0.0,
     "bypass_regime_scoring": true,
-    "time_stop": 5,
-    "stop_loss_atr": 0.85,
+    "time_stop": 10,
+    "stop_loss_atr": 1.0,
     "trail_atr": 0,
     "trail_activation": 1.05,
     "scoring_type": "breakout",
     "scoring_weights": {
-      "rsi_factor": 2.5,
-      "sniper_bonus": 100.0,
-      "trend_bonus": 40.0,
-      "vol_bonus": 40.0
+      "rsi_factor": 3.0,
+      "sniper_bonus": 50.0,
+      "trend_bonus": 30.0,
+      "vol_bonus": 50.0
     },
     "limit_ratio": 1.01,
     "sizing_mode": "risk_1pct",

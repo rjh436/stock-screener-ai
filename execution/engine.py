@@ -1560,9 +1560,15 @@ def run_backtest(
                     & np_isfinite(spy_sma200_prev)
                     & (spy_close_prev > spy_sma200_prev)
                 )
-                strat_min_score = float(params.get("min_entry_score", MIN_ENTRY_SCORE))
-                bull_min_score = min(strat_min_score, 100.0)
-                dynamic_min_score = np.where(is_bull_regime, bull_min_score, strat_min_score)
+                # --- DECOUPLING FIX: Regime Bypass ---
+                bypass_regime = bool(params.get("bypass_regime_scoring", False))
+                strat_min = float(params.get("min_entry_score", MIN_ENTRY_SCORE))
+
+                if bypass_regime:
+                    dynamic_min_score = np.full_like(score, strat_min)
+                else:
+                    bull_min = min(strat_min, 100.0)
+                    dynamic_min_score = np.where(is_bull_regime, bull_min, strat_min)
 
                 # Final Validity Check
                 score_ok = score >= dynamic_min_score
@@ -1732,12 +1738,14 @@ def run_backtest(
                     and np_isfinite(spy_sma200_prev)
                     and spy_close_prev > spy_sma200_prev
                 )
-                strat_min_score = float(params.get("min_entry_score", MIN_ENTRY_SCORE))
-                if is_bull_regime:
-                    strat_min_score = min(strat_min_score, 100.0)
-                if score < strat_min_score:
+                # --- DECOUPLING FIX: Regime Bypass ---
+                bypass_regime = bool(params.get("bypass_regime_scoring", False))
+                strat_min = float(params.get("min_entry_score", MIN_ENTRY_SCORE))
+                if not bypass_regime and is_bull_regime:
+                    strat_min = min(strat_min, 100.0)
+                if score < strat_min:
                     if debug_reject:
-                        print(f"DEBUG: {sym} REJECTED: SCORE {score:.1f} < {strat_min_score:.1f}")
+                        print(f"DEBUG: {sym} REJECTED: SCORE {score:.1f} < {strat_min:.1f}")
                     continue
 
                 candidates_by_day[day_idx].append(
