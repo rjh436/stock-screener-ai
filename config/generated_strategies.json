@@ -72,7 +72,7 @@
       {
         "col": "natr",
         "op": ">",
-        "val": 4.0
+        "val": 2.5
       },
       {
         "col": "close",
@@ -88,8 +88,7 @@
     ],
     "stop_loss_atr": 1.0,
     "time_stop": 25,
-    "trail_atr": 0,
-    "partial_profit_target": 1.15,
+    "partial_profit_target": 1.10,
     "partial_exit_scale": 0.50,
     "exit_rules": [
       {
@@ -99,12 +98,19 @@
         "ref": "sma10"
       }
     ],
+    "trail_atr": 0,
+    "regime_filter": false,
     "min_entry_score": 0.0,
     "bypass_regime_scoring": true,
     "scoring_type": "breakout",
+    "scoring_weights": {
+      "rsi_factor": 1.0,
+      "sniper_bonus": 150.0,
+      "trend_bonus": 30.0,
+      "vol_bonus": 50.0
+    },
     "limit_ratio": 1.01,
     "sizing_mode": "risk_1pct",
-    "max_pos_size": 0.25,
-    "regime_filter": true
+    "max_pos_size": 0.25
   }
 ]

@@ -210,11 +210,17 @@ def rehydrate_exit_state(row, strategies_map, history_map=None):
         peak_val = float("nan")
     peak_high = round(peak_val, 2) if np.isfinite(peak_val) else high_px
 
-    trail_mult_raw = strat.get("trail_atr", strat.get("stop_loss_atr", 3.0))
-    try:
-        trail_mult = float(trail_mult_raw or 3.0)
-    except (TypeError, ValueError):
-        trail_mult = 3.0
+    trail_mult_raw = strat.get("trail_atr")
+    if trail_mult_raw is not None:
+        try:
+            trail_mult = float(trail_mult_raw)
+        except (TypeError, ValueError):
+            trail_mult_raw = None
+    if trail_mult_raw is None:
+        try:
+            trail_mult = float(strat.get("stop_loss_atr", 3.0))
+        except (TypeError, ValueError):
+            trail_mult = 3.0
 
     try:
         act_raw = strat.get("trail_activation", 1.0)
@@ -225,7 +231,10 @@ def rehydrate_exit_state(row, strategies_map, history_map=None):
         trail_activation = 1.0
 
     activation_price = round(entry_price * trail_activation, 2) if entry_price > 0 else 0.0
-    trailing_active = (trail_activation <= 1.0) or (entry_price > 0 and peak_high >= activation_price)
+    trailing_enabled = np.isfinite(trail_mult) and trail_mult > 0
+    trailing_active = trailing_enabled and (
+        (trail_activation <= 1.0) or (entry_price > 0 and peak_high >= activation_price)
+    )
     trailing_stop = float("-inf")
     if trailing_active and atr > 0:
         trailing_stop = round(peak_high - (atr * trail_mult), 2)
