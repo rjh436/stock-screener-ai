@@ -147,6 +147,19 @@ def fetch_single_symbol(
     If force_fresh=True, it will ALWAYS ping the API for the latest data and merge it.
     If inject_live=True, it appends a synthetic bar using live quotes when today's bar is missing.
     """
+    # --- TURBO CACHE: Trust fresh files (12 hours) ---
+    # Prevents infinite redownload of IPOs/Short-history stocks
+    try:
+        cache_path = os.path.join("data", "cache", f"{sym}.parquet")
+        if os.path.exists(cache_path):
+            mtime = os.path.getmtime(cache_path)
+            if (time.time() - mtime) < 43200: # 12 hours
+                # If we just downloaded it, use it. Don't check depth.
+                df = pd.read_parquet(cache_path)
+                return clean_dataframe(df)
+    except Exception:
+        pass
+    # -------------------------------------------------
     # --- SMART TURBO MODE (Auto-Backfill) ---
     if cache_only:
         try:

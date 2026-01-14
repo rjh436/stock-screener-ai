@@ -88,9 +88,9 @@
     ],
     "stop_loss_atr": 1.0,
     "time_stop": 25,
-    "partial_profit_target": 1.10,
-    "partial_exit_scale": 0.50,
     "trail_atr": 0,
+    "partial_profit_target": 1.15,
+    "partial_exit_scale": 0.50,
     "exit_rules": [
       {
         "type": "rule",

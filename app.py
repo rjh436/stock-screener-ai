@@ -40,7 +40,9 @@ st.set_page_config(page_title="Apex Sniper AI", layout="wide", page_icon="🎯")
 def _is_wealth_strategy(config: dict) -> bool:
     name = str(config.get("name", "")).lower()
     strat_type = str(config.get("type", "")).lower()
-    return "wealth" in strat_type or "wealth" in name
+    # Allow Wealth, Breakout, Momentum, Sniper types
+    valid_keywords = ["wealth", "breakout", "momentum", "sniper", "kinetic"]
+    return any(k in strat_type or k in name for k in valid_keywords)
 
 def load_strategy_configs():
     if os.path.exists(CONFIG_PATH):
@@ -144,7 +146,11 @@ if mode == "Live Screener":
 
     col1, col2 = st.columns([1, 4])
     with col1:
-        universe = st.selectbox("Universe", ["S&P 500", "S&P 100", "S&P 1500"], index=2)
+        universe = st.selectbox(
+            "Universe",
+            ["S&P 500", "S&P 100", "S&P 1500", "Russell 3000"],
+            index=2,
+        )
         run_btn = st.button("RUN SCAN", type="primary")
     with col2:
         show_all_setups = st.checkbox("🔍 Show All Setups", value=True)
@@ -522,7 +528,11 @@ elif mode == "Backtest":
     
     col_uni, col_dur = st.columns([1, 3])
     with col_uni:
-        bt_universe = st.selectbox("Universe", ["S&P 500", "S&P 100", "S&P 1500"], index=2)
+        bt_universe = st.selectbox(
+            "Universe",
+            ["S&P 500", "S&P 100", "S&P 1500", "Russell 3000"],
+            index=2,
+        )
     
     with col_dur:
         st.write("Duration:")
