@@ -93,6 +93,7 @@ def _compute_indicators(
         ).max(axis=1)
         df["atr14"] = tr.rolling(14).mean()
         df["atr14_ma20"] = df["atr14"].rolling(20).mean()
+        df["natr"] = (df["atr14"] / df["close"]) * 100.0
 
         df["highest20"] = df["high"].rolling(20).max()
         df["highest20_1"] = df["highest20"].shift(1)
@@ -331,6 +332,7 @@ class _SymbolArrays:
     adx: np.ndarray
     stochk: np.ndarray
     atr14: np.ndarray
+    natr: np.ndarray
     volma20: np.ndarray
     sma10: np.ndarray
     sma20: np.ndarray
@@ -528,6 +530,7 @@ def prepare_backtest_data(
                 adx=_get_np_col(df, "adx", 0.0, length=n),
                 stochk=_get_np_col(df, "stoch_k", 0.0, length=n),
                 atr14=_get_np_col(df, "atr14", 0.0, length=n),
+                natr=_get_np_col(df, "natr", 0.0, length=n),
                 sma10=_get_np_col(df, "sma10", np.nan, length=n),
                 volma20=_get_np_col(df, "vol_ma20", 1.0, length=n),
                 sma20=_get_np_col(df, "sma20", np.nan, length=n),
@@ -668,6 +671,7 @@ def _legacy_run_backtest(
                 adx=_get_np_col(df, "adx", 0.0, length=n),
                 stochk=_get_np_col(df, "stoch_k", 0.0, length=n),
                 atr14=_get_np_col(df, "atr14", 0.0, length=n),
+                natr=_get_np_col(df, "natr", 0.0, length=n),
                 sma10=_get_np_col(df, "sma10", np.nan, length=n),
                 volma20=_get_np_col(df, "vol_ma20", 1.0, length=n),
                 sma20=_get_np_col(df, "sma20", np.nan, length=n),
@@ -2122,6 +2126,7 @@ def run_backtest(
                         pos["stop_price"] = max(float(pos["stop_price"]), float(pos["entry_price"]))
 
             try:
+                used_generic_exit = False
                 if bool(pos.get("is_super_signal", False)):
                     should_exit, effective_stop, target_px = _generic_exit_decision(
                         _apply_super_signal_overrides(genome),
@@ -2131,6 +2136,7 @@ def run_backtest(
                         float(pos["entry_price"]),
                         float(pos["stop_price"]),
                     )
+                    used_generic_exit = True
                 elif isinstance(active_strat, GenericStrategy) and active_strat.__class__.exit is GenericStrategy.exit:
                     should_exit, effective_stop, target_px = _generic_exit_decision(
                         genome,
@@ -2140,6 +2146,7 @@ def run_backtest(
                         float(pos["entry_price"]),
                         float(pos["stop_price"]),
                     )
+                    used_generic_exit = True
                 else:
                     exit_result = active_strat.exit(sym_data.df, loc, entry_i, pos["entry_price"], pos["stop_price"])
                     updated_stop = None
@@ -2156,6 +2163,44 @@ def run_backtest(
                         updated_stop = float(updated_stop)
                         pos["stop_price"] = max(float(pos["stop_price"]), updated_stop)
                     effective_stop = float(pos["stop_price"])
+
+                # --- FIX: Explicitly check JSON Exit Rules (e.g. SMA10) ---
+                if used_generic_exit and not should_exit:
+                    exit_rules = genome.get("exit_rules", [])
+                    for rule in exit_rules:
+                        if rule.get("type") != "rule":
+                            continue
+                        col = rule.get("col")
+                        ref = rule.get("ref")
+                        op = rule.get("op")
+                        if not col or not ref or not op:
+                            continue
+
+                        val_col = getattr(sym_data, col, None)
+                        val_ref = getattr(sym_data, ref, None)
+                        if val_col is None or val_ref is None:
+                            continue
+
+                        curr_val = float(val_col[loc])
+                        ref_val = float(val_ref[loc])
+                        if not np_isfinite(curr_val) or not np_isfinite(ref_val):
+                            continue
+
+                        if op == "<" and curr_val < ref_val:
+                            should_exit = True
+                        elif op == ">" and curr_val > ref_val:
+                            should_exit = True
+                        elif op == "<=" and curr_val <= ref_val:
+                            should_exit = True
+                        elif op == ">=" and curr_val >= ref_val:
+                            should_exit = True
+
+                        if should_exit:
+                            open_px = float(sym_data.open[loc])
+                            if not np_isfinite(open_px):
+                                open_px = float(sym_data.close[loc])
+                            effective_stop = open_px
+                            break
             except Exception:
                 should_exit = False
                 effective_stop = float(pos["stop_price"])

@@ -70,6 +70,11 @@
         "val": 30.0
       },
       {
+        "col": "natr",
+        "op": ">",
+        "val": 4.0
+      },
+      {
         "col": "close",
         "op": ">",
         "ref": "donchian_20"
@@ -83,7 +88,7 @@
     ],
     "stop_loss_atr": 1.0,
     "time_stop": 25,
-    "partial_profit_target": 1.20,
+    "partial_profit_target": 1.10,
     "partial_exit_scale": 0.50,
     "trail_atr": 0,
     "exit_rules": [
@@ -97,12 +102,6 @@
     "min_entry_score": 0.0,
     "bypass_regime_scoring": true,
     "scoring_type": "breakout",
-    "scoring_weights": {
-      "rsi_factor": 3.0,
-      "sniper_bonus": 50.0,
-      "trend_bonus": 30.0,
-      "vol_bonus": 50.0
-    },
     "limit_ratio": 1.01,
     "sizing_mode": "risk_1pct",
     "max_pos_size": 0.25,
