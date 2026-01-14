@@ -82,9 +82,10 @@
       }
     ],
     "stop_loss_atr": 1.0,
-    "time_stop": 20,
+    "time_stop": 25,
+    "partial_profit_target": 1.20,
+    "partial_exit_scale": 0.50,
     "trail_atr": 0,
-    "trail_activation": 0,
     "exit_rules": [
       {
         "type": "rule",

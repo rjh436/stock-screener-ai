@@ -2077,6 +2077,50 @@ def run_backtest(
 
             genome = getattr(active_strat, "params", getattr(active_strat, "genome", {})) or {}
 
+            # --- PARTIAL PROFIT LOGIC ---
+            # Qullamaggie Rule: Sell 1/3 to 1/2 into strength (3-5 days or 15-20% move)
+            # and move stop to Breakeven.
+            strat_params = getattr(active_strat, "params", {}) or {}
+            partial_target = float(strat_params.get("partial_profit_target", 0.0))
+            partial_scale = float(strat_params.get("partial_exit_scale", 0.0))
+
+            if partial_target > 1.0 and partial_scale > 0 and not pos.get("partial_taken", False):
+                # Check if High hit the target
+                high_px = float(sym_data.high[loc])
+                target_price = float(pos["entry_price"]) * partial_target
+
+                if high_px >= target_price:
+                    # Execute Partial Sale
+                    sell_shares = int(pos["shares"] * partial_scale)
+                    if sell_shares > 0:
+                        exit_px = target_price
+                        pnl = (exit_px - pos["entry_price"]) * sell_shares
+                        pct = ((exit_px - pos["entry_price"]) / pos["entry_price"]) * 100.0
+
+                        cash += sell_shares * exit_px
+                        trade_pnls.append(float(pnl))
+
+                        trades_list.append(
+                            {
+                                "Symbol": sym,
+                                "Entry Date": str(sym_data.df.index[entry_i].date()),
+                                "Exit Date": str(pd.Timestamp(current_dt).date()),
+                                "Entry": pos["entry_price"],
+                                "Exit": exit_px,
+                                "PnL": pnl,
+                                "Return%": pct,
+                                "Strategy": pos.get("strategy_name", strategy_label) + " (Partial)",
+                                "is_super_signal": bool(pos.get("is_super_signal", False)),
+                            }
+                        )
+
+                        # Update Position
+                        pos["shares"] -= sell_shares
+                        pos["partial_taken"] = True
+
+                        # Move Stop to Breakeven (Risk Free Ride)
+                        pos["stop_price"] = max(float(pos["stop_price"]), float(pos["entry_price"]))
+
             try:
                 if bool(pos.get("is_super_signal", False)):
                     should_exit, effective_stop, target_px = _generic_exit_decision(
