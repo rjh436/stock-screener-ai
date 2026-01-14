@@ -114,6 +114,10 @@ def _compute_indicators(
         rs2 = g2 / l2.replace(0, np.nan)
         df["rsi2"] = 100 - (100 / (1 + rs2))
 
+        # Momentum / Velocity Check
+        # ROC 60: Percentage change over last 60 trading days (approx 1 quarter)
+        df["roc_60"] = df["close"].pct_change(60) * 100.0
+
         adx = ADXIndicator(df["high"], df["low"], df["close"])
         df["adx"] = adx.adx()
         df["plus_di"] = adx.adx_pos()

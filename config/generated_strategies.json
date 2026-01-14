@@ -43,8 +43,6 @@
   {
     "name": "Apex Kinetic VCP (Strategy B)",
     "type": "breakout",
-    "min_entry_score": 0.0,
-    "bypass_regime_scoring": true,
     "entry_rules": [
       {
         "col": "close",
@@ -62,20 +60,14 @@
         "ref": "sma200"
       },
       {
-        "col": "close",
-        "op": ">",
-        "ref": "high_52w",
-        "mult": 0.85
-      },
-      {
         "col": "bb_width",
         "op": "<",
         "val": 0.25
       },
       {
-        "col": "adx",
+        "col": "roc_60",
         "op": ">",
-        "val": 20
+        "val": 30.0
       },
       {
         "col": "close",
@@ -89,11 +81,20 @@
         "mult": 1.5
       }
     ],
-    "time_stop": 25,
-    "stop_loss_atr": 2.0,
-    "trail_atr": 2.0,
-    "trail_activation": 1.05,
-    "exit_rules": [],
+    "stop_loss_atr": 1.0,
+    "time_stop": 20,
+    "trail_atr": 0,
+    "trail_activation": 0,
+    "exit_rules": [
+      {
+        "type": "rule",
+        "col": "close",
+        "op": "<",
+        "ref": "sma10"
+      }
+    ],
+    "min_entry_score": 0.0,
+    "bypass_regime_scoring": true,
     "scoring_type": "breakout",
     "scoring_weights": {
       "rsi_factor": 3.0,
