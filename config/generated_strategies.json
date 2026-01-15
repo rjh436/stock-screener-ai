@@ -60,6 +60,11 @@
         "ref": "sma200"
       },
       {
+        "col": "natr",
+        "op": ">",
+        "val": 2.0
+      },
+      {
         "col": "bb_width",
         "op": "<",
         "val": 0.25
@@ -68,11 +73,6 @@
         "col": "roc_60",
         "op": ">",
         "val": 30.0
-      },
-      {
-        "col": "natr",
-        "op": ">",
-        "val": 2.5
       },
       {
         "col": "close",
@@ -86,10 +86,12 @@
         "mult": 1.5
       }
     ],
-    "stop_loss_atr": 1.0,
-    "time_stop": 25,
+    "regime_filter": false,
     "partial_profit_target": 1.10,
     "partial_exit_scale": 0.50,
+    "stop_loss_atr": 1.0,
+    "time_stop": 25,
+    "trail_atr": 0,
     "exit_rules": [
       {
         "type": "rule",
@@ -98,8 +100,6 @@
         "ref": "sma10"
       }
     ],
-    "trail_atr": 0,
-    "regime_filter": false,
     "min_entry_score": 0.0,
     "bypass_regime_scoring": true,
     "scoring_type": "breakout",

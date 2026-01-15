@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import os
+import time
 from datetime import datetime, timedelta, timezone
 import pytz
 from zoneinfo import ZoneInfo
@@ -147,6 +148,18 @@ def fetch_single_symbol(
     If force_fresh=True, it will ALWAYS ping the API for the latest data and merge it.
     If inject_live=True, it appends a synthetic bar using live quotes when today's bar is missing.
     """
+    cache_dir = os.path.join("data", "cache")
+    symbol = sym
+    # --- TURBO CACHE FIX: Trust fresh files for IPOs ---
+    cache_path = os.path.join(cache_dir, f"{symbol}.csv")
+    if not force_fresh and os.path.exists(cache_path):
+        try:
+            # If file is < 12 hours old, use it regardless of start date
+            if (time.time() - os.path.getmtime(cache_path)) < 43200:
+                df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+                return clean_dataframe(df)
+        except: pass
+    # ---------------------------------------------------
     # --- TURBO CACHE: Trust fresh files (12 hours) ---
     # Prevents infinite redownload of IPOs/Short-history stocks
     try:
