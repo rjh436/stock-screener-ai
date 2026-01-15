@@ -14,6 +14,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from data.schwab_client import sd
 from data.loader import fetch_data_pack
 from data.indices import get_index_symbols
+from data.universe import get_universe_symbols
 from execution.engine import (
     MIN_ENTRY_SCORE,
     _compute_indicators,
@@ -159,7 +160,12 @@ if mode == "Live Screener":
 
         status_msg.info("📦 Fetching S&P 1500 Foundation...")
         progress_bar.progress(0.2, text="20% Complete")
-        symbols = get_index_symbols(universe)
+        if universe in ("Russell 3000", "RUSSELL3000"):
+            # Explicit call to the Universe module for R3000
+            symbols = get_universe_symbols("RUSSELL3000")
+        else:
+            # Standard indices
+            symbols = get_index_symbols(universe)
         base_days = 400
         data = fetch_data_pack(
             symbols,
@@ -560,7 +566,12 @@ elif mode == "Backtest":
 
             with st.spinner("Simulating..."):
                 if not cache_hit:
-                    symbols = get_index_symbols(bt_universe)
+                    if bt_universe in ("Russell 3000", "RUSSELL3000"):
+                        # Explicit call to the Universe module for R3000
+                        symbols = get_universe_symbols("RUSSELL3000")
+                    else:
+                        # Standard indices
+                        symbols = get_index_symbols(bt_universe)
                     data = fetch_data_pack(symbols, days=days + 200, backtest_mode=True) or {}
 
                     # Fetch global context once (required for RS + VIX overlays in the engine)
