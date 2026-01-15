@@ -70,9 +70,9 @@
         "ref": "donchian_20"
       }
     ],
-    "regime_filter": false,
+    "regime_filter": true,
     "partial_profit_target": 0.0,
-    "stop_loss_atr": 2.0,
+    "stop_loss_atr": 1.0,
     "time_stop": 40,
     "trail_atr": 3.0,
     "trail_activation": 1.1,
@@ -90,8 +90,7 @@
     "scoring_weights": {
       "rsi_factor": 2.0,
       "vcp_bonus": 100.0,
-      "trend_bonus": 50.0,
-      "vol_bonus": 30.0
+      "trend_bonus": 50.0
     },
     "limit_ratio": 1.01,
     "sizing_mode": "risk_1pct",

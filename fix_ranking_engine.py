@@ -6,7 +6,7 @@ import os
 import re
 import sys
 import textwrap
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, List, Optional
 
 
 ENGINE_REL_PATH = os.path.join("execution", "engine.py")
@@ -23,8 +23,8 @@ NEW_CALCULATE_ROW_SCORE = textwrap.dedent(
         **kwargs: Any,
     ) -> float:
         # --- DUAL-CORE RANKING ENGINE ---
-        # Breakout/Momentum: high RSI + VCP + near 52w high + NATR fuel.
-        # Mean Reversion/Wealth: low RSI dip buying.
+        # Breakout/Momentum: high RSI + VCP + NATR fuel.
+        # Wealth/Mean Reversion: low RSI dip buying.
         if weights is None or not isinstance(weights, dict):
             weights = DEFAULT_SCORING_WEIGHTS
 
@@ -33,7 +33,6 @@ NEW_CALCULATE_ROW_SCORE = textwrap.dedent(
 
         rsi_factor = float(merged.get("rsi_factor", 0.0) or 0.0)
         vcp_bonus = float(merged.get("vcp_bonus", merged.get("sniper_bonus", 0.0)) or 0.0)
-        trend_bonus = float(merged.get("trend_bonus", 0.0) or 0.0)
         vol_bonus = float(merged.get("vol_bonus", 0.0) or 0.0)
 
         row = row_or_rsi2 if isinstance(row_or_rsi2, (pd.Series, dict)) else None
@@ -54,9 +53,14 @@ NEW_CALCULATE_ROW_SCORE = textwrap.dedent(
 
         scoring_type = str(kwargs.get("scoring_type", "") or "").lower()
         name = str(strategy_name or "").lower()
-        is_breakout = scoring_type in ("breakout", "momentum") or any(
-            key in name for key in ("breakout", "momentum", "vcp", "kinetic")
-        )
+        if scoring_type:
+            is_breakout = scoring_type in ("breakout", "momentum")
+            is_wealth = scoring_type in ("wealth", "mean_reversion")
+        else:
+            is_breakout = any(key in name for key in ("breakout", "momentum", "vcp", "kinetic"))
+            is_wealth = "wealth" in name
+        if not is_breakout and not is_wealth:
+            is_wealth = True
 
         score = 0.0
 
@@ -70,11 +74,6 @@ NEW_CALCULATE_ROW_SCORE = textwrap.dedent(
             bb_width = _as_float(_get_val("bb_width", 1.0), 1.0)
             if bb_width < _VCP_BB_WIDTH_THRESH:
                 score += vcp_bonus
-
-            close = _as_float(_get_val("close", 0.0), 0.0)
-            high52 = _as_float(_get_val("high_52w", close), close)
-            if high52 > 0 and close >= (high52 * 0.85):
-                score += trend_bonus
 
             natr = _as_float(_get_val("natr", 0.0), 0.0)
             if natr > 2.5:
@@ -176,16 +175,6 @@ def patch_engine(engine_path: str) -> tuple[bool, str]:
     return True, mode
 
 
-def _unleashed_entry_rules() -> List[Dict[str, object]]:
-    return [
-        {"col": "close", "op": ">", "ref": "sma50"},
-        {"col": "rsi14", "op": ">", "val": 60},
-        {"col": "bb_width", "op": "<", "val": 0.20},
-        {"col": "natr", "op": ">", "val": 2.5},
-        {"col": "close", "op": ">", "ref": "donchian_20"},
-    ]
-
-
 def patch_config(config_path: str) -> bool:
     with open(config_path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
@@ -201,15 +190,13 @@ def patch_config(config_path: str) -> bool:
             continue
         found = True
         strat["scoring_type"] = "breakout"
+        strat["regime_filter"] = True
         strat["scoring_weights"] = {
             "rsi_factor": 2.0,
             "vcp_bonus": 100.0,
             "trend_bonus": 50.0,
-            "vol_bonus": 30.0,
         }
-        strat["entry_rules"] = _unleashed_entry_rules()
-        strat["regime_filter"] = False
-        strat["partial_profit_target"] = 0.0
+        strat["stop_loss_atr"] = 1.0
         break
 
     if not found:
