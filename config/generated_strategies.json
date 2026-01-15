@@ -50,21 +50,6 @@
         "ref": "sma50"
       },
       {
-        "col": "sma50",
-        "op": ">",
-        "ref": "sma150"
-      },
-      {
-        "col": "sma150",
-        "op": ">",
-        "ref": "sma200"
-      },
-      {
-        "col": "roc_60",
-        "op": ">",
-        "val": 30.0
-      },
-      {
         "col": "rsi14",
         "op": ">",
         "val": 60
@@ -72,7 +57,7 @@
       {
         "col": "bb_width",
         "op": "<",
-        "val": 0.25
+        "val": 0.2
       },
       {
         "col": "natr",
@@ -83,20 +68,14 @@
         "col": "close",
         "op": ">",
         "ref": "donchian_20"
-      },
-      {
-        "col": "volume",
-        "op": ">",
-        "ref": "vol_ma20",
-        "mult": 1.5
       }
     ],
-    "regime_filter": true,
+    "regime_filter": false,
     "partial_profit_target": 0.0,
     "stop_loss_atr": 2.0,
     "time_stop": 40,
     "trail_atr": 3.0,
-    "trail_activation": 1.10,
+    "trail_activation": 1.1,
     "exit_rules": [
       {
         "type": "rule",
@@ -109,10 +88,10 @@
     "bypass_regime_scoring": true,
     "scoring_type": "breakout",
     "scoring_weights": {
-      "rsi_factor": 3.0,
-      "vcp_bonus": 50.0,
-      "trend_bonus": 30.0,
-      "vol_bonus": 40.0
+      "rsi_factor": 2.0,
+      "vcp_bonus": 100.0,
+      "trend_bonus": 50.0,
+      "vol_bonus": 30.0
     },
     "limit_ratio": 1.01,
     "sizing_mode": "risk_1pct",

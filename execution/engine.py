@@ -279,6 +279,76 @@ def _score_candidate(
     return max(0.0, float(score))
 
 
+def _calculate_row_score(
+    row_or_rsi2: Any,
+    strategy_name: str = "",
+    weights: Optional[Dict[str, float]] = None,
+    **kwargs: Any,
+) -> float:
+    # --- DUAL-CORE RANKING ENGINE ---
+    # Breakout/Momentum: high RSI + VCP + near 52w high + NATR fuel.
+    # Mean Reversion/Wealth: low RSI dip buying.
+    if weights is None or not isinstance(weights, dict):
+        weights = DEFAULT_SCORING_WEIGHTS
+
+    merged = dict(DEFAULT_SCORING_WEIGHTS)
+    merged.update(weights)
+
+    rsi_factor = float(merged.get("rsi_factor", 0.0) or 0.0)
+    vcp_bonus = float(merged.get("vcp_bonus", merged.get("sniper_bonus", 0.0)) or 0.0)
+    trend_bonus = float(merged.get("trend_bonus", 0.0) or 0.0)
+    vol_bonus = float(merged.get("vol_bonus", 0.0) or 0.0)
+
+    row = row_or_rsi2 if isinstance(row_or_rsi2, (pd.Series, dict)) else None
+
+    def _get_val(key: str, default: float) -> float:
+        if row is not None:
+            try:
+                return row.get(key, default)
+            except Exception:
+                pass
+        return kwargs.get(key, default)
+
+    def _as_float(value: float, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    scoring_type = str(kwargs.get("scoring_type", "") or "").lower()
+    name = str(strategy_name or "").lower()
+    is_breakout = scoring_type in ("breakout", "momentum") or any(
+        key in name for key in ("breakout", "momentum", "vcp", "kinetic")
+    )
+
+    score = 0.0
+
+    if is_breakout:
+        rsi14 = _as_float(_get_val("rsi14", 50.0), 50.0)
+        if rsi14 > 50:
+            score += rsi14 * rsi_factor
+        else:
+            score -= (50.0 - rsi14)
+
+        bb_width = _as_float(_get_val("bb_width", 1.0), 1.0)
+        if bb_width < _VCP_BB_WIDTH_THRESH:
+            score += vcp_bonus
+
+        close = _as_float(_get_val("close", 0.0), 0.0)
+        high52 = _as_float(_get_val("high_52w", close), close)
+        if high52 > 0 and close >= (high52 * 0.85):
+            score += trend_bonus
+
+        natr = _as_float(_get_val("natr", 0.0), 0.0)
+        if natr > 2.5:
+            score += vol_bonus
+    else:
+        rsi2 = _as_float(_get_val("rsi2", _get_val("rsi14", 50.0)), 50.0)
+        score += (100.0 - rsi2) * rsi_factor
+
+    return max(0.0, float(score))
+
+
 def calculate_backtest_quality_score(
     row_or_rsi2: Any,
     strategy_name: str = "",
