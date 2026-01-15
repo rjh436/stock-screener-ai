@@ -52,7 +52,7 @@
       {
         "col": "rsi14",
         "op": ">",
-        "val": 60
+        "val": 50
       },
       {
         "col": "bb_width",

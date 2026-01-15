@@ -425,38 +425,64 @@ def calculate_backtest_quality_score(
     **kwargs: Any,
 ) -> float:
     """
-    Compatibility wrapper.
-
-    - Legacy call sites pass a pandas Series/dict row as the first arg.
-    - Performance call sites can pass scalars: `calculate_backtest_quality_score(rsi2, close=..., atr14=..., ...)`.
+    Bifurcated ranking engine:
+    - Breakout/VCP/Kinetic: high RSI, tight BB width, SMA10 surfing.
+    - Wealth/Mean Reversion: low RSI dip buying.
     """
-    _ = strategy_name
-    w = _compile_scoring_weights(weights, None)
+    if weights is None or not isinstance(weights, dict):
+        weights = DEFAULT_SCORING_WEIGHTS
 
-    if isinstance(row_or_rsi2, (pd.Series, dict)):
-        row = row_or_rsi2
-        rsi2 = float(row.get("rsi2", 50) or 50)
-        close_px = float(row.get("close", 0) or 0)
-        atr14 = float(row.get("atr14", 0) or 0)
-        volume = float(row.get("volume", 0) or 0)
-        vol_ma20 = float(row.get("vol_ma20", 1) or 1)
-        sma200 = float(row.get("sma200", np.nan))
-        cci = float(row.get("cci", 0) or 0)
-        bb_width = float(row.get("bb_width", 0) or 0)
-        return _score_candidate(rsi2, close_px, atr14, volume, vol_ma20, sma200, cci, bb_width, w)
+    merged = dict(DEFAULT_SCORING_WEIGHTS)
+    merged.update(weights)
 
-    rsi2 = float(row_or_rsi2)
-    close_px = float(kwargs.get("close", 0.0) or 0.0)
-    atr14 = float(kwargs.get("atr14", 0.0) or 0.0)
-    volume = float(kwargs.get("volume", 0.0) or 0.0)
-    vol_ma20 = float(kwargs.get("vol_ma20", 1.0) or 1.0)
-    sma200 = float(kwargs.get("sma200", np.nan))
-    cci = float(kwargs.get("cci", 0.0) or 0.0)
-    bb_width = float(kwargs.get("bb_width", 0.0) or 0.0)
-    return _score_candidate(rsi2, close_px, atr14, volume, vol_ma20, sma200, cci, bb_width, w)
+    rsi_factor = float(merged.get("rsi_factor", 0.0) or 0.0)
+    vcp_bonus = float(merged.get("vcp_bonus", merged.get("sniper_bonus", 0.0)) or 0.0)
+    trend_bonus = float(merged.get("trend_bonus", 0.0) or 0.0)
+
+    is_row = isinstance(row_or_rsi2, (pd.Series, dict))
+    row = row_or_rsi2 if is_row else None
+
+    def _get_val(key: str, default: float) -> float:
+        if row is not None:
+            try:
+                return row.get(key, default)
+            except Exception:
+                pass
+        return kwargs.get(key, default)
+
+    def _as_float(value: float, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    strat_key = str(strategy_name or "").lower()
+    is_breakout = any(token in strat_key for token in ("breakout", "vcp", "kinetic"))
+
+    score = 0.0
+    if is_breakout:
+        rsi14 = _as_float(_get_val("rsi14", 50.0), 50.0)
+        if rsi14 > 50.0:
+            score += rsi14 * rsi_factor
+
+        bb_width = _as_float(_get_val("bb_width", 1.0), 1.0)
+        if bb_width < 0.15:
+            score += vcp_bonus
+
+        close_px = _as_float(_get_val("close", 0.0), 0.0)
+        sma10 = _as_float(_get_val("sma10", 0.0), 0.0)
+        if close_px > 0.0 and sma10 > 0.0 and close_px > sma10:
+            score += trend_bonus
+    else:
+        if is_row:
+            rsi2 = _as_float(_get_val("rsi2", _get_val("rsi14", 50.0)), 50.0)
+        else:
+            rsi2 = _as_float(row_or_rsi2, 50.0)
+        score += (100.0 - rsi2) * rsi_factor
+
+    return max(0.0, float(score))
 
 
-@dataclass(slots=True)
 class _SymbolArrays:
     df: pd.DataFrame
     index: np.ndarray

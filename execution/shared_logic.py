@@ -455,6 +455,25 @@ def _generic_exit_decision(
         if days_held > 10:
             return True, effective_stop, None
 
+    # SMA surfing override (profit-protect for runners)
+
+    if pnl_pct > 0 and days_held > 3:
+
+        sma10 = state.get("sma10")
+
+        if sma10 is None:
+
+            row_last = state.get("row_last")
+
+            if row_last is not None:
+
+                sma10 = row_last.get("sma10")
+
+        if sma10 is not None and np_isfinite(sma10) and close_px < float(sma10):
+
+            return True, effective_stop, None
+
+
     # 4. PROFIT TARGETS
     if target_px is not None and high_px >= target_px:
         return True, effective_stop, target_px
