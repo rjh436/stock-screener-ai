@@ -26,7 +26,7 @@ SUPER_SIGNAL_NAME = "SUPER SIGNAL (Wealth + Income)"
 _ATR_HIGH_THRESH_PCT = 3.0
 _ATR_MED_THRESH_PCT = 2.0
 _VOL_REL_THRESH = 1.5
-_SNIPER_BB_WIDTH_THRESH = 0.17
+_VCP_BB_WIDTH_THRESH = 0.17
 
 # Diagnostics: enable to print every strategy's trail activation on each run.
 _DEBUG_TRAIL_ACTIVATION = os.environ.get("APEX_DEBUG_TRAIL_ACTIVATION", "").strip() not in ("", "0", "false", "False")
@@ -211,7 +211,7 @@ class _ScoreWeights:
     vol_bonus: float
     trend_bonus: float
     trend_penalty: float
-    sniper_bonus: float
+    vcp_bonus: float
 
 
 def _compile_scoring_weights(
@@ -231,7 +231,7 @@ def _compile_scoring_weights(
         vol_bonus=float(merged.get("vol_bonus", 0.0) or 0.0),
         trend_bonus=float(merged.get("trend_bonus", 0.0) or 0.0),
         trend_penalty=float(merged.get("trend_penalty", 0.0) or 0.0),
-        sniper_bonus=float(merged.get("sniper_bonus", 0.0) or 0.0),
+        vcp_bonus=float(merged.get("vcp_bonus", 0.0) or 0.0),
     )
 
 
@@ -251,7 +251,7 @@ def _score_candidate(
     if not np_isfinite(rsi2):
         rsi2 = 50.0
 
-    sniper_ok = bool(np_isfinite(cci) and np_isfinite(bb_width) and cci < 0 and bb_width > _SNIPER_BB_WIDTH_THRESH)
+    vcp_ok = bool(np_isfinite(cci) and np_isfinite(bb_width) and cci < 0 and bb_width < _VCP_BB_WIDTH_THRESH)
 
     base_score = (100.0 - float(rsi2)) * w.rsi_factor
     base_score = min(100.0, max(0.0, base_score))
@@ -273,8 +273,8 @@ def _score_candidate(
     if np_isfinite(close_px) and close_px > 0 and np_isfinite(sma200) and sma200 > 0:
         score += w.trend_bonus if close_px > sma200 else w.trend_penalty
 
-    if sniper_ok:
-        score += w.sniper_bonus
+    if vcp_ok:
+        score += w.vcp_bonus
 
     return max(0.0, float(score))
 
@@ -1282,15 +1282,15 @@ def _score_candidates_vectorized(
         base = np.clip(base, 0.0, 100.0)
         score = base.astype(np.float64, copy=True)
 
-        vcp_ok = (bb_width < 0.15)
-        score += np.where(vcp_ok, float(w.sniper_bonus), 0.0)
+        vcp_ok = (bb_width < _VCP_BB_WIDTH_THRESH)
+        score += np.where(vcp_ok, float(w.vcp_bonus), 0.0)
     else:
         base = (100.0 - rsi2) * float(w.rsi_factor)
         base = np.clip(base, 0.0, 100.0)
         score = base.astype(np.float64, copy=True)
 
-        sniper_ok = (cci < 0) & (bb_width > 0.17)
-        score += np.where(sniper_ok, float(w.sniper_bonus), 0.0)
+        vcp_ok = (cci < 0) & (bb_width < _VCP_BB_WIDTH_THRESH)
+        score += np.where(vcp_ok, float(w.vcp_bonus), 0.0)
 
     vol_rel = volume / (vol_ma20 + 1.0)
     score += np.where(vol_rel >= 1.5, float(w.vol_bonus), 0.0)
@@ -1330,7 +1330,7 @@ def run_backtest(
     super_signal_only: bool = False,
 ):
     """
-    Sniper-mode backtest engine:
+    VCP-mode backtest engine:
     - Precomputable data path (PreparedBacktestData) for GA speed
     - MIN_ENTRY_SCORE gating for selective entries
     - Explicit support for trail_activation + time_stop for GenericStrategy genomes
