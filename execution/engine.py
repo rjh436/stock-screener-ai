@@ -1023,16 +1023,35 @@ def _legacy_run_backtest(
                 if not np_isfinite(stop_price):
                     continue
 
-                score = _score_candidate(
-                    float(rsi2_arr[prev_i]),
-                    prev_close,
-                    signal_atr,
-                    float(volume_arr[prev_i]),
-                    float(vol_ma20_arr[prev_i]),
-                    float(sma200_arr[prev_i]),
-                    float(cci_arr[prev_i]),
-                    float(bb_width_arr[prev_i]),
-                    w,
+                # --- FIX: Use Dual-Core Ranking Engine ---
+                # Was: score = _score_candidate(...) which forced mean-reversion logic
+
+                # Calculate derived metrics for the new engine
+                current_natr = 0.0
+                if prev_close > 0:
+                    current_natr = (signal_atr / prev_close) * 100.0
+
+                # Pass explicit kwargs to support the Momentum/Breakout logic
+                score = calculate_backtest_quality_score(
+                    row_or_rsi2=float(rsi2_arr[prev_i]), # Legacy support
+                    strategy_name=strat.name,
+                    weights=params.get("scoring_weights"),
+
+                    # --- CRITICAL: MOMENTUM SIGNALS ---
+                    rsi14=float(rsi14_arr[prev_i]),
+                    bb_width=float(bb_width_arr[prev_i]),
+                    close=prev_close,
+                    natr=current_natr,
+                    # We use 'high' as a proxy for 52w high if the array isn't strictly tracked in this scope,
+                    # or pass 0.0 if not available. The engine defaults safely.
+                    high_52w=float(high_arr[prev_i]),
+
+                    # --- LEGACY SIGNALS ---
+                    atr14=signal_atr,
+                    volume=float(volume_arr[prev_i]),
+                    vol_ma20=float(vol_ma20_arr[prev_i]),
+                    sma200=float(sma200_arr[prev_i]),
+                    cci=float(cci_arr[prev_i])
                 )
                 score = apply_strategy_score_multipliers(score, params)
                 strat_min_score = float(params.get("min_entry_score", MIN_ENTRY_SCORE))
@@ -1893,16 +1912,35 @@ def run_backtest(
                 if not np_isfinite(stop_price):
                     continue
 
-                score = _score_candidate(
-                    float(rsi2_arr[prev_i]),
-                    prev_close,
-                    signal_atr,
-                    float(volume_arr[prev_i]),
-                    float(vol_ma20_arr[prev_i]),
-                    float(sma200_arr[prev_i]),
-                    float(cci_arr[prev_i]),
-                    float(bb_width_arr[prev_i]),
-                    w,
+                # --- FIX: Use Dual-Core Ranking Engine ---
+                # Was: score = _score_candidate(...) which forced mean-reversion logic
+
+                # Calculate derived metrics for the new engine
+                current_natr = 0.0
+                if prev_close > 0:
+                    current_natr = (signal_atr / prev_close) * 100.0
+
+                # Pass explicit kwargs to support the Momentum/Breakout logic
+                score = calculate_backtest_quality_score(
+                    row_or_rsi2=float(rsi2_arr[prev_i]), # Legacy support
+                    strategy_name=strat.name,
+                    weights=params.get("scoring_weights"),
+
+                    # --- CRITICAL: MOMENTUM SIGNALS ---
+                    rsi14=float(rsi14_arr[prev_i]),
+                    bb_width=float(bb_width_arr[prev_i]),
+                    close=prev_close,
+                    natr=current_natr,
+                    # We use 'high' as a proxy for 52w high if the array isn't strictly tracked in this scope,
+                    # or pass 0.0 if not available. The engine defaults safely.
+                    high_52w=float(high_arr[prev_i]),
+
+                    # --- LEGACY SIGNALS ---
+                    atr14=signal_atr,
+                    volume=float(volume_arr[prev_i]),
+                    vol_ma20=float(vol_ma20_arr[prev_i]),
+                    sma200=float(sma200_arr[prev_i]),
+                    cci=float(cci_arr[prev_i])
                 )
                 spy_close_prev = float(spy_close_arr[prev_i])
                 spy_sma200_prev = float(spy_sma200_arr[prev_i])
