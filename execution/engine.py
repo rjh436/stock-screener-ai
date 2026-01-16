@@ -161,6 +161,10 @@ def _compute_indicators(
             vix_df = vix_df.copy()
             vix_df.columns = vix_df.columns.str.lower()
 
+        # Average Daily Range % (20-day)
+        hl_range = df["high"] - df["low"]
+        df["adr_pct"] = (hl_range / df["close"]).rolling(20).mean() * 100.0
+
         for p in (10, 20, 50, 200):
             df[f"sma{p}"] = df["close"].rolling(p).mean()
             df[f"ema{p}"] = df["close"].ewm(span=p, adjust=False).mean()
@@ -524,6 +528,7 @@ class _SymbolArrays:
     spysma200: np.ndarray
     spyregime: np.ndarray
     rsrating: np.ndarray
+    adr_pct: np.ndarray
 
 
 @dataclass(slots=True)
@@ -725,6 +730,7 @@ def prepare_backtest_data(
                 spysma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
                 spyregime=_get_np_col(df, "spy_regime", 0.0, length=n),
                 rsrating=_get_np_col(df, "rs_rating", 0.0, length=n),
+                adr_pct=_get_np_col(df, "adr_pct", 0.0, length=n),
             )
         except Exception:
             continue
@@ -874,6 +880,7 @@ def _legacy_run_backtest(
                 spysma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
                 spyregime=_get_np_col(df, "spy_regime", 0.0, length=n),
                 rsrating=_get_np_col(df, "rs_rating", 0.0, length=n),
+                adr_pct=_get_np_col(df, "adr_pct", 0.0, length=n),
             )
         except Exception:
             continue
@@ -1928,21 +1935,22 @@ def run_backtest(
                 breakout_max_gap_pct = float(params.get("breakout_max_gap_pct", params.get("max_gap_pct", 0.0)) or 0.0)
 
                 if scoring_mode == "breakout":
-                    try:
-                        limit_ratio_val = float(limit_ratio) if limit_ratio is not None else 1.0
-                    except (ValueError, TypeError):
-                        limit_ratio_val = 1.0
-                    pivot_px = _vectorized_breakout_pivot(sd, params.get("entry_rules") or [], prev_is)
-                    if pivot_px is None:
-                        target_px = prev_close * limit_ratio_val
-                    else:
-                        target_px = pivot_px * limit_ratio_val
-
-                    filled_mask = np.isfinite(target_px) & (high_px >= target_px)
+                    prev_high = high_arr[entry_is - 1]
+                    trigger_px = prev_high * 1.0005
+                    filled_mask = np.isfinite(trigger_px) & (high_px > trigger_px)
                     if breakout_max_gap_pct > 0:
-                        filled_mask &= open_px <= (target_px * (1.0 + breakout_max_gap_pct))
-                    entry_px_arr = np.where(open_px > target_px, open_px, target_px)
-                    score[~filled_mask] = 0.0
+                        filled_mask &= open_px <= (trigger_px * (1.0 + breakout_max_gap_pct))
+                    limit_ratio_val = None
+                    if limit_ratio is not None:
+                        try:
+                            limit_ratio_val = float(limit_ratio)
+                        except (ValueError, TypeError):
+                            limit_ratio_val = None
+                    if limit_ratio_val is not None:
+                        limit_px = trigger_px * limit_ratio_val
+                        filled_mask &= open_px <= limit_px
+                    entry_px_arr = np.where(open_px > trigger_px, open_px, trigger_px)
+                    valid &= filled_mask
                 elif limit_ratio is not None:
                     try:
                         limit_ratio_val = float(limit_ratio)
@@ -2125,20 +2133,25 @@ def run_backtest(
                 breakout_max_gap_pct = float(params.get("breakout_max_gap_pct", params.get("max_gap_pct", 0.0)) or 0.0)
 
                 if scoring_mode == "breakout":
-                    try:
-                        limit_ratio_val = float(limit_ratio) if limit_ratio is not None else 1.0
-                    except (TypeError, ValueError):
-                        limit_ratio_val = 1.0
-                    pivot = _resolve_breakout_pivot(df.iloc[prev_i], params.get("entry_rules") or [])
-                    if pivot is None:
-                        pivot = prev_close
-                    target_px = pivot * limit_ratio_val
-                    if high_px >= target_px:
-                        if breakout_max_gap_pct > 0 and open_px > target_px * (1.0 + breakout_max_gap_pct):
-                            continue
-                        entry_px = open_px if open_px > target_px else target_px
-                    else:
+                    prev_high = float(high_arr[i - 1])
+                    if not np_isfinite(prev_high) or prev_high <= 0:
                         continue
+                    trigger_px = prev_high * 1.0005
+                    if high_px <= trigger_px:
+                        continue
+                    if breakout_max_gap_pct > 0 and open_px > trigger_px * (1.0 + breakout_max_gap_pct):
+                        continue
+                    limit_ratio_val = None
+                    if limit_ratio is not None:
+                        try:
+                            limit_ratio_val = float(limit_ratio)
+                        except (TypeError, ValueError):
+                            limit_ratio_val = None
+                    if limit_ratio_val is not None:
+                        limit_px = trigger_px * limit_ratio_val
+                        if open_px > limit_px:
+                            continue
+                    entry_px = open_px if open_px > trigger_px else trigger_px
                 elif limit_ratio is not None and prev_close > 0:
                     try:
                         limit_ratio_val = float(limit_ratio)
