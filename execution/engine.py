@@ -996,7 +996,12 @@ def _legacy_run_backtest(
                     rs_rating_prev = float(rs_rating_arr[prev_i]) if np_isfinite(rs_rating_arr[prev_i]) else 0.0
                     if np_isfinite(spy_close_prev) and np_isfinite(spy_sma200_prev):
                         if spy_close_prev < spy_sma200_prev:
-                            continue
+                            try:
+                                bypass_threshold = float(params.get("red_bypass_rs", 100.0))
+                            except (TypeError, ValueError):
+                                bypass_threshold = 100.0
+                            if rs_rating_prev < bypass_threshold:
+                                continue
                         if np_isfinite(spy_sma20_prev) and spy_close_prev < spy_sma20_prev:
                             yellow_floor = float(params.get("yellow_rs_floor", 92.0) or 92.0)
                             if rs_rating_prev < yellow_floor:
@@ -1862,7 +1867,11 @@ def run_backtest(
                         & np.isfinite(spy_sma200_prev)
                         & (spy_close_prev < spy_sma200_prev)
                     )
-                    valid &= ~red_mask
+                    try:
+                        bypass_threshold = float(params.get("red_bypass_rs", 100.0))
+                    except (TypeError, ValueError):
+                        bypass_threshold = 100.0
+                    valid &= ~(red_mask & (rs_rating_prev < bypass_threshold))
 
                     yellow_mask = (
                         np.isfinite(spy_close_prev)
