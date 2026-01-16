@@ -47,26 +47,52 @@
       {
         "col": "rsi14",
         "op": ">",
-        "val": 65
+        "val": 55
       },
       {
         "col": "rs_rating",
         "op": ">",
-        "val": 90
+        "val": 80
       },
       {
         "col": "bb_width",
         "op": "<",
-        "val": 0.15
+        "val": 0.25
+      },
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "donchian_20"
+      },
+      {
+        "col": "volume",
+        "op": ">",
+        "ref": "vol_ma20",
+        "mult": 1.5
+      }
+    ],
+    "exit_rules": [
+      {
+        "col": "close",
+        "op": "<",
+        "ref": "sma20"
       }
     ],
     "market_filter_mode": "traffic_light",
-    "yellow_rs_floor": 92,
-    "min_entry_score": 60,
+    "yellow_rs_floor": 85,
+    "min_entry_score": 0,
     "stop_loss_atr": 2.0,
     "trail_atr": 0,
-    "time_stop": 40,
+    "time_stop": 45,
     "risk_per_trade": 0.02,
-    "max_positions": 12
+    "max_positions": 12,
+    "scoring_type": "breakout",
+    "scoring_weights": {
+      "rsi_factor": 2.0,
+      "sniper_bonus": 150.0,
+      "trend_bonus": 30.0,
+      "vol_bonus": 50.0
+    },
+    "limit_ratio": 1.01
   }
 ]
