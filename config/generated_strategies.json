@@ -47,17 +47,17 @@
       {
         "col": "rsi14",
         "op": ">",
-        "val": 55
+        "val": 60
       },
       {
         "col": "rs_rating",
         "op": ">",
-        "val": 80
+        "val": 85
       },
       {
         "col": "bb_width",
         "op": "<",
-        "val": 0.25
+        "val": 0.20
       },
       {
         "col": "close",
@@ -79,9 +79,10 @@
       }
     ],
     "market_filter_mode": "traffic_light",
-    "yellow_rs_floor": 85,
+    "yellow_rs_floor": 90,
+    "red_bypass_rs": 95,
     "min_entry_score": 0,
-    "stop_loss_atr": 2.0,
+    "stop_loss_atr": 1.0,
     "trail_atr": 0,
     "time_stop": 45,
     "risk_per_trade": 0.02,
