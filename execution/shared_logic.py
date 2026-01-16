@@ -136,7 +136,7 @@ def rehydrate_exit_state(row, strategies_map, history_map=None):
         return {"valid": False, "reason": "missing_history", "strategy": strat}
 
     df_cols = {str(col).lower() for col in df.columns}
-    required_cols = {"close", "high", "low", "atr14", "sma50", "sma20", "bb_upper"}
+    required_cols = {"close", "high", "low", "atr14", "sma50", "sma20", "sma10", "bb_upper"}
     if not required_cols.issubset(df_cols):
         from execution.engine import _compute_indicators
 
@@ -414,6 +414,22 @@ def _generic_exit_decision(
     days_held = int(state.get("days_held", int(loc) - int(entry_i)))
     time_limit = int(state.get("time_stop", 45) or 45)
     time_limit = max(1, time_limit)
+    if isinstance(genome, dict):
+        exit_mode = str(genome.get("scoring_type") or genome.get("type") or "").lower()
+        name_key = str(genome.get("name") or "").lower()
+    else:
+        exit_mode = ""
+        name_key = ""
+    is_breakout = any(token in exit_mode for token in ("breakout", "momentum", "vcp", "kinetic"))
+    is_breakout = is_breakout or any(token in name_key for token in ("breakout", "momentum", "vcp", "kinetic"))
+    trail_activation = state.get("trail_activation", 1.0)
+    try:
+        trail_activation = float(trail_activation or 1.0)
+    except (TypeError, ValueError):
+        trail_activation = 1.0
+    if trail_activation < 1.0 or not np_isfinite(trail_activation):
+        trail_activation = 1.0
+    activation_pct = max(0.0, (trail_activation - 1.0) * 100.0)
 
     # 1. STOP LOSS CHECK
     if state.get("stop_breached"):
@@ -427,51 +443,46 @@ def _generic_exit_decision(
             return True, effective_stop, None
 
     # 2. TIME-BASED EXITS
-    if days_held >= int(time_limit * 0.8):
-        if pnl_pct < -5.0:
-            return True, effective_stop, None
-        if pnl_pct < 3.0:
-            sma20 = state.get("sma20", np.nan)
-            if not np_isfinite(sma20):
-                sma20 = close_px
-            if close_px < float(sma20):
+    if not is_breakout:
+        if days_held >= int(time_limit * 0.8):
+            if pnl_pct < -5.0:
+                return True, effective_stop, None
+            if pnl_pct < 3.0:
+                sma20 = state.get("sma20", np.nan)
+                if not np_isfinite(sma20):
+                    sma20 = close_px
+                if close_px < float(sma20):
+                    return True, effective_stop, None
+
+        # Final time limit
+        if days_held >= time_limit:
+            if pnl_pct < 0:
+                return True, effective_stop, None
+            if pnl_pct < 8.0:
+                return True, effective_stop, None
+            sma50 = state.get("sma50", np.nan)
+            if np_isfinite(sma50) and close_px < float(sma50):
                 return True, effective_stop, None
 
-    # Final time limit
-    if days_held >= time_limit:
-        if pnl_pct < 0:
-            return True, effective_stop, None
-        if pnl_pct < 8.0:
-            return True, effective_stop, None
+    # 3. TREND BREAK PROTECTION
+    if not is_breakout:
         sma50 = state.get("sma50", np.nan)
         if np_isfinite(sma50) and close_px < float(sma50):
-            return True, effective_stop, None
-
-    # 3. TREND BREAK PROTECTION
-    sma50 = state.get("sma50", np.nan)
-    if np_isfinite(sma50) and close_px < float(sma50):
-        if pnl_pct > 0:
-            return True, effective_stop, None
-        if days_held > 10:
-            return True, effective_stop, None
+            if pnl_pct > 0:
+                return True, effective_stop, None
+            if days_held > 10:
+                return True, effective_stop, None
 
     # SMA surfing override (profit-protect for runners)
-
-    if pnl_pct > 0 and days_held > 3:
-
-        sma10 = state.get("sma10")
-
-        if sma10 is None:
-
-            row_last = state.get("row_last")
-
-            if row_last is not None:
-
-                sma10 = row_last.get("sma10")
-
-        if sma10 is not None and np_isfinite(sma10) and close_px < float(sma10):
-
-            return True, effective_stop, None
+    if is_breakout:
+        if pnl_pct >= activation_pct and days_held > 5:
+            sma_ref = state.get("sma50")
+            if sma_ref is None:
+                row_last_local = state.get("row_last")
+                if row_last_local is not None:
+                    sma_ref = row_last_local.get("sma50")
+            if sma_ref is not None and np_isfinite(sma_ref) and close_px < float(sma_ref):
+                return True, effective_stop, None
 
 
     # 4. PROFIT TARGETS
@@ -479,6 +490,8 @@ def _generic_exit_decision(
         return True, effective_stop, target_px
 
     # 5. OTHER RULE-BASED EXITS
+    if is_breakout and pnl_pct < activation_pct:
+        return False, effective_stop, None
     row_last = state.get("row_last")
     for rule in genome.get("exit_rules", []) or []:
         if not isinstance(rule, dict):

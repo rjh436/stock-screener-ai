@@ -8,6 +8,7 @@ DEFAULT_SCORING_WEIGHTS = {
     "atr_high_bonus": 12.0,
     "atr_med_bonus": 5.0,
     "vol_bonus": 11.0,
+    "vcp_bonus": 50.0,
     "sniper_bonus": 50.0,
     "trend_bonus": 40.0,
     "trend_penalty": -15.0,

@@ -279,141 +279,58 @@ def _score_candidate(
     return max(0.0, float(score))
 
 
-def _calculate_row_score(
-    row_or_rsi2: Any,
-    strategy_name: str = "",
-    weights: Optional[Dict[str, float]] = None,
-    **kwargs: Any,
-) -> float:
-    # --- DUAL-CORE RANKING ENGINE ---
-    # Breakout/Momentum: high RSI + VCP + near 52w high + NATR fuel.
-    # Mean Reversion/Wealth: low RSI dip buying.
-    if weights is None or not isinstance(weights, dict):
-        weights = DEFAULT_SCORING_WEIGHTS
+def _resolve_scoring_mode(
+    strategy_name: str,
+    scoring_type: Optional[str] = None,
+    type_hint: Optional[str] = None,
+) -> str:
+    for raw in (scoring_type, type_hint):
+        if isinstance(raw, str):
+            key = raw.strip().lower()
+            if any(token in key for token in ("breakout", "momentum", "vcp", "kinetic")):
+                return "breakout"
+            if any(token in key for token in ("wealth", "mean", "reversion", "income")):
+                return "wealth"
 
-    merged = dict(DEFAULT_SCORING_WEIGHTS)
-    merged.update(weights)
-
-    rsi_factor = float(merged.get("rsi_factor", 0.0) or 0.0)
-    vcp_bonus = float(merged.get("vcp_bonus", merged.get("sniper_bonus", 0.0)) or 0.0)
-    trend_bonus = float(merged.get("trend_bonus", 0.0) or 0.0)
-    vol_bonus = float(merged.get("vol_bonus", 0.0) or 0.0)
-
-    row = row_or_rsi2 if isinstance(row_or_rsi2, (pd.Series, dict)) else None
-
-    def _get_val(key: str, default: float) -> float:
-        if row is not None:
-            try:
-                return row.get(key, default)
-            except Exception:
-                pass
-        return kwargs.get(key, default)
-
-    def _as_float(value: float, default: float) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return float(default)
-
-    scoring_type = str(kwargs.get("scoring_type", "") or "").lower()
     name = str(strategy_name or "").lower()
-    is_breakout = scoring_type in ("breakout", "momentum") or any(
-        key in name for key in ("breakout", "momentum", "vcp", "kinetic")
-    )
-
-    score = 0.0
-
-    if is_breakout:
-        rsi14 = _as_float(_get_val("rsi14", 50.0), 50.0)
-        if rsi14 > 50:
-            score += rsi14 * rsi_factor
-        else:
-            score -= (50.0 - rsi14)
-
-        bb_width = _as_float(_get_val("bb_width", 1.0), 1.0)
-        if bb_width < _VCP_BB_WIDTH_THRESH:
-            score += vcp_bonus
-
-        close = _as_float(_get_val("close", 0.0), 0.0)
-        high52 = _as_float(_get_val("high_52w", close), close)
-        if high52 > 0 and close >= (high52 * 0.85):
-            score += trend_bonus
-
-        natr = _as_float(_get_val("natr", 0.0), 0.0)
-        if natr > 2.5:
-            score += vol_bonus
-    else:
-        rsi2 = _as_float(_get_val("rsi2", _get_val("rsi14", 50.0)), 50.0)
-        score += (100.0 - rsi2) * rsi_factor
-
-    return max(0.0, float(score))
+    if any(token in name for token in ("breakout", "momentum", "vcp", "kinetic")):
+        return "breakout"
+    if any(token in name for token in ("wealth", "velocity", "income")):
+        return "wealth"
+    return "wealth"
 
 
-def _calculate_row_score(
-    row_or_rsi2: Any,
-    strategy_name: str = "",
-    weights: Optional[Dict[str, float]] = None,
-    **kwargs: Any,
+def _score_row_dual_core(
+    rsi2: float,
+    rsi14: float,
+    bb_width: float,
+    natr: float,
+    close_px: float,
+    high_52w: float,
+    weights: Dict[str, float],
+    scoring_mode: str,
 ) -> float:
-    # --- DUAL-CORE RANKING ENGINE ---
-    # Breakout/Momentum: high RSI + VCP + NATR fuel.
-    # Wealth/Mean Reversion: low RSI dip buying.
-    if weights is None or not isinstance(weights, dict):
-        weights = DEFAULT_SCORING_WEIGHTS
+    np_isfinite = np.isfinite
+    rsi_factor = float(weights.get("rsi_factor", 0.0) or 0.0)
+    vcp_bonus = float(weights.get("vcp_bonus", weights.get("sniper_bonus", 0.0)) or 0.0)
+    vol_bonus = float(weights.get("vol_bonus", 0.0) or 0.0)
+    trend_bonus = float(weights.get("trend_bonus", 0.0) or 0.0)
 
-    merged = dict(DEFAULT_SCORING_WEIGHTS)
-    merged.update(weights)
-
-    rsi_factor = float(merged.get("rsi_factor", 0.0) or 0.0)
-    vcp_bonus = float(merged.get("vcp_bonus", merged.get("sniper_bonus", 0.0)) or 0.0)
-    vol_bonus = float(merged.get("vol_bonus", 0.0) or 0.0)
-
-    row = row_or_rsi2 if isinstance(row_or_rsi2, (pd.Series, dict)) else None
-
-    def _get_val(key: str, default: float) -> float:
-        if row is not None:
-            try:
-                return row.get(key, default)
-            except Exception:
-                pass
-        return kwargs.get(key, default)
-
-    def _as_float(value: float, default: float) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return float(default)
-
-    scoring_type = str(kwargs.get("scoring_type", "") or "").lower()
-    name = str(strategy_name or "").lower()
-    if scoring_type:
-        is_breakout = scoring_type in ("breakout", "momentum")
-        is_wealth = scoring_type in ("wealth", "mean_reversion")
-    else:
-        is_breakout = any(key in name for key in ("breakout", "momentum", "vcp", "kinetic"))
-        is_wealth = "wealth" in name
-    if not is_breakout and not is_wealth:
-        is_wealth = True
-
-    score = 0.0
-
-    if is_breakout:
-        rsi14 = _as_float(_get_val("rsi14", 50.0), 50.0)
-        if rsi14 > 50:
-            score += rsi14 * rsi_factor
-        else:
-            score -= (50.0 - rsi14)
-
-        bb_width = _as_float(_get_val("bb_width", 1.0), 1.0)
-        if bb_width < _VCP_BB_WIDTH_THRESH:
+    if scoring_mode == "breakout":
+        if not np_isfinite(rsi14):
+            rsi14 = 50.0
+        score = (rsi14 * rsi_factor) if rsi14 > 50.0 else -(50.0 - rsi14)
+        if np_isfinite(bb_width) and bb_width < _VCP_BB_WIDTH_THRESH:
             score += vcp_bonus
-
-        natr = _as_float(_get_val("natr", 0.0), 0.0)
-        if natr > 2.5:
+        if np_isfinite(natr) and natr > 2.5:
             score += vol_bonus
+        if np_isfinite(close_px) and np_isfinite(high_52w) and high_52w > 0:
+            if close_px >= (high_52w * 0.85):
+                score += trend_bonus
     else:
-        rsi2 = _as_float(_get_val("rsi2", _get_val("rsi14", 50.0)), 50.0)
-        score += (100.0 - rsi2) * rsi_factor
+        if not np_isfinite(rsi2):
+            rsi2 = 50.0
+        score = (100.0 - rsi2) * rsi_factor
 
     return max(0.0, float(score))
 
@@ -425,64 +342,50 @@ def calculate_backtest_quality_score(
     **kwargs: Any,
 ) -> float:
     """
-    Bifurcated ranking engine:
-    - Breakout/VCP/Kinetic: high RSI, tight BB width, SMA10 surfing.
+    Dual-core ranking engine:
+    - Breakout/VCP/Kinetic: high RSI, tight BB width, NATR fuel.
     - Wealth/Mean Reversion: low RSI dip buying.
     """
-    if weights is None or not isinstance(weights, dict):
-        weights = DEFAULT_SCORING_WEIGHTS
-
     merged = dict(DEFAULT_SCORING_WEIGHTS)
-    merged.update(weights)
+    if isinstance(weights, dict):
+        merged.update(weights)
 
-    rsi_factor = float(merged.get("rsi_factor", 0.0) or 0.0)
-    vcp_bonus = float(merged.get("vcp_bonus", merged.get("sniper_bonus", 0.0)) or 0.0)
-    trend_bonus = float(merged.get("trend_bonus", 0.0) or 0.0)
+    scoring_mode = _resolve_scoring_mode(
+        strategy_name,
+        scoring_type=kwargs.get("scoring_type"),
+        type_hint=kwargs.get("type"),
+    )
 
-    is_row = isinstance(row_or_rsi2, (pd.Series, dict))
-    row = row_or_rsi2 if is_row else None
-
-    def _get_val(key: str, default: float) -> float:
-        if row is not None:
-            try:
-                return row.get(key, default)
-            except Exception:
-                pass
-        return kwargs.get(key, default)
-
-    def _as_float(value: float, default: float) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return float(default)
-
-    strat_key = str(strategy_name or "").lower()
-    is_breakout = any(token in strat_key for token in ("breakout", "vcp", "kinetic"))
-
-    score = 0.0
-    if is_breakout:
-        rsi14 = _as_float(_get_val("rsi14", 50.0), 50.0)
-        if rsi14 > 50.0:
-            score += rsi14 * rsi_factor
-
-        bb_width = _as_float(_get_val("bb_width", 1.0), 1.0)
-        if bb_width < 0.15:
-            score += vcp_bonus
-
-        close_px = _as_float(_get_val("close", 0.0), 0.0)
-        sma10 = _as_float(_get_val("sma10", 0.0), 0.0)
-        if close_px > 0.0 and sma10 > 0.0 and close_px > sma10:
-            score += trend_bonus
-    else:
-        if is_row:
-            rsi2 = _as_float(_get_val("rsi2", _get_val("rsi14", 50.0)), 50.0)
+    if isinstance(row_or_rsi2, (pd.Series, dict)):
+        row = row_or_rsi2
+        rsi2 = float(row.get("rsi2", 50) or 50)
+        rsi14 = float(row.get("rsi14", rsi2) or rsi2)
+        bb_width = float(row.get("bb_width", np.nan))
+        close_px = float(row.get("close", 0) or 0)
+        high_52w = float(row.get("high_52w", np.nan))
+        natr = row.get("natr")
+        if natr is None or not np.isfinite(natr):
+            atr14 = float(row.get("atr14", 0) or 0)
+            natr = (atr14 / close_px) * 100.0 if close_px > 0 and atr14 > 0 else 0.0
         else:
-            rsi2 = _as_float(row_or_rsi2, 50.0)
-        score += (100.0 - rsi2) * rsi_factor
+            natr = float(natr)
+    else:
+        rsi2 = float(row_or_rsi2 if row_or_rsi2 is not None else 50.0)
+        rsi14 = float(kwargs.get("rsi14", rsi2) or rsi2)
+        bb_width = float(kwargs.get("bb_width", np.nan))
+        close_px = float(kwargs.get("close", 0.0) or 0.0)
+        high_52w = float(kwargs.get("high_52w", np.nan))
+        natr = kwargs.get("natr")
+        if natr is None or not np.isfinite(natr):
+            atr14 = float(kwargs.get("atr14", 0.0) or 0.0)
+            natr = (atr14 / close_px) * 100.0 if close_px > 0 and atr14 > 0 else 0.0
+        else:
+            natr = float(natr)
 
-    return max(0.0, float(score))
+    return _score_row_dual_core(rsi2, rsi14, bb_width, natr, close_px, high_52w, merged, scoring_mode)
 
 
+@dataclass(slots=True)
 class _SymbolArrays:
     df: pd.DataFrame
     index: np.ndarray
@@ -884,7 +787,7 @@ def _legacy_run_backtest(
     date_to_idx = {dt: i for i, dt in enumerate(all_dates)}
     candidates_by_day: List[List[_Candidate]] = [[] for _ in range(len(all_dates))]
 
-    compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float, float, bool]] = []
+    compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float, float, bool, str]] = []
     for strat in strategies:
         raw_params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
         params = _unwrap_genome(raw_params)
@@ -900,7 +803,14 @@ def _legacy_run_backtest(
             min_adx = 0.0
         vix_limit_scaling = bool(params.get("vix_limit_scaling", False))
         base_stop_mult = float(params.get("stop_loss_atr", 3.0) or 3.0)
-        compiled_strategies.append((strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling))
+        scoring_mode = _resolve_scoring_mode(
+            strat.name,
+            scoring_type=params.get("scoring_type"),
+            type_hint=params.get("type"),
+        )
+        compiled_strategies.append(
+            (strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling, scoring_mode)
+        )
 
     np_isfinite = np.isfinite
 
@@ -957,7 +867,7 @@ def _legacy_run_backtest(
             if gap_pct < -0.08:
                 continue
 
-            for strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling in compiled_strategies:
+        for strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling, scoring_mode in compiled_strategies:
                 entry_signal = strat.entry(df, prev_i)
                 if not entry_signal:
                     continue
@@ -1036,6 +946,7 @@ def _legacy_run_backtest(
                     row_or_rsi2=float(rsi2_arr[prev_i]), # Legacy support
                     strategy_name=strat.name,
                     weights=params.get("scoring_weights"),
+                    scoring_type=scoring_mode,
 
                     # --- CRITICAL: MOMENTUM SIGNALS ---
                     rsi14=float(rsi14_arr[prev_i]),
@@ -1443,6 +1354,131 @@ def _vectorized_entry_indices(sd: _SymbolArrays, entry_rules: Sequence[Dict[str,
     return (signal_idx + 1).astype(np.int32, copy=False)
 
 
+def _vectorized_signal_indices(sd: _SymbolArrays, entry_rules: Sequence[Dict[str, Any]], warmup: int) -> np.ndarray:
+    """
+    Return *signal-day* indices (i) where the strategy signals on i.
+    """
+    n = len(sd.index)
+    if n <= 1:
+        return np.array([], dtype=np.int32)
+
+    warmup = max(int(warmup or MIN_BARS), MIN_BARS)
+
+    mask = np.ones(n, dtype=bool)
+    for rule in entry_rules or []:
+        if not isinstance(rule, dict):
+            return np.array([], dtype=np.int32)
+        col = rule.get("col")
+        op = rule.get("op")
+        op_fn = _VEC_OPS.get(str(op))
+        if not col or op_fn is None:
+            return np.array([], dtype=np.int32)
+
+        left = getattr(sd, str(col), None)
+        if left is None:
+            if str(col) in sd.df.columns:
+                left = sd.df[str(col)].to_numpy(dtype=np.float64, copy=False)
+            else:
+                return np.array([], dtype=np.int32)
+
+        if "val" in rule:
+            try:
+                rhs = float(rule.get("val"))
+            except (TypeError, ValueError):
+                return np.array([], dtype=np.int32)
+            rule_mask = op_fn(left, rhs) & np.isfinite(left)
+        elif "ref" in rule:
+            ref = str(rule.get("ref") or "")
+            right = getattr(sd, ref, None)
+            if right is None:
+                if ref in sd.df.columns:
+                    right = sd.df[ref].to_numpy(dtype=np.float64, copy=False)
+                else:
+                    return np.array([], dtype=np.int32)
+            if "mult" in rule:
+                try:
+                    mult = float(rule["mult"])
+                    right = right * mult
+                except (ValueError, TypeError):
+                    pass
+            rule_mask = op_fn(left, right) & np.isfinite(left) & np.isfinite(right)
+        else:
+            return np.array([], dtype=np.int32)
+
+        mask &= rule_mask
+
+    mask[:warmup] = False
+    mask[0] = False  # need prior close for gap logic
+    mask[-1] = False  # avoid last bar for entries
+
+    return np.flatnonzero(mask).astype(np.int32, copy=False)
+
+
+def _vectorized_breakout_pivot(
+    sd: _SymbolArrays,
+    entry_rules: Sequence[Dict[str, Any]],
+    idx: np.ndarray,
+) -> Optional[np.ndarray]:
+    pivots = []
+    for rule in entry_rules or []:
+        if not isinstance(rule, dict):
+            continue
+        if str(rule.get("col")) != "close":
+            continue
+        op = str(rule.get("op"))
+        if op not in (">", ">="):
+            continue
+        ref = rule.get("ref")
+        if not ref:
+            continue
+        right = getattr(sd, str(ref), None)
+        if right is None:
+            if str(ref) in sd.df.columns:
+                right = sd.df[str(ref)].to_numpy(dtype=np.float64, copy=False)
+            else:
+                continue
+        vals = right[idx]
+        if "mult" in rule:
+            try:
+                mult = float(rule["mult"])
+                vals = vals * mult
+            except (ValueError, TypeError):
+                pass
+        pivots.append(vals)
+
+    if not pivots:
+        return None
+    return np.nanmax(np.stack(pivots, axis=0), axis=0)
+
+
+def _resolve_breakout_pivot(row: pd.Series, entry_rules: Sequence[Dict[str, Any]]) -> Optional[float]:
+    pivot = None
+    for rule in entry_rules or []:
+        if not isinstance(rule, dict):
+            continue
+        if str(rule.get("col")) != "close":
+            continue
+        op = str(rule.get("op"))
+        if op not in (">", ">="):
+            continue
+        ref = rule.get("ref")
+        if not ref:
+            continue
+        try:
+            val = float(row.get(ref, np.nan))
+        except (TypeError, ValueError):
+            continue
+        if "mult" in rule:
+            try:
+                val *= float(rule["mult"])
+            except (TypeError, ValueError):
+                pass
+        if not np.isfinite(val):
+            continue
+        pivot = val if pivot is None else max(pivot, val)
+    return pivot
+
+
 def _score_candidates_vectorized(
     rsi2: np.ndarray,
     rsi14: np.ndarray,
@@ -1453,38 +1489,28 @@ def _score_candidates_vectorized(
     sma200: np.ndarray,
     cci: np.ndarray,
     bb_width: np.ndarray,
+    high_52w: np.ndarray,
     w: _ScoreWeights,
-    scoring_type: str = "mean_reversion",
+    scoring_mode: str = "wealth",
 ) -> np.ndarray:
     close_px = np.nan_to_num(close_px, nan=0.0)
     rsi2 = np.nan_to_num(rsi2, nan=50.0)
     rsi14 = np.nan_to_num(rsi14, nan=50.0)
     bb_width = np.nan_to_num(bb_width, nan=1.0)
+    high_52w = np.nan_to_num(high_52w, nan=0.0)
 
-    if scoring_type == "breakout":
-        base = rsi14 * float(w.rsi_factor)
-        base = np.clip(base, 0.0, 100.0)
-        score = base.astype(np.float64, copy=True)
+    natr = np.zeros_like(close_px)
+    natr_mask = (close_px > 0) & np.isfinite(atr14)
+    natr[natr_mask] = (atr14[natr_mask] / close_px[natr_mask]) * 100.0
 
-        vcp_ok = (bb_width < _VCP_BB_WIDTH_THRESH)
-        score += np.where(vcp_ok, float(w.vcp_bonus), 0.0)
+    if scoring_mode == "breakout":
+        score = np.where(rsi14 > 50.0, rsi14 * float(w.rsi_factor), -(50.0 - rsi14))
+        score += np.where(bb_width < _VCP_BB_WIDTH_THRESH, float(w.vcp_bonus), 0.0)
+        score += np.where(natr > 2.5, float(w.vol_bonus), 0.0)
+        near_high = (high_52w > 0) & (close_px >= (high_52w * 0.85))
+        score += np.where(near_high, float(w.trend_bonus), 0.0)
     else:
-        base = (100.0 - rsi2) * float(w.rsi_factor)
-        base = np.clip(base, 0.0, 100.0)
-        score = base.astype(np.float64, copy=True)
-
-        vcp_ok = (cci < 0) & (bb_width < _VCP_BB_WIDTH_THRESH)
-        score += np.where(vcp_ok, float(w.vcp_bonus), 0.0)
-
-    vol_rel = volume / (vol_ma20 + 1.0)
-    score += np.where(vol_rel >= 1.5, float(w.vol_bonus), 0.0)
-
-    trend_ok = (close_px > 0) & (sma200 > 0)
-    score += np.where(
-        trend_ok & (close_px > sma200),
-        float(w.trend_bonus),
-        np.where(trend_ok, float(w.trend_penalty), 0.0),
-    )
+        score = (100.0 - rsi2) * float(w.rsi_factor)
 
     return np.maximum(score, 0.0)
 
@@ -1557,7 +1583,7 @@ def run_backtest(
 
     date_to_idx = {dt: i for i, dt in enumerate(all_dates)}
     candidates_by_day: List[List[_Candidate]] = [[] for _ in range(len(all_dates))]
-    compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float, float, bool]] = []
+    compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float, float, bool, str]] = []
     for strat in strategies:
         raw_params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
         params = _unwrap_genome(raw_params)
@@ -1573,15 +1599,22 @@ def run_backtest(
             min_adx = 0.0
         vix_limit_scaling = bool(params.get("vix_limit_scaling", False))
         base_stop_mult = float(params.get("stop_loss_atr", 3.0) or 3.0)
-        compiled_strategies.append((strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling))
+        scoring_mode = _resolve_scoring_mode(
+            strat.name,
+            scoring_type=params.get("scoring_type"),
+            type_hint=params.get("type"),
+        )
+        compiled_strategies.append(
+            (strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling, scoring_mode)
+        )
 
     # Diagnostic: verify trail_activation is flowing from JSON -> strategy.params -> engine.
-    for strat, _w, params, _gap_ratio, _regime_filter, _base_stop_mult, _min_adx, _vix_limit_scaling in compiled_strategies:
+    for strat, _w, params, _gap_ratio, _regime_filter, _base_stop_mult, _min_adx, _vix_limit_scaling, _scoring_mode in compiled_strategies:
         if _DEBUG_TRAIL_ACTIVATION or (isinstance(params.get("version_info"), dict) and params["version_info"].get("status") == "Golden State"):
             print(f"DEBUG: {strat.name} using activation: {params.get('trail_activation')}")
 
-    wealth_present = any(_strategy_role(params) == "wealth" for _s, _w, params, _g, _r, _b, _m, _v in compiled_strategies)
-    income_present = any(_strategy_role(params) == "income" for _s, _w, params, _g, _r, _b, _m, _v in compiled_strategies)
+    wealth_present = any(_strategy_role(params) == "wealth" for _s, _w, params, _g, _r, _b, _m, _v, _sm in compiled_strategies)
+    income_present = any(_strategy_role(params) == "income" for _s, _w, params, _g, _r, _b, _m, _v, _sm in compiled_strategies)
     confluence_possible = wealth_present and income_present
     if super_signal_only and not confluence_possible:
         return _empty_result(SUPER_SIGNAL_NAME, float(start_cash), strategies[0].params if strategies else {})
@@ -1612,6 +1645,7 @@ def run_backtest(
         sma200_arr = sd.sma200
         cci_arr = sd.cci
         bb_width_arr = sd.bbwidth
+        high52w_arr = sd.high52w
         vix_arr = sd.vix
         vix_rel20_arr = sd.vixrel20
         spy_close_arr = sd.spyclose
@@ -1624,18 +1658,29 @@ def run_backtest(
             else:
                 gate_atr_arr = hl_range
 
-        for strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling in compiled_strategies:
+        for strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling, scoring_mode in compiled_strategies:
             vix_threshold = _get_param(params, "vix_threshold", 25.0, 10.0, 60.0)
             # Vectorized entry for base GenericStrategy genomes (optimizer hot path)
             if _can_vectorize_entry(strat, params, ai_model):
                 warmup = max(int(params.get("warmup_bars", MIN_BARS) or MIN_BARS), MIN_BARS)
-                entry_is = _vectorized_entry_indices(sd, params.get("entry_rules") or [], warmup)
-                if entry_is.size == 0:
-                    continue
+                same_day_breakout = scoring_mode == "breakout" and bool(params.get("breakout_same_day_entry", False))
+                if same_day_breakout:
+                    entry_is = _vectorized_signal_indices(sd, params.get("entry_rules") or [], warmup)
+                    if entry_is.size == 0:
+                        continue
+                    prev_is = entry_is
+                    prev_close = close_arr[entry_is - 1]
+                else:
+                    entry_is = _vectorized_entry_indices(sd, params.get("entry_rules") or [], warmup)
+                    if entry_is.size == 0:
+                        continue
+                    prev_is = entry_is - 1
+                    prev_close = close_arr[prev_is]
 
-                prev_is = entry_is - 1
-                prev_close, open_px, low_px = close_arr[prev_is], open_arr[entry_is], low_arr[entry_is]
+                open_px, low_px = open_arr[entry_is], low_arr[entry_is]
                 low_px = np.where(np.isfinite(low_px), low_px, open_px)
+                high_px = high_arr[entry_is]
+                high_px = np.where(np.isfinite(high_px), high_px, open_px)
 
                 debug_positions = None
                 if not super_signal_only:
@@ -1645,24 +1690,30 @@ def run_backtest(
 
                 # --- Dynamic Universe Gatekeeper ---
                 close_val = close_arr[entry_is]
-                valid &= np.isfinite(close_val) & (close_val >= 10.0)
-
-                sma200_val = sma200_arr[entry_is]
-                valid &= np.isfinite(sma200_val) & (close_val >= sma200_val)
+                min_price = float(params.get("min_price", 10.0) or 10.0)
+                valid &= np.isfinite(close_val) & (close_val >= min_price)
 
                 vol_val = volume_arr[entry_is]
-                valid &= np.isfinite(vol_val) & ((close_val * vol_val) >= 25_000_000)
+                min_dollar_vol = float(params.get("min_dollar_vol", 25_000_000) or 25_000_000)
+                valid &= np.isfinite(vol_val) & ((close_val * vol_val) >= min_dollar_vol)
 
-                atr_val = gate_atr_arr[entry_is]
-                natr = np.zeros_like(close_val)
-                natr_mask = (
-                    np.isfinite(atr_val)
-                    & (atr_val > 0)
-                    & np.isfinite(close_val)
-                    & (close_val > 0)
-                )
-                natr[natr_mask] = (atr_val[natr_mask] / close_val[natr_mask]) * 100.0
-                valid &= natr_mask & (natr >= 2.0)
+                require_above_sma200 = bool(params.get("require_above_sma200", False))
+                if require_above_sma200:
+                    sma200_val = sma200_arr[entry_is]
+                    valid &= np.isfinite(sma200_val) & (close_val >= sma200_val)
+
+                min_natr = float(params.get("min_natr", 0) or 0)
+                if min_natr > 0:
+                    atr_val = gate_atr_arr[entry_is]
+                    natr = np.zeros_like(close_val)
+                    natr_mask = (
+                        np.isfinite(atr_val)
+                        & (atr_val > 0)
+                        & np.isfinite(close_val)
+                        & (close_val > 0)
+                    )
+                    natr[natr_mask] = (atr_val[natr_mask] / close_val[natr_mask]) * 100.0
+                    valid &= natr_mask & (natr >= min_natr)
 
                 gap_pct_arr = (open_px - prev_close) / prev_close
                 valid &= gap_pct_arr >= -0.15
@@ -1686,7 +1737,6 @@ def run_backtest(
                 valid &= np.isfinite(signal_atr) & (signal_atr > 0)
 
                 # Batched Scoring
-                scoring_type = params.get("scoring_type", "mean_reversion")
                 score = _score_candidates_vectorized(
                     rsi2_arr[prev_is],
                     rsi14_arr[prev_is],
@@ -1697,18 +1747,36 @@ def run_backtest(
                     sma200_arr[prev_is],
                     cci_arr[prev_is],
                     bb_width_arr[prev_is],
+                    high52w_arr[prev_is],
                     w,
-                    scoring_type=scoring_type,
+                    scoring_mode=scoring_mode,
                 )
 
                 # FIX 1: Apply Parity Strategy Multipliers
                 score = apply_strategy_score_multipliers(score, params)
 
-                # FIX 2: Vectorized Limit Entry Logic
+                # FIX 2: Vectorized Limit/Stop Entry Logic
                 entry_px_arr = open_px.copy()
                 limit_ratio = params.get("limit_ratio")
+                breakout_max_gap_pct = float(params.get("breakout_max_gap_pct", params.get("max_gap_pct", 0.0)) or 0.0)
 
-                if limit_ratio is not None:
+                if scoring_mode == "breakout":
+                    try:
+                        limit_ratio_val = float(limit_ratio) if limit_ratio is not None else 1.0
+                    except (ValueError, TypeError):
+                        limit_ratio_val = 1.0
+                    pivot_px = _vectorized_breakout_pivot(sd, params.get("entry_rules") or [], prev_is)
+                    if pivot_px is None:
+                        target_px = prev_close * limit_ratio_val
+                    else:
+                        target_px = pivot_px * limit_ratio_val
+
+                    filled_mask = np.isfinite(target_px) & (high_px >= target_px)
+                    if breakout_max_gap_pct > 0:
+                        filled_mask &= open_px <= (target_px * (1.0 + breakout_max_gap_pct))
+                    entry_px_arr = np.where(open_px > target_px, open_px, target_px)
+                    score[~filled_mask] = 0.0
+                elif limit_ratio is not None:
                     try:
                         limit_ratio_val = float(limit_ratio)
                         target_px = prev_close * limit_ratio_val
@@ -1720,14 +1788,12 @@ def run_backtest(
                                 1.0,
                             )
                             target_px = target_px * scale
-                        # Fill if Open < Target OR Low < Target
+                        # Mean-reversion: buy on pullback to the target.
                         filled_mask = (open_px < target_px) | (low_px < target_px)
-
-                        # Zero out scores for unfilled trades
-                        score[~filled_mask] = 0.0
-
-                        # Set entry price
                         entry_px_arr = np.where(open_px < target_px, open_px, target_px)
+
+                        # Zero out scores for unfilled trades.
+                        score[~filled_mask] = 0.0
                     except (ValueError, TypeError):
                         pass
 
@@ -1804,10 +1870,12 @@ def run_backtest(
                 if day_idx is None:
                     continue
 
-                prev_i = i - 1
+                same_day_breakout = scoring_mode == "breakout" and bool(params.get("breakout_same_day_entry", False))
+                signal_i = i if same_day_breakout else (i - 1)
+                prev_i = signal_i
                 debug_reject = debug_last_bar and i == (n - 1)
 
-                prev_close = float(close_arr[prev_i])
+                prev_close = float(close_arr[i - 1]) if same_day_breakout else float(close_arr[prev_i])
                 if not np_isfinite(prev_close) or prev_close <= 0:
                     continue
 
@@ -1819,10 +1887,15 @@ def run_backtest(
                 if not np_isfinite(low_px):
                     low_px = open_px
 
+                high_px = float(high_arr[i])
+                if not np_isfinite(high_px):
+                    high_px = open_px
+
                 # --- Dynamic Universe Gatekeeper ---
                 curr_i = i
                 close_val = float(close_arr[curr_i])
-                if not np_isfinite(close_val) or close_val < 10.0:
+                min_price = float(params.get("min_price", 10.0) or 10.0)
+                if not np_isfinite(close_val) or close_val < min_price:
                     continue
 
                 sma200_val = float(sma200_arr[curr_i])
@@ -1830,7 +1903,8 @@ def run_backtest(
                     continue
 
                 vol_val = float(volume_arr[curr_i])
-                if not np_isfinite(vol_val) or (close_val * vol_val) < 25_000_000:
+                min_dollar_vol = float(params.get("min_dollar_vol", 25_000_000) or 25_000_000)
+                if not np_isfinite(vol_val) or (close_val * vol_val) < min_dollar_vol:
                     continue
 
                 atr_val = float(gate_atr_arr[curr_i])
@@ -1878,7 +1952,24 @@ def run_backtest(
                 if limit_ratio is None:
                     limit_ratio = params.get("limit_ratio")
 
-                if limit_ratio is not None and prev_close > 0:
+                breakout_max_gap_pct = float(params.get("breakout_max_gap_pct", params.get("max_gap_pct", 0.0)) or 0.0)
+
+                if scoring_mode == "breakout":
+                    try:
+                        limit_ratio_val = float(limit_ratio) if limit_ratio is not None else 1.0
+                    except (TypeError, ValueError):
+                        limit_ratio_val = 1.0
+                    pivot = _resolve_breakout_pivot(df.iloc[prev_i], params.get("entry_rules") or [])
+                    if pivot is None:
+                        pivot = prev_close
+                    target_px = pivot * limit_ratio_val
+                    if high_px >= target_px:
+                        if breakout_max_gap_pct > 0 and open_px > target_px * (1.0 + breakout_max_gap_pct):
+                            continue
+                        entry_px = open_px if open_px > target_px else target_px
+                    else:
+                        continue
+                elif limit_ratio is not None and prev_close > 0:
                     try:
                         limit_ratio_val = float(limit_ratio)
                     except (TypeError, ValueError):
@@ -1889,6 +1980,7 @@ def run_backtest(
                             if np_isfinite(vix_prev) and vix_prev > vix_threshold:
                                 limit_ratio_val *= 0.98
                         target_px = prev_close * limit_ratio_val
+                        # Mean-reversion: buy on pullback to the target.
                         if open_px < target_px:
                             entry_px = open_px
                         elif low_px < target_px:
@@ -1925,6 +2017,7 @@ def run_backtest(
                     row_or_rsi2=float(rsi2_arr[prev_i]), # Legacy support
                     strategy_name=strat.name,
                     weights=params.get("scoring_weights"),
+                    scoring_type=scoring_mode,
 
                     # --- CRITICAL: MOMENTUM SIGNALS ---
                     rsi14=float(rsi14_arr[prev_i]),
