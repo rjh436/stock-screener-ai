@@ -1,6 +1,9 @@
 import copy
+import gc
 import itertools
+import multiprocessing as mp
 import os
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Dict, Optional
@@ -47,6 +50,10 @@ PARAM_GRID = {
     "red_bypass_rs": [90, 95, 101],
 }
 
+_ENV_MAX_WORKERS = "APEX_OPTIMIZER_MAX_WORKERS"
+_ENV_MP_CONTEXT = "APEX_OPTIMIZER_MP_CONTEXT"
+_ENV_SERIAL = "APEX_OPTIMIZER_SERIAL"
+
 _DATA_PACK = None
 
 
@@ -88,12 +95,53 @@ def get_data(days: int = 365 * 20):
 
     global_ctx = _load_cached_globals(cutoff)
     prepared = prepare_backtest_data(data_map, None, None, global_ctx)
+    data_map.clear()
+    gc.collect()
     return prepared
 
 
-def _init_worker(data_pack):
+def _init_worker(data_pack=None):
     global _DATA_PACK
-    _DATA_PACK = data_pack
+    if data_pack is not None:
+        _DATA_PACK = data_pack
+
+
+def _resolve_mp_context() -> mp.context.BaseContext:
+    override = os.environ.get(_ENV_MP_CONTEXT, "").strip().lower()
+    if override:
+        try:
+            return mp.get_context(override)
+        except ValueError:
+            print(f"Invalid {_ENV_MP_CONTEXT}={override}. Falling back to default.")
+    if sys.platform == "darwin":
+        try:
+            return mp.get_context("fork")
+        except ValueError:
+            pass
+    return mp.get_context()
+
+
+def _resolve_max_workers(total_jobs: int, start_method: str, symbol_count: int) -> int:
+    serial = os.environ.get(_ENV_SERIAL, "").strip().lower()
+    if serial in ("1", "true", "yes"):
+        return 1
+
+    env_val = os.environ.get(_ENV_MAX_WORKERS, "").strip()
+    if env_val:
+        try:
+            val = int(env_val)
+        except ValueError:
+            val = 0
+        if val > 0:
+            return min(val, total_jobs)
+
+    cpu = os.cpu_count() or 1
+    cap = 8 if start_method == "fork" else 4
+    if symbol_count >= 2500:
+        cap = min(cap, 4)
+    elif symbol_count >= 1500:
+        cap = min(cap, 6)
+    return min(total_jobs, max(1, min(cpu, cap)))
 
 
 def _normalize_dd(raw_dd: float) -> float:
@@ -156,18 +204,23 @@ def optimize():
         print("No cached data loaded. Check cache or data loader.")
         return
 
+    _init_worker(data_pack)
+
     keys, values = zip(*PARAM_GRID.items())
     combinations = [dict(zip(keys, vals)) for vals in itertools.product(*values)]
 
     print(f"Starting optimization: {len(combinations)} strategies")
 
     results = []
-    max_workers = min(os.cpu_count() or 1, len(combinations))
+    ctx = _resolve_mp_context()
+    start_method = ctx.get_start_method()
+    symbol_count = len(data_pack.enriched) if hasattr(data_pack, "enriched") else 0
+    max_workers = _resolve_max_workers(len(combinations), start_method, symbol_count)
+    print(f"Using multiprocessing '{start_method}' with {max_workers} worker(s).")
 
-    with ProcessPoolExecutor(max_workers=max_workers, initializer=_init_worker, initargs=(data_pack,)) as executor:
-        futures = [executor.submit(worker, combo) for combo in combinations]
-        for i, fut in enumerate(as_completed(futures), start=1):
-            res = fut.result()
+    if max_workers <= 1:
+        for i, combo in enumerate(combinations, start=1):
+            res = worker(combo)
             if "error" in res:
                 continue
 
@@ -181,6 +234,34 @@ def optimize():
                 f"Exit:{res['params']['exit_sma']} "
                 f"CAGR:{res['cagr']:.2%} DD:{res['max_dd']:.2%} Trades:{res['trades']}"
             )
+    else:
+        pool_kwargs = {"max_workers": max_workers, "mp_context": ctx}
+        if start_method == "fork":
+            executor = ProcessPoolExecutor(**pool_kwargs)
+        else:
+            executor = ProcessPoolExecutor(
+                **pool_kwargs,
+                initializer=_init_worker,
+                initargs=(data_pack,),
+            )
+
+        with executor:
+            futures = [executor.submit(worker, combo) for combo in combinations]
+            for i, fut in enumerate(as_completed(futures), start=1):
+                res = fut.result()
+                if "error" in res:
+                    continue
+
+                dd = abs(res["max_dd"]) if res["max_dd"] != 0 else 0.0001
+                score = res["cagr"] / dd
+                res["score"] = score
+                results.append(res)
+
+                print(
+                    f"[{i}/{len(combinations)}] Stop:{res['params']['stop_loss_atr']} "
+                    f"Exit:{res['params']['exit_sma']} "
+                    f"CAGR:{res['cagr']:.2%} DD:{res['max_dd']:.2%} Trades:{res['trades']}"
+                )
 
     if not results:
         print("No results generated.")
