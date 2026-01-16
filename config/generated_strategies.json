@@ -45,108 +45,28 @@
     "type": "breakout",
     "entry_rules": [
       {
-        "col": "close",
-        "op": ">",
-        "ref": "sma50"
-      },
-      {
-        "col": "sma50",
-        "op": ">",
-        "ref": "sma150"
-      },
-      {
-        "col": "sma150",
-        "op": ">",
-        "ref": "sma200"
-      },
-      {
-        "col": "sma200_slope",
-        "op": ">",
-        "val": 0
-      },
-      {
-        "col": "close",
-        "op": ">",
-        "ref": "sma200"
-      },
-      {
-        "col": "close",
-        "op": ">",
-        "ref": "high_52w",
-        "mult": 0.9
-      },
-      {
-        "col": "close",
-        "op": "<",
-        "ref": "sma50",
-        "mult": 1.2
-      },
-      {
         "col": "rsi14",
         "op": ">",
         "val": 65
       },
       {
-        "col": "roc_60",
+        "col": "rs_rating",
         "op": ">",
-        "val": 30.0
-      },
-      {
-        "col": "rs_mom20",
-        "op": ">",
-        "val": 0.02
+        "val": 90
       },
       {
         "col": "bb_width",
         "op": "<",
-        "val": 0.18
-      },
-      {
-        "col": "natr",
-        "op": ">",
-        "val": 1.8
-      },
-      {
-        "col": "close",
-        "op": ">",
-        "ref": "highest55_1"
-      },
-      {
-        "col": "volume",
-        "op": ">",
-        "ref": "vol_ma20",
-        "mult": 1.7
+        "val": 0.15
       }
     ],
-    "regime_filter": true,
-    "partial_profit_target": 0.0,
+    "market_filter_mode": "traffic_light",
+    "yellow_rs_floor": 92,
+    "min_entry_score": 60,
     "stop_loss_atr": 2.0,
-    "time_stop": 120,
-    "trail_atr": 4.0,
-    "trail_activation": 2.0,
-    "exit_rules": [
-      {
-        "type": "rule",
-        "col": "close",
-        "op": "<",
-        "ref": "sma50"
-      }
-    ],
-    "min_entry_score": 0.0,
-    "bypass_regime_scoring": true,
-    "scoring_type": "breakout",
-    "scoring_weights": {
-      "rsi_factor": 2.5,
-      "vcp_bonus": 120.0,
-      "trend_bonus": 80.0,
-      "vol_bonus": 30.0
-    },
-    "limit_ratio": 1.0,
-    "breakout_max_gap_pct": 0.05,
-    "breakout_same_day_entry": true,
-    "min_price": 10.0,
-    "min_dollar_vol": 10000000,
-    "sizing_mode": "risk_1pct",
-    "max_pos_size": 0.25
+    "trail_atr": 0,
+    "time_stop": 40,
+    "risk_per_trade": 0.02,
+    "max_positions": 12
   }
 ]

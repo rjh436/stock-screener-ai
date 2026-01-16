@@ -40,6 +40,96 @@ def get_sector(symbol: str) -> str:
     return "Unknown"
 
 
+def inject_market_rs_rank(
+    enriched,
+    all_dates,
+    lookbacks=(63, 126, 189, 252),
+    weights=(0.40, 0.20, 0.20, 0.20),
+    min_history=252,
+    min_names=100,
+):
+    """
+    Creates rs_rating in [1..99] for each symbol/day using cross-sectional percentile rank
+    of weighted multi-horizon returns. NaN-safe; IPO-safe via min_history.
+    """
+    syms = list(enriched.keys())
+    n_days = len(all_dates)
+    n_syms = len(syms)
+
+    if n_syms == 0:
+        return
+
+    # Build matrix: rows=dates, cols=symbols
+    close_mat = np.full((n_days, n_syms), np.nan, dtype=np.float32)
+    for j, sym in enumerate(syms):
+        sd = enriched[sym]
+        # sd.gidx maps local bars -> global all_dates indices
+        # Check bounds to be safe
+        valid_mask = (sd.gidx >= 0) & (sd.gidx < n_days)
+        close_mat[sd.gidx[valid_mask], j] = sd.close[valid_mask].astype(np.float32)
+
+    # Weighted return score
+    tmp = np.zeros((n_days, n_syms), dtype=np.float32)
+
+    # Track valid history to avoid ranking IPOs too early
+    valid_hist = np.isfinite(close_mat)
+    cum = np.cumsum(valid_hist, axis=0)
+    enough = cum >= min_history
+
+    # Calculate weighted returns
+    # This vectorizes the sliding window return calc across all symbols
+    for lb, w in zip(lookbacks, weights):
+        # pct_change(lb) equivalent in numpy: (arr / arr shifted) - 1
+        shifted = np.roll(close_mat, lb, axis=0)
+        # Shift introduces wrap-around at the top; mask those out
+        shifted[:lb, :] = np.nan
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ret = (close_mat / shifted) - 1.0
+
+        # Where ret is nan, contribute 0? No, if any component is NaN, result is NaN.
+        # We rely on 'enough' mask later, but intermediate NaNs propagate.
+        tmp += w * ret
+
+    # Only score if we have enough history and valid data
+    score = np.where(enough & np.isfinite(tmp), tmp, np.nan)
+
+    # Rank day-by-day in chunks to save memory
+    rs_rating = np.zeros((n_days, n_syms), dtype=np.float32)
+
+    chunk = 250
+    for start in range(0, n_days, chunk):
+        end = min(n_days, start + chunk)
+        block = score[start:end, :]
+
+        for i in range(block.shape[0]):
+            row = block[i]
+            m = np.isfinite(row)
+            k = int(m.sum())
+            if k < min_names:
+                continue
+
+            vals = row[m]
+            # argsort gives indices that would sort the array
+            order = np.argsort(vals, kind="quicksort")
+            # ranks[k] = rank of value at index k
+            ranks = np.empty_like(order, dtype=np.int32)
+            ranks[order] = np.arange(k, dtype=np.int32)
+
+            # percentile in [0..1] -> mapped to 1..99
+            pct = (ranks / (k - 1)) if k > 1 else np.zeros(k, dtype=np.float32)
+            rs_rating[start + i, m] = 1.0 + 98.0 * pct
+
+    # Write back to symbol arrays
+    for j, sym in enumerate(syms):
+        sd = enriched[sym]
+        # Map global rating back to local indices
+        # sd.gidx contains global indices for each local bar
+        valid_indices = (sd.gidx >= 0) & (sd.gidx < n_days)
+        if np.any(valid_indices):
+            sd.rsrating[valid_indices] = rs_rating[sd.gidx[valid_indices], j]
+
+
 def simulate_breakout_fill(open_px: float, high_px: float, trigger_px: float, limit_px: float | None = None) -> float | None:
     """
     Conservatively simulates a Buy Stop Limit order on Daily Data.
@@ -134,6 +224,8 @@ def _compute_indicators(
             df["rs_sma20"] = df["rs_ratio"].rolling(20).mean()
             df["rs_trend"] = df["rs_ratio"] - df["rs_sma20"]
             df["spy_close"] = spy_aligned
+            df["spy_sma20"] = spy_aligned.rolling(20).mean()
+            df["spy_sma50"] = spy_aligned.rolling(50).mean()
             df["spy_sma200"] = spy_aligned.rolling(200).mean()
             df["rs_mom20"] = (df["rs_ratio"] / df["rs_ratio"].shift(20)) - 1.0
             df["spy_regime"] = (df["spy_close"] > df["spy_sma200"]).astype(int)
@@ -141,6 +233,8 @@ def _compute_indicators(
             df["rs_ratio"] = 1.0
             df["rs_trend"] = 0.0
             df["spy_close"] = np.nan
+            df["spy_sma20"] = np.nan
+            df["spy_sma50"] = np.nan
             df["spy_sma200"] = np.nan
             df["rs_mom20"] = 0.0
             df["spy_regime"] = 0.0
@@ -171,6 +265,9 @@ def _compute_indicators(
         df["rs_score"] = df["close"].pct_change(126)
         df["donchian20"] = df["highest20_1"]
         df["donchian_20"] = df["highest20_1"]
+
+        if "rs_rating" not in df.columns:
+            df["rs_rating"] = 0.0
 
         return df
     except Exception:
@@ -422,8 +519,11 @@ class _SymbolArrays:
     vixsma20: np.ndarray
     vixrel20: np.ndarray
     spyclose: np.ndarray
+    spysma20: np.ndarray
+    spysma50: np.ndarray
     spysma200: np.ndarray
     spyregime: np.ndarray
+    rsrating: np.ndarray
 
 
 @dataclass(slots=True)
@@ -620,8 +720,11 @@ def prepare_backtest_data(
                 vixsma20=_get_np_col(df, "vix_sma20", 20.0, length=n),
                 vixrel20=_get_np_col(df, "vix_rel20", 0.0, length=n),
                 spyclose=_get_np_col(df, "spy_close", np.nan, length=n),
+                spysma20=_get_np_col(df, "spy_sma20", np.nan, length=n),
+                spysma50=_get_np_col(df, "spy_sma50", np.nan, length=n),
                 spysma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
                 spyregime=_get_np_col(df, "spy_regime", 0.0, length=n),
+                rsrating=_get_np_col(df, "rs_rating", 0.0, length=n),
             )
         except Exception:
             continue
@@ -643,6 +746,11 @@ def prepare_backtest_data(
 
     for sym_data in enriched.values():
         sym_data.gidx = np.searchsorted(all_dates, sym_data.index).astype(np.int32, copy=False)
+
+    inject_market_rs_rank(enriched, all_dates)
+    for sym_data in enriched.values():
+        if "rs_rating" in sym_data.df.columns:
+            sym_data.df["rs_rating"] = sym_data.rsrating
 
     return PreparedBacktestData(enriched=enriched, all_dates=all_dates)
 
@@ -761,8 +869,11 @@ def _legacy_run_backtest(
                 vixsma20=_get_np_col(df, "vix_sma20", 20.0, length=n),
                 vixrel20=_get_np_col(df, "vix_rel20", 0.0, length=n),
                 spyclose=_get_np_col(df, "spy_close", np.nan, length=n),
+                spysma20=_get_np_col(df, "spy_sma20", np.nan, length=n),
+                spysma50=_get_np_col(df, "spy_sma50", np.nan, length=n),
                 spysma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
                 spyregime=_get_np_col(df, "spy_regime", 0.0, length=n),
+                rsrating=_get_np_col(df, "rs_rating", 0.0, length=n),
             )
         except Exception:
             continue
@@ -783,6 +894,11 @@ def _legacy_run_backtest(
     all_dates = all_index.values.astype("datetime64[ns]")
     for sym_data in enriched.values():
         sym_data.gidx = np.searchsorted(all_dates, sym_data.index).astype(np.int32, copy=False)
+
+    inject_market_rs_rank(enriched, all_dates)
+    for sym_data in enriched.values():
+        if "rs_rating" in sym_data.df.columns:
+            sym_data.df["rs_rating"] = sym_data.rsrating
 
     date_to_idx = {dt: i for i, dt in enumerate(all_dates)}
     candidates_by_day: List[List[_Candidate]] = [[] for _ in range(len(all_dates))]
@@ -872,7 +988,20 @@ def _legacy_run_backtest(
                 if not entry_signal:
                     continue
 
-                if regime_filter:
+                market_filter_mode = str(params.get("market_filter_mode") or "").lower()
+                if market_filter_mode == "traffic_light":
+                    spy_close_prev = float(spy_close_arr[prev_i])
+                    spy_sma200_prev = float(spy_sma200_arr[prev_i])
+                    spy_sma20_prev = float(spy_sma20_arr[prev_i])
+                    rs_rating_prev = float(rs_rating_arr[prev_i]) if np_isfinite(rs_rating_arr[prev_i]) else 0.0
+                    if np_isfinite(spy_close_prev) and np_isfinite(spy_sma200_prev):
+                        if spy_close_prev < spy_sma200_prev:
+                            continue
+                        if np_isfinite(spy_sma20_prev) and spy_close_prev < spy_sma20_prev:
+                            yellow_floor = float(params.get("yellow_rs_floor", 92.0) or 92.0)
+                            if rs_rating_prev < yellow_floor:
+                                continue
+                elif regime_filter:
                     spy_close_prev = float(spy_close_arr[prev_i])
                     spy_sma200_prev = float(spy_sma200_arr[prev_i])
                     if np_isfinite(spy_close_prev) and np_isfinite(spy_sma200_prev):
@@ -1649,7 +1778,10 @@ def run_backtest(
         vix_arr = sd.vix
         vix_rel20_arr = sd.vixrel20
         spy_close_arr = sd.spyclose
+        spy_sma20_arr = sd.spysma20
+        spy_sma50_arr = sd.spysma50
         spy_sma200_arr = sd.spysma200
+        rs_rating_arr = sd.rsrating
         gate_atr_arr = atr14_arr
         if not np.any(np.isfinite(gate_atr_arr) & (gate_atr_arr > 0)):
             hl_range = high_arr - low_arr
@@ -1718,9 +1850,35 @@ def run_backtest(
                 gap_pct_arr = (open_px - prev_close) / prev_close
                 valid &= gap_pct_arr >= -0.15
 
-                if regime_filter:
-                    valid &= ~(np.isfinite(spy_close_arr[prev_is]) & np.isfinite(spy_sma200_arr[prev_is]) &
-                               (spy_close_arr[prev_is] < spy_sma200_arr[prev_is]))
+                market_filter_mode = str(params.get("market_filter_mode") or "").lower()
+                if market_filter_mode == "traffic_light":
+                    spy_close_prev = spy_close_arr[prev_is]
+                    spy_sma200_prev = spy_sma200_arr[prev_is]
+                    spy_sma20_prev = spy_sma20_arr[prev_is]
+                    rs_rating_prev = rs_rating_arr[prev_is]
+
+                    red_mask = (
+                        np.isfinite(spy_close_prev)
+                        & np.isfinite(spy_sma200_prev)
+                        & (spy_close_prev < spy_sma200_prev)
+                    )
+                    valid &= ~red_mask
+
+                    yellow_mask = (
+                        np.isfinite(spy_close_prev)
+                        & np.isfinite(spy_sma200_prev)
+                        & np.isfinite(spy_sma20_prev)
+                        & (spy_close_prev >= spy_sma200_prev)
+                        & (spy_close_prev < spy_sma20_prev)
+                    )
+                    yellow_floor = float(params.get("yellow_rs_floor", 92.0) or 92.0)
+                    valid &= ~(yellow_mask & (rs_rating_prev < yellow_floor))
+                elif regime_filter:
+                    valid &= ~(
+                        np.isfinite(spy_close_arr[prev_is])
+                        & np.isfinite(spy_sma200_arr[prev_is])
+                        & (spy_close_arr[prev_is] < spy_sma200_arr[prev_is])
+                    )
 
                 if min_adx > 0:
                     adx_prev = adx_arr[prev_is]
@@ -1819,10 +1977,13 @@ def run_backtest(
                     & (spy_close_prev > spy_sma200_prev)
                 )
                 # --- DECOUPLING FIX: Binary Override ---
+                market_filter_mode = str(params.get("market_filter_mode") or "").lower()
                 bypass_regime = bool(params.get("bypass_regime_scoring", False))
                 strat_min = float(params.get("min_entry_score", MIN_ENTRY_SCORE))
 
-                if bypass_regime:
+                if market_filter_mode == "traffic_light":
+                    dynamic_min_score = np.full_like(score, strat_min)
+                elif bypass_regime:
                     dynamic_min_score = np.full_like(score, strat_min)
                 else:
                     bull_min = min(strat_min, 100.0)
@@ -2043,10 +2204,13 @@ def run_backtest(
                     and spy_close_prev > spy_sma200_prev
                 )
                 # --- DECOUPLING FIX: Binary Override ---
+                market_filter_mode = str(params.get("market_filter_mode") or "").lower()
                 bypass_regime = bool(params.get("bypass_regime_scoring", False))
                 strat_min = float(params.get("min_entry_score", MIN_ENTRY_SCORE))
 
-                if bypass_regime:
+                if market_filter_mode == "traffic_light":
+                    dynamic_min_score = strat_min
+                elif bypass_regime:
                     dynamic_min_score = strat_min
                 else:
                     bull_min = min(strat_min, 100.0)

@@ -357,179 +357,117 @@ def _exit_plan_style(val: str) -> str:
 
 
 def _generic_exit_decision(
-    genome: Dict[str, Any],
+    strategy_obj: Any,
     sd: Any,
     loc: int,
-    entry_i: int,
-    entry_price: float,
-    initial_stop: float,
+    entry_loc: int,
+    entry_px: float,
+    current_stop: float,
 ) -> Tuple[bool, float, Optional[float]]:
     """
-    Engine-native exit logic for rule-based (GenericStrategy) genomes.
-
-    Returns:
-      - should_exit
-      - effective_stop (including trail_activation)
-      - target_px (when profit_target triggers), else None
+    Centralized exit logic for both backtesting and live execution.
+    Returns: (should_exit, new_stop_price, target_price_hit)
     """
-    if isinstance(genome, dict) and isinstance(genome.get("genome"), dict):
-        genome = genome["genome"]
-
-    symbol_key = "__ENGINE__"
-    row = {
-        "genome": genome,
-        "entry_i": entry_i,
-        "entry_price": entry_price,
-        "stop_price": initial_stop,
-        "symbol": symbol_key,
-        "loc": loc,
-    }
-    history_map = {symbol_key: getattr(sd, "df", None)}
-    state = rehydrate_exit_state(row, {}, history_map)
-    if not state.get("valid"):
-        return False, float(initial_stop), None
-
-    np_isfinite = np.isfinite
-
-    entry_px = float(state.get("entry_price", entry_price))
-    close_px = float(state.get("close_px", entry_px))
-    high_px = float(state.get("high_px", close_px))
-    low_px = float(state.get("low_px", close_px))
-
-    effective_stop = state.get("effective_stop")
-    if effective_stop is None or not np_isfinite(effective_stop):
-        effective_stop = float(initial_stop)
+    if isinstance(strategy_obj, dict):
+        genome = strategy_obj
     else:
-        effective_stop = float(effective_stop)
+        genome = getattr(strategy_obj, "params", getattr(strategy_obj, "genome", {})) or {}
+    params = _unwrap_genome(genome) or (genome if isinstance(genome, dict) else {})
 
-    target_px = state.get("target_px")
-    target_px = float(target_px) if target_px is not None and np_isfinite(target_px) else None
-
-    pnl_pct = state.get("pnl_pct")
-    if pnl_pct is None:
-        pnl_pct = ((close_px - entry_px) / entry_px) * 100.0 if entry_px else 0.0
-    else:
-        pnl_pct = float(pnl_pct)
-
-    days_held = int(state.get("days_held", int(loc) - int(entry_i)))
-    time_limit = int(state.get("time_stop", 45) or 45)
-    time_limit = max(1, time_limit)
-    if isinstance(genome, dict):
-        exit_mode = str(genome.get("scoring_type") or genome.get("type") or "").lower()
-        name_key = str(genome.get("name") or "").lower()
-    else:
-        exit_mode = ""
-        name_key = ""
-    is_breakout = any(token in exit_mode for token in ("breakout", "momentum", "vcp", "kinetic"))
-    is_breakout = is_breakout or any(token in name_key for token in ("breakout", "momentum", "vcp", "kinetic"))
-    trail_activation = state.get("trail_activation", 1.0)
-    try:
-        trail_activation = float(trail_activation or 1.0)
-    except (TypeError, ValueError):
-        trail_activation = 1.0
-    if trail_activation < 1.0 or not np_isfinite(trail_activation):
-        trail_activation = 1.0
-    activation_pct = max(0.0, (trail_activation - 1.0) * 100.0)
+    close_px = float(sd.close[loc])
+    high_px = float(sd.high[loc])
+    low_px = float(sd.low[loc])
 
     # 1. STOP LOSS CHECK
-    if state.get("stop_breached"):
-        return True, effective_stop, None
+    if low_px < current_stop:
+        return True, current_stop, None
 
-    # 1b. Bollinger profit release (optional)
-    use_bb_exit = bool(state.get("use_bb_exit", False))
-    if use_bb_exit:
-        bb_upper = state.get("bb_upper")
-        if bb_upper is not None and np_isfinite(bb_upper) and high_px >= float(bb_upper):
-            return True, effective_stop, None
+    # 2. TRAILING STOP LOGIC
+    # FIX: Explicit check for None to allow 0.0 to disable trailing
+    trail_raw = params.get("trail_atr")
+    if trail_raw is not None:
+        trail_mult = float(trail_raw)
+    else:
+        trail_mult = float(params.get("stop_loss_atr", 3.0))
 
-    # 2. TIME-BASED EXITS
-    if not is_breakout:
-        if days_held >= int(time_limit * 0.8):
-            if pnl_pct < -5.0:
-                return True, effective_stop, None
-            if pnl_pct < 3.0:
-                sma20 = state.get("sma20", np.nan)
-                if not np_isfinite(sma20):
-                    sma20 = close_px
-                if close_px < float(sma20):
-                    return True, effective_stop, None
+    new_stop = current_stop
 
-        # Final time limit
-        if days_held >= time_limit:
-            if pnl_pct < 0:
-                return True, effective_stop, None
-            if pnl_pct < 8.0:
-                return True, effective_stop, None
-            sma50 = state.get("sma50", np.nan)
-            if np_isfinite(sma50) and close_px < float(sma50):
-                return True, effective_stop, None
+    if trail_mult > 0.001:
+        # Trail Activation
+        activation_mult = float(params.get("trail_activation", 1.0) or 1.0)
+        atr_val = float(sd.atr14[loc])
 
-    # 3. TREND BREAK PROTECTION
-    if not is_breakout:
-        sma50 = state.get("sma50", np.nan)
-        if np_isfinite(sma50) and close_px < float(sma50):
-            if pnl_pct > 0:
-                return True, effective_stop, None
-            if days_held > 10:
-                return True, effective_stop, None
+        # Calculate theoretical trail stop based on High - Trail
+        potential_stop = high_px - (atr_val * trail_mult)
 
-    # SMA surfing override (profit-protect for runners)
-    if is_breakout:
-        if pnl_pct >= activation_pct and days_held > 5:
-            sma_ref = state.get("sma50")
-            if sma_ref is None:
-                row_last_local = state.get("row_last")
-                if row_last_local is not None:
-                    sma_ref = row_last_local.get("sma50")
-            if sma_ref is not None and np_isfinite(sma_ref) and close_px < float(sma_ref):
-                return True, effective_stop, None
+        # Only raise stop, never lower
+        if potential_stop > current_stop:
+            # Check activation
+            dist_from_entry = (high_px - entry_px)
+            atr_at_entry = float(sd.atr14[entry_loc])
+            if dist_from_entry >= (atr_at_entry * activation_mult):
+                new_stop = potential_stop
 
+    # 3. TIME STOP
+    time_stop_days = int(params.get("time_stop", 0) or 0)
+    if time_stop_days > 0:
+        days_held = loc - entry_loc
+        if days_held >= time_stop_days:
+            # Only exit if not profitable? Or hard exit?
+            # Standard logic: if trade is dead money (below 1ATR profit)
+            pnl_pct = (close_px - entry_px) / entry_px
+            if pnl_pct < 0.05:  # 5% threshold for dead money
+                return True, new_stop, None
 
-    # 4. PROFIT TARGETS
+    # 4. PROFIT TARGET (Partial or Full)
+    # Simple full exit at profit target if defined
+    profit_target = float(params.get("profit_target", 0.0) or 0.0)
+    target_px = None
+    if profit_target > 0:
+        target_mult = profit_target if profit_target >= 1.0 else (1.0 + profit_target)
+        target_px = entry_px * target_mult
+    if target_px is None:
+        mult = _best_profit_target_multiple(params.get("exit_rules"))
+        if mult is not None:
+            target_px = entry_px * mult
     if target_px is not None and high_px >= target_px:
-        return True, effective_stop, target_px
+        return True, new_stop, target_px
 
-    # 5. OTHER RULE-BASED EXITS
-    if is_breakout and pnl_pct < activation_pct:
-        return False, effective_stop, None
-    row_last = state.get("row_last")
-    for rule in genome.get("exit_rules", []) or []:
-        if not isinstance(rule, dict):
-            continue
-        if rule.get("type") == "profit_target":
-            continue
-
-        col = rule.get("col")
-        op = rule.get("op")
-        if not col or not op:
-            continue
-
-        op_fn = _SCALAR_OPS.get(str(op))
-        if op_fn is None:
-            continue
-
-        if row_last is None:
-            try:
-                row_last = sd.df.iloc[loc]
-            except Exception:
-                break
-
-        val_a = row_last.get(col, np.nan)
-        if "val" in rule:
-            val_b = rule.get("val", np.nan)
-        elif "ref" in rule:
-            val_b = row_last.get(rule.get("ref"), np.nan)
-        else:
-            continue
-
+    row_df = getattr(sd, "df", None)
+    if row_df is not None:
         try:
-            a = float(val_a)
-            b = float(val_b)
+            row_last = row_df.iloc[loc]
         except Exception:
-            continue
-        if not np_isfinite(a) or not np_isfinite(b):
-            continue
-        if op_fn(a, b):
-            return True, effective_stop, None
+            row_last = None
+        for rule in params.get("exit_rules", []) or []:
+            if not isinstance(rule, dict):
+                continue
+            if rule.get("type") == "profit_target":
+                continue
+            col = rule.get("col")
+            op = rule.get("op")
+            if not col or not op:
+                continue
+            op_fn = _SCALAR_OPS.get(str(op))
+            if op_fn is None:
+                continue
+            if row_last is None:
+                break
+            val_a = row_last.get(col, np.nan)
+            if "val" in rule:
+                val_b = rule.get("val", np.nan)
+            elif "ref" in rule:
+                val_b = row_last.get(rule.get("ref"), np.nan)
+            else:
+                continue
+            try:
+                a = float(val_a)
+                b = float(val_b)
+            except Exception:
+                continue
+            if not np.isfinite(a) or not np.isfinite(b):
+                continue
+            if op_fn(a, b):
+                return True, new_stop, None
 
-    return False, effective_stop, None
+    return False, new_stop, None
