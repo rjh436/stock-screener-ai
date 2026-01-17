@@ -4,6 +4,8 @@ import itertools
 import pandas as pd
 import numpy as np
 import sys
+import multiprocessing as mp
+import random
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 # Ensure project root is in path
@@ -14,6 +16,8 @@ from data.loader import fetch_data_pack
 from data.indices import get_index_symbols
 from execution.engine import run_backtest
 from strategies.generic import GenericStrategy
+from data.cache_manager import DataCache
+from data.loader import clean_dataframe
 
 # --- CONFIGURATION ---
 STRATEGY_TEMPLATE = {
@@ -49,12 +53,53 @@ PARAM_GRID = {
     "rs_rating":     [80, 85, 90],           # Leader Quality
     "exit_sma":      ["sma10", "sma20"],     # Trend Duration
     "adr_pct":       [2.5, 3.5, 4.5],        # Volatility Fuel
-    "red_bypass_rs": [95, 101]               # 101 = Disabled
+    "red_bypass_rs": [95, 101],              # 101 = Disabled
+    "rsi14":         [50, 55],               # Momentum Strength
+    "bb_width":      [0.18, 0.25],           # Volatility Squeeze
+    "vol_mult":      [1.2, 1.5],             # Volume Expansion
+    "trail_atr":     [0.0, 2.0],             # Trailing Stop
+    "time_stop":     [45, 90]                # Max Hold (days)
 }
 
-def get_data():
-    """Load data once to share across workers"""
-    print("Loading Data Pack...")
+_DATA_PACK = None
+_SAMPLE_SIZE = int(os.environ.get("APEX_OPT_SAMPLE_SIZE", "300"))
+_FINALISTS = int(os.environ.get("APEX_OPT_FINALISTS", "8"))
+_MAX_COMBOS = int(os.environ.get("APEX_OPT_MAX_COMBOS", "0"))
+_POOL = str(os.environ.get("APEX_OPT_POOL", "thread")).strip().lower()
+
+_BASE_COLS = ("open", "high", "low", "close", "volume", "vix")
+
+def _init_worker(data_pack):
+    global _DATA_PACK
+    _DATA_PACK = data_pack
+
+def _trim_df(df):
+    if df is None or df.empty:
+        return df
+    keep = [c for c in _BASE_COLS if c in df.columns]
+    if not keep:
+        return df
+    return df[keep].copy()
+
+def _load_cached_pack(symbols):
+    data = {}
+    for sym in symbols:
+        df = DataCache.get_cached_data(sym, validate=False, allow_stale=True)
+        df = clean_dataframe(df)
+        df = _trim_df(df)
+        if df is not None and not df.empty:
+            data[sym] = df
+    return data
+
+def _trim_pack(data):
+    trimmed = {}
+    for sym, df in (data or {}).items():
+        df = _trim_df(df)
+        if df is not None and not df.empty:
+            trimmed[sym] = df
+    return trimmed
+
+def _build_universe():
     try:
         # FORCE RUSSELL 3000
         print("Requesting Russell 3000 Universe...")
@@ -70,20 +115,33 @@ def get_data():
             universe = get_index_symbols("SP1500")
 
         print(f"Fetching data for {len(universe)} symbols...")
-        data = fetch_data_pack(universe, backtest_mode=True)
-        if not data:
-            data = fetch_data_pack(universe)
-        return data
+        return universe
 
     except Exception as e:
         print(f"ERROR loading data: {e}")
-        # Fallback
-        from data.cache_manager import load_all_data
-        return load_all_data()
+        return []
 
-def worker(params, data_pack):
+def _load_data_pack(universe):
+    """Load cached data for a universe, fallback to fetch if too sparse."""
+    if not universe:
+        return {}
+    cached = _load_cached_pack(universe)
+    min_required = max(10, int(len(universe) * 0.6))
+    min_required = min(500, min_required)
+    if cached and len(cached) >= min_required:
+        print(f"Using cached data for {len(cached)} symbols...")
+        return cached
+    data = fetch_data_pack(universe, backtest_mode=True)
+    if not data:
+        data = fetch_data_pack(universe)
+    return _trim_pack(data)
+
+def worker(params):
     """Runs a single backtest for a parameter set"""
     try:
+        data_pack = _DATA_PACK
+        if not data_pack:
+            return {"error": "Missing data pack in worker"}
         # Clone Strategy
         strat = STRATEGY_TEMPLATE.copy()
         strat["name"] = f"QM_Stop{params['stop_loss_atr']}_ADR{params['adr_pct']}_{params['exit_sma']}"
@@ -95,13 +153,21 @@ def worker(params, data_pack):
         # Update Rules
         entry_rules = [r.copy() for r in strat["entry_rules"]]
         for r in entry_rules:
+            if r["col"] == "rsi14":
+                r["val"] = params["rsi14"]
             if r["col"] == "rs_rating":
                 r["val"] = params["rs_rating"]
             if r["col"] == "adr_pct":
                 r["val"] = params["adr_pct"]
+            if r["col"] == "bb_width":
+                r["val"] = params["bb_width"]
+            if r["col"] == "volume":
+                r["mult"] = params["vol_mult"]
         strat["entry_rules"] = entry_rules
 
         strat["exit_rules"] = [{"col": "close", "op": "<", "ref": params["exit_sma"]}]
+        strat["trail_atr"] = params["trail_atr"]
+        strat["time_stop"] = params["time_stop"]
 
         # Run Backtest
         res = run_backtest(GenericStrategy(strat), data_pack, None, start_cash=100000.0)
@@ -118,21 +184,45 @@ def worker(params, data_pack):
         return {"error": str(e)}
 
 def optimize():
-    data = get_data()
+    print("Loading Data Pack...")
+    full_universe = _build_universe()
+    if not full_universe:
+        print("ERROR: No universe loaded. Check indices.")
+        return
+
+    if _SAMPLE_SIZE > 0 and len(full_universe) > _SAMPLE_SIZE:
+        sample_universe = full_universe[:_SAMPLE_SIZE]
+        print(f"Sampling {len(sample_universe)} symbols for grid search...")
+    else:
+        sample_universe = full_universe
+
+    data = _load_data_pack(sample_universe)
     if not data:
         print("ERROR: No data loaded. Check loader.")
         return
 
     keys, values = zip(*PARAM_GRID.items())
     combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+    if _MAX_COMBOS > 0 and len(combinations) > _MAX_COMBOS:
+        random.seed(42)
+        combinations = random.sample(combinations, _MAX_COMBOS)
+        print(f"Sampling {len(combinations)} parameter combinations...")
 
     print(f"Starting V2 Optimization: {len(combinations)} Strategies")
 
     def run_pool(executor_cls, label):
         results = []
         errors = []
-        with executor_cls(max_workers=os.cpu_count()) as executor:
-            futures = [executor.submit(worker, combo, data) for combo in combinations]
+        max_workers = max(1, min(int(os.environ.get("APEX_OPT_WORKERS", "2")), os.cpu_count()))
+        kwargs = {"max_workers": max_workers, "initializer": _init_worker, "initargs": (data,)}
+        if executor_cls is ProcessPoolExecutor:
+            try:
+                ctx = mp.get_context("fork" if sys.platform == "darwin" else None)
+            except Exception:
+                ctx = mp.get_context()
+            kwargs["mp_context"] = ctx
+        with executor_cls(**kwargs) as executor:
+            futures = [executor.submit(worker, combo) for combo in combinations]
 
             for i, f in enumerate(futures):
                 res = f.result()
@@ -148,26 +238,59 @@ def optimize():
 
                 res["score"] = score
                 results.append(res)
-                print(f"[{i+1}/{len(combinations)}] ADR:{res['params']['adr_pct']} Stop:{res['params']['stop_loss_atr']} -> CAGR: {res['cagr']:.1%} DD: {res['max_dd']:.1%}")
+                print(f"[{i+1}/{len(combinations)}] ADR:{res['params']['adr_pct']} Stop:{res['params']['stop_loss_atr']} -> CAGR: {res['cagr']:.1%} DD: {res['max_dd']:.1f}%")
         if errors:
             print(f"{label} errors: {len(errors)}")
             print("Sample error:", errors[0])
         return results
 
     # Try process pool first, then thread pool if needed
-    results = run_pool(ProcessPoolExecutor, "ProcessPoolExecutor")
+    if _POOL == "process" and len(data) > 150:
+        print("Warning: dataset too large for process pool; switching to thread pool to avoid memory spikes.")
+        pool_choice = "thread"
+    else:
+        pool_choice = _POOL or "thread"
+
+    if pool_choice == "thread":
+        results = run_pool(ThreadPoolExecutor, "ThreadPoolExecutor")
+    else:
+        results = run_pool(ProcessPoolExecutor, "ProcessPoolExecutor")
     if not results:
         print("No results from process pool, retrying with ThreadPoolExecutor...")
         results = run_pool(ThreadPoolExecutor, "ThreadPoolExecutor")
         if not results:
             print("ERROR: No results generated.")
             return
+    results = sorted(results, key=lambda r: r.get("score", 0), reverse=True)
+
+    # Optional final evaluation on full universe
+    if sample_universe is not full_universe and _FINALISTS > 0:
+        finalists = results[:_FINALISTS]
+        print(f"Running final evaluation on full universe for top {_FINALISTS} configs...")
+        full_data = _load_data_pack(full_universe)
+        if not full_data:
+            print("ERROR: Full universe data load failed. Skipping final evaluation.")
+        else:
+            global _DATA_PACK
+            _DATA_PACK = full_data
+            final_results = []
+            for idx, res in enumerate(finalists, start=1):
+                params = res["params"]
+                final = worker(params)
+                if "error" in final:
+                    print(f"Final eval error for {params}: {final['error']}")
+                    continue
+                final["score"] = final["cagr"]
+                final_results.append(final)
+                print(f"[Final {idx}/{len(finalists)}] ADR:{params['adr_pct']} Stop:{params['stop_loss_atr']} -> CAGR: {final['cagr']:.1%} DD: {final['max_dd']:.1f}%")
+            if final_results:
+                results = final_results
 
     df = pd.DataFrame(results)
     df = df.sort_values("score", ascending=False)
 
     print("\nTOP 5 V2 CONFIGURATIONS")
-    print(df.head(5)[["params", "cagr", "max_dd", "trades", "profit_factor"]])
+    print(df.head(5)[["params", "cagr", "max_dd", "trades", "profit_factor"]].to_string(index=False))
 
     best = df.iloc[0]
     print(f"\nWINNER: {best['params']}")

@@ -202,7 +202,18 @@ class GenericStrategy(BaseStrategy):
         if "val" in rule:
             return float(rule["val"])
         if "ref" in rule:
-            return float(row.get(rule["ref"], 0))
+            base = row.get(rule["ref"], 0)
+            try:
+                base = float(base)
+            except Exception:
+                return float("nan")
+            mult = rule.get("mult")
+            if mult is not None:
+                try:
+                    base *= float(mult)
+                except Exception:
+                    return float("nan")
+            return base
         return 0.0
 
     def _check_condition(self, row: pd.Series, rule: Dict) -> bool:

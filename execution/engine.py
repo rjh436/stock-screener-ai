@@ -671,7 +671,14 @@ def prepare_backtest_data(
         sym_data.gidx = np.searchsorted(all_dates, sym_data.index).astype(np.int32, copy=False)
 
     # --- INJECT RS RATINGS (VECTORIZED) ---
-    inject_market_rs_rank(enriched, all_dates)
+    min_names = min(100, max(10, int(len(enriched) * 0.6)))
+    min_names = min(min_names, len(enriched))
+    inject_market_rs_rank(enriched, all_dates, min_names=min_names)
+    for sym_data in enriched.values():
+        try:
+            sym_data.df["rs_rating"] = sym_data.rsrating
+        except Exception:
+            continue
 
     return PreparedBacktestData(enriched=enriched, all_dates=all_dates)
 
@@ -844,6 +851,24 @@ def _legacy_run_backtest(
                     if not np_isfinite(val_adx) or val_adx < min_adx:
                         continue
 
+                try:
+                    entry_signal = strat.entry(df, prev_i)
+                except Exception:
+                    entry_signal = None
+                if entry_signal is None:
+                    continue
+
+                entry_limit_ratio = None
+                entry_stop_mult = base_stop_mult
+                if isinstance(entry_signal, dict):
+                    if entry_signal.get("limit_ratio") is not None:
+                        entry_limit_ratio = entry_signal.get("limit_ratio")
+                    if entry_signal.get("stop_loss_atr") is not None:
+                        try:
+                            entry_stop_mult = float(entry_signal.get("stop_loss_atr"))
+                        except (TypeError, ValueError):
+                            entry_stop_mult = base_stop_mult
+
                 score = _score_row_dual_core(
                     rsi2_arr[prev_i],
                     rsi14_arr[prev_i],
@@ -872,16 +897,16 @@ def _legacy_run_backtest(
                     if scoring_mode == "breakout":
                         # V2 Logic: Must break yesterday's high
                         trigger = prev_high * 1.0005 # 0.05% above high
-                        
+
                         if high_px < trigger:
                             continue # Failed breakout
-                        
+
                         # Calculate fill
                         entry_px = max(open_px, trigger)
                     else:
                         # Legacy Limit Logic for Wealth
                         prev_close = float(close_arr[prev_i])
-                        limit_ratio = params.get("limit_ratio")
+                        limit_ratio = entry_limit_ratio if entry_limit_ratio is not None else params.get("limit_ratio")
                         if limit_ratio is not None and prev_close > 0:
                             try:
                                 limit_ratio_val = float(limit_ratio)
@@ -897,7 +922,7 @@ def _legacy_run_backtest(
                                 entry_px = open_px
                     
                     atr = float(atr14_arr[prev_i])
-                    stop_px = calculate_stop_price(entry_px, atr, base_stop_mult)
+                    stop_px = calculate_stop_price(entry_px, atr, entry_stop_mult)
 
                     ai_prob = 0.0
                     # ... AI logic remains the same ...
@@ -977,7 +1002,8 @@ def _legacy_run_backtest(
 
                     shares = pos["shares"]
                     pnl = (exit_px - pos["entry_price"]) * shares
-                    pnl_pct = ((exit_px - pos["entry_price"]) / pos["entry_price"]) * 100.0
+                    entry_price = float(pos["entry_price"])
+                    pnl_pct = ((exit_px - entry_price) / entry_price) * 100.0 if entry_price else 0.0
                     
                     cash += (shares * exit_px)
                     trades_list.append({
@@ -1045,7 +1071,19 @@ def _legacy_run_backtest(
             equity_curve.append({"Date": current_dt, "Equity": curr_equity})
 
         final_val = equity_curve[-1]["Equity"] if equity_curve else start_cash
-        
+
+        max_drawdown_pct = 0.0
+        if equity_curve:
+            peak = float(equity_curve[0]["Equity"])
+            for point in equity_curve:
+                val = float(point["Equity"])
+                if val > peak:
+                    peak = val
+                if peak > 0:
+                    dd = ((val - peak) / peak) * 100.0
+                    if dd < max_drawdown_pct:
+                        max_drawdown_pct = dd
+
         df_trades = pd.DataFrame(trades_list)
         win_rate = 0.0
         profit_factor = 0.0
@@ -1065,6 +1103,7 @@ def _legacy_run_backtest(
             "total_trades": len(trades_list),
             "hit_rate": win_rate,
             "profit_factor": profit_factor,
+            "max_drawdown_pct": max_drawdown_pct,
             "equity_curve": equity_curve,
             "trades_list": trades_list
         })
