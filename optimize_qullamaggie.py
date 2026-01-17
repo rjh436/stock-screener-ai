@@ -1,20 +1,18 @@
-import copy
-import gc
-import itertools
-import multiprocessing as mp
 import os
-import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime, timedelta
-from typing import Dict, Optional
-
-import numpy as np
+import json
+import itertools
 import pandas as pd
+import numpy as np
+import sys
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
-from data.cache_manager import DataCache
-from data.loader import clean_dataframe
-from data.universe import get_universe_symbols
-from execution.engine import prepare_backtest_data, run_backtest
+# Ensure project root is in path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# CORRECTED IMPORTS
+from data.loader import fetch_data_pack
+from data.indices import get_index_symbols
+from execution.engine import run_backtest
 from strategies.generic import GenericStrategy
 
 # --- CONFIGURATION ---
@@ -22,17 +20,18 @@ STRATEGY_TEMPLATE = {
     "name": "Apex Kinetic VCP (Optimizer)",
     "type": "breakout",
     "entry_rules": [
-        {"col": "rsi14", "op": ">", "val": 60},
-        {"col": "rs_rating", "op": ">", "val": 85},
-        {"col": "bb_width", "op": "<", "val": 0.20},
+        {"col": "rsi14", "op": ">", "val": 55},
+        {"col": "rs_rating", "op": ">", "val": 80},
+        {"col": "adr_pct", "op": ">", "val": 3.0},
+        {"col": "bb_width", "op": "<", "val": 0.25},
         {"col": "close", "op": ">", "ref": "donchian_20"},
-        {"col": "volume", "op": ">", "ref": "vol_ma20", "mult": 1.5},
+        {"col": "volume", "op": ">", "ref": "vol_ma20", "mult": 1.5}
     ],
     "exit_rules": [
-        {"col": "close", "op": "<", "ref": "sma20"},
+        {"col": "close", "op": "<", "ref": "sma20"}
     ],
     "market_filter_mode": "traffic_light",
-    "yellow_rs_floor": 90,
+    "yellow_rs_floor": 85,
     "red_bypass_rs": 95,
     "stop_loss_atr": 2.0,
     "trail_atr": 0,
@@ -41,243 +40,137 @@ STRATEGY_TEMPLATE = {
     "max_positions": 12,
     "scoring_type": "breakout",
     "scoring_weights": {"rsi_factor": 2.0, "sniper_bonus": 150.0},
+    "min_entry_score": 0.0
 }
 
+# --- THE SEARCH GRID (V2) ---
 PARAM_GRID = {
-    "stop_loss_atr": [1.0, 1.5, 2.0, 2.5],
-    "rs_rating": [80, 85, 90],
-    "exit_sma": ["sma10", "sma20", "sma50"],
-    "red_bypass_rs": [90, 95, 101],
+    "stop_loss_atr": [1.5, 2.0, 2.5],        # Risk Management
+    "rs_rating":     [80, 85, 90],           # Leader Quality
+    "exit_sma":      ["sma10", "sma20"],     # Trend Duration
+    "adr_pct":       [2.5, 3.5, 4.5],        # Volatility Fuel
+    "red_bypass_rs": [95, 101]               # 101 = Disabled
 }
 
-_ENV_MAX_WORKERS = "APEX_OPTIMIZER_MAX_WORKERS"
-_ENV_MP_CONTEXT = "APEX_OPTIMIZER_MP_CONTEXT"
-_ENV_SERIAL = "APEX_OPTIMIZER_SERIAL"
-
-_DATA_PACK = None
-
-
-def _load_cached_symbol(sym: str, cutoff: datetime) -> Optional[pd.DataFrame]:
-    df = DataCache.get_cached_data(sym, validate=False, allow_stale=True)
-    df = clean_dataframe(df)
-    if df is None or df.empty:
-        return None
-    if isinstance(df.index, pd.DatetimeIndex):
-        df = df[df.index >= cutoff]
-    return df if not df.empty else None
-
-
-def _load_cached_globals(cutoff: datetime) -> Dict[str, Optional[pd.DataFrame]]:
-    spy = _load_cached_symbol("SPY", cutoff)
-    vix = _load_cached_symbol("VIX", cutoff) or _load_cached_symbol("$VIX", cutoff)
-    return {"SPY": spy, "VIX": vix}
-
-
-def get_data(days: int = 365 * 20):
-    print("Loading cached data...")
-    cutoff = datetime.now() - timedelta(days=days)
-
-    symbols = get_universe_symbols("RUSSELL3000") or []
-    if not symbols:
-        symbols = get_universe_symbols("SP1500") or []
-
-    if not symbols:
-        return None
-
-    data_map: Dict[str, pd.DataFrame] = {}
-    for sym in symbols:
-        df = _load_cached_symbol(sym, cutoff)
-        if df is not None:
-            data_map[sym] = df
-
-    if not data_map:
-        return None
-
-    global_ctx = _load_cached_globals(cutoff)
-    prepared = prepare_backtest_data(data_map, None, None, global_ctx)
-    data_map.clear()
-    gc.collect()
-    return prepared
-
-
-def _init_worker(data_pack=None):
-    global _DATA_PACK
-    if data_pack is not None:
-        _DATA_PACK = data_pack
-
-
-def _resolve_mp_context() -> mp.context.BaseContext:
-    override = os.environ.get(_ENV_MP_CONTEXT, "").strip().lower()
-    if override:
-        try:
-            return mp.get_context(override)
-        except ValueError:
-            print(f"Invalid {_ENV_MP_CONTEXT}={override}. Falling back to default.")
-    if sys.platform == "darwin":
-        try:
-            return mp.get_context("fork")
-        except ValueError:
-            pass
-    return mp.get_context()
-
-
-def _resolve_max_workers(total_jobs: int, start_method: str, symbol_count: int) -> int:
-    serial = os.environ.get(_ENV_SERIAL, "").strip().lower()
-    if serial in ("1", "true", "yes"):
-        return 1
-
-    env_val = os.environ.get(_ENV_MAX_WORKERS, "").strip()
-    if env_val:
-        try:
-            val = int(env_val)
-        except ValueError:
-            val = 0
-        if val > 0:
-            return min(val, total_jobs)
-
-    cpu = os.cpu_count() or 1
-    cap = 8 if start_method == "fork" else 4
-    if symbol_count >= 2500:
-        cap = min(cap, 4)
-    elif symbol_count >= 1500:
-        cap = min(cap, 6)
-    return min(total_jobs, max(1, min(cpu, cap)))
-
-
-def _normalize_dd(raw_dd: float) -> float:
-    if raw_dd is None:
-        return 0.0
+def get_data():
+    """Load data once to share across workers"""
+    print("Loading Data Pack...")
     try:
-        dd_val = float(raw_dd)
-    except (TypeError, ValueError):
-        return 0.0
-    if not np.isfinite(dd_val):
-        return 0.0
-    if abs(dd_val) > 1.0:
-        return dd_val / 100.0
-    return dd_val
+        # FORCE RUSSELL 3000
+        print("Requesting Russell 3000 Universe...")
+        universe = get_index_symbols("R3000")
 
+        if not universe or len(universe) < 2000:
+            print("Warning: 'R3000' key missing or too small. Trying 'IWV' (Russell 3000 ETF)...")
+            universe = get_index_symbols("IWV")
 
-def worker(params: Dict[str, object]):
-    global _DATA_PACK
-    if _DATA_PACK is None:
-        return {"error": "data_not_loaded"}
+        if not universe:
+            # Absolute fallback if indices file is empty
+            print("Warning: 'IWV' failed. Loading S&P 1500 as fallback.")
+            universe = get_index_symbols("SP1500")
 
+        print(f"Fetching data for {len(universe)} symbols...")
+        data = fetch_data_pack(universe, backtest_mode=True)
+        if not data:
+            data = fetch_data_pack(universe)
+        return data
+
+    except Exception as e:
+        print(f"ERROR loading data: {e}")
+        # Fallback
+        from data.cache_manager import load_all_data
+        return load_all_data()
+
+def worker(params, data_pack):
+    """Runs a single backtest for a parameter set"""
     try:
-        strat = copy.deepcopy(STRATEGY_TEMPLATE)
-        strat["name"] = f"QM_Stop{params['stop_loss_atr']}_RS{params['rs_rating']}_{params['exit_sma']}"
+        # Clone Strategy
+        strat = STRATEGY_TEMPLATE.copy()
+        strat["name"] = f"QM_Stop{params['stop_loss_atr']}_ADR{params['adr_pct']}_{params['exit_sma']}"
 
+        # Apply Scalar Params
         strat["stop_loss_atr"] = params["stop_loss_atr"]
         strat["red_bypass_rs"] = params["red_bypass_rs"]
 
+        # Update Rules
         entry_rules = [r.copy() for r in strat["entry_rules"]]
-        for rule in entry_rules:
-            if rule.get("col") == "rs_rating":
-                rule["val"] = params["rs_rating"]
+        for r in entry_rules:
+            if r["col"] == "rs_rating":
+                r["val"] = params["rs_rating"]
+            if r["col"] == "adr_pct":
+                r["val"] = params["adr_pct"]
         strat["entry_rules"] = entry_rules
 
         strat["exit_rules"] = [{"col": "close", "op": "<", "ref": params["exit_sma"]}]
 
-        result = run_backtest(GenericStrategy(strat), _DATA_PACK, start_cash=100000.0)
-
-        cagr = float(result.get("cagr", 0.0) or 0.0)
-        max_dd = _normalize_dd(result.get("max_drawdown_pct", 0.0))
-        trades = int(result.get("total_trades", 0) or 0)
-        win_rate = float(result.get("hit_rate", 0.0) or 0.0)
-        final_equity = float(result.get("final_value", 0.0) or 0.0)
+        # Run Backtest
+        res = run_backtest(GenericStrategy(strat), data_pack, None, start_cash=100000.0)
 
         return {
             "params": params,
-            "cagr": cagr,
-            "max_dd": max_dd,
-            "trades": trades,
-            "win_rate": win_rate,
-            "final_equity": final_equity,
+            "cagr": res.get("cagr", 0),
+            "max_dd": res.get("max_drawdown_pct", 0),
+            "trades": res.get("total_trades", 0),
+            "win_rate": res.get("hit_rate", 0),
+            "profit_factor": res.get("profit_factor", 0)
         }
-    except Exception as exc:
-        return {"error": str(exc), "params": params}
-
+    except Exception as e:
+        return {"error": str(e)}
 
 def optimize():
-    data_pack = get_data()
-    if data_pack is None:
-        print("No cached data loaded. Check cache or data loader.")
+    data = get_data()
+    if not data:
+        print("ERROR: No data loaded. Check loader.")
         return
-
-    _init_worker(data_pack)
 
     keys, values = zip(*PARAM_GRID.items())
-    combinations = [dict(zip(keys, vals)) for vals in itertools.product(*values)]
+    combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
-    print(f"Starting optimization: {len(combinations)} strategies")
+    print(f"Starting V2 Optimization: {len(combinations)} Strategies")
 
-    results = []
-    ctx = _resolve_mp_context()
-    start_method = ctx.get_start_method()
-    symbol_count = len(data_pack.enriched) if hasattr(data_pack, "enriched") else 0
-    max_workers = _resolve_max_workers(len(combinations), start_method, symbol_count)
-    print(f"Using multiprocessing '{start_method}' with {max_workers} worker(s).")
+    def run_pool(executor_cls, label):
+        results = []
+        errors = []
+        with executor_cls(max_workers=os.cpu_count()) as executor:
+            futures = [executor.submit(worker, combo, data) for combo in combinations]
 
-    if max_workers <= 1:
-        for i, combo in enumerate(combinations, start=1):
-            res = worker(combo)
-            if "error" in res:
-                continue
-
-            dd = abs(res["max_dd"]) if res["max_dd"] != 0 else 0.0001
-            score = res["cagr"] / dd
-            res["score"] = score
-            results.append(res)
-
-            print(
-                f"[{i}/{len(combinations)}] Stop:{res['params']['stop_loss_atr']} "
-                f"Exit:{res['params']['exit_sma']} "
-                f"CAGR:{res['cagr']:.2%} DD:{res['max_dd']:.2%} Trades:{res['trades']}"
-            )
-    else:
-        pool_kwargs = {"max_workers": max_workers, "mp_context": ctx}
-        if start_method == "fork":
-            executor = ProcessPoolExecutor(**pool_kwargs)
-        else:
-            executor = ProcessPoolExecutor(
-                **pool_kwargs,
-                initializer=_init_worker,
-                initargs=(data_pack,),
-            )
-
-        with executor:
-            futures = [executor.submit(worker, combo) for combo in combinations]
-            for i, fut in enumerate(as_completed(futures), start=1):
-                res = fut.result()
+            for i, f in enumerate(futures):
+                res = f.result()
                 if "error" in res:
+                    errors.append(res["error"])
                     continue
+                # Score = CAGR but kill if DD > 30% or Trades < 50
+                score = res["cagr"]
+                if abs(res["max_dd"]) > 30.0:
+                    score *= 0.5
+                if res["trades"] < 50:
+                    score = 0
 
-                dd = abs(res["max_dd"]) if res["max_dd"] != 0 else 0.0001
-                score = res["cagr"] / dd
                 res["score"] = score
                 results.append(res)
+                print(f"[{i+1}/{len(combinations)}] ADR:{res['params']['adr_pct']} Stop:{res['params']['stop_loss_atr']} -> CAGR: {res['cagr']:.1%} DD: {res['max_dd']:.1%}")
+        if errors:
+            print(f"{label} errors: {len(errors)}")
+            print("Sample error:", errors[0])
+        return results
 
-                print(
-                    f"[{i}/{len(combinations)}] Stop:{res['params']['stop_loss_atr']} "
-                    f"Exit:{res['params']['exit_sma']} "
-                    f"CAGR:{res['cagr']:.2%} DD:{res['max_dd']:.2%} Trades:{res['trades']}"
-                )
-
+    # Try process pool first, then thread pool if needed
+    results = run_pool(ProcessPoolExecutor, "ProcessPoolExecutor")
     if not results:
-        print("No results generated.")
-        return
+        print("No results from process pool, retrying with ThreadPoolExecutor...")
+        results = run_pool(ThreadPoolExecutor, "ThreadPoolExecutor")
+        if not results:
+            print("ERROR: No results generated.")
+            return
 
-    df = pd.DataFrame(results).sort_values("score", ascending=False)
+    df = pd.DataFrame(results)
+    df = df.sort_values("score", ascending=False)
 
-    print("\nTop 5 configurations")
-    print(df.head(5)[["params", "cagr", "max_dd", "trades", "win_rate", "score"]])
+    print("\nTOP 5 V2 CONFIGURATIONS")
+    print(df.head(5)[["params", "cagr", "max_dd", "trades", "profit_factor"]])
 
     best = df.iloc[0]
-    print("\nWinner")
-    print(f"Params: {best['params']}")
-    print(f"CAGR: {best['cagr']:.2%}")
-    print(f"Drawdown: {best['max_dd']:.2%}")
-
+    print(f"\nWINNER: {best['params']}")
 
 if __name__ == "__main__":
     optimize()

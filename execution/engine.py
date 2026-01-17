@@ -822,6 +822,7 @@ def _legacy_run_backtest(
                 vix_limit_scaling,
                 scoring_mode,
             ) in enumerate(compiled_strategies):
+                market_filter_mode = str(params.get("market_filter_mode") or "").lower()
 
                 # --- V2 UPGRADE: Elite Bypass Traffic Light ---
                 if market_filter_mode == "traffic_light":
