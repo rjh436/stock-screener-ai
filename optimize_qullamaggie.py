@@ -5,272 +5,171 @@ import pandas as pd
 import numpy as np
 import sys
 import random
-from concurrent.futures import ProcessPoolExecutor
+import multiprocessing as mp
+import pickle
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # Ensure project root is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# CORRECTED IMPORTS
-from data.loader import fetch_data_pack
+from data.loader import fetch_data_pack, clean_dataframe
 from data.indices import get_index_symbols
 from execution.engine import prepare_backtest_data, run_backtest
 from strategies.generic import GenericStrategy
-from data.cache_manager import DataCache
-from data.loader import clean_dataframe
 
-# --- CONFIGURATION ---
+# ============================================================================
+# CONFIGURATION: QULLAMAGGIE V2.1 (M3 MAX OPTIMIZED)
+# ============================================================================
 STRATEGY_TEMPLATE = {
     "name": "Apex Kinetic VCP (Optimizer)",
     "type": "breakout",
     "entry_rules": [
         {"col": "rsi14", "op": ">", "val": 55},
         {"col": "rs_rating", "op": ">", "val": 80},
-        {"col": "adr_pct", "op": ">", "val": 3.0},
+        {"col": "adr_pct", "op": ">", "val": 2.5}, # Lowered floor per GPT audit
         {"col": "bb_width", "op": "<", "val": 0.25},
         {"col": "close", "op": ">", "ref": "donchian_20"},
         {"col": "volume", "op": ">", "ref": "vol_ma20", "mult": 1.5}
     ],
-    "exit_rules": [
-        {"col": "close", "op": "<", "ref": "sma20"}
-    ],
     "market_filter_mode": "traffic_light",
     "yellow_rs_floor": 85,
     "red_bypass_rs": 95,
-    "stop_loss_atr": 2.0,
-    "trail_atr": 0,
-    "time_stop": 45,
-    "risk_per_trade": 0.02,
-    "max_positions": 12,
+    "risk_per_trade": 0.015, # 1.5% Risk
+    "max_positions": 10,
     "scoring_type": "breakout",
-    "scoring_weights": {"rsi_factor": 2.0, "sniper_bonus": 150.0},
     "min_entry_score": 0.0
 }
 
-# --- THE SEARCH GRID (V2) ---
+# --- SEARCH GRID (Qullamaggie Pillars) ---
 PARAM_GRID = {
-    "stop_loss_atr": [1.5, 2.0, 2.5],        # Risk Management
-    "rs_rating":     [80, 85, 90],           # Leader Quality
-    "exit_sma":      ["sma10", "sma20"],     # Trend Duration
-    "adr_pct":       [2.5, 3.5, 4.5],        # Volatility Fuel
-    "red_bypass_rs": [95, 101],              # 101 = Disabled
-    "rsi14":         [50, 55],               # Momentum Strength
-    "bb_width":      [0.18, 0.25],           # Volatility Squeeze
-    "vol_mult":      [1.2, 1.5],             # Volume Expansion
-    "trail_atr":     [0.0, 2.0],             # Trailing Stop
-    "time_stop":     [45, 90]                # Max Hold (days)
+    "stop_loss_atr": [1.0, 1.5, 2.0],        # Tight stops
+    "adr_pct":       [3.0, 4.0, 5.0],        # High Fuel
+    "exit_mode":     ["sma10", "sma20", "trail2.5", "trail3.5"], # ISOLATED EXITS
+    "rs_rating":     [85, 92],               # Top 15% vs Top 8%
+    "bb_width":      [0.15, 0.22],           # Squeeze tightness
+    "time_stop":     [20, 45],               # 1 mo vs 2 mo
+    "limit_ratio":   [1.0, 1.0005]           # Market vs Buffer
 }
 
-_DATA_PACK = None
-_PREPARED_CACHE = None
+# Hardware Optimization
+WORKER_COUNT = 10 # Optimized for M3 Max 36GB RAM
 _WORKER_CACHE = None
-_FINALISTS = int(os.environ.get("APEX_OPT_FINALISTS", "8"))
-_MAX_COMBOS = int(os.environ.get("APEX_OPT_MAX_COMBOS", "0"))
 
-_BASE_COLS = ("open", "high", "low", "close", "volume", "vix")
-
-def _init_worker(data_pack):
-    global _DATA_PACK
-    _DATA_PACK = data_pack
-
-def worker_init(data_cache):
+# ============================================================================
+# WORKER LOGIC
+# ============================================================================
+def worker_init(pickled_data):
+    """Unpickle the heavy universe data once per process (Efficiency)"""
     global _WORKER_CACHE
-    _WORKER_CACHE = data_cache
-
-def _trim_df(df):
-    if df is None or df.empty:
-        return df
-    keep = [c for c in _BASE_COLS if c in df.columns]
-    if not keep:
-        return df
-    return df[keep].copy()
-
-def _load_cached_pack(symbols):
-    data = {}
-    for sym in symbols:
-        df = DataCache.get_cached_data(sym, validate=False, allow_stale=True)
-        df = clean_dataframe(df)
-        df = _trim_df(df)
-        if df is not None and not df.empty:
-            data[sym] = df
-    return data
-
-def _trim_pack(data):
-    trimmed = {}
-    for sym, df in (data or {}).items():
-        df = _trim_df(df)
-        if df is not None and not df.empty:
-            trimmed[sym] = df
-    return trimmed
-
-def _build_universe():
-    try:
-        # FORCE RUSSELL 3000
-        print("Requesting Russell 3000 Universe...")
-        universe = get_index_symbols("R3000")
-
-        if not universe or len(universe) < 2000:
-            print("Warning: 'R3000' key missing or too small. Trying 'IWV' (Russell 3000 ETF)...")
-            universe = get_index_symbols("IWV")
-
-        if not universe:
-            # Absolute fallback if indices file is empty
-            print("Warning: 'IWV' failed. Loading S&P 1500 as fallback.")
-            universe = get_index_symbols("SP1500")
-
-        print(f"Fetching data for {len(universe)} symbols...")
-        return universe
-
-    except Exception as e:
-        print(f"ERROR loading data: {e}")
-        return []
-
-def _load_data_pack(universe):
-    """Load cached data for a universe, fallback to fetch if too sparse."""
-    if not universe:
-        return {}
-    cached = _load_cached_pack(universe)
-    min_required = max(10, int(len(universe) * 0.6))
-    min_required = min(500, min_required)
-    if cached and len(cached) >= min_required:
-        print(f"Using cached data for {len(cached)} symbols...")
-        return cached
-    data = fetch_data_pack(universe, backtest_mode=True)
-    if not data:
-        data = fetch_data_pack(universe)
-    return _trim_pack(data)
+    _WORKER_CACHE = pickle.loads(pickled_data)
 
 def worker(params):
-    """Runs a single backtest for a parameter set"""
     try:
-        prepared_cache = _WORKER_CACHE
-        if prepared_cache is None:
-            return {"error": "Missing pre-calculated data cache in worker"}
-        # Clone Strategy
+        # 1. Clone & Setup Strategy
         strat = STRATEGY_TEMPLATE.copy()
-        strat["name"] = f"QM_Stop{params['stop_loss_atr']}_ADR{params['adr_pct']}_{params['exit_sma']}"
-
-        # Apply Scalar Params
+        strat["name"] = f"QM_{params['exit_mode']}_Stop{params['stop_loss_atr']}_ADR{params['adr_pct']}"
+        
+        # 2. Apply Dynamic Parameters
         strat["stop_loss_atr"] = params["stop_loss_atr"]
-        strat["red_bypass_rs"] = params["red_bypass_rs"]
-
+        strat["time_stop"] = params["time_stop"]
+        strat["limit_ratio"] = params["limit_ratio"]
+        
         # Update Rules
         entry_rules = [r.copy() for r in strat["entry_rules"]]
         for r in entry_rules:
-            if r["col"] == "rsi14":
-                r["val"] = params["rsi14"]
-            if r["col"] == "rs_rating":
-                r["val"] = params["rs_rating"]
-            if r["col"] == "adr_pct":
-                r["val"] = params["adr_pct"]
-            if r["col"] == "bb_width":
-                r["val"] = params["bb_width"]
-            if r["col"] == "volume":
-                r["mult"] = params["vol_mult"]
+            if r["col"] == "adr_pct":   r["val"] = params["adr_pct"]
+            if r["col"] == "rs_rating": r["val"] = params["rs_rating"]
+            if r["col"] == "bb_width":  r["val"] = params["bb_width"]
         strat["entry_rules"] = entry_rules
+        
+        # ISOLATE EXITS (Critical Audit Fix)
+        if params["exit_mode"].startswith("trail"):
+            strat["trail_atr"] = float(params["exit_mode"].replace("trail", ""))
+            strat["exit_rules"] = [] # Clear SMA
+        else:
+            strat["trail_atr"] = 0
+            strat["exit_rules"] = [{"col": "close", "op": "<", "ref": params["exit_mode"]}]
 
-        strat["exit_rules"] = [{"col": "close", "op": "<", "ref": params["exit_sma"]}]
-        strat["trail_atr"] = params["trail_atr"]
-        strat["time_stop"] = params["time_stop"]
-
-        # Run Backtest
-        # Use the process-local global cache.
+        # 3. Execute Backtest
         res = run_backtest(
             GenericStrategy(strat),
-            None,
-            None,
+            None, None,
             start_cash=100000.0,
-            pre_calculated_data=prepared_cache,
+            pre_calculated_data=_WORKER_CACHE
         )
+
+        # 4. Composite Scoring (Reward Skew & PF over Smoothness)
+        cagr = res.get("cagr", 0) * 100
+        pf = res.get("profit_factor", 0)
+        wr = res.get("hit_rate", 0)
+        dd = abs(res.get("max_drawdown_pct", 0))
+        trades = res.get("total_trades", 0)
+
+        # Qullamaggie Formula: (Return * Quality) / Risk Penality
+        # Penalty is mild until DD > 30%
+        dd_penalty = 1.0 if dd < 30 else (30 / dd)
+        score = (cagr * pf * (wr/100)) * dd_penalty
+        
+        if trades < 40: score = 0 # Statistical significance
 
         return {
             "params": params,
-            "cagr": res.get("cagr", 0),
-            "max_dd": res.get("max_drawdown_pct", 0),
-            "trades": res.get("total_trades", 0),
-            "win_rate": res.get("hit_rate", 0),
-            "profit_factor": res.get("profit_factor", 0)
+            "cagr": cagr, "max_dd": dd, "pf": pf, "wr": wr, "trades": trades,
+            "score": score
         }
     except Exception as e:
         return {"error": str(e)}
 
+# ============================================================================
+# MAIN LOOP
+# ============================================================================
 def optimize():
-    print("Loading Data Pack...")
-    full_universe = _build_universe()
-    if not full_universe:
-        print("ERROR: No universe loaded. Check indices.")
-        return
-
-    data_pack = _load_data_pack(full_universe)
-    if not data_pack:
-        print("ERROR: No data loaded. Check loader.")
-        return
-    print(f"🚀 Starting V2 Optimization on FULL UNIVERSE ({len(data_pack)} symbols)...")
-    global _DATA_PACK
-    _DATA_PACK = data_pack
-    print("🧠 Pre-calculating indicators for the entire universe (Once)...")
-    global _PREPARED_CACHE
-    _PREPARED_CACHE = prepare_backtest_data(data_pack, None, None, None)
-    print(f"✅ Pre-calculation complete. Cached {len(_PREPARED_CACHE.enriched)} symbols.")
-    print("Pre-calculation cache active for optimization.")
-
+    print("\n🚀 APEX KINETIC V2.1 - QULLAMAGGIE OPTIMIZER")
+    print(f"Hardware: M3 Max | Workers: {WORKER_COUNT} | RAM Target: 24GB")
+    
+    # 1. Load Universe
+    print("🌍 Loading Russell 3000 Universe...")
+    universe = get_index_symbols("R3000")
+    if not universe: universe = get_index_symbols("SP1500")
+    
+    # 2. Build Cache (Once)
+    print("🧠 Pre-calculating indicators for the FULL UNIVERSE...")
+    raw_data = fetch_data_pack(universe, backtest_mode=True)
+    full_cache = prepare_backtest_data(raw_data, None, None, None)
+    
+    # 3. Serialize for Workers (Safety Fix)
+    print("📦 Serializing cache for workers...")
+    pickled_cache = pickle.dumps(full_cache)
+    
+    # 4. Generate Grid
     keys, values = zip(*PARAM_GRID.items())
     combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
-    if _MAX_COMBOS > 0 and len(combinations) > _MAX_COMBOS:
-        random.seed(42)
-        combinations = random.sample(combinations, _MAX_COMBOS)
-        print(f"Sampling {len(combinations)} parameter combinations...")
+    print(f"🔍 Testing {len(combinations)} Strategy Variants...")
 
-    print(f"Starting V2 Optimization: {len(combinations)} Strategies")
+    # 5. Run Parallel Loop
+    results = []
+    with ProcessPoolExecutor(max_workers=WORKER_COUNT, initializer=worker_init, initargs=(pickled_cache,)) as executor:
+        futures = [executor.submit(worker, c) for c in combinations]
+        
+        completed = 0
+        for future in as_completed(futures):
+            completed += 1
+            r = future.result()
+            if "error" in r:
+                print(f"⚠️ Error: {r['error']}")
+                continue
+            
+            print(f"[{completed}/{len(combinations)}] ADR:{r['params']['adr_pct']} Exit:{r['params']['exit_mode']} -> CAGR:{r['cagr']:.1f}% | PF:{r['pf']:.2f} | Score:{r['score']:.1f}")
+            results.append(r)
 
-    def run_pool(label, global_cache):
-        results = []
-        errors = []
-        max_parallel = 5
-        # Pass the pre-computed cache via initializer (copies once per process).
-        with ProcessPoolExecutor(
-            max_workers=max_parallel,
-            initializer=worker_init,
-            initargs=(global_cache,),
-        ) as executor:
-            futures = [executor.submit(worker, combo) for combo in combinations]
-
-            for i, f in enumerate(futures):
-                res = f.result()
-                if "error" in res:
-                    errors.append(res["error"])
-                    continue
-                # Score = CAGR but kill if DD > 30% or Trades < 50
-                score = res["cagr"]
-                if abs(res["max_dd"]) > 30.0:
-                    score *= 0.5
-                if res["trades"] < 50:
-                    score = 0
-
-                res["score"] = score
-                results.append(res)
-                print(f"[{i+1}/{len(combinations)}] ADR:{res['params']['adr_pct']} Stop:{res['params']['stop_loss_atr']} -> CAGR: {res['cagr']:.1%} DD: {res['max_dd']:.1f}%")
-        if errors:
-            print(f"{label} errors: {len(errors)}")
-            print("Sample error:", errors[0])
-        return results
-
-    results = run_pool("ProcessPoolExecutor", _PREPARED_CACHE)
-    if not results:
-        print("No results from ProcessPoolExecutor, retrying...")
-        results = run_pool("ProcessPoolExecutor", _PREPARED_CACHE)
-        if not results:
-            print("ERROR: No results generated.")
-            return
-    results = sorted(results, key=lambda r: r.get("score", 0), reverse=True)
-
-    df = pd.DataFrame(results)
-    df = df.sort_values("score", ascending=False)
-
-    print("\nTOP 5 V2 CONFIGURATIONS")
-    print(df.head(5)[["params", "cagr", "max_dd", "trades", "profit_factor"]].to_string(index=False))
-
+    # 6. Report
+    df = pd.DataFrame(results).sort_values("score", ascending=False)
+    print("\n" + "="*60 + "\n🏆 TOP 5 CONFIGURATIONS\n" + "="*60)
+    print(df.head(5)[["params", "cagr", "max_dd", "pf", "trades"]].to_string(index=False))
+    
     best = df.iloc[0]
-    print(f"\nWINNER: {best['params']}")
+    print(f"\n✅ WINNER:\n{json.dumps(best['params'], indent=2)}")
 
 if __name__ == "__main__":
+    mp.set_start_method('spawn', force=True)
     optimize()
