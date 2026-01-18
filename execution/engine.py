@@ -138,10 +138,16 @@ def _compute_indicators(
             vix_df = vix_df.copy()
             vix_df.columns = vix_df.columns.str.lower()
 
-        # V2 UPGRADE: ADR % Calculation
-        # (High - Low) / Close, 20-day MA * 100
+        # V2 UPGRADE: Robust ADR % Calculation
+        # Handle zero division and NaN propagation.
         df["hl_range"] = df["high"] - df["low"]
-        df["adr_pct"] = (df["hl_range"] / df["close"]).rolling(20).mean() * 100.0
+        close_safe = df["close"].replace(0, np.nan)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            df["adr_pct"] = (df["hl_range"] / close_safe).rolling(20).mean() * 100.0
+
+        # Fill NaN/Inf with 0.0 to prevent crashes; 0.0 marks invalid for trading.
+        df["adr_pct"] = df["adr_pct"].fillna(0.0).replace([np.inf, -np.inf], 0.0)
 
         for p in (10, 20, 50, 200):
             df[f"sma{p}"] = df["close"].rolling(p).mean()
@@ -887,60 +893,69 @@ def _legacy_run_backtest(
 
                 strat_min_score = float(params.get("min_entry_score", MIN_ENTRY_SCORE))
                 if score >= strat_min_score:
-                    # --- V2 UPGRADE: STOP-BUY EXECUTION ---
-                    prev_high = float(prev_high_arr[curr_i]) # Actually yesterday's high
-                    open_px = float(open_arr[curr_i])
-                    high_px = float(high_arr[curr_i])
-                    
-                    entry_px = open_px # Default for Wealth Strategy
+                    try:
+                        # --- V2 UPGRADE: STOP-BUY EXECUTION ---
+                        open_px = float(open_arr[curr_i])
+                        entry_px = open_px  # Default for wealth strategy.
 
-                    if scoring_mode == "breakout":
-                        # V2 Logic: Must break yesterday's high
-                        trigger = prev_high * 1.0005 # 0.05% above high
+                        if scoring_mode == "breakout":
+                            curr_adr = float(adr_pct_arr[prev_i])
 
-                        if high_px < trigger:
-                            continue # Failed breakout
-
-                        # Calculate fill
-                        entry_px = max(open_px, trigger)
-                    else:
-                        # Legacy Limit Logic for Wealth
-                        prev_close = float(close_arr[prev_i])
-                        limit_ratio = entry_limit_ratio if entry_limit_ratio is not None else params.get("limit_ratio")
-                        if limit_ratio is not None and prev_close > 0:
-                            try:
-                                limit_ratio_val = float(limit_ratio)
-                            except (TypeError, ValueError):
-                                limit_ratio_val = 0.98
-                            
-                            target_px = prev_close * limit_ratio_val
-                            if open_px < target_px:
-                                entry_px = open_px
-                            elif open_px > target_px * 1.05:
+                            # Reject bad ADR data before applying filters.
+                            if curr_adr <= 0.0:
                                 continue
-                            else:
-                                entry_px = open_px
-                    
-                    atr = float(atr14_arr[prev_i])
-                    stop_px = calculate_stop_price(entry_px, atr, entry_stop_mult)
+                            if curr_adr < 3.0:
+                                continue
 
-                    ai_prob = 0.0
-                    # ... AI logic remains the same ...
+                            trigger = float(prev_high_arr[curr_i]) * 1.0005
+                            high_val = float(high_arr[curr_i])
 
-                    candidates_by_day[day_idx].append(
-                        _Candidate(
-                            sym=sym,
-                            entry_px=entry_px,
-                            stop_px=stop_px,
-                            score=score,
-                            strategy_name=strat.name,
-                            strategy_obj=strat,
-                            entry_i=curr_i,
-                            signal_i=prev_i,
-                            is_super_signal=super_signal_only,
-                            ai_prob=ai_prob,
+                            if high_val < trigger:
+                                continue
+
+                            entry_px = max(open_px, trigger)
+                        else:
+                            # Legacy Limit Logic for Wealth
+                            prev_close = float(close_arr[prev_i])
+                            limit_ratio = entry_limit_ratio if entry_limit_ratio is not None else params.get("limit_ratio")
+                            if limit_ratio is not None and prev_close > 0:
+                                try:
+                                    limit_ratio_val = float(limit_ratio)
+                                except (TypeError, ValueError):
+                                    limit_ratio_val = 0.98
+
+                                target_px = prev_close * limit_ratio_val
+                                if open_px < target_px:
+                                    entry_px = open_px
+                                elif open_px > target_px * 1.05:
+                                    continue
+                                else:
+                                    entry_px = open_px
+
+                        atr = float(atr14_arr[prev_i])
+                        stop_px = calculate_stop_price(entry_px, atr, entry_stop_mult)
+
+                        ai_prob = 0.0
+                        # ... AI logic remains the same ...
+
+                        candidates_by_day[day_idx].append(
+                            _Candidate(
+                                sym=sym,
+                                entry_px=entry_px,
+                                stop_px=stop_px,
+                                score=score,
+                                strategy_name=strat.name,
+                                strategy_obj=strat,
+                                entry_i=curr_i,
+                                signal_i=prev_i,
+                                is_super_signal=super_signal_only,
+                                ai_prob=ai_prob,
+                            )
                         )
-                    )
+                    except Exception as e:
+                        if _DEBUG_TRAIL_ACTIVATION:
+                            print(f"Warning: error processing {sym} at {day_idx}: {e}")
+                        continue
 
     # Execution Loop
     portfolio = {s.name: {"cash": float(start_cash), "positions": {}} for s in strategies}
