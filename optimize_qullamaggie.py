@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import sys
 import random
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 
 # Ensure project root is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -62,6 +62,7 @@ PARAM_GRID = {
 
 _DATA_PACK = None
 _PREPARED_CACHE = None
+_WORKER_CACHE = None
 _FINALISTS = int(os.environ.get("APEX_OPT_FINALISTS", "8"))
 _MAX_COMBOS = int(os.environ.get("APEX_OPT_MAX_COMBOS", "0"))
 
@@ -70,6 +71,10 @@ _BASE_COLS = ("open", "high", "low", "close", "volume", "vix")
 def _init_worker(data_pack):
     global _DATA_PACK
     _DATA_PACK = data_pack
+
+def worker_init(data_cache):
+    global _WORKER_CACHE
+    _WORKER_CACHE = data_cache
 
 def _trim_df(df):
     if df is None or df.empty:
@@ -137,7 +142,7 @@ def _load_data_pack(universe):
 def worker(params):
     """Runs a single backtest for a parameter set"""
     try:
-        prepared_cache = _PREPARED_CACHE
+        prepared_cache = _WORKER_CACHE
         if prepared_cache is None:
             return {"error": "Missing pre-calculated data cache in worker"}
         # Clone Strategy
@@ -168,6 +173,7 @@ def worker(params):
         strat["time_stop"] = params["time_stop"]
 
         # Run Backtest
+        # Use the process-local global cache.
         res = run_backtest(
             GenericStrategy(strat),
             None,
@@ -216,14 +222,16 @@ def optimize():
 
     print(f"Starting V2 Optimization: {len(combinations)} Strategies")
 
-    def run_pool(label):
+    def run_pool(label, global_cache):
         results = []
         errors = []
-        cpu_count = os.cpu_count() or 1
-        max_workers = cpu_count + 4
-        # Use ThreadPoolExecutor to prevent OOM (Out Of Memory) on macOS.
-        # Threads share memory; processes duplicate it.
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        max_parallel = 5
+        # Pass the pre-computed cache via initializer (copies once per process).
+        with ProcessPoolExecutor(
+            max_workers=max_parallel,
+            initializer=worker_init,
+            initargs=(global_cache,),
+        ) as executor:
             futures = [executor.submit(worker, combo) for combo in combinations]
 
             for i, f in enumerate(futures):
@@ -246,10 +254,10 @@ def optimize():
             print("Sample error:", errors[0])
         return results
 
-    results = run_pool("ThreadPoolExecutor")
+    results = run_pool("ProcessPoolExecutor", _PREPARED_CACHE)
     if not results:
-        print("No results from ThreadPoolExecutor, retrying...")
-        results = run_pool("ThreadPoolExecutor")
+        print("No results from ProcessPoolExecutor, retrying...")
+        results = run_pool("ProcessPoolExecutor", _PREPARED_CACHE)
         if not results:
             print("ERROR: No results generated.")
             return
