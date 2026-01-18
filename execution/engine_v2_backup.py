@@ -980,12 +980,6 @@ def _legacy_run_backtest(
         params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
         max_pos = int(params.get("max_positions", 10) or 10)
         risk_per_trade = float(params.get("risk_per_trade", 0.02) or 0.02)
-        try:
-            partial_profit_day = int(params.get("partial_profit_day", 4) or 4)
-        except (TypeError, ValueError):
-            partial_profit_day = 4
-        if partial_profit_day < 1:
-            partial_profit_day = 1
 
         for day_idx, candidates in enumerate(candidates_by_day):
             current_dt = all_dates[day_idx]
@@ -1007,43 +1001,8 @@ def _legacy_run_backtest(
                 should_exit, effective_stop, target_px = _generic_exit_decision(
                     strat, sym_data, loc, pos["entry_i"], pos["entry_price"], pos["stop_price"]
                 )
-
+                
                 pos["stop_price"] = effective_stop
-                pos["days_held"] = (loc - pos["entry_i"]) + 1
-
-                if (
-                    not should_exit
-                    and not pos.get("partial_taken", False)
-                    and pos["days_held"] >= pos.get("partial_profit_day", partial_profit_day)
-                ):
-                    current_close = float(sym_data.close[loc])
-                    entry_price = float(pos["entry_price"])
-                    if np_isfinite(current_close) and np_isfinite(entry_price) and current_close > (entry_price * 1.01):
-                        sell_shares = int(pos["shares"] // 2)
-                        if sell_shares >= 1:
-                            exit_px = current_close
-                            pnl = (exit_px - entry_price) * sell_shares
-                            pnl_pct = ((exit_px - entry_price) / entry_price) * 100.0 if entry_price else 0.0
-                            cash += (sell_shares * exit_px)
-                            trades_list.append({
-                                "Symbol": sym,
-                                "Entry Date": str(sym_data.df.index[pos["entry_i"]].date()),
-                                "Exit Date": str(pd.Timestamp(current_dt).date()),
-                                "Entry": entry_price,
-                                "Exit": exit_px,
-                                "Shares": sell_shares,
-                                "PnL": pnl,
-                                "Return %": pnl_pct,
-                                "Strategy": strat_key,
-                                "Exit Type": "PARTIAL"
-                            })
-                            pos["shares"] -= sell_shares
-                            breakeven = entry_price * 1.001
-                            if not np_isfinite(pos["stop_price"]):
-                                pos["stop_price"] = breakeven
-                            else:
-                                pos["stop_price"] = max(pos["stop_price"], breakeven)
-                            pos["partial_taken"] = True
 
                 if should_exit:
                     open_px = float(sym_data.open[loc])
@@ -1114,10 +1073,7 @@ def _legacy_run_backtest(
                         "stop_price": cand.stop_px,
                         "shares": shares,
                         "entry_i": cand.entry_i,
-                        "adds": 0,
-                        "days_held": 0,
-                        "partial_taken": False,
-                        "partial_profit_day": partial_profit_day,
+                        "adds": 0 
                     }
 
             # 3. Record Curve

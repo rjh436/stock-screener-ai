@@ -1,5 +1,4 @@
 import json
-import math
 import multiprocessing as mp
 import os
 import sys
@@ -234,11 +233,14 @@ def _score_window(metrics):
 
     score = (
         0.30 * calmar
-        + 0.25 * metrics["pf"]
-        + 0.20 * metrics["tail_ratio"]
-        + 0.15 * metrics["explosiveness"]
-        + 0.10 * metrics["cagr"]
+        + 0.30 * metrics["tail_ratio"]
+        + 0.20 * metrics["pf"]
+        + 0.20 * metrics["cagr"]
     )
+
+    if metrics["max_dd"] > 25.0:
+        score *= 0.1
+
     if not np.isfinite(score):
         return 0.0
     return max(0.0, float(score))
@@ -253,6 +255,7 @@ def _build_strategy(params):
     strat["stop_loss_atr"] = params["stop_loss_atr"]
     strat["limit_ratio"] = params["limit_ratio"]
     strat["time_stop"] = params["time_stop"]
+    strat["partial_profit_day"] = params["partial_profit_day"]
 
     entry_rules = [rule.copy() for rule in strat["entry_rules"]]
     for rule in entry_rules:
@@ -282,17 +285,18 @@ def objective(trial):
         return 0.0
 
     params = {
-        "stop_loss_atr": trial.suggest_float("stop_loss_atr", 0.8, 2.5, log=True),
-        "adr_pct": trial.suggest_float("adr_pct", 2.0, 6.0),
+        "stop_loss_atr": trial.suggest_float("stop_loss_atr", 1.2, 2.5),
+        "adr_pct": trial.suggest_float("adr_pct", 3.5, 6.0),
         "bb_width": trial.suggest_float("bb_width", 0.08, 0.28),
         "rs_rating": trial.suggest_int("rs_rating", 75, 97),
         "rsi14": trial.suggest_int("rsi14", 45, 70),
         "exit_mode": trial.suggest_categorical(
             "exit_mode",
-            ["sma10", "sma20", "sma50", "trail2.5", "trail3.5", "trail4.0"],
+            ["ema10", "sma10", "trail2.5"],
         ),
         "limit_ratio": trial.suggest_float("limit_ratio", 1.0, 1.0015),
-        "time_stop": trial.suggest_int("time_stop", 20, 90),
+        "time_stop": trial.suggest_int("time_stop", 10, 40),
+        "partial_profit_day": trial.suggest_int("partial_profit_day", 3, 5),
     }
 
     strat_conf = _build_strategy(params)
