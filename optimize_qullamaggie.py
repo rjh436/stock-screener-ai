@@ -62,7 +62,6 @@ PARAM_GRID = {
 }
 
 _DATA_PACK = None
-_SAMPLE_SIZE = int(os.environ.get("APEX_OPT_SAMPLE_SIZE", "300"))
 _FINALISTS = int(os.environ.get("APEX_OPT_FINALISTS", "8"))
 _MAX_COMBOS = int(os.environ.get("APEX_OPT_MAX_COMBOS", "0"))
 _POOL = str(os.environ.get("APEX_OPT_POOL", "thread")).strip().lower()
@@ -190,16 +189,11 @@ def optimize():
         print("ERROR: No universe loaded. Check indices.")
         return
 
-    if _SAMPLE_SIZE > 0 and len(full_universe) > _SAMPLE_SIZE:
-        sample_universe = full_universe[:_SAMPLE_SIZE]
-        print(f"Sampling {len(sample_universe)} symbols for grid search...")
-    else:
-        sample_universe = full_universe
-
-    data = _load_data_pack(sample_universe)
-    if not data:
+    data_pack = _load_data_pack(full_universe)
+    if not data_pack:
         print("ERROR: No data loaded. Check loader.")
         return
+    print(f"🚀 Starting V2 Optimization on FULL UNIVERSE ({len(data_pack)} symbols)...")
 
     keys, values = zip(*PARAM_GRID.items())
     combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
@@ -213,8 +207,8 @@ def optimize():
     def run_pool(executor_cls, label):
         results = []
         errors = []
-        max_workers = max(1, min(int(os.environ.get("APEX_OPT_WORKERS", "2")), os.cpu_count()))
-        kwargs = {"max_workers": max_workers, "initializer": _init_worker, "initargs": (data,)}
+        max_workers = os.cpu_count() or 1
+        kwargs = {"max_workers": max_workers, "initializer": _init_worker, "initargs": (data_pack,)}
         if executor_cls is ProcessPoolExecutor:
             try:
                 ctx = mp.get_context("fork" if sys.platform == "darwin" else None)
@@ -245,7 +239,7 @@ def optimize():
         return results
 
     # Try process pool first, then thread pool if needed
-    if _POOL == "process" and len(data) > 150:
+    if _POOL == "process" and len(data_pack) > 150:
         print("Warning: dataset too large for process pool; switching to thread pool to avoid memory spikes.")
         pool_choice = "thread"
     else:
@@ -262,29 +256,6 @@ def optimize():
             print("ERROR: No results generated.")
             return
     results = sorted(results, key=lambda r: r.get("score", 0), reverse=True)
-
-    # Optional final evaluation on full universe
-    if sample_universe is not full_universe and _FINALISTS > 0:
-        finalists = results[:_FINALISTS]
-        print(f"Running final evaluation on full universe for top {_FINALISTS} configs...")
-        full_data = _load_data_pack(full_universe)
-        if not full_data:
-            print("ERROR: Full universe data load failed. Skipping final evaluation.")
-        else:
-            global _DATA_PACK
-            _DATA_PACK = full_data
-            final_results = []
-            for idx, res in enumerate(finalists, start=1):
-                params = res["params"]
-                final = worker(params)
-                if "error" in final:
-                    print(f"Final eval error for {params}: {final['error']}")
-                    continue
-                final["score"] = final["cagr"]
-                final_results.append(final)
-                print(f"[Final {idx}/{len(finalists)}] ADR:{params['adr_pct']} Stop:{params['stop_loss_atr']} -> CAGR: {final['cagr']:.1%} DD: {final['max_dd']:.1f}%")
-            if final_results:
-                results = final_results
 
     df = pd.DataFrame(results)
     df = df.sort_values("score", ascending=False)
