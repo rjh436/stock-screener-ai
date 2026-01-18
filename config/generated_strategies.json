@@ -100,5 +100,72 @@
       "vol_bonus": 50.0
     },
     "limit_ratio": 1.01
+  },
+  {
+    "name": "Apex Kinetic V3.1 (Qullamaggie Production)",
+    "type": "breakout",
+    "entry_rules": [
+      {
+        "col": "rsi14",
+        "op": ">",
+        "val": 52
+      },
+      {
+        "col": "rs_rating",
+        "op": ">",
+        "val": 82
+      },
+      {
+        "col": "adr_pct",
+        "op": ">",
+        "val": 4.72
+      },
+      {
+        "col": "bb_width",
+        "op": "<",
+        "val": 0.19
+      },
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "donchian_20"
+      },
+      {
+        "col": "volume",
+        "op": ">",
+        "ref": "vol_ma20",
+        "mult": 1.5
+      }
+    ],
+    "exit_rules": [
+      {
+        "col": "close",
+        "op": "<",
+        "ref": "sma10"
+      }
+    ],
+    "market_filter_mode": "traffic_light",
+    "yellow_rs_floor": 85,
+    "red_bypass_rs": 95,
+    "min_entry_score": 0.0,
+    "stop_loss_atr": 1.2,
+    "trail_atr": 0,
+    "time_stop": 29,
+    "risk_per_trade": 0.015,
+    "max_positions": 10,
+    "scoring_type": "breakout",
+    "scoring_weights": {
+      "rsi_factor": 2.0,
+      "sniper_bonus": 150.0,
+      "trend_bonus": 30.0,
+      "vol_bonus": 50.0
+    },
+    "limit_ratio": 1.0002,
+    "partial_profit_day": 3,
+    "version_info": {
+      "status": "Production",
+      "source": "Optuna V3.1",
+      "notes": "3-Day Free Roll Config"
+    }
   }
 ]
