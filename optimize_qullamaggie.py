@@ -4,9 +4,8 @@ import itertools
 import pandas as pd
 import numpy as np
 import sys
-import multiprocessing as mp
 import random
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 
 # Ensure project root is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -64,7 +63,6 @@ PARAM_GRID = {
 _DATA_PACK = None
 _FINALISTS = int(os.environ.get("APEX_OPT_FINALISTS", "8"))
 _MAX_COMBOS = int(os.environ.get("APEX_OPT_MAX_COMBOS", "0"))
-_POOL = str(os.environ.get("APEX_OPT_POOL", "thread")).strip().lower()
 
 _BASE_COLS = ("open", "high", "low", "close", "volume", "vix")
 
@@ -194,6 +192,8 @@ def optimize():
         print("ERROR: No data loaded. Check loader.")
         return
     print(f"🚀 Starting V2 Optimization on FULL UNIVERSE ({len(data_pack)} symbols)...")
+    global _DATA_PACK
+    _DATA_PACK = data_pack
 
     keys, values = zip(*PARAM_GRID.items())
     combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
@@ -204,18 +204,14 @@ def optimize():
 
     print(f"Starting V2 Optimization: {len(combinations)} Strategies")
 
-    def run_pool(executor_cls, label):
+    def run_pool(label):
         results = []
         errors = []
-        max_workers = os.cpu_count() or 1
-        kwargs = {"max_workers": max_workers, "initializer": _init_worker, "initargs": (data_pack,)}
-        if executor_cls is ProcessPoolExecutor:
-            try:
-                ctx = mp.get_context("fork" if sys.platform == "darwin" else None)
-            except Exception:
-                ctx = mp.get_context()
-            kwargs["mp_context"] = ctx
-        with executor_cls(**kwargs) as executor:
+        cpu_count = os.cpu_count() or 1
+        max_workers = cpu_count + 4
+        # Use ThreadPoolExecutor to prevent OOM (Out Of Memory) on macOS.
+        # Threads share memory; processes duplicate it.
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(worker, combo) for combo in combinations]
 
             for i, f in enumerate(futures):
@@ -238,20 +234,10 @@ def optimize():
             print("Sample error:", errors[0])
         return results
 
-    # Try process pool first, then thread pool if needed
-    if _POOL == "process" and len(data_pack) > 150:
-        print("Warning: dataset too large for process pool; switching to thread pool to avoid memory spikes.")
-        pool_choice = "thread"
-    else:
-        pool_choice = _POOL or "thread"
-
-    if pool_choice == "thread":
-        results = run_pool(ThreadPoolExecutor, "ThreadPoolExecutor")
-    else:
-        results = run_pool(ProcessPoolExecutor, "ProcessPoolExecutor")
+    results = run_pool("ThreadPoolExecutor")
     if not results:
-        print("No results from process pool, retrying with ThreadPoolExecutor...")
-        results = run_pool(ThreadPoolExecutor, "ThreadPoolExecutor")
+        print("No results from ThreadPoolExecutor, retrying...")
+        results = run_pool("ThreadPoolExecutor")
         if not results:
             print("ERROR: No results generated.")
             return
