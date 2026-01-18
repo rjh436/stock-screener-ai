@@ -701,6 +701,7 @@ def _legacy_run_backtest(
     ai_model=None,
     ai_threshold=0.60,
     super_signal_only: bool = False,
+    pre_calculated_data: Optional["PreparedBacktestData"] = None,
 ):
     def _unwrap_genome(params: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(params, dict) and isinstance(params.get("genome"), dict):
@@ -717,8 +718,12 @@ def _legacy_run_backtest(
     if super_signal_only:
         strategy_label = SUPER_SIGNAL_NAME
 
-    # Use centralized data preparation which includes RS injection
-    prepared = prepare_backtest_data(data_dict, symbol_universe, start_date, global_data)
+    # Use centralized data preparation which includes RS injection,
+    # unless pre-calculated data is provided.
+    if pre_calculated_data is not None:
+        prepared = pre_calculated_data
+    else:
+        prepared = prepare_backtest_data(data_dict, symbol_universe, start_date, global_data)
     enriched = prepared.enriched
     all_dates = prepared.all_dates
 

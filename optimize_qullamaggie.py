@@ -13,7 +13,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # CORRECTED IMPORTS
 from data.loader import fetch_data_pack
 from data.indices import get_index_symbols
-from execution.engine import run_backtest
+from execution.engine import prepare_backtest_data, run_backtest
 from strategies.generic import GenericStrategy
 from data.cache_manager import DataCache
 from data.loader import clean_dataframe
@@ -61,6 +61,7 @@ PARAM_GRID = {
 }
 
 _DATA_PACK = None
+_PREPARED_CACHE = None
 _FINALISTS = int(os.environ.get("APEX_OPT_FINALISTS", "8"))
 _MAX_COMBOS = int(os.environ.get("APEX_OPT_MAX_COMBOS", "0"))
 
@@ -136,9 +137,9 @@ def _load_data_pack(universe):
 def worker(params):
     """Runs a single backtest for a parameter set"""
     try:
-        data_pack = _DATA_PACK
-        if not data_pack:
-            return {"error": "Missing data pack in worker"}
+        prepared_cache = _PREPARED_CACHE
+        if prepared_cache is None:
+            return {"error": "Missing pre-calculated data cache in worker"}
         # Clone Strategy
         strat = STRATEGY_TEMPLATE.copy()
         strat["name"] = f"QM_Stop{params['stop_loss_atr']}_ADR{params['adr_pct']}_{params['exit_sma']}"
@@ -167,7 +168,13 @@ def worker(params):
         strat["time_stop"] = params["time_stop"]
 
         # Run Backtest
-        res = run_backtest(GenericStrategy(strat), data_pack, None, start_cash=100000.0)
+        res = run_backtest(
+            GenericStrategy(strat),
+            None,
+            None,
+            start_cash=100000.0,
+            pre_calculated_data=prepared_cache,
+        )
 
         return {
             "params": params,
@@ -194,6 +201,11 @@ def optimize():
     print(f"🚀 Starting V2 Optimization on FULL UNIVERSE ({len(data_pack)} symbols)...")
     global _DATA_PACK
     _DATA_PACK = data_pack
+    print("🧠 Pre-calculating indicators for the entire universe (Once)...")
+    global _PREPARED_CACHE
+    _PREPARED_CACHE = prepare_backtest_data(data_pack, None, None, None)
+    print(f"✅ Pre-calculation complete. Cached {len(_PREPARED_CACHE.enriched)} symbols.")
+    print("Pre-calculation cache active for optimization.")
 
     keys, values = zip(*PARAM_GRID.items())
     combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
