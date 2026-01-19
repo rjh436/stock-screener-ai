@@ -19,7 +19,7 @@ from execution.engine import prepare_backtest_data, run_backtest
 from strategies.generic import GenericStrategy
 
 # ============================================================================
-# CONFIGURATION: QULLAMAGGIE V3 (BAYESIAN + WALK-FORWARD)
+# CONFIGURATION: QULLAMAGGIE V3 (BAYESIAN + REGIME SAMPLING)
 # ============================================================================
 STRATEGY_TEMPLATE = {
     "name": "Apex Kinetic VCP (Optimizer)",
@@ -41,47 +41,37 @@ STRATEGY_TEMPLATE = {
     "min_entry_score": 0.0,
 }
 
-_RECENT_WEIGHT = 0.8 / 3.0
 WFV_WINDOWS = [
     {
-        "name": "w1_2020",
-        "train_start": "2015-01-01",
-        "train_end": "2019-12-31",
+        "name": "Regime_Grind_2006",
+        "test_start": "2006-01-01",
+        "test_end": "2007-12-31",
+        "min_trades": 10,
+    },
+    {
+        "name": "Regime_Crisis_2008",
+        "test_start": "2008-01-01",
+        "test_end": "2008-12-31",
+        "min_trades": 0,
+        "max_dd_cap": 35.0,
+    },
+    {
+        "name": "Regime_Chop_2014",
+        "test_start": "2014-01-01",
+        "test_end": "2015-12-31",
+        "min_trades": 10,
+    },
+    {
+        "name": "Regime_Boom_2020",
         "test_start": "2020-01-01",
-        "test_end": "2020-12-31",
-        "weight": 0.10,
-    },
-    {
-        "name": "w2_2021",
-        "train_start": "2016-01-01",
-        "train_end": "2020-12-31",
-        "test_start": "2021-01-01",
         "test_end": "2021-12-31",
-        "weight": 0.10,
+        "min_trades": 10,
     },
     {
-        "name": "w3_2022",
-        "train_start": "2017-01-01",
-        "train_end": "2021-12-31",
+        "name": "Regime_Bear_2022",
         "test_start": "2022-01-01",
         "test_end": "2022-12-31",
-        "weight": _RECENT_WEIGHT,
-    },
-    {
-        "name": "w4_2023",
-        "train_start": "2018-01-01",
-        "train_end": "2022-12-31",
-        "test_start": "2023-01-01",
-        "test_end": "2023-12-31",
-        "weight": _RECENT_WEIGHT,
-    },
-    {
-        "name": "w5_2024",
-        "train_start": "2019-01-01",
-        "train_end": "2023-12-31",
-        "test_start": "2024-01-01",
-        "test_end": "2024-12-31",
-        "weight": _RECENT_WEIGHT,
+        "min_trades": 0,
     },
 ]
 
@@ -176,11 +166,7 @@ def _window_metrics(trades_df, equity_df, start_date, end_date):
     if eq_slice.empty:
         return {
             "cagr": 0.0,
-            "sortino": 0.0,
             "max_dd": 0.0,
-            "pf": 0.0,
-            "tail_ratio": 0.0,
-            "explosiveness": 0.0,
             "trades": 0,
         }
 
@@ -193,17 +179,6 @@ def _window_metrics(trades_df, equity_df, start_date, end_date):
     else:
         cagr = (end_equity / start_equity) ** (365.0 / span_days) - 1.0
 
-    returns_series = eq_slice["Equity"].pct_change().dropna()
-    if returns_series.empty:
-        sortino = 0.0
-    else:
-        downside = returns_series[returns_series < 0]
-        downside_std = downside.std(ddof=0)
-        if downside_std > 0:
-            sortino = (returns_series.mean() / downside_std) * np.sqrt(252.0)
-        else:
-            sortino = 0.0
-
     equity = eq_slice["Equity"].to_numpy(dtype=float)
     peak = np.maximum.accumulate(equity)
     drawdown = (equity - peak) / peak
@@ -213,63 +188,35 @@ def _window_metrics(trades_df, equity_df, start_date, end_date):
     returns = trades_window["return_pct"].dropna().to_numpy(dtype=float)
     trade_count = int(returns.size)
 
-    wins = returns[returns > 0]
-    losses = returns[returns < 0]
-    wins_sum = wins.sum()
-    losses_sum = losses.sum()
-
-    if losses_sum < 0:
-        pf = wins_sum / abs(losses_sum) if wins_sum > 0 else 0.0
-    else:
-        pf = 10.0 if wins_sum > 0 else 0.0
-
-    if returns.size >= 2:
-        p95 = float(np.percentile(returns, 95))
-        p5 = float(np.percentile(returns, 5))
-        tail_ratio = p95 / abs(p5) if p5 < 0 else 0.0
-    else:
-        tail_ratio = 0.0
-
-    avg_loss = abs(losses.mean()) if losses.size > 0 else 0.0
-    explosiveness = float(np.mean(returns >= 3.0 * avg_loss)) if avg_loss > 0 else 0.0
-
     return {
         "cagr": float(cagr),
-        "sortino": float(sortino),
         "max_dd": float(max_dd),
-        "pf": float(pf),
-        "tail_ratio": float(tail_ratio),
-        "explosiveness": float(explosiveness),
         "trades": trade_count,
     }
 
 
-def _score_window(metrics):
-    if metrics["trades"] < 15:
-        return 0.0
-    if metrics["max_dd"] > 40.0:
-        return 0.0
-    if metrics["pf"] < 1.1:
+def _score_window(metrics, window):
+    min_trades = int(window.get("min_trades", 0) or 0)
+    if metrics["trades"] < min_trades:
         return 0.0
 
-    if metrics["max_dd"] > 0:
-        calmar = metrics["cagr"] / (metrics["max_dd"] / 100.0)
-    else:
-        calmar = 0.0
-
-    score = (
-        0.30 * calmar
-        + 0.30 * metrics["tail_ratio"]
-        + 0.20 * metrics["pf"]
-        + 0.20 * metrics["sortino"]
-    )
-
-    if metrics["max_dd"] > 25.0:
-        score *= 0.1
-
-    if not np.isfinite(score):
+    max_dd_cap = float(window.get("max_dd_cap", 40.0) or 40.0)
+    if metrics["max_dd"] > max_dd_cap:
         return 0.0
-    return max(0.0, float(score))
+
+    max_dd = metrics["max_dd"]
+    if not np.isfinite(max_dd) or max_dd <= 0:
+        return 0.0
+
+    cagr = metrics["cagr"]
+    if not np.isfinite(cagr):
+        return 0.0
+
+    calmar = cagr / (max_dd / 100.0)
+    if not np.isfinite(calmar):
+        return 0.0
+
+    return float(calmar)
 
 
 def _build_strategy(params):
@@ -342,35 +289,26 @@ def objective(trial):
     equity_df = _extract_equity_df(result.get("equity_curve", []))
     if equity_df.empty:
         return 0.0
-    span_days = (equity_df.index[-1] - equity_df.index[0]).days
-    span_years = max(span_days / 365.25, 0.01)
-    trade_density = len(trades_df) / span_years
-    if trade_density < 40.0:
-        return 0.0
 
     window_scores = []
     window_attrs = {}
 
     for idx, window in enumerate(WFV_WINDOWS):
         metrics = _window_metrics(trades_df, equity_df, window["test_start"], window["test_end"])
-        score = _score_window(metrics)
+        score = _score_window(metrics, window)
         window_scores.append(score)
         window_attrs[window["name"]] = {"score": score, **metrics}
-
-        if window["name"] == "w3_2022":
-            if metrics["cagr"] < -20.0 or metrics["max_dd"] > 40.0:
-                trial.report(score, step=idx)
-                if trial.should_prune():
-                    raise optuna.TrialPruned()
-                return 0.0
 
         trial.report(score, step=idx)
         if trial.should_prune():
             raise optuna.TrialPruned()
 
-    final_score = 0.0
-    for score, window in zip(window_scores, WFV_WINDOWS):
-        final_score += score * window["weight"]
+    if not window_scores:
+        return 0.0
+
+    min_score = min(window_scores)
+    avg_score = float(np.mean(window_scores)) if window_scores else 0.0
+    final_score = (0.6 * min_score) + (0.4 * avg_score)
 
     trial.set_user_attr("window_metrics", window_attrs)
     return float(final_score)
@@ -391,7 +329,7 @@ def _optuna_worker(storage_url, study_name, n_trials, seed):
 def main():
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    print("Starting Bayesian HPO with walk-forward validation.")
+    print("Starting Bayesian HPO with regime sampling.")
     print(f"Workers: {WORKER_COUNT}, Trials: {TOTAL_TRIALS}, Storage: {DB_PATH}")
 
     global _WORKER_CACHE
