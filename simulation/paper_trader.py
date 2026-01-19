@@ -324,6 +324,7 @@ class PaperTrader:
         entry_index: Optional[int] = None,
         genome: Optional[Dict] = None,
         atr: Optional[float] = None,
+        trigger_price: Optional[float] = None,
         partial_profit_day: Optional[int] = None,
     ) -> Optional[Dict]:
         """
@@ -358,6 +359,7 @@ class PaperTrader:
             "shares": shares,
             "committed_cash": estimated_cost,
             "order_price_estimate": price,
+            "trigger": trigger_price,
             "stop_price": stop_val,
             "atr": atr,
             "strategy": strat_name,
@@ -457,56 +459,71 @@ class PaperTrader:
                 fill_log.append(f"✅ SOLD {sym} @ ${exit_price:.2f} (PnL: ${pnl:.2f})")
                 continue
 
-            est_price = order.get("order_price_estimate", 0)
+            trigger_price = float(order.get("trigger") or order.get("order_price_estimate") or 0.0)
             fill_price = 0.0
-            
-            # 1. Get Fill Price
+
+            if not is_market_open:
+                fill_log.append(f"⏳ WAITING {sym}: Market not open")
+                remaining_orders.append(order)
+                continue
+
+            # 1. Stop-Buy Validation (High >= Trigger)
             quote_payload = None
-            quote_has_price = False
             try:
                 q = sd.get_quote(sym)
                 if q and sym in q and "quote" in q[sym]:
                     quote_payload = q[sym]["quote"]
-            except: pass
-            
+            except:  # noqa: E722
+                quote_payload = None
+
+            current_open = 0.0
+            current_high = 0.0
             if quote_payload:
                 open_price = float(quote_payload.get("openPrice") or 0)
                 last_price = float(quote_payload.get("lastPrice") or 0)
                 mark_price = float(quote_payload.get("markPrice") or quote_payload.get("mark") or 0)
-                quote_has_price = any(p > 0 for p in (open_price, last_price, mark_price))
+                high_price = float(quote_payload.get("highPrice") or quote_payload.get("high") or 0)
 
                 if open_price > 0:
-                    fill_price = open_price
-                elif after_grace and last_price > 0:
-                    fill_price = last_price
-                elif last_price > 0:
-                    fill_price = last_price
-                elif mark_price > 0:
-                    fill_price = mark_price
+                    current_open = open_price
+                if high_price > 0:
+                    current_high = high_price
+                elif any(p > 0 for p in (open_price, last_price, mark_price)):
+                    current_high = max(open_price, last_price, mark_price)
 
-            # Tier 3 Fallback: historical open only if quote is empty
-            if fill_price == 0 and not quote_has_price:
-                df = fetch_single_symbol(sym, days=5, force_fresh=True)
-                if df is not None and not df.empty:
-                    last_dt = df.index[-1]
-                    # Simple date check
+            df_hist = None
+            if current_open <= 0 or current_high <= 0:
+                df_hist = fetch_single_symbol(sym, days=60, force_fresh=True)
+                if df_hist is not None and not df_hist.empty:
+                    df_hist = df_hist.sort_index()
+                    last_dt = df_hist.index[-1]
                     if last_dt.date() == today_ny:
-                        fill_price = float(df.iloc[-1]["open"])
+                        if current_open <= 0:
+                            current_open = float(df_hist.iloc[-1].get("open", 0) or 0)
+                        if current_high <= 0:
+                            current_high = float(df_hist.iloc[-1].get("high", 0) or 0)
 
-            # WAITING logic
-            if fill_price <= 0:
-                if not is_market_open:
-                    reason = "Market not open"
-                elif not after_grace:
-                    reason = "Waiting for official open price"
-                else:
-                    reason = "No usable price after grace"
-                fill_log.append(f"⏳ WAITING {sym}: {reason}")
+            if trigger_price <= 0:
+                fill_log.append(f"❌ FAILED {sym}: Missing trigger price")
+                continue
+            if current_high <= 0:
+                fill_log.append(f"⏳ WAITING {sym}: No usable high price")
+                remaining_orders.append(order)
+                continue
+            if current_high < trigger_price:
+                fill_log.append(
+                    f"⏳ WAITING {sym}: High {current_high:.2f} < Trigger {trigger_price:.2f}"
+                )
                 remaining_orders.append(order)
                 continue
 
+            if current_open <= 0:
+                current_open = trigger_price
+            fill_price = max(current_open, trigger_price)
+
             # 2. Standardized Gap Protection (prev close vs fill)
-            df_hist = fetch_single_symbol(sym, days=60, force_fresh=True)
+            if df_hist is None:
+                df_hist = fetch_single_symbol(sym, days=60, force_fresh=True)
             prev_close = None
             if df_hist is not None and not df_hist.empty:
                 df_hist = df_hist.sort_index()
@@ -930,6 +947,7 @@ class PaperTrader:
                 entry_index=cand.get("entry_i"),
                 genome=cand.get("genome"),
                 atr=cand.get("atr"),
+                trigger_price=cand.get("trigger"),
                 partial_profit_day=cand.get("partial_profit_day"),
             )
             if order:

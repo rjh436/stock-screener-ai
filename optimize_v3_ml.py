@@ -85,7 +85,7 @@ WFV_WINDOWS = [
     },
 ]
 
-WORKER_COUNT = 10
+WORKER_COUNT = 12
 TOTAL_TRIALS = int(os.environ.get("APEX_V3_TRIALS", "200"))
 STUDY_NAME = "apex_v3_hpo"
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apex_v3.db")
@@ -163,6 +163,7 @@ def _window_metrics(trades_df, equity_df, start_date, end_date):
     if eq_slice.empty:
         return {
             "cagr": 0.0,
+            "sortino": 0.0,
             "max_dd": 0.0,
             "pf": 0.0,
             "tail_ratio": 0.0,
@@ -178,6 +179,17 @@ def _window_metrics(trades_df, equity_df, start_date, end_date):
         cagr = 0.0
     else:
         cagr = (end_equity / start_equity) ** (365.0 / span_days) - 1.0
+
+    returns_series = eq_slice["Equity"].pct_change().dropna()
+    if returns_series.empty:
+        sortino = 0.0
+    else:
+        downside = returns_series[returns_series < 0]
+        downside_std = downside.std(ddof=0)
+        if downside_std > 0:
+            sortino = (returns_series.mean() / downside_std) * np.sqrt(252.0)
+        else:
+            sortino = 0.0
 
     equity = eq_slice["Equity"].to_numpy(dtype=float)
     peak = np.maximum.accumulate(equity)
@@ -210,6 +222,7 @@ def _window_metrics(trades_df, equity_df, start_date, end_date):
 
     return {
         "cagr": float(cagr),
+        "sortino": float(sortino),
         "max_dd": float(max_dd),
         "pf": float(pf),
         "tail_ratio": float(tail_ratio),
@@ -235,7 +248,7 @@ def _score_window(metrics):
         0.30 * calmar
         + 0.30 * metrics["tail_ratio"]
         + 0.20 * metrics["pf"]
-        + 0.20 * metrics["cagr"]
+        + 0.20 * metrics["sortino"]
     )
 
     if metrics["max_dd"] > 25.0:
@@ -305,7 +318,7 @@ def objective(trial):
         None,
         None,
         start_cash=100000.0,
-        start_date="2012-01-01",
+        start_date="2006-01-01",
         pre_calculated_data=_WORKER_CACHE,
     )
 
@@ -315,6 +328,11 @@ def objective(trial):
     trades_df = _extract_trades_df(result.get("trades_list", []))
     equity_df = _extract_equity_df(result.get("equity_curve", []))
     if equity_df.empty:
+        return 0.0
+    span_days = (equity_df.index[-1] - equity_df.index[0]).days
+    span_years = max(span_days / 365.25, 0.01)
+    trade_density = len(trades_df) / span_years
+    if trade_density < 40.0:
         return 0.0
 
     window_scores = []

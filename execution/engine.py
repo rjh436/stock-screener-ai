@@ -915,7 +915,18 @@ def _legacy_run_backtest(
                             # Reject bad ADR data before applying filters.
                             if curr_adr <= 0.0:
                                 continue
-                            if curr_adr < 3.0:
+                            try:
+                                min_adr = float(params.get("adr_pct", 2.0))
+                            except (TypeError, ValueError):
+                                min_adr = 2.0
+
+                            close_prev = float(close_arr[prev_i])
+                            sma200_prev = float(sma200_arr[prev_i])
+                            if not np_isfinite(close_prev) or not np_isfinite(sma200_prev):
+                                continue
+                            if close_prev < sma200_prev:
+                                continue
+                            if curr_adr < min_adr:
                                 continue
                             # --- REMEDIATION: Stop-Buy Logic (High > Trigger) ---
                             trigger_price = float(prev_high_arr[prev_i]) * 1.0005
