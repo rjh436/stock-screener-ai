@@ -201,6 +201,9 @@ def _compute_indicators(
         df["rsi2"] = 100 - (100 / (1 + rs2))
 
         df["roc_60"] = df["close"].pct_change(60) * 100.0
+        # New for HTF V7
+        df["roc_40"] = df["close"].pct_change(40) * 100.0
+        df["adr_pct_ma10"] = df["adr_pct"].rolling(10).mean()
 
         adx = ADXIndicator(df["high"], df["low"], df["close"])
         df["adx"] = adx.adx()
@@ -210,6 +213,9 @@ def _compute_indicators(
         df["cci"] = CCIIndicator(df["high"], df["low"], df["close"]).cci()
         df["stoch_k"] = StochasticOscillator(df["high"], df["low"], df["close"]).stoch()
         df["vol_ma20"] = df["volume"].rolling(20).mean()
+
+        df["highest10"] = df["high"].rolling(10).max()
+        df["highest10_1"] = df["highest10"].shift(1) # Trigger for HTF
 
         if spy_df is not None and not spy_df.empty:
             spy_aligned = spy_df["close"].reindex(df.index).ffill().bfill()
@@ -475,6 +481,10 @@ class _SymbolArrays:
     rsrating: np.ndarray
     adr_pct: np.ndarray   # V2: New ADR Field
     prev_high: np.ndarray # V2: New Prev High Field
+    roc40: np.ndarray     # V7: HTF Pole
+    adr_pct_ma10: np.ndarray # V7: HTF Flag
+    highest10: np.ndarray # V7: HTF Breakout
+    highest10_1: np.ndarray # V7: HTF Trigger
 
 
 @dataclass(slots=True)
@@ -671,6 +681,10 @@ def prepare_backtest_data(
                 rsrating=np.zeros(n, dtype=np.float64),
                 adr_pct=_get_np_col(df, "adr_pct", 0.0, length=n),
                 prev_high=_get_np_col(df, "prev_high", 0.0, length=n),
+                roc40=_get_np_col(df, "roc_40", 0.0, length=n),
+                adr_pct_ma10=_get_np_col(df, "adr_pct_ma10", 0.0, length=n),
+                highest10=_get_np_col(df, "highest10", 0.0, length=n),
+                highest10_1=_get_np_col(df, "highest10_1", 0.0, length=n),
             )
         except Exception:
             continue
@@ -842,6 +856,10 @@ def _legacy_run_backtest(
         rs_rating_arr = sd.rsrating
         adr_pct_arr = sd.adr_pct
         prev_high_arr = sd.prev_high
+        roc40_arr = sd.roc40
+        adr_pct_ma10_arr = sd.adr_pct_ma10
+        highest10_arr = sd.highest10
+        highest10_1_arr = sd.highest10_1
         gidx = sd.gidx
 
         n_bars = len(idx)
@@ -999,7 +1017,16 @@ def _legacy_run_backtest(
                             if curr_adr < min_adr:
                                 continue
                             # --- REMEDIATION: Stop-Buy Logic (High > Trigger) ---
-                            trigger_price = float(prev_high_arr[prev_i]) * 1.0005
+                            # V7 Upgrade: Configurable Trigger (default to prev_high * 1.0005)
+                            trigger_base_col = params.get("stop_buy_ref", "prev_high")
+                            trigger_mult = float(params.get("stop_buy_mult", 1.0005))
+                            
+                            if trigger_base_col == "highest10_1":
+                                base_price = float(highest10_1_arr[prev_i])
+                            else:
+                                base_price = float(prev_high_arr[prev_i])
+
+                            trigger_price = base_price * trigger_mult
                             day_high = float(high_arr[curr_i])
                             day_open = float(open_arr[curr_i])
 
