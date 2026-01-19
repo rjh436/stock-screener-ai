@@ -671,32 +671,21 @@ elif mode == "Backtest":
                 # -------------------------------------------------
 
                 # --- CHART CRASH FIX: Normalize Date Types ---
-                equity_data = res.get("equity_curve", [])
-                if equity_data:
-                    try:
-                        df_ec = pd.DataFrame(equity_data)
-                        # Force Date column to datetime
-                        if "Date" in df_ec.columns:
-                            df_ec["Date"] = pd.to_datetime(df_ec["Date"], errors='coerce')
-                            df_ec = df_ec.dropna(subset=["Date"]).set_index("Date")
-
-                            # Force Equity column to numeric
-                            if "Equity" in df_ec.columns:
-                                df_ec["Equity"] = pd.to_numeric(df_ec["Equity"], errors='coerce')
-                                st.line_chart(df_ec["Equity"])
-                            else:
-                                st.error("Equity data missing 'Equity' column.")
-                        else:
-                            st.error("Equity data missing 'Date' column.")
-                    except Exception as e:
-                        st.error(f"Chart Render Failed: {e}")
-                else:
-                    st.info("No equity curve to display.")
+                ec_data = res.get("equity_curve", [])
+                if ec_data:
+                    df_ec = pd.DataFrame(ec_data)
+                    if "Date" in df_ec.columns and "Equity" in df_ec.columns:
+                        df_ec["Date"] = pd.to_datetime(df_ec["Date"])
+                        df_ec = df_ec.set_index("Date")
+                        st.line_chart(df_ec["Equity"])
+                    else:
+                        st.warning("Equity data malformed.")
                 # ---------------------------------------------
                 
                 # --- DOWNLOAD BUTTON RESTORED ---
                 # Safe data extraction
-                equity_curve = res.get("equity_curve")
+                equity_curve = res.get("equity_curve", [])
+                equity_df = pd.DataFrame(equity_curve)
                 # Fallback chain to ensure we never get "Unknown" if the key exists
                 strategy_name = res.get("strategy_name") or res.get("strategy") or name or "Backtest_Result"
                 # Sanitize filename (remove special chars)
@@ -704,9 +693,9 @@ elif mode == "Backtest":
                     [c for c in strategy_name if c.isalnum() or c in (" ", "_", "-")]
                 ).strip()
 
-                if equity_curve is not None and not isinstance(equity_curve, list) and not equity_curve.empty:
+                if not equity_df.empty:
                     try:
-                        csv_data = equity_curve.to_csv().encode('utf-8')
+                        csv_data = equity_df.to_csv().encode('utf-8')
                         st.download_button(
                             label="📥 Export Result (CSV)",
                             data=csv_data,

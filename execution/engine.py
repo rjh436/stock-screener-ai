@@ -704,7 +704,7 @@ def _legacy_run_backtest(
     pre_calculated_data: Optional["PreparedBacktestData"] = None,
 ):
     # --- FIX: Auto-detect if data_pack is actually prepared data ---
-    if pre_calculated_data is None and hasattr(data, "enriched"):
+    if hasattr(data, "enriched"):
         pre_calculated_data = data
         data = None
     # -------------------------------------------------------------
@@ -1130,15 +1130,18 @@ def _legacy_run_backtest(
             curr_equity = cash
             for sym, pos in positions.items():
                 if sym in enriched:
-                    loc_range = np.searchsorted(enriched[sym].gidx, [day_idx, day_idx+1])
+                    loc_range = np.searchsorted(enriched[sym].gidx, [day_idx, day_idx + 1])
                     if loc_range[0] < loc_range[1]:
-                        curr_equity += pos["shares"] * enriched[sym].close[loc_range[0]]
+                        c_price = float(enriched[sym].close[loc_range[0]])
+                        if c_price <= 0.0 or not np.isfinite(c_price):
+                            c_price = pos["entry_price"]
+                        curr_equity += pos["shares"] * c_price
                     else:
                         curr_equity += pos["shares"] * pos["entry_price"]
                 else:
                     curr_equity += pos["shares"] * pos["entry_price"]
-            
-            equity_curve.append({"Date": current_dt, "Equity": curr_equity})
+
+            equity_curve.append({"Date": pd.Timestamp(current_dt), "Equity": float(curr_equity)})
 
         final_val = equity_curve[-1]["Equity"] if equity_curve else start_cash
 
@@ -1165,6 +1168,7 @@ def _legacy_run_backtest(
                 profit_factor = wins["PnL"].sum() / abs(losses["PnL"].sum())
             else:
                 profit_factor = 10.0
+        avg_profit_pct = df_trades["Return %"].mean() if not df_trades.empty else 0.0
 
         res = _empty_result(strat_key, start_cash, params)
         res.update({
@@ -1173,6 +1177,7 @@ def _legacy_run_backtest(
             "total_trades": len(trades_list),
             "hit_rate": win_rate,
             "profit_factor": profit_factor,
+            "avg_profit_pct": avg_profit_pct,
             "max_drawdown_pct": max_drawdown_pct,
             "equity_curve": equity_curve,
             "trades_list": trades_list
