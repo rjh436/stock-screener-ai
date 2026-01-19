@@ -180,8 +180,14 @@ def _compute_indicators(
         df["highest55"] = df["high"].rolling(55).max()
         df["highest55_1"] = df["highest55"].shift(1)
         
-        # New for V2: Previous High for Stop-Buy Trigger
         df["prev_high"] = df["high"].shift(1)
+        df["prev_close"] = df["close"].shift(1)
+        
+        # New for Qullamaggie EP: Gap % (Open vs Prev Close)
+        # We need this to identify "Episodic Pivots" (Earnings Gaps)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            df["gap_pct"] = ((df["open"] - df["prev_close"]) / df["prev_close"]) * 100.0
+        df["gap_pct"] = df["gap_pct"].fillna(0.0)
 
         delta = df["close"].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
@@ -778,6 +784,36 @@ def _legacy_run_backtest(
     np_isfinite = np.isfinite
     hard_deck_blocks = 0
 
+    # --- FIX: PREPARE GLOBAL SPY ARRAYS (Aligned to all_dates) ---
+    global_spy_close = np.zeros(len(all_dates), dtype=np.float64)
+    global_spy_sma20 = np.zeros(len(all_dates), dtype=np.float64)
+    global_spy_sma50 = np.zeros(len(all_dates), dtype=np.float64)
+    global_spy_sma200 = np.zeros(len(all_dates), dtype=np.float64)
+
+    if global_data and "SPY" in global_data:
+        spy_df_raw = global_data["SPY"]
+        if not spy_df_raw.empty:
+            spy_df_raw = spy_df_raw.copy()
+            spy_df_raw.columns = spy_df_raw.columns.str.lower()
+            if spy_df_raw.index.tz is not None:
+                spy_df_raw.index = spy_df_raw.index.tz_localize(None)
+
+            # Ensure we have SMA200
+            if "sma200" not in spy_df_raw.columns:
+                 spy_df_raw["sma200"] = spy_df_raw["close"].rolling(200).mean()
+            if "sma20" not in spy_df_raw.columns:
+                 spy_df_raw["sma20"] = spy_df_raw["close"].rolling(20).mean()
+            if "sma50" not in spy_df_raw.columns:
+                 spy_df_raw["sma50"] = spy_df_raw["close"].rolling(50).mean()
+
+            # Align to all_dates
+            spy_aligned = spy_df_raw.reindex(all_dates).ffill().bfill()
+            global_spy_close = spy_aligned["close"].to_numpy(dtype=np.float64)
+            global_spy_sma20 = spy_aligned["sma20"].fillna(0).to_numpy(dtype=np.float64)
+            global_spy_sma50 = spy_aligned["sma50"].fillna(0).to_numpy(dtype=np.float64)
+            global_spy_sma200 = spy_aligned["sma200"].fillna(0).to_numpy(dtype=np.float64)
+    # ----------------------------------------------------------------
+
     for sym, sd in enriched.items():
         df = sd.df
         idx = sd.index
@@ -822,21 +858,31 @@ def _legacy_run_backtest(
             prev_i = valid_indices[i - 1]
             day_idx = gidx[curr_i]
 
-            if day_idx < 0 or day_idx >= len(all_dates):
+            if day_idx < 1 or day_idx >= len(all_dates):
                 continue
 
-            # --- TRAFFIC LIGHT PRE-CALCULATION (NO LOOKAHEAD) ---
-            spy_c = float(spy_close_arr[prev_i]) if np_isfinite(spy_close_arr[prev_i]) else 0.0
-            spy_20 = float(spy_sma20_arr[prev_i]) if np_isfinite(spy_sma20_arr[prev_i]) else 0.0
-            spy_50 = float(spy_sma50_arr[prev_i]) if np_isfinite(spy_sma50_arr[prev_i]) else 0.0
-            spy_200 = float(spy_sma200_arr[prev_i]) if np_isfinite(spy_sma200_arr[prev_i]) else 0.0
+            # --- TRAFFIC LIGHT PRE-CALCULATION (ROBUST GLOBAL LOOKUP) ---
+            # Lookup the Global Market State for the PREVIOUS DAY relative to the current simulation step.
+            # day_idx is 'Today'. day_idx - 1 is 'Yesterday' (Global).
+            spy_c = global_spy_close[day_idx - 1]
+            spy_20 = global_spy_sma20[day_idx - 1]
+            spy_50 = global_spy_sma50[day_idx - 1]
+            spy_200 = global_spy_sma200[day_idx - 1]
+            # Local vars remain local
             rs_rating = float(rs_rating_arr[prev_i]) if np_isfinite(rs_rating_arr[prev_i]) else 0.0
 
             # --- HARD DECK CIRCUIT BREAKER ---
             # Critical Safety Rule: If Market is in a Long-Term Downtrend, BLOCK ALL ENTRIES.
-            market_crash_mode = False
-            if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
-                market_crash_mode = True
+            # FAIL SAFE: Default to BLOCKED (market_crash_mode = True) unless we positively verify an Uptrend.
+            # If SPY data is missing (spy_c == 0), we remain in crash mode.
+            market_crash_mode = True 
+            
+            if spy_c > 0 and spy_200 > 0:
+                # We have valid data. Check the Trend.
+                if spy_c >= spy_200:
+                    market_crash_mode = False # Uptrend confirmed
+                # else: Remain True (Downtrend)
+            
             if market_crash_mode:
                 hard_deck_blocks += 1
                 if _DEBUG_TRAIL_ACTIVATION:
@@ -1145,7 +1191,10 @@ def _legacy_run_backtest(
                 dist = max(0.01, cand.entry_px - cand.stop_px)
                 shares = int(risk_amt / dist)
                 
-                max_capital = equity * 0.25
+                # Uncap position size if strategy requests it
+                max_size_pct = float(params.get("max_pos_size_pct", 0.25))
+                max_capital = equity * max_size_pct
+                
                 if shares * cand.entry_px > max_capital:
                     shares = int(max_capital / cand.entry_px)
                 

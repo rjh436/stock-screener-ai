@@ -608,6 +608,7 @@ elif mode == "Backtest":
                             prepared,
                             start_cash=100000.0,
                             start_date=None,
+                            global_data=global_data,
                         ): strat.name
                         for strat in run_strategies
                     }
