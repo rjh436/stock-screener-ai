@@ -113,5 +113,61 @@
     "market_filter_mode": "traffic_light",
     "yellow_rs_floor": 85,
     "red_bypass_rs": 95
+  },
+  {
+    "name": "Apex Kinetic V3.3 (Regime Robust)",
+    "type": "breakout",
+    "entry_rules": [
+      {
+        "col": "rsi14",
+        "op": ">",
+        "val": 48
+      },
+      {
+        "col": "rs_rating",
+        "op": ">",
+        "val": 77
+      },
+      {
+        "col": "adr_pct",
+        "op": ">",
+        "val": 2.68
+      },
+      {
+        "col": "bb_width",
+        "op": "<",
+        "val": 0.27
+      },
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "donchian_20"
+      },
+      {
+        "col": "volume",
+        "op": ">",
+        "ref": "vol_ma20",
+        "mult": 1.5
+      }
+    ],
+    "exit_rules": [
+      {
+        "col": "close",
+        "op": "<",
+        "ref": "sma10"
+      }
+    ],
+    "risk_parameters": {
+      "stop_loss_atr": 1.97,
+      "risk_per_trade": 0.015
+    },
+    "execution_parameters": {
+      "limit_ratio": 1.0008,
+      "time_stop": 19,
+      "partial_profit_day": 5
+    },
+    "market_filter_mode": "traffic_light",
+    "yellow_rs_floor": 85,
+    "red_bypass_rs": 95
   }
 ]

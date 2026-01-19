@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 from ta.momentum import StochasticOscillator
-from ta.trend import ADXIndicator, CCIIndicator
+from ta.trend import ADXIndicator, CCIIndicator, SMAIndicator
 
 from strategies.generic import GenericStrategy
 from strategies.strategy_loader import load_strategies
@@ -213,7 +213,10 @@ def _compute_indicators(
             df["spy_close"] = spy_aligned
             df["spy_sma20"] = spy_aligned.rolling(20).mean()
             df["spy_sma50"] = spy_aligned.rolling(50).mean()
-            df["spy_sma200"] = spy_aligned.rolling(200).mean()
+            if "sma200" in spy_df.columns:
+                df["spy_sma200"] = spy_df["sma200"].reindex(df.index).ffill().bfill()
+            else:
+                df["spy_sma200"] = spy_aligned.rolling(200).mean()
             df["rs_mom20"] = (df["rs_ratio"] / df["rs_ratio"].shift(20)) - 1.0
             df["spy_regime"] = (df["spy_close"] > df["spy_sma200"]).astype(int)
         else:
@@ -574,6 +577,14 @@ def prepare_backtest_data(
 
     vix_df = global_data.get("VIX") if global_data else None
     spy_df = global_data.get("SPY") if global_data else None
+    if spy_df is not None and not spy_df.empty:
+        spy_df = spy_df.copy()
+        spy_df.columns = spy_df.columns.str.lower()
+        if "sma200" not in spy_df.columns or spy_df["sma200"].isna().all():
+            try:
+                spy_df["sma200"] = SMAIndicator(spy_df["close"], window=200).sma_indicator()
+            except Exception:
+                spy_df["sma200"] = spy_df["close"].rolling(200).mean()
 
     enriched: Dict[str, _SymbolArrays] = {}
 
@@ -765,6 +776,7 @@ def _legacy_run_backtest(
         )
 
     np_isfinite = np.isfinite
+    hard_deck_blocks = 0
 
     for sym, sd in enriched.items():
         df = sd.df
@@ -819,6 +831,18 @@ def _legacy_run_backtest(
             spy_50 = float(spy_sma50_arr[prev_i]) if np_isfinite(spy_sma50_arr[prev_i]) else 0.0
             spy_200 = float(spy_sma200_arr[prev_i]) if np_isfinite(spy_sma200_arr[prev_i]) else 0.0
             rs_rating = float(rs_rating_arr[prev_i]) if np_isfinite(rs_rating_arr[prev_i]) else 0.0
+
+            # --- HARD DECK CIRCUIT BREAKER ---
+            # Critical Safety Rule: If Market is in a Long-Term Downtrend, BLOCK ALL ENTRIES.
+            market_crash_mode = False
+            if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
+                market_crash_mode = True
+            if market_crash_mode:
+                hard_deck_blocks += 1
+                if _DEBUG_TRAIL_ACTIVATION:
+                    date_str = pd.Timestamp(all_dates[day_idx]).date()
+                    print(f"HARD DECK: Blocked entry for {sym} on {date_str}")
+                continue
 
             market_state = "GREEN" 
             if spy_c > 0 and spy_200 > 0:
@@ -980,6 +1004,9 @@ def _legacy_run_backtest(
                         if _DEBUG_TRAIL_ACTIVATION:
                             print(f"Warning: error processing {sym} at {day_idx}: {e}")
                         continue
+
+    if _DEBUG_TRAIL_ACTIVATION and hard_deck_blocks:
+        print(f"HARD DECK: Blocked {hard_deck_blocks} entries")
 
     # Execution Loop
     portfolio = {s.name: {"cash": float(start_cash), "positions": {}} for s in strategies}
