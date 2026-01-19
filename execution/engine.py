@@ -703,6 +703,12 @@ def _legacy_run_backtest(
     super_signal_only: bool = False,
     pre_calculated_data: Optional["PreparedBacktestData"] = None,
 ):
+    # --- FIX: Auto-detect if data_pack is actually prepared data ---
+    if pre_calculated_data is None and hasattr(data, "enriched"):
+        pre_calculated_data = data
+        data = None
+    # -------------------------------------------------------------
+
     def _unwrap_genome(params: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(params, dict) and isinstance(params.get("genome"), dict):
             return params["genome"]

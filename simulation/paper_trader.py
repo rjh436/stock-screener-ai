@@ -324,6 +324,7 @@ class PaperTrader:
         entry_index: Optional[int] = None,
         genome: Optional[Dict] = None,
         atr: Optional[float] = None,
+        partial_profit_day: Optional[int] = None,
     ) -> Optional[Dict]:
         """
         PHASE 3: Queues a Market-On-Open (MOO) order.
@@ -362,6 +363,7 @@ class PaperTrader:
             "strategy": strat_name,
             "strategy_name": strat_name,
             "genome": strat_genome,
+            "partial_profit_day": partial_profit_day,
             "date": str(datetime.now().date()),
             "type": "BUY_MOO",
             "status": "PENDING",
@@ -571,6 +573,12 @@ class PaperTrader:
                 "unrealized_pnl": 0.0,
                 "unrealized_pct": 0.0,
                 "entry_i": order.get("entry_i"),
+                "partial_taken": False,
+                "partial_profit_day": int(
+                    order.get("partial_profit_day")
+                    or getattr(s_obj, "params", {}).get("partial_profit_day", 3)
+                    or 3
+                ),
             }
 
             self._append_trade_ledger(
@@ -808,6 +816,7 @@ class PaperTrader:
             "vix": cand.get("vix", 0),
             "close": cand.get("close", price),
             "sma20": cand.get("sma20", 0),
+            "partial_profit_day": cand.get("partial_profit_day"),
         }
 
     def _execute_governor(self, candidates: List[Dict]) -> Dict[str, Any]:
@@ -921,6 +930,7 @@ class PaperTrader:
                 entry_index=cand.get("entry_i"),
                 genome=cand.get("genome"),
                 atr=cand.get("atr"),
+                partial_profit_day=cand.get("partial_profit_day"),
             )
             if order:
                 sector_exposure[sec] = sector_exposure.get(sec, 0.0) + position_val
@@ -1027,17 +1037,24 @@ class PaperTrader:
                     # Store BOTH close AND open from the signal bar
                     signal_close = float(row_signal["close"])
                     signal_open = float(row_signal["open"])
+                    prev_high = float(row_signal.get("high", 0) or 0)
+                    trigger = (prev_high * 1.0005) if prev_high > 0 else signal_close
+                    mode_key = str(params.get("scoring_type") or params.get("type") or strat.name or "").lower()
+                    is_breakout = any(token in mode_key for token in ("breakout", "momentum", "vcp", "kinetic"))
+                    order_price = trigger if is_breakout else signal_close
 
                     # Stop Loss (Estimation only - Recalculated on fill)
                     atr = float(row_signal.get("atr14", signal_close * 0.02))
                     stop_mult = float(getattr(strat, "params", {}).get("stop_loss_atr", 3.0))
                     stop_price = signal_close - (atr * stop_mult)
+                    partial_profit_day = int(params.get("partial_profit_day", 3) or 3)
 
                     candidates.append({
                         "symbol": sym,
-                        "price": signal_close,
+                        "price": order_price,
                         "close": float(row_signal.get("close", 0)),
                         "signal_open": signal_open,
+                        "trigger": trigger,
                         "stop": stop_price,
                         "atr": atr,
                         "vix": float(row_signal.get("vix", 0)),
@@ -1046,6 +1063,7 @@ class PaperTrader:
                         "strategy_obj": strat,
                         "genome": strat_genome,
                         "score": score,
+                        "partial_profit_day": partial_profit_day,
                         "entry_i": signal_idx + 1
                     })
                 except: continue
@@ -1059,6 +1077,7 @@ class PaperTrader:
 
     def process_exits(self, strategies_map=None):
         exits = []
+        today_dt = datetime.now().date()
 
         def _build_exit_arrays(frame: pd.DataFrame) -> SimpleNamespace:
             def _col(name: str) -> np.ndarray:
@@ -1093,10 +1112,22 @@ class PaperTrader:
             if entry_i is None:
                 try:
                     entry_dt = pd.to_datetime(pos["date"]).date()
-                    today_dt = datetime.now().date()
                     days_held = (today_dt - entry_dt).days
                     entry_i = max(0, current_idx - days_held)
                 except: entry_i = current_idx
+            try:
+                entry_dt = pd.to_datetime(pos.get("date")).date()
+                days_held = (today_dt - entry_dt).days
+            except Exception:
+                days_held = max(0, current_idx - (entry_i or 0))
+            pos["days_held"] = days_held
+            partial_profit_day = int(
+                pos.get("partial_profit_day")
+                or getattr(strat_obj, "params", {}).get("partial_profit_day", 3)
+                or 3
+            )
+            if partial_profit_day < 1:
+                partial_profit_day = 1
 
             stop_price = pos.get("stop_price", pos.get("entry_price", 0) * 0.9)
             target_px = None
@@ -1149,8 +1180,52 @@ class PaperTrader:
                     pos["stop_price"] = stop_price
                 effective_stop = stop_price
 
+            last_row = df.iloc[-1]
+            current_price = float(last_row.get("close", 0) or 0)
+            if (
+                not should_exit
+                and not pos.get("partial_taken", False)
+                and days_held >= partial_profit_day
+                and current_price > (pos["entry_price"] * 1.01)
+            ):
+                sell_shares = int(pos["shares"] // 2)
+                if sell_shares >= 1:
+                    exit_price = current_price
+                    proceeds = exit_price * sell_shares
+                    pnl = proceeds - (pos["entry_price"] * sell_shares)
+                    pct = (exit_price - pos["entry_price"]) / pos["entry_price"] * 100
+
+                    pos["shares"] -= sell_shares
+                    pos["partial_taken"] = True
+                    pos["stop_price"] = max(stop_price, pos["entry_price"] * 1.001)
+                    self.state["cash"] += proceeds
+
+                    try:
+                        self._append_trade_ledger(
+                            symbol=sym,
+                            strategy=pos.get("strategy_name", strat_obj.name),
+                            entry_date=pos.get("date", ""),
+                            exit_date=str(today_dt),
+                            entry_price=pos["entry_price"],
+                            exit_price=exit_price,
+                            shares=sell_shares,
+                            pnl=pnl,
+                            pnl_pct=pct,
+                            reason="PARTIAL",
+                        )
+                    except Exception as e:
+                        print(f"⚠️ Ledger append failed for {sym}: {e}")
+
+                    self.state["history"].append({
+                        "symbol": sym, "strategy": pos.get("strategy_name", strat_obj.name),
+                        "type": "PARTIAL_EXIT", "reason": "PARTIAL",
+                        "entry_date": pos.get("date", ""), "exit_date": str(today_dt),
+                        "entry_price": pos["entry_price"], "exit_price": exit_price,
+                        "shares": sell_shares, "pnl": pnl, "return_pct": pct,
+                    })
+                    exits.append(f"✅ PARTIAL: Sold 50% of {sym} at ${exit_price:.2f} (Free Roll Active)")
+
             if should_exit:
-                last_row = df.iloc[-1]
                 exit_price = float(last_row.get("close", 0) or 0)
                 open_val = last_row.get("open")
                 low_val = last_row.get("low")

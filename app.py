@@ -650,13 +650,49 @@ elif mode == "Backtest":
         for i, name in enumerate(st.session_state.backtest_results.keys()):
             res = st.session_state.backtest_results[name]
             with tabs[i]:
+                # --- METRICS FIX: Calculate Dynamic Avg Profit ---
+                avg_profit_display = 0.0
+                trades = res.get("trades_list", [])
+                if trades:
+                    df_trades = pd.DataFrame(trades)
+                    # Ensure 'Return %' exists and is numeric
+                    if "Return %" in df_trades.columns:
+                        df_trades["Return %"] = pd.to_numeric(df_trades["Return %"], errors='coerce')
+                        # Calculate mean ignoring NaNs
+                        mean_val = df_trades["Return %"].mean()
+                        if pd.notna(mean_val):
+                            avg_profit_display = mean_val
+
                 col1, col2, col3, col4 = st.columns(4)
-                col1.metric("CAGR", f"{res['cagr']:.1%}")
-                col2.metric("Win Rate", f"{res['hit_rate']:.1f}%")
-                col3.metric("Avg Profit", f"{res['avg_profit_pct']:.2f}%")
-                col4.metric("Total Trades", res["total_trades"])
-                
-                st.line_chart(res["equity_curve"])
+                col1.metric("CAGR", f"{res.get('cagr', 0):.1%}")
+                col2.metric("Win Rate", f"{res.get('hit_rate', 0):.1f}%")
+                col3.metric("Avg Profit", f"{avg_profit_display:.2f}%") # Use safe calculated value
+                col4.metric("Total Trades", res.get("total_trades", 0))
+                # -------------------------------------------------
+
+                # --- CHART CRASH FIX: Normalize Date Types ---
+                equity_data = res.get("equity_curve", [])
+                if equity_data:
+                    try:
+                        df_ec = pd.DataFrame(equity_data)
+                        # Force Date column to datetime
+                        if "Date" in df_ec.columns:
+                            df_ec["Date"] = pd.to_datetime(df_ec["Date"], errors='coerce')
+                            df_ec = df_ec.dropna(subset=["Date"]).set_index("Date")
+
+                            # Force Equity column to numeric
+                            if "Equity" in df_ec.columns:
+                                df_ec["Equity"] = pd.to_numeric(df_ec["Equity"], errors='coerce')
+                                st.line_chart(df_ec["Equity"])
+                            else:
+                                st.error("Equity data missing 'Equity' column.")
+                        else:
+                            st.error("Equity data missing 'Date' column.")
+                    except Exception as e:
+                        st.error(f"Chart Render Failed: {e}")
+                else:
+                    st.info("No equity curve to display.")
+                # ---------------------------------------------
                 
                 # --- DOWNLOAD BUTTON RESTORED ---
                 # Safe data extraction
