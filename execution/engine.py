@@ -1129,17 +1129,21 @@ def _legacy_run_backtest(
             # 3. Record Curve
             curr_equity = cash
             for sym, pos in positions.items():
+                # SAFETY: Robust Price Fetching
                 if sym in enriched:
                     loc_range = np.searchsorted(enriched[sym].gidx, [day_idx, day_idx + 1])
                     if loc_range[0] < loc_range[1]:
-                        c_price = float(enriched[sym].close[loc_range[0]])
-                        if c_price <= 0.0 or not np.isfinite(c_price):
+                        raw_close = float(enriched[sym].close[loc_range[0]])
+                        if raw_close > 0 and np.isfinite(raw_close):
+                            c_price = raw_close
+                        else:
                             c_price = pos["entry_price"]
-                        curr_equity += pos["shares"] * c_price
                     else:
-                        curr_equity += pos["shares"] * pos["entry_price"]
+                        c_price = pos["entry_price"]
                 else:
-                    curr_equity += pos["shares"] * pos["entry_price"]
+                    c_price = pos["entry_price"]
+
+                curr_equity += pos["shares"] * c_price
 
             equity_curve.append({"Date": pd.Timestamp(current_dt), "Equity": float(curr_equity)})
 

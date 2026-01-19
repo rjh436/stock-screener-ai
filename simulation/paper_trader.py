@@ -1011,6 +1011,7 @@ class PaperTrader:
 
                     # USE PARITY INDEXING
                     signal_idx, _current_idx = resolve_signal_index(df_ind)
+                    current_i = _current_idx
                     if signal_idx < MIN_BARS:
                         continue
 
@@ -1033,6 +1034,23 @@ class PaperTrader:
                             f"⚠️ REJECTED {sym}: Low score {score:.1f} < {MIN_ENTRY_SCORE:.1f}"
                         )
                         continue
+
+                    # NEW: Validate Breakout (Stop-Buy Logic)
+                    try:
+                        is_breakout_type = "breakout" in str(getattr(strat, "type", "")).lower()
+                    except Exception:
+                        is_breakout_type = False
+                    if is_breakout_type and current_i > signal_idx:
+                        curr_high = float(df_ind.iloc[current_i].get("high", 0))
+                        prev_high = float(df_ind.iloc[signal_idx].get("high", 0))
+                        trigger_price = prev_high * 1.0005
+
+                        # In Paper Trading, we verify if High > Trigger to simulate a Stop Order fill
+                        if curr_high < trigger_price:
+                            scan_logs.append(
+                                f"⏳ WAITING {sym}: High {curr_high:.2f} < Trigger {trigger_price:.2f}"
+                            )
+                            continue
 
                     # Store BOTH close AND open from the signal bar
                     signal_close = float(row_signal["close"])
