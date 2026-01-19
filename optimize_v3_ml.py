@@ -119,21 +119,34 @@ def _extract_trades_df(trades_list):
         return pd.DataFrame(columns=["entry_dt", "exit_dt", "return_pct"])
 
     df = pd.DataFrame(trades_list)
+    cols_lower = {str(c).strip().lower(): c for c in df.columns}
     if "Entry Date" in df.columns:
         df["entry_dt"] = pd.to_datetime(df["Entry Date"], errors="coerce")
+    elif "entry date" in cols_lower:
+        df["entry_dt"] = pd.to_datetime(df[cols_lower["entry date"]], errors="coerce")
     else:
         df["entry_dt"] = pd.NaT
 
     if "Exit Date" in df.columns:
         df["exit_dt"] = pd.to_datetime(df["Exit Date"], errors="coerce")
+    elif "exit date" in cols_lower:
+        df["exit_dt"] = pd.to_datetime(df[cols_lower["exit date"]], errors="coerce")
     else:
         df["exit_dt"] = pd.NaT
 
     if "Return %" in df.columns:
         df["return_pct"] = pd.to_numeric(df["Return %"], errors="coerce")
+    elif "return %" in cols_lower:
+        df["return_pct"] = pd.to_numeric(df[cols_lower["return %"]], errors="coerce")
+    elif "return_pct" in cols_lower:
+        df["return_pct"] = pd.to_numeric(df[cols_lower["return_pct"]], errors="coerce")
     elif "Entry" in df.columns and "Exit" in df.columns:
         entry = pd.to_numeric(df["Entry"], errors="coerce")
         exit_px = pd.to_numeric(df["Exit"], errors="coerce")
+        df["return_pct"] = (exit_px - entry) / entry * 100.0
+    elif "entry" in cols_lower and "exit" in cols_lower:
+        entry = pd.to_numeric(df[cols_lower["entry"]], errors="coerce")
+        exit_px = pd.to_numeric(df[cols_lower["exit"]], errors="coerce")
         df["return_pct"] = (exit_px - entry) / entry * 100.0
     else:
         df["return_pct"] = np.nan
@@ -232,11 +245,11 @@ def _window_metrics(trades_df, equity_df, start_date, end_date):
 
 
 def _score_window(metrics):
-    if metrics["trades"] < 30:
+    if metrics["trades"] < 15:
         return 0.0
-    if metrics["max_dd"] > 35.0:
+    if metrics["max_dd"] > 40.0:
         return 0.0
-    if metrics["pf"] < 1.2:
+    if metrics["pf"] < 1.1:
         return 0.0
 
     if metrics["max_dd"] > 0:
@@ -345,7 +358,7 @@ def objective(trial):
         window_attrs[window["name"]] = {"score": score, **metrics}
 
         if window["name"] == "w3_2022":
-            if metrics["cagr"] < 0.0 or metrics["max_dd"] > 40.0:
+            if metrics["cagr"] < -20.0 or metrics["max_dd"] > 40.0:
                 trial.report(score, step=idx)
                 if trial.should_prune():
                     raise optuna.TrialPruned()
