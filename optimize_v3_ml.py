@@ -286,7 +286,7 @@ def objective(trial):
 
     params = {
         "stop_loss_atr": trial.suggest_float("stop_loss_atr", 1.2, 2.5),
-        "adr_pct": trial.suggest_float("adr_pct", 3.5, 6.0),
+        "adr_pct": trial.suggest_float("adr_pct", 2.0, 5.0),
         "bb_width": trial.suggest_float("bb_width", 0.08, 0.28),
         "rs_rating": trial.suggest_int("rs_rating", 75, 97),
         "rsi14": trial.suggest_int("rsi14", 45, 70),
@@ -305,6 +305,7 @@ def objective(trial):
         None,
         None,
         start_cash=100000.0,
+        start_date="2012-01-01",
         pre_calculated_data=_WORKER_CACHE,
     )
 

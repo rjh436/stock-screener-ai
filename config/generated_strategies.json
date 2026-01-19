@@ -118,7 +118,7 @@
       {
         "col": "adr_pct",
         "op": ">",
-        "val": 4.72
+        "val": 2.5
       },
       {
         "col": "bb_width",
@@ -148,7 +148,7 @@
     "yellow_rs_floor": 85,
     "red_bypass_rs": 95,
     "min_entry_score": 0.0,
-    "stop_loss_atr": 1.2,
+    "stop_loss_atr": 2.0,
     "trail_atr": 0,
     "time_stop": 29,
     "risk_per_trade": 0.015,
@@ -163,9 +163,8 @@
     "limit_ratio": 1.0002,
     "partial_profit_day": 3,
     "version_info": {
-      "status": "Production",
-      "source": "Optuna V3.1",
-      "notes": "3-Day Free Roll Config"
+      "status": "Remediation V3.2",
+      "notes": "ADR 2.5%, Stop 2.0 ATR, SMA10 Exit"
     }
   }
 ]

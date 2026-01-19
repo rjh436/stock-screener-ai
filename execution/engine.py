@@ -917,14 +917,16 @@ def _legacy_run_backtest(
                                 continue
                             if curr_adr < 3.0:
                                 continue
+                            # --- REMEDIATION: Stop-Buy Logic (High > Trigger) ---
+                            trigger_price = float(prev_high_arr[prev_i]) * 1.0005
+                            day_high = float(high_arr[curr_i])
+                            day_open = float(open_arr[curr_i])
 
-                            trigger = float(prev_high_arr[curr_i]) * 1.0005
-                            high_val = float(high_arr[curr_i])
-
-                            if high_val < trigger:
+                            if day_high >= trigger_price:
+                                entry_px = max(day_open, trigger_price)
+                            else:
                                 continue
-
-                            entry_px = max(open_px, trigger)
+                            # ----------------------------------------------------
                         else:
                             # Legacy Limit Logic for Wealth
                             prev_close = float(close_arr[prev_i])
