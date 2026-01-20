@@ -203,7 +203,15 @@ def _compute_indicators(
         df["roc_60"] = df["close"].pct_change(60) * 100.0
         # New for HTF V7
         df["roc_40"] = df["close"].pct_change(40) * 100.0
+        df["roc_40"] = df["close"].pct_change(40) * 100.0
         df["adr_pct_ma10"] = df["adr_pct"].rolling(10).mean()
+        
+        # New for Apex V10: Close Location Value (CLV)
+        # (Close - Low) / (High - Low)
+        # Filter for High - Low == 0 to avoid DBZ
+        with np.errstate(divide="ignore", invalid="ignore"):
+            df["clv"] = (df["close"] - df["low"]) / (df["high"] - df["low"])
+        df["clv"] = df["clv"].fillna(0.5) # Default to mid-range if flat day
 
         adx = ADXIndicator(df["high"], df["low"], df["close"])
         df["adx"] = adx.adx()
@@ -484,7 +492,9 @@ class _SymbolArrays:
     roc40: np.ndarray     # V7: HTF Pole
     adr_pct_ma10: np.ndarray # V7: HTF Flag
     highest10: np.ndarray # V7: HTF Breakout
+    highest10: np.ndarray # V7: HTF Breakout
     highest10_1: np.ndarray # V7: HTF Trigger
+    clv: np.ndarray       # V10: Close Location Value
 
 
 @dataclass(slots=True)
@@ -685,6 +695,7 @@ def prepare_backtest_data(
                 adr_pct_ma10=_get_np_col(df, "adr_pct_ma10", 0.0, length=n),
                 highest10=_get_np_col(df, "highest10", 0.0, length=n),
                 highest10_1=_get_np_col(df, "highest10_1", 0.0, length=n),
+                clv=_get_np_col(df, "clv", 0.5, length=n),
             )
         except Exception:
             continue
@@ -859,7 +870,9 @@ def _legacy_run_backtest(
         roc40_arr = sd.roc40
         adr_pct_ma10_arr = sd.adr_pct_ma10
         highest10_arr = sd.highest10
+        highest10_arr = sd.highest10
         highest10_1_arr = sd.highest10_1
+        clv_arr = sd.clv
         gidx = sd.gidx
 
         n_bars = len(idx)

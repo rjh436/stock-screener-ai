@@ -1,6 +1,6 @@
 [
   {
-    "name": "Apex Qullamaggie V_Real (Episodic Pivot)",
+    "name": "Apex Qullamaggie V10 (Nitro - Max)",
     "type": "breakout",
     "entry_rules": [
       {
@@ -15,9 +15,9 @@
         "mult": 2.0
       },
       {
-        "col": "rsi14",
+        "col": "clv",
         "op": ">",
-        "val": 50
+        "val": 0.60
       },
       {
         "col": "adr_pct",
@@ -25,77 +25,14 @@
         "val": 2.5
       },
       {
-        "col": "close",
-        "op": ">",
-        "ref": "sma20"
-      }
-    ],
-    "exit_rules": [
-      {
-        "col": "close",
-        "op": "<",
-        "ref": "sma10"
-      }
-    ],
-    "risk_parameters": {
-      "stop_loss_atr": 1.5,
-      "risk_per_trade": 0.02,
-      "max_positions": 5,
-      "max_pos_size_pct": 0.20
-    },
-    "execution_parameters": {
-      "limit_ratio": 1.005,
-      "time_stop": 60,
-      "partial_profit_day": 4
-    },
-    "market_filter_mode": "traffic_light",
-    "yellow_rs_floor": 85,
-    "red_bypass_rs": 98,
-    "version_info": {
-      "status": "V_Real (Episodic Pivot)",
-      "notes": "Gap > 3%, Vol > 2x, Partials @ Day 4, SMA10 Trail"
-    }
-  },
-  {
-    "name": "Apex HTF V7 (High Tight Flag)",
-    "type": "breakout",
-    "entry_rules": [
-      {
-        "col": "roc_40",
-        "op": ">",
-        "val": 50.0
-      },
-      {
-        "col": "adr_pct",
-        "op": "<",
-        "ref": "adr_pct_ma10"
-      },
-      {
-        "col": "adr_pct",
-        "op": ">",
-        "val": 4.0
-      },
-      {
-        "col": "close",
-        "op": ">",
-        "ref": "highest20",
-        "mult": 0.85
-      },
-      {
         "col": "rs_rating",
         "op": ">",
         "val": 90
       },
       {
-        "col": "sma10",
+        "col": "close",
         "op": ">",
         "ref": "sma20"
-      },
-      {
-        "col": "volume",
-        "op": ">",
-        "ref": "vol_ma20",
-        "mult": 1.5
       }
     ],
     "exit_rules": [
@@ -107,78 +44,22 @@
     ],
     "risk_parameters": {
       "stop_loss_atr": 2.0,
-      "risk_per_trade": 0.025,
-      "max_positions": 5,
-      "max_pos_size_pct": 0.25
+      "risk_per_trade": 0.07,
+      "max_positions": 4,
+      "max_pos_size_pct": 1.0
     },
     "execution_parameters": {
       "stop_buy_ref": "prev_high",
-      "stop_buy_mult": 1.001,
-      "time_stop": 10,
-      "partial_profit_day": 4
-    },
-    "market_filter_mode": "traffic_light",
-    "yellow_rs_floor": 85,
-    "red_bypass_rs": 95,
-    "version_info": {
-      "status": "HTF V7 (Pole + Flag)",
-      "notes": "Pole > 30%, Quiet Flag, Breakout 10D High"
-    }
-  },
-  {
-    "name": "Apex Kinetic V3.3 (Regime Robust)",
-    "type": "breakout",
-    "entry_rules": [
-      {
-        "col": "rsi14",
-        "op": ">",
-        "val": 48
-      },
-      {
-        "col": "rs_rating",
-        "op": ">",
-        "val": 77
-      },
-      {
-        "col": "adr_pct",
-        "op": ">",
-        "val": 2.68
-      },
-      {
-        "col": "bb_width",
-        "op": "<",
-        "val": 0.27
-      },
-      {
-        "col": "close",
-        "op": ">",
-        "ref": "donchian_20"
-      },
-      {
-        "col": "volume",
-        "op": ">",
-        "ref": "vol_ma20",
-        "mult": 1.5
-      }
-    ],
-    "exit_rules": [
-      {
-        "col": "close",
-        "op": "<",
-        "ref": "sma10"
-      }
-    ],
-    "risk_parameters": {
-      "stop_loss_atr": 1.97,
-      "risk_per_trade": 0.015
-    },
-    "execution_parameters": {
-      "limit_ratio": 1.0008,
-      "time_stop": 19,
+      "stop_buy_mult": 1.0,
+      "time_stop": 15,
       "partial_profit_day": 5
     },
     "market_filter_mode": "traffic_light",
     "yellow_rs_floor": 85,
-    "red_bypass_rs": 95
+    "red_bypass_rs": 98,
+    "version_info": {
+      "status": "V10 Nitro Max",
+      "notes": "Gap > 3%, Vol > 2x, Risk 7%, Max Size 100%"
+    }
   }
 ]

@@ -28,8 +28,7 @@ def main():
     
     # Filter for Target Strategies
     target_names = [
-        "Apex Qullamaggie V_Real (Episodic Pivot)", 
-        "Apex HTF V7 (High Tight Flag)"
+        "Apex Qullamaggie V10 (Nitro - Max)"
     ]
     strat_configs = [s for s in strategies_config if s.get("name") in target_names]
     
