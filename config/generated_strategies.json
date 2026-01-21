@@ -324,13 +324,13 @@
       {
         "col": "gap_pct",
         "op": ">",
-        "val": 3.0
+        "val": 1.0
       },
       {
         "col": "volume",
         "op": ">",
         "ref": "vol_ma20",
-        "mult": 3.0
+        "mult": 1.5
       },
       {
         "col": "clv",
@@ -340,7 +340,7 @@
       {
         "col": "adr_pct",
         "op": ">",
-        "val": 3.5
+        "val": 2.5
       },
       {
         "col": "rs_rating",
