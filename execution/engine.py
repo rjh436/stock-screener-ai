@@ -1254,8 +1254,18 @@ def _legacy_run_backtest(
                 if shares < 1:
                     continue
                 
-                cost = shares * cand.entry_px
-                if cash >= cost:
+                # --- REMEDIATION: Partial Fill Logic ---
+                # Check if we have enough cash for the ideal size
+                target_cost = shares * cand.entry_px
+                
+                if cash < target_cost:
+                    # Downgrade share count to match available cash
+                    shares = int(cash // cand.entry_px)
+                    cost = shares * cand.entry_px
+                else:
+                    cost = target_cost
+                    
+                if shares > 0:
                     cash -= cost
                     positions[cand.sym] = {
                         "entry_price": cand.entry_px,

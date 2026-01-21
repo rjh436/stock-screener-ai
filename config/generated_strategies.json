@@ -363,14 +363,14 @@
     "risk_parameters": {
       "stop_loss_type": "low_of_day",
       "stop_loss_atr": 100.0,
-      "risk_per_trade": 0.01,
-      "max_positions": 10,
+      "risk_per_trade": 0.015,
+      "max_positions": 8,
       "max_pos_size_pct": 1.0
     },
     "execution_parameters": {
       "stop_buy_ref": "prev_high",
       "stop_buy_mult": 1.0,
-      "time_stop": 90,
+      "time_stop": 15,
       "partial_profit_day": 3
     },
     "market_filter_mode": "traffic_light",
