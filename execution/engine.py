@@ -744,6 +744,7 @@ def _legacy_run_backtest(
     ai_threshold=0.60,
     super_signal_only: bool = False,
     pre_calculated_data: Optional["PreparedBacktestData"] = None,
+    end_date=None,
 ):
     # --- FIX: Auto-detect if data_pack is actually prepared data ---
     if hasattr(data, "enriched"):
@@ -1132,8 +1133,26 @@ def _legacy_run_backtest(
         if partial_profit_day < 1:
             partial_profit_day = 1
 
+        def _coerce_dt(val: Any) -> Optional[pd.Timestamp]:
+            if val is None:
+                return None
+            try:
+                ts = pd.Timestamp(val)
+            except Exception:
+                return None
+            if ts.tzinfo is not None:
+                ts = ts.tz_localize(None)
+            return ts
+
+        trade_start = _coerce_dt(start_date)
+        trade_end = _coerce_dt(end_date)
+
         for day_idx, candidates in enumerate(candidates_by_day):
-            current_dt = all_dates[day_idx]
+            current_dt = pd.Timestamp(all_dates[day_idx])
+            if trade_start and current_dt < trade_start:
+                continue
+            if trade_end and current_dt > trade_end:
+                break
 
             # 1. Manage Existing Positions
             to_remove = []
@@ -1264,6 +1283,15 @@ def _legacy_run_backtest(
                     cost = shares * cand.entry_px
                 else:
                     cost = target_cost
+
+                if shares < 1:
+                    continue
+
+                print(
+                    f"DEBUG_ENTRY: {cand.sym} | Cash: {cash:.2f} | Equity: {equity:.2f} | "
+                    f"Risk: {risk_amt:.2f} | Dist: {dist:.2f} | CALC_SHARES: {shares} | "
+                    f"Cost: {shares * cand.entry_px:.2f}"
+                )
                     
                 if shares > 0:
                     cash -= cost
@@ -1349,3 +1377,95 @@ run_backtest = _legacy_run_backtest
 
 def calculate_stop_price(entry_price, atr, multiplier):
     return entry_price - (atr * multiplier)
+
+
+def _run_cli() -> int:
+    import argparse
+    from datetime import datetime
+
+    from data.loader import fetch_data_pack
+    from data.universe import get_universe_symbols
+
+    parser = argparse.ArgumentParser(description="Run a headless backtest from engine.py")
+    parser.add_argument("--strategy", required=True, help="Strategy name in generated_strategies.json")
+    parser.add_argument("--start", dest="start_date", default=None, help="Start date (YYYY-MM-DD)")
+    parser.add_argument("--end", dest="end_date", default=None, help="End date (YYYY-MM-DD)")
+    args = parser.parse_args()
+
+    config_path = os.path.join("config", "generated_strategies.json")
+    with open(config_path, "r") as f:
+        strategies_config = json.load(f)
+
+    strat_configs = [s for s in strategies_config if s.get("name") == args.strategy]
+    if not strat_configs:
+        print(f"ERROR: Strategy '{args.strategy}' not found.")
+        print("Available strategies:", [s.get("name") for s in strategies_config])
+        return 1
+
+    # Flatten nested parameters for engine consumption
+    for cfg in strat_configs:
+        if "risk_parameters" in cfg:
+            cfg.update(cfg.pop("risk_parameters"))
+        if "execution_parameters" in cfg:
+            cfg.update(cfg.pop("execution_parameters"))
+
+    strategies = load_strategies(strat_configs)
+
+    symbols = get_universe_symbols("RUSSELL3000")
+    if not symbols:
+        print("ERROR: No symbols returned for RUSSELL3000 universe.")
+        return 1
+
+    days = 5040
+    data = fetch_data_pack(symbols, days=days + 200, backtest_mode=True) or {}
+    if not data:
+        print("ERROR: No data returned for universe.")
+        return 1
+
+    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days + 200, backtest_mode=True) or {}
+    vix_df = g_data.get("$VIX")
+    if vix_df is None or getattr(vix_df, "empty", False):
+        vix_df = g_data.get("VIX")
+    spy_df = g_data.get("SPY")
+    global_data = {"SPY": spy_df, "VIX": vix_df}
+
+    prepared = prepare_backtest_data(
+        data,
+        symbol_universe=symbols,
+        start_date=None,
+        global_data=global_data,
+    )
+
+    result = run_backtest(
+        strategies,
+        prepared,
+        start_cash=100000.0,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        global_data=global_data,
+    )
+    if isinstance(result, list):
+        if not result:
+            print("ERROR: No backtest results.")
+            return 1
+        result = result[0]
+
+    equity_curve = result.get("equity_curve") or []
+    if not equity_curve:
+        print("ERROR: No equity curve returned.")
+        return 1
+
+    equity_df = pd.DataFrame(equity_curve)
+    os.makedirs("exports", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join(
+        "exports",
+        f"engine_backtest_{args.strategy.replace(' ', '_').replace('(', '').replace(')', '')}_{timestamp}.csv",
+    )
+    equity_df.to_csv(out_path, index=False)
+    print(f"✅ Equity curve CSV: {out_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_run_cli())
