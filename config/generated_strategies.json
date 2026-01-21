@@ -59,7 +59,326 @@
     "red_bypass_rs": 98,
     "version_info": {
       "status": "V10 Nitro Max",
-      "notes": "Gap > 3%, Vol > 2x, Risk 7%, Max Size 100%"
+      "notes": "Gap > 3%, Vol > 2x, Risk 7%"
+    }
+  },
+  {
+    "name": "Apex Qullamaggie V11 (Asymmetric)",
+    "type": "breakout",
+    "entry_rules": [
+      {
+        "col": "gap_pct",
+        "op": ">",
+        "val": 3.0
+      },
+      {
+        "col": "volume",
+        "op": ">",
+        "ref": "vol_ma20",
+        "mult": 2.0
+      },
+      {
+        "col": "clv",
+        "op": ">",
+        "val": 0.60
+      },
+      {
+        "col": "adr_pct",
+        "op": ">",
+        "val": 2.5
+      },
+      {
+        "col": "rs_rating",
+        "op": ">",
+        "val": 90
+      },
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "sma20"
+      }
+    ],
+    "exit_rules": [
+      {
+        "col": "close",
+        "op": "<",
+        "ref": "sma10"
+      }
+    ],
+    "risk_parameters": {
+      "stop_loss_type": "low_of_day",
+      "risk_per_trade": 0.01,
+      "max_positions": 10,
+      "max_pos_size_pct": 1.0
+    },
+    "execution_parameters": {
+      "stop_buy_ref": "prev_high",
+      "stop_buy_mult": 1.0,
+      "time_stop": 60,
+      "partial_profit_day": 3
+    },
+    "market_filter_mode": "traffic_light",
+    "yellow_rs_floor": 85,
+    "red_bypass_rs": 98,
+    "version_info": {
+      "status": "V11 Asymmetric",
+      "notes": "LOD Stop, 1% Risk, Day 3 Partial, SMA10 Trail"
+    }
+  },
+  {
+    "name": "Apex Qullamaggie V14 (Pure SMA)",
+    "type": "breakout",
+    "entry_rules": [
+      {
+        "col": "gap_pct",
+        "op": ">",
+        "val": 3.0
+      },
+      {
+        "col": "volume",
+        "op": ">",
+        "ref": "vol_ma20",
+        "mult": 2.0
+      },
+      {
+        "col": "clv",
+        "op": ">",
+        "val": 0.60
+      },
+      {
+        "col": "adr_pct",
+        "op": ">",
+        "val": 2.5
+      },
+      {
+        "col": "rs_rating",
+        "op": ">",
+        "val": 90
+      },
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "sma20"
+      }
+    ],
+    "exit_rules": [
+      {
+        "col": "close",
+        "op": "<",
+        "ref": "sma10"
+      }
+    ],
+    "risk_parameters": {
+      "stop_loss_type": "low_of_day",
+      "stop_loss_atr": 100.0,
+      "risk_per_trade": 0.01,
+      "max_positions": 10,
+      "max_pos_size_pct": 1.0
+    },
+    "execution_parameters": {
+      "stop_buy_ref": "prev_high",
+      "stop_buy_mult": 1.0,
+      "time_stop": 90,
+      "partial_profit_day": 999
+    },
+    "market_filter_mode": "traffic_light",
+    "yellow_rs_floor": 85,
+    "red_bypass_rs": 98,
+    "version_info": {
+      "status": "V14 Pure SMA",
+      "notes": "LOD Stop, 1% Risk, SMA10, NO ATR TRAIL"
+    }
+  },
+  {
+    "name": "Apex Qullamaggie V15 (Hybrid)",
+    "type": "breakout",
+    "entry_rules": [
+      {
+        "col": "gap_pct",
+        "op": ">",
+        "val": 3.0
+      },
+      {
+        "col": "volume",
+        "op": ">",
+        "ref": "vol_ma20",
+        "mult": 2.0
+      },
+      {
+        "col": "clv",
+        "op": ">",
+        "val": 0.60
+      },
+      {
+        "col": "adr_pct",
+        "op": ">",
+        "val": 2.5
+      },
+      {
+        "col": "rs_rating",
+        "op": ">",
+        "val": 90
+      },
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "sma20"
+      }
+    ],
+    "exit_rules": [
+      {
+        "col": "close",
+        "op": "<",
+        "ref": "sma10"
+      }
+    ],
+    "risk_parameters": {
+      "stop_loss_type": "low_of_day",
+      "stop_loss_atr": 100.0,
+      "risk_per_trade": 0.01,
+      "max_positions": 10,
+      "max_pos_size_pct": 1.0
+    },
+    "execution_parameters": {
+      "stop_buy_ref": "prev_high",
+      "stop_buy_mult": 1.0,
+      "time_stop": 90,
+      "partial_profit_day": 3
+    },
+    "market_filter_mode": "traffic_light",
+    "yellow_rs_floor": 85,
+    "red_bypass_rs": 98,
+    "version_info": {
+      "status": "V15 Hybrid",
+      "notes": "LOD Stop, 1% Risk, SMA10, No ATR, Day 3 Partial"
+    }
+  },
+  {
+    "name": "Apex Qullamaggie V16 (Concentrated)",
+    "type": "breakout",
+    "entry_rules": [
+      {
+        "col": "gap_pct",
+        "op": ">",
+        "val": 3.0
+      },
+      {
+        "col": "volume",
+        "op": ">",
+        "ref": "vol_ma20",
+        "mult": 2.0
+      },
+      {
+        "col": "clv",
+        "op": ">",
+        "val": 0.60
+      },
+      {
+        "col": "adr_pct",
+        "op": ">",
+        "val": 2.5
+      },
+      {
+        "col": "rs_rating",
+        "op": ">",
+        "val": 90
+      },
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "sma20"
+      }
+    ],
+    "exit_rules": [
+      {
+        "col": "close",
+        "op": "<",
+        "ref": "sma10"
+      }
+    ],
+    "risk_parameters": {
+      "stop_loss_type": "low_of_day",
+      "stop_loss_atr": 100.0,
+      "risk_per_trade": 0.015,
+      "max_positions": 6,
+      "max_pos_size_pct": 1.0
+    },
+    "execution_parameters": {
+      "stop_buy_ref": "prev_high",
+      "stop_buy_mult": 1.0,
+      "time_stop": 90,
+      "partial_profit_day": 3
+    },
+    "market_filter_mode": "traffic_light",
+    "yellow_rs_floor": 85,
+    "red_bypass_rs": 98,
+    "version_info": {
+      "status": "V16 Concentrated",
+      "notes": "LOD Stop, 1.5% Risk, 6 Pos Max"
+    }
+  },
+  {
+    "name": "Apex Qullamaggie V17 (High Octane)",
+    "type": "breakout",
+    "entry_rules": [
+      {
+        "col": "gap_pct",
+        "op": ">",
+        "val": 3.0
+      },
+      {
+        "col": "volume",
+        "op": ">",
+        "ref": "vol_ma20",
+        "mult": 3.0
+      },
+      {
+        "col": "clv",
+        "op": ">",
+        "val": 0.60
+      },
+      {
+        "col": "adr_pct",
+        "op": ">",
+        "val": 3.5
+      },
+      {
+        "col": "rs_rating",
+        "op": ">",
+        "val": 90
+      },
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "sma20"
+      }
+    ],
+    "exit_rules": [
+      {
+        "col": "close",
+        "op": "<",
+        "ref": "sma10"
+      }
+    ],
+    "risk_parameters": {
+      "stop_loss_type": "low_of_day",
+      "stop_loss_atr": 100.0,
+      "risk_per_trade": 0.01,
+      "max_positions": 10,
+      "max_pos_size_pct": 1.0
+    },
+    "execution_parameters": {
+      "stop_buy_ref": "prev_high",
+      "stop_buy_mult": 1.0,
+      "time_stop": 90,
+      "partial_profit_day": 3
+    },
+    "market_filter_mode": "traffic_light",
+    "yellow_rs_floor": 85,
+    "red_bypass_rs": 98,
+    "version_info": {
+      "status": "V17 High Octane",
+      "notes": "ADR > 3.5%, Vol > 3x, 1% Risk, Hybrid Exit"
     }
   }
 ]

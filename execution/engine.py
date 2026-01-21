@@ -977,7 +977,9 @@ def _legacy_run_backtest(
                     continue
 
                 entry_limit_ratio = None
+                entry_limit_ratio = None
                 entry_stop_mult = base_stop_mult
+                entry_stop_type = "atr"
                 if isinstance(entry_signal, dict):
                     if entry_signal.get("limit_ratio") is not None:
                         entry_limit_ratio = entry_signal.get("limit_ratio")
@@ -986,6 +988,8 @@ def _legacy_run_backtest(
                             entry_stop_mult = float(entry_signal.get("stop_loss_atr"))
                         except (TypeError, ValueError):
                             entry_stop_mult = base_stop_mult
+                    if entry_signal.get("stop_loss_type") is not None:
+                        entry_stop_type = str(entry_signal.get("stop_loss_type")).lower()
 
                 score = _score_row_dual_core(
                     rsi2_arr[prev_i],
@@ -1067,7 +1071,16 @@ def _legacy_run_backtest(
                                     entry_px = open_px
 
                         atr = float(atr14_arr[prev_i])
-                        stop_px = calculate_stop_price(entry_px, atr, entry_stop_mult)
+                        
+                        if entry_stop_type == "low_of_day" or entry_stop_type == "lod":
+                             # Qullamaggie Style: Stop at Low of Entry Day
+                             day_low = float(low_arr[curr_i])
+                             stop_px = day_low * 0.999 # 0.1% buffer
+                             # Sanity check: Stop must be below entry
+                             if stop_px >= entry_px:
+                                 stop_px = entry_px * 0.99 # Fallback 1% stop if LOD is weird
+                        else:
+                             stop_px = calculate_stop_price(entry_px, atr, entry_stop_mult)
 
                         ai_prob = 0.0
                         # ... AI logic remains the same ...
