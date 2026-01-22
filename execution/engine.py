@@ -392,10 +392,20 @@ def _score_row_dual_core(
             if close_px >= (high_52w * 0.85):
                 score += trend_bonus
     else:
-        # Wealth/Reversion logic: prize LOW RSI2
-        if not np_isfinite(rsi2):
-            rsi2 = 50.0
-        score = (100.0 - rsi2) * rsi_factor
+        # --- FIXED LOGIC: DEFAULT TO MOMENTUM ---
+        # Previous logic (100-rsi2) forced Mean Reversion.
+        # We now default to Momentum (RSI14) unless "reversion" is explicit in the mode.
+        is_reversion = "wealth" in scoring_mode.lower() or "reversion" in scoring_mode.lower()
+
+        if is_reversion:
+            if not np_isfinite(rsi2):
+                rsi2 = 50.0
+            score = (100.0 - rsi2) * rsi_factor
+        else:
+            # Default Momentum: Higher RSI is better
+            if not np_isfinite(rsi14):
+                rsi14 = 50.0
+            score = (rsi14 * rsi_factor)
 
     return max(0.0, float(score))
 
@@ -1260,7 +1270,21 @@ def _legacy_run_backtest(
                 
                 equity = cash + sum(p["shares"] * p["entry_price"] for p in positions.values())
                 risk_amt = equity * risk_per_trade
-                dist = max(0.01, cand.entry_px - cand.stop_px)
+                # --- FIXED LOGIC: VOLATILITY FLOOR SIZING ---
+                raw_dist = cand.entry_px - cand.stop_px
+                atr_val = 0.0
+                sym_data = enriched.get(cand.sym)
+                if sym_data is not None:
+                    try:
+                        if 0 <= cand.entry_i < len(sym_data.atr14):
+                            atr_val = float(sym_data.atr14[cand.entry_i])
+                    except Exception:
+                        atr_val = 0.0
+                if not np_isfinite(atr_val) or atr_val <= 0:
+                    atr_val = cand.entry_px * 0.02
+
+                vol_floor = atr_val * 0.5
+                dist = max(raw_dist, vol_floor, 0.01)
                 shares = int(risk_amt / dist)
                 
                 # Uncap position size if strategy requests it
