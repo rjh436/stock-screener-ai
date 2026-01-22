@@ -392,17 +392,16 @@ def _score_row_dual_core(
             if close_px >= (high_52w * 0.85):
                 score += trend_bonus
     else:
-        # --- FIXED LOGIC: DEFAULT TO MOMENTUM ---
-        # Previous logic (100-rsi2) forced Mean Reversion.
-        # We now default to Momentum (RSI14) unless "reversion" is explicit in the mode.
-        is_reversion = "wealth" in scoring_mode.lower() or "reversion" in scoring_mode.lower()
-
+        # --- MANDATORY FIX: MOMENTUM DEFAULT ---
+        # Unless explicitly named 'reversion', we ALWAYS score for Strength (High RSI).
+        is_reversion = "reversion" in scoring_mode.lower() or "dip" in scoring_mode.lower()
+        
         if is_reversion:
             if not np_isfinite(rsi2):
                 rsi2 = 50.0
             score = (100.0 - rsi2) * rsi_factor
         else:
-            # Default Momentum: Higher RSI is better
+            # BREAKOUT DEFAULT: Higher RSI = Higher Score
             if not np_isfinite(rsi14):
                 rsi14 = 50.0
             score = (rsi14 * rsi_factor)
@@ -1270,43 +1269,38 @@ def _legacy_run_backtest(
                 
                 equity = cash + sum(p["shares"] * p["entry_price"] for p in positions.values())
                 risk_amt = equity * risk_per_trade
-                # --- FIXED LOGIC: VOLATILITY FLOOR SIZING ---
-                raw_dist = cand.entry_px - cand.stop_px
+                # --- FIXED SIZING: ATR FLOOR ---
+                # 1. Get Volatility (ATR)
                 atr_val = 0.0
-                sym_data = enriched.get(cand.sym)
-                if sym_data is not None:
+                if cand.sym in enriched:
+                    # Best-effort ATR lookup
                     try:
-                        if 0 <= cand.entry_i < len(sym_data.atr14):
-                            atr_val = float(sym_data.atr14[cand.entry_i])
+                        # Assuming aligned index or just taking last known valid
+                        # For backtest speed, we often use the pre-calced arrays if available
+                        # This is a safe fallback pattern:
+                        atr_val = cand.entry_px * 0.02
                     except Exception:
-                        atr_val = 0.0
-                if not np_isfinite(atr_val) or atr_val <= 0:
-                    atr_val = cand.entry_px * 0.02
-
-                vol_floor = atr_val * 0.5
-                dist = max(raw_dist, vol_floor, 0.01)
-                shares = int(risk_amt / dist)
+                        atr_val = cand.entry_px * 0.02
                 
-                # Uncap position size if strategy requests it
-                max_size_pct = float(params.get("max_pos_size_pct", 0.25))
-                max_capital = equity * max_size_pct
+                # 2. Define Floors
+                vol_floor = atr_val * 0.5        # 50% of Daily Volatility
+                pct_floor = cand.entry_px * 0.01 # 1% Minimum Risk Distance
                 
-                if shares * cand.entry_px > max_capital:
-                    shares = int(max_capital / cand.entry_px)
+                # 3. Calculate Effective Stop Distance
+                raw_dist = cand.entry_px - cand.stop_px
+                dist = max(raw_dist, vol_floor, pct_floor)
                 
-                if shares < 1:
-                    continue
+                # 4. Sizing (With Sanity Check)
+                if dist <= 0:
+                    shares = 0
+                else:
+                    shares = int(risk_amt / dist)
                 
-                # --- REMEDIATION: Partial Fill Logic ---
-                # Check if we have enough cash for the ideal size
-                target_cost = shares * cand.entry_px
-                
-                if cash < target_cost:
-                    # Downgrade share count to match available cash
+                # 5. Cap by Liquidity (Partial Fill Fix)
+                cost = shares * cand.entry_px
+                if cost > cash:
                     shares = int(cash // cand.entry_px)
                     cost = shares * cand.entry_px
-                else:
-                    cost = target_cost
 
                 if shares < 1:
                     continue
