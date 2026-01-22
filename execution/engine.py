@@ -1256,8 +1256,24 @@ def _legacy_run_backtest(
                 if cand.sym in positions:
                     continue
                 
-                equity = cash + sum(p["shares"] * p["entry_price"] for p in positions.values())
-                risk_amt = equity * risk_per_trade
+                # --- FIXED LOGIC: MARK-TO-MARKET EQUITY ---
+                # We must use current market value to allow compounding of unrealized gains.
+                mtm_equity = float(cash)
+                for sym, pos in positions.items():
+                    # Default to entry if current price unknown
+                    c_price = pos["entry_price"]
+                    if sym in enriched:
+                        loc_range = np.searchsorted(enriched[sym].gidx, [day_idx, day_idx + 1])
+                        if loc_range[0] < loc_range[1]:
+                            raw_close = float(enriched[sym].close[loc_range[0]])
+                            if raw_close > 0 and np_isfinite(raw_close):
+                                c_price = raw_close
+                    mtm_equity += pos["shares"] * c_price
+
+                # Use MTM Equity for Sizing
+                risk_amt = mtm_equity * risk_per_trade
+                max_pos_size_pct = float(params.get("max_pos_size_pct", 0.25) or 0.25)
+                max_capital = mtm_equity * max_pos_size_pct
                 # --- FIXED SIZING: ATR FLOOR ---
                 # 1. Get Volatility (ATR)
                 atr_val = 0.0
@@ -1285,8 +1301,11 @@ def _legacy_run_backtest(
                 else:
                     shares = int(risk_amt / dist)
                 
-                # 5. Cap by Liquidity (Partial Fill Fix)
+                # 5. Cap by Max Capital then Liquidity (Partial Fill Fix)
                 cost = shares * cand.entry_px
+                if max_capital > 0 and cost > max_capital:
+                    shares = int(max_capital // cand.entry_px)
+                    cost = shares * cand.entry_px
                 if cost > cash:
                     shares = int(cash // cand.entry_px)
                     cost = shares * cand.entry_px
@@ -1295,7 +1314,7 @@ def _legacy_run_backtest(
                     continue
 
                 print(
-                    f"DEBUG_ENTRY: {cand.sym} | Cash: {cash:.2f} | Equity: {equity:.2f} | "
+                    f"DEBUG_ENTRY: {cand.sym} | Cash: {cash:.2f} | Equity: {mtm_equity:.2f} | "
                     f"Risk: {risk_amt:.2f} | Dist: {dist:.2f} | CALC_SHARES: {shares} | "
                     f"Cost: {shares * cand.entry_px:.2f}"
                 )
