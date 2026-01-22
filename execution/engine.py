@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+print(f"!!! CRITICAL: ACTIVE ENGINE LOADING FROM {__file__} !!!")
+
 import concurrent.futures
 import json
 import os
@@ -371,41 +374,27 @@ def _score_row_dual_core(
     weights: Dict[str, float],
     scoring_mode: str,
 ) -> float:
-    np_isfinite = np.isfinite
-    rsi_factor = float(weights.get("rsi_factor", 0.0) or 0.0)
-    vcp_bonus = float(weights.get("vcp_bonus", weights.get("sniper_bonus", 0.0)) or 0.0)
-    vol_bonus = float(weights.get("vol_bonus", 0.0) or 0.0)
-    trend_bonus = float(weights.get("trend_bonus", 0.0) or 0.0)
-
-    if scoring_mode == "breakout":
-        # V2 SCORING: Reward High RSI + VCP
-        # This is not falling knives; it rewards trends
-        if not np_isfinite(rsi14):
-            rsi14 = 50.0
-        score = (rsi14 * rsi_factor)
+    # --- MANDATORY MOMENTUM LOGIC ---
+    # We IGNORE 'scoring_mode' complexity and force Breakout logic for V17.
+    
+    rsi_factor = float(weights.get("rsi_factor", 1.0))
+    
+    # 1. Base Score: Pure Momentum (RSI 14)
+    # Higher RSI = Higher Score. 
+    score = (rsi14 * rsi_factor)
+    
+    # 2. VCP Bonus (Tightness)
+    if bb_width < 0.15:
+        score += 50.0
         
-        if np_isfinite(bb_width) and bb_width < _VCP_BB_WIDTH_THRESH:
-            score += vcp_bonus
-        if np_isfinite(natr) and natr > 3.0: # Reward volatility
-            score += vol_bonus
-        if np_isfinite(close_px) and np_isfinite(high_52w) and high_52w > 0:
-            if close_px >= (high_52w * 0.85):
-                score += trend_bonus
-    else:
-        # --- MANDATORY FIX: MOMENTUM DEFAULT ---
-        # Unless explicitly named 'reversion', we ALWAYS score for Strength (High RSI).
-        is_reversion = "reversion" in scoring_mode.lower() or "dip" in scoring_mode.lower()
+    # 3. Volatility Bonus (Fuel)
+    if natr > 3.0:
+        score += 20.0
         
-        if is_reversion:
-            if not np_isfinite(rsi2):
-                rsi2 = 50.0
-            score = (100.0 - rsi2) * rsi_factor
-        else:
-            # BREAKOUT DEFAULT: Higher RSI = Higher Score
-            if not np_isfinite(rsi14):
-                rsi14 = 50.0
-            score = (rsi14 * rsi_factor)
-
+    # 4. Trend Bonus (Near Highs)
+    if close_px >= (high_52w * 0.85):
+        score += 30.0
+        
     return max(0.0, float(score))
 
 
