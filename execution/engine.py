@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-print(f"!!! CRITICAL: ACTIVE ENGINE LOADING FROM {__file__} !!!")
 
 import concurrent.futures
 import json
@@ -951,7 +950,7 @@ def _legacy_run_backtest(
             if market_crash_mode:
                 hard_deck_blocks += 1
                 if _DEBUG_TRAIL_ACTIVATION:
-                    date_str = pd.Timestamp(all_dates[day_idx]).date()
+                    date_str = np.datetime_as_string(all_dates[day_idx], unit="D")
                     print(f"HARD DECK: Blocked entry for {sym} on {date_str}")
                 continue
 
@@ -1179,12 +1178,14 @@ def _legacy_run_backtest(
 
         trade_start = _coerce_dt(start_date)
         trade_end = _coerce_dt(end_date)
+        trade_start_ns = trade_start.to_datetime64() if trade_start is not None else None
+        trade_end_ns = trade_end.to_datetime64() if trade_end is not None else None
 
         for day_idx, candidates in enumerate(candidates_by_day):
-            current_dt = pd.Timestamp(all_dates[day_idx])
-            if trade_start and current_dt < trade_start:
+            current_dt = all_dates[day_idx]
+            if trade_start_ns is not None and current_dt < trade_start_ns:
                 continue
-            if trade_end and current_dt > trade_end:
+            if trade_end_ns is not None and current_dt > trade_end_ns:
                 break
 
             # 1. Manage Existing Positions
