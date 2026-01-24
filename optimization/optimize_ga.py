@@ -237,8 +237,7 @@ def main():
     best_score = -9999
 
     for gen in range(GENERATIONS):
-        print(f"
-🧬 Generation {gen + 1}/{GENERATIONS}")
+        print(f"\n🧬 Generation {gen + 1}/{GENERATIONS}")
         results = evaluate_population(population, prepared, g_data)
         if not results:
             continue
@@ -265,8 +264,7 @@ def main():
             new_pop.append(child)
         population = new_pop
 
-    print("
-🏁 SEPA GA COMPLETE.")
+    print("\n🏁 SEPA GA COMPLETE.")
 
 
 if __name__ == "__main__":
