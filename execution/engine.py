@@ -1349,12 +1349,6 @@ def _legacy_run_backtest(
                 if shares < 1:
                     continue
 
-                print(
-                    f"DEBUG_ENTRY: {cand.sym} | Cash: {cash:.2f} | Equity: {mtm_equity:.2f} | "
-                    f"Risk: {risk_amt:.2f} | Dist: {dist:.2f} | CALC_SHARES: {shares} | "
-                    f"Cost: {shares * cand.entry_px:.2f}"
-                )
-                    
                 if shares > 0:
                     cash -= cost
                     positions[cand.sym] = {
