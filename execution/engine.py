@@ -29,7 +29,8 @@ SUPER_SIGNAL_NAME = "SUPER SIGNAL (Wealth + Income)"
 _ATR_HIGH_THRESH_PCT = 3.0
 _ATR_MED_THRESH_PCT = 2.0
 _VOL_REL_THRESH = 1.5
-_VCP_BB_WIDTH_THRESH = 0.17
+# AUDIT UPDATE: Tighter VCP threshold for Minervini compliance (0.17 -> 0.15)
+_VCP_BB_WIDTH_THRESH = 0.15
 
 # Diagnostics: enable to print every strategy's trail activation on each run.
 _DEBUG_TRAIL_ACTIVATION = os.environ.get("APEX_DEBUG_TRAIL_ACTIVATION", "").strip() not in ("", "0", "false", "False")
@@ -156,6 +157,9 @@ def _compute_indicators(
             df[f"sma{p}"] = df["close"].rolling(p).mean()
             df[f"ema{p}"] = df["close"].ewm(span=p, adjust=False).mean()
 
+        # AUDIT UPGRADE: Add SMA150 for Minervini Trend Template
+        df["sma150"] = df["close"].rolling(150).mean()
+
         df["bb_upper"] = df["close"].rolling(20).mean() + (df["close"].rolling(20).std() * 2)
         df["bb_lower"] = df["close"].rolling(20).mean() - (df["close"].rolling(20).std() * 2)
         df["bb_mid"] = df["close"].rolling(20).mean()
@@ -206,7 +210,6 @@ def _compute_indicators(
         df["roc_60"] = df["close"].pct_change(60) * 100.0
         # New for HTF V7
         df["roc_40"] = df["close"].pct_change(40) * 100.0
-        df["roc_40"] = df["close"].pct_change(40) * 100.0
         df["adr_pct_ma10"] = df["adr_pct"].rolling(10).mean()
         
         # New for Apex V10: Close Location Value (CLV)
@@ -224,6 +227,8 @@ def _compute_indicators(
         df["cci"] = CCIIndicator(df["high"], df["low"], df["close"]).cci()
         df["stoch_k"] = StochasticOscillator(df["high"], df["low"], df["close"]).stoch()
         df["vol_ma20"] = df["volume"].rolling(20).mean()
+        # AUDIT UPGRADE: 50-day Volume MA for VDU (Volume Dry Up)
+        df["vol_ma50"] = df["volume"].rolling(50).mean()
 
         df["highest10"] = df["high"].rolling(10).max()
         df["highest10_1"] = df["highest10"].shift(1) # Trigger for HTF
@@ -268,7 +273,7 @@ def _compute_indicators(
         df.loc[mask, "vix_rel20"] = (df.loc[mask, "vix"] / vix_sma20[mask]) - 1.0
 
         df["sma50"] = df["close"].rolling(50).mean()
-        df["sma150"] = df["close"].rolling(150).mean()
+        # sma150 calculated above
         df["sma200"] = df["close"].rolling(200).mean()
         df["high_52w"] = df["high"].rolling(252).max()
         df["low_52w"] = df["low"].rolling(252).min()
@@ -460,6 +465,7 @@ class _SymbolArrays:
     atr14: np.ndarray
     natr: np.ndarray
     volma20: np.ndarray
+    volma50: np.ndarray
     sma10: np.ndarray
     sma20: np.ndarray
     sma50: np.ndarray
@@ -489,7 +495,6 @@ class _SymbolArrays:
     prev_high: np.ndarray # V2: New Prev High Field
     roc40: np.ndarray     # V7: HTF Pole
     adr_pct_ma10: np.ndarray # V7: HTF Flag
-    highest10: np.ndarray # V7: HTF Breakout
     highest10: np.ndarray # V7: HTF Breakout
     highest10_1: np.ndarray # V7: HTF Trigger
     clv: np.ndarray       # V10: Close Location Value
@@ -662,6 +667,7 @@ def prepare_backtest_data(
                 atr14=_get_np_col(df, "atr14", 0.0, length=n),
                 natr=_get_np_col(df, "natr", 0.0, length=n),
                 volma20=_get_np_col(df, "vol_ma20", 1.0, length=n),
+                volma50=_get_np_col(df, "vol_ma50", 1.0, length=n),
                 sma10=_get_np_col(df, "sma10", np.nan, length=n),
                 sma20=_get_np_col(df, "sma20", np.nan, length=n),
                 sma50=_get_np_col(df, "sma50", np.nan, length=n),
@@ -851,13 +857,16 @@ def _legacy_run_backtest(
         adx_arr = sd.adx
         atr14_arr = sd.atr14
         vol_ma20_arr = sd.volma20
+        vol_ma50_arr = sd.volma50
         sma20_arr = sd.sma20
         sma50_arr = sd.sma50
+        sma150_arr = sd.sma150
         sma200_arr = sd.sma200
         cci_arr = sd.cci
         bbwidth_arr = sd.bbwidth
         natr_arr = sd.natr
         high52w_arr = sd.high52w
+        low52w_arr = sd.low52w
         vix_arr = sd.vix
         spy_close_arr = sd.spyclose
         spy_sma20_arr = sd.spysma20
@@ -869,10 +878,10 @@ def _legacy_run_backtest(
         roc40_arr = sd.roc40
         adr_pct_ma10_arr = sd.adr_pct_ma10
         highest10_arr = sd.highest10
-        highest10_arr = sd.highest10
         highest10_1_arr = sd.highest10_1
         clv_arr = sd.clv
         gidx = sd.gidx
+        sma200_slope_arr = sd.sma200slope
 
         n_bars = len(idx)
         if n_bars < 2:
@@ -900,6 +909,32 @@ def _legacy_run_backtest(
             spy_200 = global_spy_sma200[day_idx - 1]
             # Local vars remain local
             rs_rating = float(rs_rating_arr[prev_i]) if np_isfinite(rs_rating_arr[prev_i]) else 0.0
+
+            # AUDIT: Minervini SEPA Hard Gates (Trend Template + VCP Proxy)
+            # 1. Trend Template (Stage 2 Filter)
+            c_p = float(close_arr[prev_i])
+            sma50_p = float(sma50_arr[prev_i])
+            sma150_p = float(sma150_arr[prev_i])
+            sma200_p = float(sma200_arr[prev_i])
+            slope200_p = float(sma200_slope_arr[prev_i])
+            high52_p = float(high52w_arr[prev_i])
+            low52_p = float(low52w_arr[prev_i])
+
+            if not (
+                c_p > sma50_p > sma150_p > sma200_p and
+                slope200_p > 0 and
+                c_p > 0.75 * high52_p and
+                c_p > 1.30 * low52_p
+            ):
+                continue
+
+            # 2. VCP Proxy (Volatility Squeeze)
+            bb_w = float(bbwidth_arr[prev_i])
+            natr_p = float(natr_arr[prev_i])
+            if (not np_isfinite(bb_w)) or (not np_isfinite(natr_p)):
+                continue
+            if bb_w > _VCP_BB_WIDTH_THRESH or natr_p > 4.0:
+                continue
 
             # --- HARD DECK CIRCUIT BREAKER ---
             # Critical Safety Rule: If Market is in a Long-Term Downtrend, BLOCK ALL ENTRIES.
@@ -1272,7 +1307,8 @@ def _legacy_run_backtest(
 
                 # Use MTM Equity for Sizing
                 risk_amt = mtm_equity * risk_per_trade
-                max_pos_size_pct = float(params.get("max_pos_size_pct", 0.25) or 0.25)
+                # AUDIT FIX: Position Sizing Cap (default 30% per Minervini)
+                max_pos_size_pct = float(params.get("max_pos_size_pct", 0.30) or 0.30)
                 max_capital = mtm_equity * max_pos_size_pct
                 # --- FIXED SIZING: ATR FLOOR ---
                 # 1. Get Volatility (ATR)
