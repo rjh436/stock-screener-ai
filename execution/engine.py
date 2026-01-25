@@ -44,7 +44,7 @@ def get_sector(symbol: str) -> str:
 
 def inject_market_rs_rank(enriched, all_dates, lookbacks=(63, 126, 189, 252),
                           weights=(0.40, 0.20, 0.20, 0.20),
-                          min_history=252, min_names=50): # AUDIT FIX: Lowered min_names to 50
+                          min_history=252, min_names=None):
     """
     Creates rs_rating in [1..99] for each symbol/day using cross-sectional percentile rank.
     """
@@ -55,6 +55,10 @@ def inject_market_rs_rank(enriched, all_dates, lookbacks=(63, 126, 189, 252),
     if n_syms == 0:
         return
 
+    # AUDIT FIX: Dynamic min_names to handle small universes (Diagnostic Mode)
+    if min_names is None:
+        min_names = min(50, max(1, int(n_syms * 0.5)))
+    
     # Build matrix: rows=dates, cols=symbols
     close_mat = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     for j, sym in enumerate(syms):
@@ -409,17 +413,16 @@ def prepare_backtest_data(
                 high_arr = open_arr
 
             # --- AUDIT FIX: VECTORIZED MINERVINI HARD GATES (C-SPEED) ---
-            # V18.2 FIX: DECOUPLED VCP from TREND MASK to fix "Consecutive Bug"
-            # We ONLY check long-term Trend Template here (which is stable).
+            # V18.3 FIX: Added 2% Tolerance to Trend Checks to survive shakeouts
+            # V18.3 FIX: Decoupled VCP from Trend Mask
             with np.errstate(invalid='ignore'): 
                 trend_mask = (
-                    (close_arr > sma50_arr) &
-                    (sma50_arr > sma150_arr) &
+                    (close_arr > (sma50_arr * 0.98)) &        # 2% Tolerance
+                    (sma50_arr > (sma150_arr * 0.98)) &       # 2% Tolerance
                     (sma150_arr > sma200_arr) &
                     (slope_arr > 0) &
                     (close_arr > 0.75 * high52_arr) &
                     (close_arr > 1.30 * low52_arr)
-                    # REMOVED bb_width check here to allow breakout expansion
                 )
             
             trend_mask = np.nan_to_num(trend_mask, nan=False).astype(bool)
@@ -480,7 +483,7 @@ def prepare_backtest_data(
         sym_data.gidx = np.searchsorted(all_dates, sym_data.index).astype(np.int32, copy=False)
 
     # --- INJECT RS RATINGS (VECTORIZED) ---
-    inject_market_rs_rank(enriched, all_dates, min_names=50) # Use relaxed constraint
+    inject_market_rs_rank(enriched, all_dates) # Auto-dynamic min_names
     for sym_data in enriched.values():
         try:
             sym_data.df["rs_rating"] = sym_data.rsrating
@@ -617,7 +620,6 @@ def _legacy_run_backtest(
     portfolio = {s.name: {"cash": float(start_cash), "positions": {}} for s in strategies}
     final_results = []
 
-    # AUDIT FIX: RESTORED DATE CHECK
     start_ts = pd.Timestamp(start_date) if start_date else None
     end_ts = pd.Timestamp(end_date) if end_date else None
 
