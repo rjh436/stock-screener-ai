@@ -561,13 +561,16 @@ def _legacy_run_backtest(
         if n_bars < 2: continue
 
         # Vectorized check handles all hard gates.
-        # Iterate all valid SETUP days; use next day as entry.
+        # V18.5 FIX: Iterate Setup Days directly.
+        # We trade on curr_i (Tomorrow) based on prev_i (Today's Setup).
         setup_indices = np.where(sd.trend_mask)[0]
         if len(setup_indices) < 1:
             continue
 
         for prev_i in setup_indices:
             curr_i = prev_i + 1
+
+            # Boundary Safety
             if curr_i >= n_bars:
                 continue
 
