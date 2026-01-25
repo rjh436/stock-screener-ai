@@ -561,16 +561,14 @@ def _legacy_run_backtest(
         if n_bars < 2: continue
 
         # Vectorized check handles all hard gates.
-        # Only iterate days where trend_mask is True
-        valid_indices = np.where(sd.trend_mask)[0]
-        if len(valid_indices) < 2: continue
+        # Iterate all valid SETUP days; use next day as entry.
+        setup_indices = np.where(sd.trend_mask)[0]
+        if len(setup_indices) < 1:
+            continue
 
-        for j in range(1, len(valid_indices)):
-            curr_i = valid_indices[j]
-            prev_i = valid_indices[j - 1]
-            
-            # Ensure continuity (consecutive days)
-            if curr_i != prev_i + 1:
+        for prev_i in setup_indices:
+            curr_i = prev_i + 1
+            if curr_i >= n_bars:
                 continue
 
             day_idx = sd.gidx[curr_i]
