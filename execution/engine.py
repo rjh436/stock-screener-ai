@@ -409,7 +409,8 @@ def prepare_backtest_data(
                 high_arr = open_arr
 
             # --- AUDIT FIX: VECTORIZED MINERVINI HARD GATES (C-SPEED) ---
-            # Calculates valid Stage 2 setup for EVERY bar in one go.
+            # V18.2 FIX: DECOUPLED VCP from TREND MASK to fix "Consecutive Bug"
+            # We ONLY check long-term Trend Template here (which is stable).
             with np.errstate(invalid='ignore'): 
                 trend_mask = (
                     (close_arr > sma50_arr) &
@@ -417,8 +418,8 @@ def prepare_backtest_data(
                     (sma150_arr > sma200_arr) &
                     (slope_arr > 0) &
                     (close_arr > 0.75 * high52_arr) &
-                    (close_arr > 1.30 * low52_arr) &
-                    (bb_w_arr < 0.20)  # Loose VCP Gate
+                    (close_arr > 1.30 * low52_arr)
+                    # REMOVED bb_width check here to allow breakout expansion
                 )
             
             trend_mask = np.nan_to_num(trend_mask, nan=False).astype(bool)
@@ -587,6 +588,7 @@ def _legacy_run_backtest(
                 max_bb = float(params.get("bb_width_max", 0.20))
                 
                 if rs_rating < min_rs: continue
+                # VCP CHECK RE-INSERTED HERE (Soft Gate):
                 if sd.bbwidth[prev_i] > max_bb: continue
 
                 # Calculate Entry/Stop
@@ -615,6 +617,7 @@ def _legacy_run_backtest(
     portfolio = {s.name: {"cash": float(start_cash), "positions": {}} for s in strategies}
     final_results = []
 
+    # AUDIT FIX: RESTORED DATE CHECK
     start_ts = pd.Timestamp(start_date) if start_date else None
     end_ts = pd.Timestamp(end_date) if end_date else None
 
@@ -632,9 +635,11 @@ def _legacy_run_backtest(
         partial_profit_day = int(params.get("partial_profit_day", 4) or 4)
 
         for day_idx, candidates in enumerate(candidates_by_day):
-            # Micro-Optimization: Lazy timestamp creation
-            # Only create pd.Timestamp if we are recording equity or exiting
-            
+            # AUDIT FIX: Respect Start/End dates
+            current_dt_np = all_dates[day_idx]
+            if start_ts and current_dt_np < start_ts.to_datetime64(): continue
+            if end_ts and current_dt_np > end_ts.to_datetime64(): break
+
             # 1. Manage Positions
             to_remove = []
             for sym, pos in positions.items():
