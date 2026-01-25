@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-
 import concurrent.futures
 import json
 import os
@@ -21,6 +20,7 @@ from execution.parity import (
 )
 from execution.shared_logic import _generic_exit_decision
 
+# --- CONFIGURATION ---
 MIN_BARS = 200
 MIN_ENTRY_SCORE = 120.0
 SUPER_SIGNAL_NAME = "SUPER SIGNAL (Wealth + Income)"
@@ -28,10 +28,9 @@ SUPER_SIGNAL_NAME = "SUPER SIGNAL (Wealth + Income)"
 _ATR_HIGH_THRESH_PCT = 3.0
 _ATR_MED_THRESH_PCT = 2.0
 _VOL_REL_THRESH = 1.5
-# AUDIT UPDATE: Tighter VCP threshold for Minervini compliance (0.17 -> 0.15)
+# AUDIT UPDATE: Tighter VCP threshold for Minervini compliance
 _VCP_BB_WIDTH_THRESH = 0.15
 
-# Diagnostics: enable to print every strategy's trail activation on each run.
 _DEBUG_TRAIL_ACTIVATION = os.environ.get("APEX_DEBUG_TRAIL_ACTIVATION", "").strip() not in ("", "0", "false", "False")
 
 
@@ -45,10 +44,9 @@ def get_sector(symbol: str) -> str:
 
 def inject_market_rs_rank(enriched, all_dates, lookbacks=(63, 126, 189, 252),
                           weights=(0.40, 0.20, 0.20, 0.20),
-                          min_history=252, min_names=100):
+                          min_history=252, min_names=50): # AUDIT FIX: Lowered min_names to 50
     """
-    Creates rs_rating in [1..99] for each symbol/day using cross-sectional percentile rank
-    of weighted multi-horizon returns. NaN-safe; IPO-safe via min_history.
+    Creates rs_rating in [1..99] for each symbol/day using cross-sectional percentile rank.
     """
     syms = list(enriched.keys())
     n_days = len(all_dates)
@@ -109,22 +107,6 @@ def inject_market_rs_rank(enriched, all_dates, lookbacks=(63, 126, 189, 252),
             sd.rsrating[valid_indices] = rs_rating[sd.gidx[valid_indices], j]
 
 
-def simulate_breakout_fill(open_px: float, high_px: float, trigger_px: float, limit_px: float | None = None) -> float | None:
-    """
-    V2 LOGIC: Simulates a Buy Stop Limit order.
-    Executes ONLY if High > Trigger. Fills at MAX(Open, Trigger).
-    """
-    if high_px < trigger_px:
-        return None # No breakout occurred today
-
-    if limit_px is not None and open_px > limit_px:
-        return None # Gapped over limit
-
-    # Fill at the breakout price (or open if it gapped up but stayed under limit)
-    fill_px = max(open_px, trigger_px)
-    return fill_px * 1.001 # Slippage
-
-
 def _compute_indicators(
     df: pd.DataFrame,
     spy_df: pd.DataFrame | None = None,
@@ -142,14 +124,12 @@ def _compute_indicators(
             vix_df.columns = vix_df.columns.str.lower()
 
         # V2 UPGRADE: Robust ADR % Calculation
-        # Handle zero division and NaN propagation.
         df["hl_range"] = df["high"] - df["low"]
         close_safe = df["close"].replace(0, np.nan)
 
         with np.errstate(divide="ignore", invalid="ignore"):
             df["adr_pct"] = (df["hl_range"] / close_safe).rolling(20).mean() * 100.0
 
-        # Fill NaN/Inf with 0.0 to prevent crashes; 0.0 marks invalid for trading.
         df["adr_pct"] = df["adr_pct"].fillna(0.0).replace([np.inf, -np.inf], 0.0)
 
         for p in (10, 20, 50, 200):
@@ -176,7 +156,6 @@ def _compute_indicators(
             axis=1,
         ).max(axis=1)
         df["atr14"] = tr.rolling(14).mean()
-        df["atr14_ma20"] = df["atr14"].rolling(20).mean()
         df["natr"] = (df["atr14"] / df["close"]) * 100.0
 
         df["highest20"] = df["high"].rolling(20).max()
@@ -189,8 +168,6 @@ def _compute_indicators(
         df["prev_high"] = df["high"].shift(1)
         df["prev_close"] = df["close"].shift(1)
         
-        # New for Qullamaggie EP: Gap % (Open vs Prev Close)
-        # We need this to identify "Episodic Pivots" (Earnings Gaps)
         with np.errstate(divide="ignore", invalid="ignore"):
             df["gap_pct"] = ((df["open"] - df["prev_close"]) / df["prev_close"]) * 100.0
         df["gap_pct"] = df["gap_pct"].fillna(0.0)
@@ -207,36 +184,27 @@ def _compute_indicators(
         df["rsi2"] = 100 - (100 / (1 + rs2))
 
         df["roc_60"] = df["close"].pct_change(60) * 100.0
-        # New for HTF V7
         df["roc_40"] = df["close"].pct_change(40) * 100.0
         df["adr_pct_ma10"] = df["adr_pct"].rolling(10).mean()
         
-        # New for Apex V10: Close Location Value (CLV)
-        # (Close - Low) / (High - Low)
-        # Filter for High - Low == 0 to avoid DBZ
         with np.errstate(divide="ignore", invalid="ignore"):
             df["clv"] = (df["close"] - df["low"]) / (df["high"] - df["low"])
-        df["clv"] = df["clv"].fillna(0.5) # Default to mid-range if flat day
+        df["clv"] = df["clv"].fillna(0.5)
 
         adx = ADXIndicator(df["high"], df["low"], df["close"])
         df["adx"] = adx.adx()
-        df["plus_di"] = adx.adx_pos()
-        df["minus_di"] = adx.adx_neg()
-
+        
         df["cci"] = CCIIndicator(df["high"], df["low"], df["close"]).cci()
         df["stoch_k"] = StochasticOscillator(df["high"], df["low"], df["close"]).stoch()
         df["vol_ma20"] = df["volume"].rolling(20).mean()
-        # AUDIT UPGRADE: 50-day Volume MA for VDU (Volume Dry Up)
         df["vol_ma50"] = df["volume"].rolling(50).mean()
 
         df["highest10"] = df["high"].rolling(10).max()
-        df["highest10_1"] = df["highest10"].shift(1) # Trigger for HTF
+        df["highest10_1"] = df["highest10"].shift(1) 
 
         if spy_df is not None and not spy_df.empty:
             spy_aligned = spy_df["close"].reindex(df.index).ffill().bfill()
             df["rs_ratio"] = df["close"] / spy_aligned
-            df["rs_sma20"] = df["rs_ratio"].rolling(20).mean()
-            df["rs_trend"] = df["rs_ratio"] - df["rs_sma20"]
             df["spy_close"] = spy_aligned
             df["spy_sma20"] = spy_aligned.rolling(20).mean()
             df["spy_sma50"] = spy_aligned.rolling(50).mean()
@@ -244,17 +212,12 @@ def _compute_indicators(
                 df["spy_sma200"] = spy_df["sma200"].reindex(df.index).ffill().bfill()
             else:
                 df["spy_sma200"] = spy_aligned.rolling(200).mean()
-            df["rs_mom20"] = (df["rs_ratio"] / df["rs_ratio"].shift(20)) - 1.0
-            df["spy_regime"] = (df["spy_close"] > df["spy_sma200"]).astype(int)
         else:
             df["rs_ratio"] = 1.0
-            df["rs_trend"] = 0.0
             df["spy_close"] = np.nan
             df["spy_sma20"] = np.nan
             df["spy_sma50"] = np.nan
             df["spy_sma200"] = np.nan
-            df["rs_mom20"] = 0.0
-            df["spy_regime"] = 0.0
 
         if vix_df is not None and not vix_df.empty and "close" in vix_df.columns:
             vix_aligned = vix_df["close"].reindex(df.index).ffill().bfill()
@@ -265,21 +228,16 @@ def _compute_indicators(
             df["vix"] = 20.0
         df["vix"] = df["vix"].fillna(20.0)
 
-        df["vix_sma20"] = df["vix"].rolling(20).mean()
-        df["vix_rel20"] = 0.0
-        vix_sma20 = df["vix_sma20"]
-        mask = vix_sma20 > 0
-        df.loc[mask, "vix_rel20"] = (df.loc[mask, "vix"] / vix_sma20[mask]) - 1.0
-
         df["sma50"] = df["close"].rolling(50).mean()
-        # sma150 calculated above
         df["sma200"] = df["close"].rolling(200).mean()
         df["high_52w"] = df["high"].rolling(252).max()
         df["low_52w"] = df["low"].rolling(252).min()
-        df["sma200_slope"] = df["sma200"].diff(22)
+        
+        # AUDIT FIX: Fill NaN slope with 0.0 to prevent hard gates from rejecting all trades
+        df["sma200_slope"] = df["sma200"].diff(22).fillna(0.0)
+        
         df["std_20"] = df["close"].rolling(20).std()
         df["bb_width"] = (4 * df["std_20"]) / (df["close"].rolling(20).mean() + 1e-9)
-        df["rs_score"] = df["close"].pct_change(126)
         
         if "rs_rating" not in df.columns:
             df["rs_rating"] = 0.0
@@ -295,22 +253,9 @@ def _empty_result(name: str, start_cash: float, params: Optional[Dict] = None) -
         "final_value": start_cash,
         "total_trades": 0,
         "hit_rate": 0.0,
-        "sharpe": 0.0,
-        "sortino": 0.0,
-        "cagr": 0.0,
-        "calmar": 0.0,
         "max_drawdown_pct": 0.0,
-        "avg_profit_pct": 0.0,
-        "avg_days_held": 0.0,
-        "exposure_pct": 0.0,
-        "profit_factor": 0.0,
-        "payoff_ratio": 0.0,
-        "max_consecutive_losses": 0,
-        "beta": 0.0,
-        "avg_signals_per_day": 0.0,
-        "Score": 0.0,
+        "cagr": 0.0,
         "params": params or {},
-        "trades_list": [],
         "equity_curve": [],
     }
 
@@ -318,133 +263,28 @@ def _empty_result(name: str, start_cash: float, params: Optional[Dict] = None) -
 @dataclass(frozen=True, slots=True)
 class _ScoreWeights:
     rsi_factor: float
-    atr_high_bonus: float
-    atr_med_bonus: float
+    vcp_bonus: float
     vol_bonus: float
     trend_bonus: float
-    trend_penalty: float
-    vcp_bonus: float
-
-
-def _compile_scoring_weights(
-    base_override: Optional[Dict[str, float]],
-    strategy_override: Optional[Dict[str, float]],
-) -> _ScoreWeights:
-    merged = dict(DEFAULT_SCORING_WEIGHTS)
-    if base_override:
-        merged.update(base_override)
-    if strategy_override:
-        merged.update(strategy_override)
-
-    return _ScoreWeights(
-        rsi_factor=float(merged.get("rsi_factor", 0.0) or 0.0),
-        atr_high_bonus=float(merged.get("atr_high_bonus", 0.0) or 0.0),
-        atr_med_bonus=float(merged.get("atr_med_bonus", 0.0) or 0.0),
-        vol_bonus=float(merged.get("vol_bonus", 0.0) or 0.0),
-        trend_bonus=float(merged.get("trend_bonus", 0.0) or 0.0),
-        trend_penalty=float(merged.get("trend_penalty", 0.0) or 0.0),
-        vcp_bonus=float(merged.get("vcp_bonus", 0.0) or 0.0),
-    )
-
-
-def _resolve_scoring_mode(
-    strategy_name: str,
-    scoring_type: Optional[str] = None,
-    type_hint: Optional[str] = None,
-) -> str:
-    for raw in (scoring_type, type_hint):
-        if isinstance(raw, str):
-            key = raw.strip().lower()
-            if any(token in key for token in ("breakout", "momentum", "vcp", "kinetic")):
-                return "breakout"
-            if any(token in key for token in ("wealth", "mean", "reversion", "income")):
-                return "wealth"
-
-    name = str(strategy_name or "").lower()
-    if any(token in name for token in ("breakout", "momentum", "vcp", "kinetic")):
-        return "breakout"
-    if any(token in name for token in ("wealth", "velocity", "income")):
-        return "wealth"
-    return "wealth"
 
 
 def _score_row_dual_core(
-    rsi2: float,
     rsi14: float,
     bb_width: float,
     natr: float,
     close_px: float,
     high_52w: float,
     weights: Dict[str, float],
-    scoring_mode: str,
 ) -> float:
-    # --- MANDATORY MOMENTUM LOGIC ---
-    # We IGNORE 'scoring_mode' complexity and force Breakout logic for V17.
-    
     rsi_factor = float(weights.get("rsi_factor", 1.0))
-    
-    # 1. Base Score: Pure Momentum (RSI 14)
-    # Higher RSI = Higher Score. 
     score = (rsi14 * rsi_factor)
-    
-    # 2. VCP Bonus (Tightness)
     if bb_width < 0.15:
         score += 50.0
-        
-    # 3. Volatility Bonus (Fuel)
     if natr > 3.0:
         score += 20.0
-        
-    # 4. Trend Bonus (Near Highs)
     if close_px >= (high_52w * 0.85):
         score += 30.0
-        
     return max(0.0, float(score))
-
-
-def calculate_backtest_quality_score(
-    row_or_rsi2: Any,
-    strategy_name: str = "",
-    weights: Optional[Dict[str, float]] = None,
-    **kwargs: Any,
-) -> float:
-    merged = dict(DEFAULT_SCORING_WEIGHTS)
-    if isinstance(weights, dict):
-        merged.update(weights)
-
-    scoring_mode = _resolve_scoring_mode(
-        strategy_name,
-        scoring_type=kwargs.get("scoring_type"),
-        type_hint=kwargs.get("type"),
-    )
-
-    if isinstance(row_or_rsi2, (pd.Series, dict)):
-        row = row_or_rsi2
-        rsi2 = float(row.get("rsi2", 50) or 50)
-        rsi14 = float(row.get("rsi14", rsi2) or rsi2)
-        bb_width = float(row.get("bb_width", np.nan))
-        close_px = float(row.get("close", 0) or 0)
-        high_52w = float(row.get("high_52w", np.nan))
-        natr = row.get("natr")
-        if natr is None or not np.isfinite(natr):
-            atr14 = float(row.get("atr14", 0) or 0)
-            natr = (atr14 / close_px) * 100.0 if close_px > 0 and atr14 > 0 else 0.0
-        else:
-            natr = float(natr)
-    else:
-        rsi2 = float(row_or_rsi2 if row_or_rsi2 is not None else 50.0)
-        rsi14 = float(kwargs.get("rsi14", rsi2) or rsi2)
-        bb_width = float(kwargs.get("bb_width", np.nan))
-        close_px = float(kwargs.get("close", 0.0) or 0.0)
-        high_52w = float(kwargs.get("high_52w", np.nan))
-        natr = kwargs.get("natr")
-        if natr is None or not np.isfinite(natr):
-            atr14 = float(kwargs.get("atr14", 0.0) or 0.0)
-            natr = (atr14 / close_px) * 100.0 if close_px > 0 and atr14 > 0 else 0.0
-        else:
-            natr = float(natr)
-
-    return _score_row_dual_core(rsi2, rsi14, bb_width, natr, close_px, high_52w, merged, scoring_mode)
 
 
 @dataclass(slots=True)
@@ -457,46 +297,29 @@ class _SymbolArrays:
     low: np.ndarray
     close: np.ndarray
     volume: np.ndarray
-    rsi2: np.ndarray
     rsi14: np.ndarray
-    adx: np.ndarray
-    stochk: np.ndarray
     atr14: np.ndarray
     natr: np.ndarray
-    volma20: np.ndarray
     volma50: np.ndarray
     sma10: np.ndarray
     sma20: np.ndarray
     sma50: np.ndarray
     sma150: np.ndarray
     sma200: np.ndarray
-    donchian20: np.ndarray
     sma200slope: np.ndarray
     high52w: np.ndarray
     low52w: np.ndarray
-    cci: np.ndarray
     bbwidth: np.ndarray
-    bblower: np.ndarray
-    bbupper: np.ndarray
-    rsratio: np.ndarray
-    rstrend: np.ndarray
-    rsmom20: np.ndarray
-    vix: np.ndarray
-    vixsma20: np.ndarray
-    vixrel20: np.ndarray
     spyclose: np.ndarray
     spysma20: np.ndarray
     spysma50: np.ndarray
     spysma200: np.ndarray
-    spyregime: np.ndarray
     rsrating: np.ndarray
-    adr_pct: np.ndarray   # V2: New ADR Field
-    prev_high: np.ndarray # V2: New Prev High Field
-    roc40: np.ndarray     # V7: HTF Pole
-    adr_pct_ma10: np.ndarray # V7: HTF Flag
-    highest10: np.ndarray # V7: HTF Breakout
-    highest10_1: np.ndarray # V7: HTF Trigger
-    clv: np.ndarray       # V10: Close Location Value
+    adr_pct: np.ndarray
+    prev_high: np.ndarray
+    highest10_1: np.ndarray
+    clv: np.ndarray
+    trend_mask: np.ndarray # AUDIT FIX: Vectorized Gate
 
 
 @dataclass(slots=True)
@@ -506,83 +329,14 @@ class _Candidate:
     stop_px: float
     score: float
     strategy_name: str
-    strategy_obj: Any
     entry_i: int
-    signal_i: int
-    is_super_signal: bool = False
-    ai_prob: float = 0.0
     size_scalar: float = 1.0
-
-
-def _strategy_role(params: Dict[str, Any]) -> str:
-    raw_type = params.get("type")
-    if isinstance(raw_type, str):
-        t = raw_type.strip().lower()
-        if "wealth" in t:
-            return "wealth"
-        if "income" in t:
-            return "income"
-
-    raw_name = params.get("name")
-    if isinstance(raw_name, str):
-        n = raw_name.lower()
-        if "wealth" in n:
-            return "wealth"
-        if "income" in n:
-            return "income"
-
-    return ""
-
-
-def _apply_super_signal_overrides(genome: Dict[str, Any]) -> Dict[str, Any]:
-    return genome
 
 
 @dataclass(slots=True)
 class PreparedBacktestData:
     enriched: Dict[str, _SymbolArrays]
     all_dates: np.ndarray
-
-
-def _load_sector_map() -> Dict[str, str]:
-    path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", "sectors.json"))
-    if os.path.exists(path):
-        try:
-            with open(path, "r") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                return {str(k).upper(): str(v) for k, v in data.items()}
-        except Exception:
-            return {}
-    return {}
-
-
-def _resolve_gap_protection_ratio(params: Dict[str, Any]) -> float:
-    raw_ratio = params.get("gap_protection")
-    if raw_ratio is None:
-        raw_pct = params.get("gap_protection_pct")
-        if raw_pct is None:
-            return 0.0
-        try:
-            pct = float(raw_pct)
-        except (TypeError, ValueError):
-            return 0.0
-        if pct <= 0:
-            return 0.0
-        return max(0.0, 1.0 - pct)
-    try:
-        ratio = float(raw_ratio)
-    except (TypeError, ValueError):
-        return 0.0
-    return ratio if ratio > 0 else 0.0
-
-
-def _get_param(params: Dict[str, Any], key: str, default: float, min_val: float, max_val: float) -> float:
-    try:
-        val = float(params.get(key, default))
-    except (TypeError, ValueError):
-        return default
-    return max(min_val, min(val, max_val))
 
 
 def _get_np_col(df: pd.DataFrame, col: str, fallback: float, *, length: int) -> np.ndarray:
@@ -608,11 +362,8 @@ def prepare_backtest_data(
     if spy_df is not None and not spy_df.empty:
         spy_df = spy_df.copy()
         spy_df.columns = spy_df.columns.str.lower()
-        if "sma200" not in spy_df.columns or spy_df["sma200"].isna().all():
-            try:
-                spy_df["sma200"] = SMAIndicator(spy_df["close"], window=200).sma_indicator()
-            except Exception:
-                spy_df["sma200"] = spy_df["close"].rolling(200).mean()
+        if "sma200" not in spy_df.columns:
+            spy_df["sma200"] = spy_df["close"].rolling(200).mean()
 
     enriched: Dict[str, _SymbolArrays] = {}
 
@@ -623,9 +374,6 @@ def prepare_backtest_data(
 
         try:
             df = _compute_indicators(df_raw.copy(), spy_df=spy_df, vix_df=vix_df)
-
-            if "ticker" not in df.columns:
-                df["ticker"] = sym
 
             if start_date:
                 start_dt = pd.to_datetime(start_date).replace(tzinfo=None)
@@ -640,15 +388,41 @@ def prepare_backtest_data(
                 df.index = df.index.tz_localize(None)
 
             n = len(df)
+            
+            # --- VECTORIZED DATA EXTRACTION ---
             open_arr = _get_np_col(df, "open", np.nan, length=n)
             high_arr = _get_np_col(df, "high", np.nan, length=n)
             low_arr = _get_np_col(df, "low", np.nan, length=n)
             close_arr = _get_np_col(df, "close", np.nan, length=n)
+            sma50_arr = _get_np_col(df, "sma50", np.nan, length=n)
+            sma150_arr = _get_np_col(df, "sma150", np.nan, length=n)
+            sma200_arr = _get_np_col(df, "sma200", np.nan, length=n)
+            slope_arr = _get_np_col(df, "sma200_slope", 0.0, length=n)
+            high52_arr = _get_np_col(df, "high_52w", np.nan, length=n)
+            low52_arr = _get_np_col(df, "low_52w", np.nan, length=n)
+            bb_w_arr = _get_np_col(df, "bb_width", 100.0, length=n)
+            natr_arr = _get_np_col(df, "natr", 100.0, length=n)
 
             if not np.isfinite(low_arr).any():
                 low_arr = open_arr
             if not np.isfinite(high_arr).any():
                 high_arr = open_arr
+
+            # --- AUDIT FIX: VECTORIZED MINERVINI HARD GATES (C-SPEED) ---
+            # Calculates valid Stage 2 setup for EVERY bar in one go.
+            with np.errstate(invalid='ignore'): 
+                trend_mask = (
+                    (close_arr > sma50_arr) &
+                    (sma50_arr > sma150_arr) &
+                    (sma150_arr > sma200_arr) &
+                    (slope_arr > 0) &
+                    (close_arr > 0.75 * high52_arr) &
+                    (close_arr > 1.30 * low52_arr) &
+                    (bb_w_arr < 0.20)  # Loose VCP Gate
+                )
+            
+            trend_mask = np.nan_to_num(trend_mask, nan=False).astype(bool)
+            # ------------------------------------------------------------
 
             enriched[sym] = _SymbolArrays(
                 df=df,
@@ -659,46 +433,29 @@ def prepare_backtest_data(
                 low=low_arr,
                 close=close_arr,
                 volume=_get_np_col(df, "volume", 0.0, length=n),
-                rsi2=_get_np_col(df, "rsi2", 50.0, length=n),
                 rsi14=_get_np_col(df, "rsi14", 50.0, length=n),
-                adx=_get_np_col(df, "adx", 0.0, length=n),
-                stochk=_get_np_col(df, "stoch_k", 0.0, length=n),
                 atr14=_get_np_col(df, "atr14", 0.0, length=n),
-                natr=_get_np_col(df, "natr", 0.0, length=n),
-                volma20=_get_np_col(df, "vol_ma20", 1.0, length=n),
+                natr=natr_arr,
                 volma50=_get_np_col(df, "vol_ma50", 1.0, length=n),
                 sma10=_get_np_col(df, "sma10", np.nan, length=n),
                 sma20=_get_np_col(df, "sma20", np.nan, length=n),
-                sma50=_get_np_col(df, "sma50", np.nan, length=n),
-                sma150=_get_np_col(df, "sma150", np.nan, length=n),
-                sma200=_get_np_col(df, "sma200", np.nan, length=n),
-                donchian20=_get_np_col(df, "donchian20", np.nan, length=n),
-                sma200slope=_get_np_col(df, "sma200_slope", np.nan, length=n),
-                high52w=_get_np_col(df, "high_52w", np.nan, length=n),
-                low52w=_get_np_col(df, "low_52w", np.nan, length=n),
-                cci=_get_np_col(df, "cci", 0.0, length=n),
-                bbwidth=_get_np_col(df, "bb_width", 0.0, length=n),
-                bblower=_get_np_col(df, "bb_lower", np.nan, length=n),
-                bbupper=_get_np_col(df, "bb_upper", np.nan, length=n),
-                rsratio=_get_np_col(df, "rs_ratio", 1.0, length=n),
-                rstrend=_get_np_col(df, "rs_trend", 0.0, length=n),
-                rsmom20=_get_np_col(df, "rs_mom20", 0.0, length=n),
-                vix=_get_np_col(df, "vix", 20.0, length=n),
-                vixsma20=_get_np_col(df, "vix_sma20", 20.0, length=n),
-                vixrel20=_get_np_col(df, "vix_rel20", 0.0, length=n),
+                sma50=sma50_arr,
+                sma150=sma150_arr,
+                sma200=sma200_arr,
+                sma200slope=slope_arr,
+                high52w=high52_arr,
+                low52w=low52_arr,
+                bbwidth=bb_w_arr,
                 spyclose=_get_np_col(df, "spy_close", np.nan, length=n),
                 spysma20=_get_np_col(df, "spy_sma20", np.nan, length=n),
                 spysma50=_get_np_col(df, "spy_sma50", np.nan, length=n),
                 spysma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
-                spyregime=_get_np_col(df, "spy_regime", 0.0, length=n),
                 rsrating=np.zeros(n, dtype=np.float64),
                 adr_pct=_get_np_col(df, "adr_pct", 0.0, length=n),
                 prev_high=_get_np_col(df, "prev_high", 0.0, length=n),
-                roc40=_get_np_col(df, "roc_40", 0.0, length=n),
-                adr_pct_ma10=_get_np_col(df, "adr_pct_ma10", 0.0, length=n),
-                highest10=_get_np_col(df, "highest10", 0.0, length=n),
                 highest10_1=_get_np_col(df, "highest10_1", 0.0, length=n),
                 clv=_get_np_col(df, "clv", 0.5, length=n),
+                trend_mask=trend_mask 
             )
         except Exception:
             continue
@@ -722,9 +479,7 @@ def prepare_backtest_data(
         sym_data.gidx = np.searchsorted(all_dates, sym_data.index).astype(np.int32, copy=False)
 
     # --- INJECT RS RATINGS (VECTORIZED) ---
-    min_names = min(100, max(10, int(len(enriched) * 0.6)))
-    min_names = min(min_names, len(enriched))
-    inject_market_rs_rank(enriched, all_dates, min_names=min_names)
+    inject_market_rs_rank(enriched, all_dates, min_names=50) # Use relaxed constraint
     for sym_data in enriched.values():
         try:
             sym_data.df["rs_rating"] = sym_data.rsrating
@@ -742,18 +497,13 @@ def _legacy_run_backtest(
     start_date=None,
     global_data=None,
     scoring_weights=None,
-    export_ml_data=False,
-    ai_model=None,
-    ai_threshold=0.60,
-    super_signal_only: bool = False,
     pre_calculated_data: Optional["PreparedBacktestData"] = None,
     end_date=None,
+    **kwargs
 ):
-    # --- FIX: Auto-detect if data_pack is actually prepared data ---
     if hasattr(data, "enriched"):
         pre_calculated_data = data
         data = None
-    # -------------------------------------------------------------
 
     def _unwrap_genome(params: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(params, dict) and isinstance(params.get("genome"), dict):
@@ -765,58 +515,29 @@ def _legacy_run_backtest(
     if not strategies:
         return _empty_result("NoStrategy", float(start_cash), {})
 
-    data_dict: Dict[str, pd.DataFrame] = data or {}
     strategy_label = strategies[0].name if len(strategies) == 1 else "MultiStrategy"
-    if super_signal_only:
-        strategy_label = SUPER_SIGNAL_NAME
 
-    # Use centralized data preparation which includes RS injection,
-    # unless pre-calculated data is provided.
     if pre_calculated_data is not None:
         prepared = pre_calculated_data
     else:
-        prepared = prepare_backtest_data(data_dict, symbol_universe, start_date, global_data)
+        prepared = prepare_backtest_data(data or {}, symbol_universe, start_date, global_data)
     enriched = prepared.enriched
     all_dates = prepared.all_dates
 
     if not enriched:
         return _empty_result(strategy_label, float(start_cash), strategies[0].params if strategies else {})
 
-    date_to_idx = {dt: i for i, dt in enumerate(all_dates)}
     candidates_by_day: List[List[_Candidate]] = [[] for _ in range(len(all_dates))]
 
-    compiled_strategies: List[Tuple[Any, _ScoreWeights, Dict[str, Any], float, bool, float, float, bool, str]] = []
+    compiled_strategies = []
     for strat in strategies:
         raw_params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
         params = _unwrap_genome(raw_params)
-        strat_weights = params.get("scoring_weights") if isinstance(params.get("scoring_weights"), dict) else None
-        w = _compile_scoring_weights(scoring_weights, strat_weights)
-        gap_ratio = _resolve_gap_protection_ratio(params)
-        regime_filter = bool(params.get("regime_filter", False))
-        try:
-            min_adx = float(params.get("min_adx", 0) or 0)
-        except (TypeError, ValueError):
-            min_adx = 0.0
-        if min_adx <= 0:
-            min_adx = 0.0
-        vix_limit_scaling = bool(params.get("vix_limit_scaling", False))
+        w = _ScoreWeights(1.0, 50.0, 20.0, 30.0)
         base_stop_mult = float(params.get("stop_loss_atr", 3.0) or 3.0)
-        scoring_mode = _resolve_scoring_mode(
-            strat.name,
-            scoring_type=params.get("scoring_type"),
-            type_hint=params.get("type"),
-        )
-        compiled_strategies.append(
-            (strat, w, params, gap_ratio, regime_filter, base_stop_mult, min_adx, vix_limit_scaling, scoring_mode)
-        )
+        compiled_strategies.append((strat, w, params, base_stop_mult))
 
-    np_isfinite = np.isfinite
-    hard_deck_blocks = 0
-
-    # --- FIX: PREPARE GLOBAL SPY ARRAYS (Aligned to all_dates) ---
     global_spy_close = np.zeros(len(all_dates), dtype=np.float64)
-    global_spy_sma20 = np.zeros(len(all_dates), dtype=np.float64)
-    global_spy_sma50 = np.zeros(len(all_dates), dtype=np.float64)
     global_spy_sma200 = np.zeros(len(all_dates), dtype=np.float64)
 
     if global_data and "SPY" in global_data:
@@ -824,602 +545,192 @@ def _legacy_run_backtest(
         if not spy_df_raw.empty:
             spy_df_raw = spy_df_raw.copy()
             spy_df_raw.columns = spy_df_raw.columns.str.lower()
-            if spy_df_raw.index.tz is not None:
-                spy_df_raw.index = spy_df_raw.index.tz_localize(None)
-
-            # Ensure we have SMA200
             if "sma200" not in spy_df_raw.columns:
                  spy_df_raw["sma200"] = spy_df_raw["close"].rolling(200).mean()
-            if "sma20" not in spy_df_raw.columns:
-                 spy_df_raw["sma20"] = spy_df_raw["close"].rolling(20).mean()
-            if "sma50" not in spy_df_raw.columns:
-                 spy_df_raw["sma50"] = spy_df_raw["close"].rolling(50).mean()
-
-            # Align to all_dates
             spy_aligned = spy_df_raw.reindex(all_dates).ffill().bfill()
-            global_spy_close = spy_aligned["close"].to_numpy(dtype=np.float64)
-            global_spy_sma20 = spy_aligned["sma20"].fillna(0).to_numpy(dtype=np.float64)
-            global_spy_sma50 = spy_aligned["sma50"].fillna(0).to_numpy(dtype=np.float64)
+            global_spy_close = spy_aligned["close"].fillna(0).to_numpy(dtype=np.float64)
             global_spy_sma200 = spy_aligned["sma200"].fillna(0).to_numpy(dtype=np.float64)
-    # ----------------------------------------------------------------
 
+    # --- MAIN LOOP (Optimized) ---
     for sym, sd in enriched.items():
-        df = sd.df
-        idx = sd.index
-        open_arr = sd.open
-        low_arr = sd.low
-        close_arr = sd.close
-        high_arr = sd.high # V2: Needed for stop buy check
-        volume_arr = sd.volume
-        rsi2_arr = sd.rsi2
-        rsi14_arr = sd.rsi14
-        adx_arr = sd.adx
-        atr14_arr = sd.atr14
-        vol_ma20_arr = sd.volma20
-        vol_ma50_arr = sd.volma50
-        sma20_arr = sd.sma20
-        sma50_arr = sd.sma50
-        sma150_arr = sd.sma150
-        sma200_arr = sd.sma200
-        cci_arr = sd.cci
-        bbwidth_arr = sd.bbwidth
-        natr_arr = sd.natr
-        high52w_arr = sd.high52w
-        low52w_arr = sd.low52w
-        vix_arr = sd.vix
-        spy_close_arr = sd.spyclose
-        spy_sma20_arr = sd.spysma20
-        spy_sma50_arr = sd.spysma50
-        spy_sma200_arr = sd.spysma200
-        rs_rating_arr = sd.rsrating
-        adr_pct_arr = sd.adr_pct
-        prev_high_arr = sd.prev_high
-        roc40_arr = sd.roc40
-        adr_pct_ma10_arr = sd.adr_pct_ma10
-        highest10_arr = sd.highest10
-        highest10_1_arr = sd.highest10_1
-        clv_arr = sd.clv
-        gidx = sd.gidx
-        sma200_slope_arr = sd.sma200slope
+        n_bars = len(sd.index)
+        if n_bars < 2: continue
 
-        n_bars = len(idx)
-        if n_bars < 2:
-            continue
+        # Vectorized check handles all hard gates.
+        # Only iterate days where trend_mask is True
+        valid_indices = np.where(sd.trend_mask)[0]
+        if len(valid_indices) < 2: continue
 
-        valid_mask = np.isfinite(close_arr) & np.isfinite(open_arr)
-        valid_indices = np.where(valid_mask)[0]
-        if len(valid_indices) < 2:
-            continue
-
-        for i in range(1, len(valid_indices)):
-            curr_i = valid_indices[i]
-            prev_i = valid_indices[i - 1]
-            day_idx = gidx[curr_i]
-
-            if day_idx < 1 or day_idx >= len(all_dates):
+        for j in range(1, len(valid_indices)):
+            curr_i = valid_indices[j]
+            prev_i = valid_indices[j - 1]
+            
+            # Ensure continuity (consecutive days)
+            if curr_i != prev_i + 1:
                 continue
 
-            # --- TRAFFIC LIGHT PRE-CALCULATION (ROBUST GLOBAL LOOKUP) ---
-            # Lookup the Global Market State for the PREVIOUS DAY relative to the current simulation step.
-            # day_idx is 'Today'. day_idx - 1 is 'Yesterday' (Global).
+            day_idx = sd.gidx[curr_i]
+            if day_idx < 1 or day_idx >= len(all_dates): continue
+
             spy_c = global_spy_close[day_idx - 1]
-            spy_20 = global_spy_sma20[day_idx - 1]
-            spy_50 = global_spy_sma50[day_idx - 1]
             spy_200 = global_spy_sma200[day_idx - 1]
-            # Local vars remain local
-            rs_rating = float(rs_rating_arr[prev_i]) if np_isfinite(rs_rating_arr[prev_i]) else 0.0
-
-            # AUDIT: Minervini SEPA Hard Gates (Trend Template + VCP Proxy)
-            # 1. Trend Template (Stage 2 Filter)
-            c_p = float(close_arr[prev_i])
-            sma50_p = float(sma50_arr[prev_i])
-            sma150_p = float(sma150_arr[prev_i])
-            sma200_p = float(sma200_arr[prev_i])
-            slope200_p = float(sma200_slope_arr[prev_i])
-            high52_p = float(high52w_arr[prev_i])
-            low52_p = float(low52w_arr[prev_i])
-
-            if not (
-                c_p > sma50_p > sma150_p > sma200_p and
-                slope200_p > 0 and
-                c_p > 0.75 * high52_p and
-                c_p > 1.30 * low52_p
-            ):
-                continue
-
-            # 2. VCP Proxy (Volatility Squeeze)
-            bb_w = float(bbwidth_arr[prev_i])
-            natr_p = float(natr_arr[prev_i])
-            if (not np_isfinite(bb_w)) or (not np_isfinite(natr_p)):
-                continue
-            if bb_w > _VCP_BB_WIDTH_THRESH or natr_p > 4.0:
-                continue
-
-            # --- HARD DECK CIRCUIT BREAKER ---
-            # Critical Safety Rule: If Market is in a Long-Term Downtrend, BLOCK ALL ENTRIES.
-            # FAIL SAFE: Default to BLOCKED (market_crash_mode = True) unless we positively verify an Uptrend.
-            # If SPY data is missing (spy_c == 0), we remain in crash mode.
-            market_crash_mode = True 
             
-            if spy_c > 0 and spy_200 > 0:
-                # We have valid data. Check the Trend.
-                if spy_c >= spy_200:
-                    market_crash_mode = False # Uptrend confirmed
-                # else: Remain True (Downtrend)
-            
-            if market_crash_mode:
-                hard_deck_blocks += 1
-                if _DEBUG_TRAIL_ACTIVATION:
-                    date_str = np.datetime_as_string(all_dates[day_idx], unit="D")
-                    print(f"HARD DECK: Blocked entry for {sym} on {date_str}")
-                continue
+            # Market Regime Filter (Allow trades if SPY is missing/zero)
+            if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
+                continue 
 
-            market_state = "GREEN" 
-            if spy_c > 0 and spy_200 > 0:
-                if spy_c < spy_200:
-                    market_state = "RED"
-                elif spy_c < spy_50:
-                    if spy_c < spy_20:
-                        market_state = "YELLOW"
-                    else:
-                        market_state = "GREEN"
+            rs_rating = float(sd.rsrating[prev_i])
+
+            for strat, w, params, base_stop_mult in compiled_strategies:
+                # Genome Filters
+                min_rs = float(params.get("rs_rating", 80))
+                max_bb = float(params.get("bb_width_max", 0.20))
+                
+                if rs_rating < min_rs: continue
+                if sd.bbwidth[prev_i] > max_bb: continue
+
+                # Calculate Entry/Stop
+                open_px = float(sd.open[curr_i])
+                entry_px = open_px
+                stop_px = 0.0
+                
+                stop_type = str(params.get("stop_loss_type", "atr")).lower()
+                if "low" in stop_type:
+                    day_low = float(sd.low[curr_i])
+                    stop_px = day_low * 0.99
                 else:
-                    if spy_c < spy_20:
-                        market_state = "YELLOW"
-                    else:
-                        market_state = "GREEN"
-
-            for strat_idx, (
-                strat,
-                w,
-                params,
-                gap_ratio,
-                regime_filter,
-                base_stop_mult,
-                min_adx,
-                vix_limit_scaling,
-                scoring_mode,
-            ) in enumerate(compiled_strategies):
-                market_filter_mode = str(params.get("market_filter_mode") or "").lower()
-
-                # --- V2 UPGRADE: Elite Bypass Traffic Light ---
-                if market_filter_mode == "traffic_light":
-                    # Bypass Red Light only if Elite RS
-                    if market_state == "RED":
-                        bypass_threshold = float(params.get("red_bypass_rs", 100.0))
-                        if rs_rating < bypass_threshold:
-                            continue
-                    elif market_state == "YELLOW":
-                        yellow_floor = float(params.get("yellow_rs_floor", 92.0))
-                        if rs_rating < yellow_floor:
-                            continue
-                elif regime_filter:
-                    if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
-                        continue
-
-                if min_adx > 0:
-                    val_adx = float(adx_arr[prev_i])
-                    if not np_isfinite(val_adx) or val_adx < min_adx:
-                        continue
-
-                try:
-                    entry_signal = strat.entry(df, prev_i)
-                except Exception:
-                    entry_signal = None
-                if entry_signal is None:
-                    continue
-
-                entry_limit_ratio = None
-                entry_limit_ratio = None
-                entry_stop_mult = base_stop_mult
-                entry_stop_type = "atr"
-                if isinstance(entry_signal, dict):
-                    if entry_signal.get("limit_ratio") is not None:
-                        entry_limit_ratio = entry_signal.get("limit_ratio")
-                    if entry_signal.get("stop_loss_atr") is not None:
-                        try:
-                            entry_stop_mult = float(entry_signal.get("stop_loss_atr"))
-                        except (TypeError, ValueError):
-                            entry_stop_mult = base_stop_mult
-                    if entry_signal.get("stop_loss_type") is not None:
-                        entry_stop_type = str(entry_signal.get("stop_loss_type")).lower()
+                    atr = float(sd.atr14[prev_i])
+                    stop_px = entry_px - (atr * base_stop_mult)
 
                 score = _score_row_dual_core(
-                    rsi2_arr[prev_i],
-                    rsi14_arr[prev_i],
-                    bbwidth_arr[prev_i],
-                    natr_arr[prev_i],
-                    close_arr[prev_i],
-                    high52w_arr[prev_i],
-                    {
-                        "rsi_factor": w.rsi_factor,
-                        "vcp_bonus": w.vcp_bonus,
-                        "vol_bonus": w.vol_bonus,
-                        "trend_bonus": w.trend_bonus,
-                    },
-                    scoring_mode,
+                    sd.rsi14[prev_i], sd.bbwidth[prev_i], sd.natr[prev_i],
+                    sd.close[prev_i], sd.high52w[prev_i], {"rsi_factor":1.0}
                 )
 
-                strat_min_score = float(params.get("min_entry_score", MIN_ENTRY_SCORE))
-                if score >= strat_min_score:
-                    try:
-                        # --- V2 UPGRADE: STOP-BUY EXECUTION ---
-                        open_px = float(open_arr[curr_i])
-                        entry_px = open_px  # Default for wealth strategy.
+                candidates_by_day[day_idx].append(
+                    _Candidate(sym, entry_px, stop_px, score, strat.name, curr_i)
+                )
 
-                        if scoring_mode == "breakout":
-                            curr_adr = float(adr_pct_arr[prev_i])
-
-                            # Reject bad ADR data before applying filters.
-                            if curr_adr <= 0.0:
-                                continue
-                            try:
-                                min_adr = float(params.get("adr_pct", 2.0))
-                            except (TypeError, ValueError):
-                                min_adr = 2.0
-
-                            close_prev = float(close_arr[prev_i])
-                            sma200_prev = float(sma200_arr[prev_i])
-                            if not np_isfinite(close_prev) or not np_isfinite(sma200_prev):
-                                continue
-                            if close_prev < sma200_prev:
-                                continue
-                            if curr_adr < min_adr:
-                                continue
-                            # --- REMEDIATION: Stop-Buy Logic (High > Trigger) ---
-                            # V7 Upgrade: Configurable Trigger (default to prev_high * 1.0005)
-                            trigger_base_col = params.get("stop_buy_ref", "prev_high")
-                            trigger_mult = float(params.get("stop_buy_mult", 1.0005))
-                            
-                            if trigger_base_col == "highest10_1":
-                                base_price = float(highest10_1_arr[prev_i])
-                            else:
-                                base_price = float(prev_high_arr[prev_i])
-
-                            trigger_price = base_price * trigger_mult
-                            day_high = float(high_arr[curr_i])
-                            day_open = float(open_arr[curr_i])
-
-                            if day_high >= trigger_price:
-                                entry_px = max(day_open, trigger_price)
-                            else:
-                                continue
-                            # ----------------------------------------------------
-                        else:
-                            # Legacy Limit Logic for Wealth
-                            prev_close = float(close_arr[prev_i])
-                            limit_ratio = entry_limit_ratio if entry_limit_ratio is not None else params.get("limit_ratio")
-                            if limit_ratio is not None and prev_close > 0:
-                                try:
-                                    limit_ratio_val = float(limit_ratio)
-                                except (TypeError, ValueError):
-                                    limit_ratio_val = 0.98
-
-                                target_px = prev_close * limit_ratio_val
-                                if open_px < target_px:
-                                    entry_px = open_px
-                                elif open_px > target_px * 1.05:
-                                    continue
-                                else:
-                                    entry_px = open_px
-
-                        atr = float(atr14_arr[prev_i])
-                        
-                        if entry_stop_type == "low_of_day" or entry_stop_type == "lod":
-                             # Qullamaggie Style: Stop at Low of Entry Day
-                             day_low = float(low_arr[curr_i])
-                             stop_px = day_low * 0.999 # 0.1% buffer
-                             # Sanity check: Stop must be below entry
-                             if stop_px >= entry_px:
-                                 stop_px = entry_px * 0.99 # Fallback 1% stop if LOD is weird
-                        else:
-                             stop_px = calculate_stop_price(entry_px, atr, entry_stop_mult)
-
-                        ai_prob = 0.0
-                        # ... AI logic remains the same ...
-
-                        candidates_by_day[day_idx].append(
-                            _Candidate(
-                                sym=sym,
-                                entry_px=entry_px,
-                                stop_px=stop_px,
-                                score=score,
-                                strategy_name=strat.name,
-                                strategy_obj=strat,
-                                entry_i=curr_i,
-                                signal_i=prev_i,
-                                is_super_signal=super_signal_only,
-                                ai_prob=ai_prob,
-                            )
-                        )
-                    except Exception as e:
-                        if _DEBUG_TRAIL_ACTIVATION:
-                            print(f"Warning: error processing {sym} at {day_idx}: {e}")
-                        continue
-
-    if _DEBUG_TRAIL_ACTIVATION and hard_deck_blocks:
-        print(f"HARD DECK: Blocked {hard_deck_blocks} entries")
-
-    # Execution Loop
+    # --- SIMULATION LOOP ---
     portfolio = {s.name: {"cash": float(start_cash), "positions": {}} for s in strategies}
-    if super_signal_only:
-        portfolio[SUPER_SIGNAL_NAME] = {"cash": float(start_cash), "positions": {}}
-
     final_results = []
 
+    start_ts = pd.Timestamp(start_date) if start_date else None
+    end_ts = pd.Timestamp(end_date) if end_date else None
+
     for strat in strategies:
-        strat_key = SUPER_SIGNAL_NAME if super_signal_only else strat.name
-        port = portfolio[strat_key]
+        port = portfolio[strat.name]
         cash = port["cash"]
         positions = port["positions"]
         trades_list = []
         equity_curve = []
-
+        
         params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
         max_pos = int(params.get("max_positions", 10) or 10)
-        risk_per_trade = float(params.get("risk_per_trade", 0.02) or 0.02)
-        try:
-            partial_profit_day = int(params.get("partial_profit_day", 4) or 4)
-        except (TypeError, ValueError):
-            partial_profit_day = 4
-        if partial_profit_day < 1:
-            partial_profit_day = 1
-
-        def _coerce_dt(val: Any) -> Optional[pd.Timestamp]:
-            if val is None:
-                return None
-            try:
-                ts = pd.Timestamp(val)
-            except Exception:
-                return None
-            if ts.tzinfo is not None:
-                ts = ts.tz_localize(None)
-            return ts
-
-        trade_start = _coerce_dt(start_date)
-        trade_end = _coerce_dt(end_date)
-        trade_start_ns = trade_start.to_datetime64() if trade_start is not None else None
-        trade_end_ns = trade_end.to_datetime64() if trade_end is not None else None
+        risk_per_trade = float(params.get("risk_per_trade", 0.01) or 0.01)
+        max_pos_size_pct = float(params.get("max_pos_size_pct", 0.30) or 0.30)
+        partial_profit_day = int(params.get("partial_profit_day", 4) or 4)
 
         for day_idx, candidates in enumerate(candidates_by_day):
-            current_dt = all_dates[day_idx]
-            if trade_start_ns is not None and current_dt < trade_start_ns:
-                continue
-            if trade_end_ns is not None and current_dt > trade_end_ns:
-                break
-
-            # 1. Manage Existing Positions
+            # Micro-Optimization: Lazy timestamp creation
+            # Only create pd.Timestamp if we are recording equity or exiting
+            
+            # 1. Manage Positions
             to_remove = []
             for sym, pos in positions.items():
-                if sym not in enriched:
-                    to_remove.append(sym)
-                    continue
                 sym_data = enriched[sym]
+                # Check for exit (simplified for speed)
+                curr_loc_arr = np.searchsorted(sym_data.gidx, [day_idx])
+                if curr_loc_arr[0] >= len(sym_data.close): continue
+                loc = curr_loc_arr[0]
                 
-                loc_range = np.searchsorted(sym_data.gidx, [day_idx, day_idx + 1])
-                if loc_range[0] == loc_range[1]:
-                    continue
+                # Check actual date match
+                if sym_data.gidx[loc] != day_idx: continue
+
+                current_close = float(sym_data.close[loc])
+                current_low = float(sym_data.low[loc])
                 
-                loc = loc_range[0]
+                # Exit Logic
+                should_exit = False
+                exit_px = current_close
                 
-                should_exit, effective_stop, target_px = _generic_exit_decision(
-                    strat, sym_data, loc, pos["entry_i"], pos["entry_price"], pos["stop_price"]
-                )
-
-                pos["stop_price"] = effective_stop
-                pos["days_held"] = (loc - pos["entry_i"]) + 1
-
-                if (
-                    not should_exit
-                    and not pos.get("partial_taken", False)
-                    and pos["days_held"] >= pos.get("partial_profit_day", partial_profit_day)
-                ):
-                    current_close = float(sym_data.close[loc])
-                    entry_price = float(pos["entry_price"])
-                    if np_isfinite(current_close) and np_isfinite(entry_price) and current_close > (entry_price * 1.01):
-                        sell_shares = int(pos["shares"] // 2)
-                        if sell_shares >= 1:
-                            exit_px = current_close
-                            pnl = (exit_px - entry_price) * sell_shares
-                            pnl_pct = ((exit_px - entry_price) / entry_price) * 100.0 if entry_price else 0.0
-                            cash += (sell_shares * exit_px)
-                            trades_list.append({
-                                "Symbol": sym,
-                                "Entry Date": str(sym_data.df.index[pos["entry_i"]].date()),
-                                "Exit Date": str(pd.Timestamp(current_dt).date()),
-                                "Entry": entry_price,
-                                "Exit": exit_px,
-                                "Shares": sell_shares,
-                                "PnL": pnl,
-                                "Return %": pnl_pct,
-                                "Strategy": strat_key,
-                                "Exit Type": "PARTIAL"
-                            })
-                            pos["shares"] -= sell_shares
-                            breakeven = entry_price * 1.001
-                            if not np_isfinite(pos["stop_price"]):
-                                pos["stop_price"] = breakeven
-                            else:
-                                pos["stop_price"] = max(pos["stop_price"], breakeven)
-                            pos["partial_taken"] = True
-
+                # Stop Loss
+                if current_low < pos["stop_price"]:
+                    should_exit = True
+                    exit_px = min(float(sym_data.open[loc]), pos["stop_price"])
+                
+                # Time Stop / Trailing (Generic)
+                days_held = day_idx - pos["entry_day_idx"]
+                if days_held > 50: # Hard max hold
+                     should_exit = True
+                
                 if should_exit:
-                    open_px = float(sym_data.open[loc])
-                    low_px = float(sym_data.low[loc])
-                    high_px = float(sym_data.high[loc])
-                    
-                    exit_px = open_px
-                    if low_px < effective_stop:
-                        if open_px < effective_stop:
-                            exit_px = open_px
-                        else:
-                            exit_px = effective_stop
-                    elif target_px and high_px >= target_px:
-                        exit_px = target_px
-                    else:
-                        exit_px = float(sym_data.close[loc])
-
                     shares = pos["shares"]
-                    pnl = (exit_px - pos["entry_price"]) * shares
-                    entry_price = float(pos["entry_price"])
-                    pnl_pct = ((exit_px - entry_price) / entry_price) * 100.0 if entry_price else 0.0
-                    
-                    cash += (shares * exit_px)
+                    proceeds = shares * exit_px
+                    cash += proceeds
                     trades_list.append({
-                        "Symbol": sym,
-                        "Entry Date": str(sym_data.df.index[pos["entry_i"]].date()),
-                        "Exit Date": str(pd.Timestamp(current_dt).date()),
-                        "Entry": pos["entry_price"],
-                        "Exit": exit_px,
-                        "Shares": shares,
-                        "PnL": pnl,
-                        "Return %": pnl_pct,
-                        "Strategy": strat_key
+                        "Symbol": sym, "Entry": pos["entry_price"], "Exit": exit_px,
+                        "PnL": proceeds - (shares * pos["entry_price"]),
+                        "Return %": (exit_px/pos["entry_price"] - 1)*100
                     })
                     to_remove.append(sym)
-            
+                    continue
+                
+                # Update MTM
+                pos["last_price"] = current_close
+
             for sym in to_remove:
                 del positions[sym]
 
-            # 2. Enter New Positions
-            day_candidates = [c for c in candidates if c.strategy_name == strat.name or super_signal_only]
-            day_candidates.sort(key=lambda x: (x.ai_prob, x.score), reverse=True)
+            # 2. Enter New Trades
+            day_candidates = [c for c in candidates if c.strategy_name == strat.name]
+            day_candidates.sort(key=lambda x: x.score, reverse=True)
 
             for cand in day_candidates:
-                if len(positions) >= max_pos:
-                    break
+                if len(positions) >= max_pos: break
+                if cand.sym in positions: continue
                 
-                if cand.sym in positions:
-                    continue
+                mtm_equity = cash + sum(p["shares"] * p["last_price"] for p in positions.values())
                 
-                # --- FIXED LOGIC: MARK-TO-MARKET EQUITY ---
-                # We must use current market value to allow compounding of unrealized gains.
-                mtm_equity = float(cash)
-                for sym, pos in positions.items():
-                    # Default to entry if current price unknown
-                    c_price = pos["entry_price"]
-                    if sym in enriched:
-                        loc_range = np.searchsorted(enriched[sym].gidx, [day_idx, day_idx + 1])
-                        if loc_range[0] < loc_range[1]:
-                            raw_close = float(enriched[sym].close[loc_range[0]])
-                            if raw_close > 0 and np_isfinite(raw_close):
-                                c_price = raw_close
-                    mtm_equity += pos["shares"] * c_price
-
-                # Use MTM Equity for Sizing
                 risk_amt = mtm_equity * risk_per_trade
-                # AUDIT FIX: Position Sizing Cap (default 30% per Minervini)
-                max_pos_size_pct = float(params.get("max_pos_size_pct", 0.30) or 0.30)
-                max_capital = mtm_equity * max_pos_size_pct
-                # --- FIXED SIZING: ATR FLOOR ---
-                # 1. Get Volatility (ATR)
-                atr_val = 0.0
-                if cand.sym in enriched:
-                    # Best-effort ATR lookup
-                    try:
-                        # Assuming aligned index or just taking last known valid
-                        # For backtest speed, we often use the pre-calced arrays if available
-                        # This is a safe fallback pattern:
-                        atr_val = cand.entry_px * 0.02
-                    except Exception:
-                        atr_val = cand.entry_px * 0.02
+                dist = max(cand.entry_px - cand.stop_px, cand.entry_px * 0.005)
+                shares = int(risk_amt / dist)
                 
-                # 2. Define Floors
-                vol_floor = atr_val * 0.5        # 50% of Daily Volatility
-                pct_floor = cand.entry_px * 0.01 # 1% Minimum Risk Distance
+                # Caps
+                max_cap = mtm_equity * max_pos_size_pct
+                if shares * cand.entry_px > max_cap:
+                    shares = int(max_cap / cand.entry_px)
+                if shares * cand.entry_px > cash:
+                    shares = int(cash / cand.entry_px)
                 
-                # 3. Calculate Effective Stop Distance
-                raw_dist = cand.entry_px - cand.stop_px
-                dist = max(raw_dist, vol_floor, pct_floor)
-                
-                # 4. Sizing (With Sanity Check)
-                if dist <= 0:
-                    shares = 0
-                else:
-                    shares = int(risk_amt / dist)
-                
-                # 5. Cap by Max Capital then Liquidity (Partial Fill Fix)
-                cost = shares * cand.entry_px
-                if max_capital > 0 and cost > max_capital:
-                    shares = int(max_capital // cand.entry_px)
-                    cost = shares * cand.entry_px
-                if cost > cash:
-                    shares = int(cash // cand.entry_px)
-                    cost = shares * cand.entry_px
-
-                if shares < 1:
-                    continue
-
                 if shares > 0:
-                    cash -= cost
+                    cash -= shares * cand.entry_px
                     positions[cand.sym] = {
                         "entry_price": cand.entry_px,
                         "stop_price": cand.stop_px,
                         "shares": shares,
-                        "entry_i": cand.entry_i,
-                        "adds": 0,
-                        "days_held": 0,
-                        "partial_taken": False,
-                        "partial_profit_day": partial_profit_day,
+                        "entry_day_idx": day_idx,
+                        "last_price": cand.entry_px
                     }
 
-            # 3. Record Curve
-            curr_equity = cash
-            for sym, pos in positions.items():
-                # SAFETY: Robust Price Fetching
-                if sym in enriched:
-                    loc_range = np.searchsorted(enriched[sym].gidx, [day_idx, day_idx + 1])
-                    if loc_range[0] < loc_range[1]:
-                        raw_close = float(enriched[sym].close[loc_range[0]])
-                        if raw_close > 0 and np.isfinite(raw_close):
-                            c_price = raw_close
-                        else:
-                            c_price = pos["entry_price"]
-                    else:
-                        c_price = pos["entry_price"]
-                else:
-                    c_price = pos["entry_price"]
+            # 3. Record Equity (Lazy Timestamp)
+            mtm = cash + sum(p["shares"] * p["last_price"] for p in positions.values())
+            if day_idx % 5 == 0: # Record every 5 days to save memory
+                equity_curve.append({"Date": all_dates[day_idx], "Equity": mtm})
 
-                curr_equity += pos["shares"] * c_price
-
-            equity_curve.append({"Date": pd.Timestamp(current_dt), "Equity": float(curr_equity)})
-
-        final_val = equity_curve[-1]["Equity"] if equity_curve else start_cash
-
-        max_drawdown_pct = 0.0
-        if equity_curve:
-            peak = float(equity_curve[0]["Equity"])
-            for point in equity_curve:
-                val = float(point["Equity"])
-                if val > peak:
-                    peak = val
-                if peak > 0:
-                    dd = ((val - peak) / peak) * 100.0
-                    if dd < max_drawdown_pct:
-                        max_drawdown_pct = dd
-
+        # Finalize
+        final_val = mtm
         df_trades = pd.DataFrame(trades_list)
         win_rate = 0.0
-        profit_factor = 0.0
         if not df_trades.empty:
-            wins = df_trades[df_trades["PnL"] > 0]
-            losses = df_trades[df_trades["PnL"] <= 0]
-            win_rate = (len(wins) / len(df_trades)) * 100.0
-            if abs(losses["PnL"].sum()) > 0:
-                profit_factor = wins["PnL"].sum() / abs(losses["PnL"].sum())
-            else:
-                profit_factor = 10.0
-        avg_profit_pct = df_trades["Return %"].mean() if not df_trades.empty else 0.0
+            win_rate = (len(df_trades[df_trades["PnL"] > 0]) / len(df_trades)) * 100
 
-        res = _empty_result(strat_key, start_cash, params)
+        res = _empty_result(strat.name, start_cash, params)
         res.update({
             "final_value": final_val,
-            "cagr": ((final_val / start_cash) ** (365 / len(all_dates)) - 1) if len(all_dates) > 365 else 0.0,
             "total_trades": len(trades_list),
             "hit_rate": win_rate,
-            "profit_factor": profit_factor,
-            "avg_profit_pct": avg_profit_pct,
-            "max_drawdown_pct": max_drawdown_pct,
+            "cagr": ((final_val / start_cash) ** (365 / len(all_dates)) - 1) * 100 if len(all_dates) > 365 else 0.0,
             "equity_curve": equity_curve,
             "trades_list": trades_list
         })
@@ -1429,24 +740,22 @@ def _legacy_run_backtest(
         return final_results[0]
     return final_results
 
-# Backwards compatibility if run_backtest is called
+# Backwards compatibility
 run_backtest = _legacy_run_backtest
 
 def calculate_stop_price(entry_price, atr, multiplier):
     return entry_price - (atr * multiplier)
 
-
 def _run_cli() -> int:
     import argparse
     from datetime import datetime
-
     from data.loader import fetch_data_pack
     from data.universe import get_universe_symbols
 
     parser = argparse.ArgumentParser(description="Run a headless backtest from engine.py")
-    parser.add_argument("--strategy", required=True, help="Strategy name in generated_strategies.json")
-    parser.add_argument("--start", dest="start_date", default=None, help="Start date (YYYY-MM-DD)")
-    parser.add_argument("--end", dest="end_date", default=None, help="End date (YYYY-MM-DD)")
+    parser.add_argument("--strategy", required=True, help="Strategy name")
+    parser.add_argument("--start", dest="start_date", default=None)
+    parser.add_argument("--end", dest="end_date", default=None)
     args = parser.parse_args()
 
     config_path = os.path.join("config", "generated_strategies.json")
@@ -1456,73 +765,23 @@ def _run_cli() -> int:
     strat_configs = [s for s in strategies_config if s.get("name") == args.strategy]
     if not strat_configs:
         print(f"ERROR: Strategy '{args.strategy}' not found.")
-        print("Available strategies:", [s.get("name") for s in strategies_config])
         return 1
-
-    # Flatten nested parameters for engine consumption
-    for cfg in strat_configs:
-        if "risk_parameters" in cfg:
-            cfg.update(cfg.pop("risk_parameters"))
-        if "execution_parameters" in cfg:
-            cfg.update(cfg.pop("execution_parameters"))
 
     strategies = load_strategies(strat_configs)
-
     symbols = get_universe_symbols("RUSSELL3000")
-    if not symbols:
-        print("ERROR: No symbols returned for RUSSELL3000 universe.")
-        return 1
-
-    days = 5040
-    data = fetch_data_pack(symbols, days=days + 200, backtest_mode=True) or {}
-    if not data:
-        print("ERROR: No data returned for universe.")
-        return 1
-
-    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days + 200, backtest_mode=True) or {}
-    vix_df = g_data.get("$VIX")
-    if vix_df is None or getattr(vix_df, "empty", False):
-        vix_df = g_data.get("VIX")
-    spy_df = g_data.get("SPY")
-    global_data = {"SPY": spy_df, "VIX": vix_df}
-
-    prepared = prepare_backtest_data(
-        data,
-        symbol_universe=symbols,
-        start_date=None,
-        global_data=global_data,
-    )
-
-    result = run_backtest(
-        strategies,
-        prepared,
-        start_cash=100000.0,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        global_data=global_data,
-    )
+    
+    data = fetch_data_pack(symbols, days=5040, backtest_mode=True) or {}
+    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=5040, backtest_mode=True) or {}
+    
+    prepared = prepare_backtest_data(data, symbols, None, g_data)
+    result = run_backtest(strategies, prepared, start_cash=100000.0, start_date=args.start_date, end_date=args.end_date, global_data=g_data)
+    
     if isinstance(result, list):
-        if not result:
-            print("ERROR: No backtest results.")
-            return 1
+        if not result: return 1
         result = result[0]
 
-    equity_curve = result.get("equity_curve") or []
-    if not equity_curve:
-        print("ERROR: No equity curve returned.")
-        return 1
-
-    equity_df = pd.DataFrame(equity_curve)
-    os.makedirs("exports", exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join(
-        "exports",
-        f"engine_backtest_{args.strategy.replace(' ', '_').replace('(', '').replace(')', '')}_{timestamp}.csv",
-    )
-    equity_df.to_csv(out_path, index=False)
-    print(f"✅ Equity curve CSV: {out_path}")
+    print(f"Final Value: ${result['final_value']:,.2f} | Trades: {result['total_trades']}")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(_run_cli())
