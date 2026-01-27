@@ -291,6 +291,47 @@ def _score_row_dual_core(
     return max(0.0, float(score))
 
 
+def calculate_backtest_quality_score(
+    row_or_rsi2,
+    strategy_name: str = "",
+    weights: Optional[Dict[str, float]] = None,
+    **kwargs,
+) -> float:
+    """
+    Compatibility helper for diagnostics (diag_trace.py).
+    Uses the same core scoring logic as the engine.
+    """
+    merged = dict(DEFAULT_SCORING_WEIGHTS)
+    if isinstance(weights, dict):
+        merged.update(weights)
+
+    if isinstance(row_or_rsi2, (pd.Series, dict)):
+        row = row_or_rsi2
+        rsi14 = float(row.get("rsi14", 50) or 50)
+        bb_width = float(row.get("bb_width", np.nan))
+        close_px = float(row.get("close", 0.0) or 0.0)
+        high_52w = float(row.get("high_52w", np.nan))
+        natr = row.get("natr")
+        if natr is None or not np.isfinite(natr):
+            atr14 = float(row.get("atr14", 0.0) or 0.0)
+            natr = (atr14 / close_px) * 100.0 if close_px > 0 and atr14 > 0 else 0.0
+        else:
+            natr = float(natr)
+    else:
+        rsi14 = float(kwargs.get("rsi14", 50) or 50)
+        bb_width = float(kwargs.get("bb_width", np.nan))
+        close_px = float(kwargs.get("close", 0.0) or 0.0)
+        high_52w = float(kwargs.get("high_52w", np.nan))
+        natr = kwargs.get("natr")
+        if natr is None or not np.isfinite(natr):
+            atr14 = float(kwargs.get("atr14", 0.0) or 0.0)
+            natr = (atr14 / close_px) * 100.0 if close_px > 0 and atr14 > 0 else 0.0
+        else:
+            natr = float(natr)
+
+    return _score_row_dual_core(rsi14, bb_width, natr, close_px, high_52w, merged)
+
+
 @dataclass(slots=True)
 class _SymbolArrays:
     df: pd.DataFrame
@@ -585,6 +626,9 @@ def _legacy_run_backtest(
                 continue 
 
             rs_rating = float(sd.rsrating[prev_i])
+            if not np.isfinite(rs_rating) or rs_rating <= 0:
+                # Fail-open if RS rating was not computed (diagnostic safety).
+                rs_rating = 99.0
 
             for strat, w, params, base_stop_mult in compiled_strategies:
                 # Genome Filters

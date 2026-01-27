@@ -26,7 +26,8 @@ except ImportError:
 try:
     from schwab.auth import easy_client
 except ImportError:
-    pass 
+    # Keep a defined name to avoid NameError during auth.
+    easy_client = None
 
 def _first_env(*keys, default=""):
     for k in keys:
@@ -64,6 +65,8 @@ class SchwabData:
         # This prevents "Ghost Tokens" from being created in ~/.schwab
         print(f"🔐 Authenticating with token at: {self._tok}")
         try:
+            if easy_client is None:
+                raise RuntimeError("schwab.auth.easy_client is unavailable (missing Schwab SDK).")
             self._cli = easy_client(
                 api_key=self.cid,
                 app_secret=self.ck,
