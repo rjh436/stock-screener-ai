@@ -546,6 +546,14 @@ def _legacy_run_backtest(
     end_date=None,
     **kwargs
 ):
+    _debug_fired = {"done": False}
+
+    def DBG(msg: str) -> None:
+        if _debug_fired["done"]:
+            return
+        _debug_fired["done"] = True
+        print(msg)
+
     if hasattr(data, "enriched"):
         pre_calculated_data = data
         data = None
@@ -606,6 +614,7 @@ def _legacy_run_backtest(
         # We trade on curr_i (Tomorrow) based on prev_i (Today's Setup).
         setup_indices = np.where(sd.trend_mask)[0]
         if len(setup_indices) < 1:
+            DBG(f"{sym}: REJECTED - Trend Mask Empty")
             continue
 
         for prev_i in setup_indices:
@@ -623,6 +632,7 @@ def _legacy_run_backtest(
             
             # Market Regime Filter (Allow trades if SPY is missing/zero)
             if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
+                DBG(f"{sym}: REJECTED - SPY Filter")
                 continue 
 
             rs_rating = float(sd.rsrating[prev_i])
@@ -635,9 +645,14 @@ def _legacy_run_backtest(
                 min_rs = float(params.get("rs_rating", 80))
                 max_bb = float(params.get("bb_width_max", 0.20))
                 
-                if rs_rating < min_rs: continue
+                if rs_rating < min_rs:
+                    DBG(f"{sym}: REJECTED - RS Rating {rs_rating} < {min_rs}")
+                    continue
                 # VCP CHECK RE-INSERTED HERE (Soft Gate):
-                if sd.bbwidth[prev_i] > max_bb: continue
+                width = float(sd.bbwidth[prev_i])
+                if width > max_bb:
+                    DBG(f"{sym}: REJECTED - VCP Width {width} > {max_bb}")
+                    continue
 
                 # Calculate Entry/Stop
                 open_px = float(sd.open[curr_i])
@@ -660,6 +675,7 @@ def _legacy_run_backtest(
                 candidates_by_day[day_idx].append(
                     _Candidate(sym, entry_px, stop_px, score, strat.name, curr_i)
                 )
+                DBG(f"{sym}: ACCEPTED - Trade Generated")
 
     # --- SIMULATION LOOP ---
     portfolio = {s.name: {"cash": float(start_cash), "positions": {}} for s in strategies}
@@ -755,6 +771,11 @@ def _legacy_run_backtest(
                 if shares * cand.entry_px > cash:
                     shares = int(cash / cand.entry_px)
                 
+                if shares == 0:
+                    sym = cand.sym
+                    DBG(f"{sym}: REJECTED - Zero Shares")
+                    continue
+
                 if shares > 0:
                     cash -= shares * cand.entry_px
                     positions[cand.sym] = {
