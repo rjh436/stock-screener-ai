@@ -453,27 +453,20 @@ def prepare_backtest_data(
             if not np.isfinite(high_arr).any():
                 high_arr = open_arr
 
-            # --- AUDIT FIX: VECTORIZED MINERVINI HARD GATES (C-SPEED) ---
-            # V18.3 FIX: Added 2% Tolerance to Trend Checks to survive shakeouts
-            # V18.3 FIX: Decoupled VCP from Trend Mask
-            # with np.errstate(invalid='ignore'):
-            #     trend_mask = (
-            #         (close_arr > (sma50_arr * 0.98)) &        # 2% Tolerance
-            #         (sma50_arr > (sma150_arr * 0.98)) &       # 2% Tolerance
-            #         (sma150_arr > sma200_arr) &
-            #         (slope_arr > 0) &
-            #         (close_arr > 0.75 * high52_arr) &
-            #         (close_arr > 1.30 * low52_arr)
-            #     )
-            #
-            # trend_mask = np.nan_to_num(trend_mask, nan=False).astype(bool)
-            # ------------------------------------------------------------
-
-            # --- FLOODGATE FIX: BYPASS TREND GATES ---
-            # The strict Minervini rules work in 2024 but fail in 2008/2020 test slices.
-            # We force this to True so the optimizer can finally see trades in the test years.
-            trend_mask = np.ones(n, dtype=bool)
-            # -----------------------------------------
+            # --- MINERVINI TREND TEMPLATE (STAGE 2 UPTREND) ---
+            # V18.5 PRODUCTION: Strict alignment with SEPA V18 Stage 2 criteria.
+            # Tolerance: 2% for SMA crossovers to survive minor shakeouts.
+            with np.errstate(invalid='ignore'):
+                trend_mask = (
+                    (close_arr > (sma50_arr * 0.98)) &        # Price above 50-day (2% tolerance)
+                    (sma50_arr > (sma150_arr * 0.98)) &       # 50 > 150 (2% tolerance)
+                    (sma150_arr > sma200_arr) &               # 150 > 200 (strict)
+                    (slope_arr > 0) &                         # 200-day rising (Stage 2 confirmation)
+                    (close_arr > 0.75 * high52_arr) &         # Within 25% of 52-week high
+                    (close_arr > 1.30 * low52_arr)            # Above 30% of 52-week low
+                )
+            trend_mask = np.nan_to_num(trend_mask, nan=False).astype(bool)
+            # -------------------------------------------------------
 
             enriched[sym] = _SymbolArrays(
                 df=df,
@@ -636,10 +629,13 @@ def _legacy_run_backtest(
             spy_c = global_spy_close[day_idx - 1]
             spy_200 = global_spy_sma200[day_idx - 1]
             
-            # Market Regime Filter (Allow trades if SPY is missing/zero)
-            # if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
-            #     DBG(f"{sym}: REJECTED - SPY Filter")
-            #     continue 
+            # === MARKET REGIME FILTER (SPY STAGE GATE) ===
+            # Prevent trading when the broad market (SPY) is in correction/bear mode.
+            # Only trade when SPY > 200-day SMA (Stage 2 or higher).
+            if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
+                DBG(f"{sym}: REJECTED - SPY Filter")
+                continue
+            # =============================================
 
             rs_rating = float(sd.rsrating[prev_i])
             if not np.isfinite(rs_rating) or rs_rating <= 0:
