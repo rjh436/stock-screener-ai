@@ -552,13 +552,13 @@ def _legacy_run_backtest(
     end_date=None,
     **kwargs
 ):
+    # --- SMART LOGGER: Only print logs for Test Years ---
+    TARGET_YEARS = {"2008", "2015", "2020"}
     _debug_fired = {"done": False}
 
     def DBG(msg: str) -> None:
-        if _debug_fired["done"]:
-            return
-        _debug_fired["done"] = True
-        print(msg)
+        if any(y in msg for y in TARGET_YEARS):
+            print(f"\nDBG {msg}")
 
     if hasattr(data, "enriched"):
         pre_calculated_data = data
@@ -681,10 +681,9 @@ def _legacy_run_backtest(
                 candidates_by_day[day_idx].append(
                     _Candidate(sym, entry_px, stop_px, score, strat.name, curr_i)
                 )
-                # --- DIAGNOSTIC: PRINT DATE TO CONFIRM TIME TRAVEL ---
+                # --- DATE-AWARE LOGGING ---
                 curr_date_str = str(all_dates[day_idx])[:10]
-                DBG(f"[{curr_date_str}] {sym}: ACCEPTED - Trade Generated (Score: {score:.1f})")
-                # -----------------------------------------------------
+                DBG(f"[{curr_date_str}] {sym}: ACCEPTED (Score: {score:.1f})")
 
     # --- SIMULATION LOOP ---
     portfolio = {s.name: {"cash": float(start_cash), "positions": {}} for s in strategies}

@@ -106,8 +106,15 @@ def evaluate_genome(genome, prepared_data, global_data):
                 global_data=global_data,
                 scoring_weights=DEFAULT_SCORING_WEIGHTS
             )
+            # --- BUG FIX: HANDLE DICT RETURN ---
+            # Engine returns a dict for single-strategy runs, but GA expected a list.
+            if isinstance(res, dict):
+                return res
+            # -----------------------------------
+
             if isinstance(res, list) and res:
                 return res[0]
+
             # AUDIT FIX: Don't fail on None, return empty result
             return {"total_trades": 0, "final_value": 100000.0, "max_drawdown_pct": 0.0}
 

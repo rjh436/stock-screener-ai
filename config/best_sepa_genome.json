@@ -1,9 +1,9 @@
 {
-    "rs_rating": 94,
-    "bb_width_max": 0.1,
-    "risk_per_trade": 0.008,
+    "rs_rating": 97,
+    "bb_width_max": 0.15,
+    "risk_per_trade": 0.01,
     "max_pos_size_pct": 0.2,
     "stop_loss_type": "atr",
-    "stop_loss_atr": 2.5,
+    "stop_loss_atr": 1.75,
     "partial_profit_day": 3
 }
