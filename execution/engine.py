@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import operator
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -237,8 +238,16 @@ def _compute_indicators(
 
         df["sma50"] = df["close"].rolling(50).mean()
         df["sma200"] = df["close"].rolling(200).mean()
-        df["high_52w"] = df["high"].rolling(252).max()
-        df["low_52w"] = df["low"].rolling(252).min()
+        # AUDIT FIX: Allow IPOs (<252 days) to have valid 52w Highs
+        df["high_52w"] = df["high"].rolling(252, min_periods=1).max()
+        df["low_52w"] = df["low"].rolling(252, min_periods=1).min()
+
+        # AUDIT FIX: Add Breakout Trigger (Donchian High)
+        # This detects if price is breaking out of the VCP base.
+        high_20 = df["high"].rolling(window=20).max()
+        df["high_20"] = high_20
+        # Also shift it so we compare today's close vs yesterday's high (true breakout)
+        df["high_20_prev"] = high_20.shift(1)
         
         # AUDIT FIX: Fill NaN slope with 0.0 to prevent hard gates from rejecting all trades
         df["sma200_slope"] = df["sma200"].diff(22).fillna(0.0)
@@ -576,6 +585,62 @@ def _legacy_run_backtest(
             return params["genome"]
         return params
 
+    def _flatten_params(raw_params: Dict[str, Any]) -> Dict[str, Any]:
+        params = _unwrap_genome(raw_params) or {}
+        if not isinstance(params, dict):
+            return {}
+        params = dict(params)
+        # AUDIT FIX: Flatten nested parameters so engine sees risk/execution settings
+        params.update(params.get("risk_parameters", {}) or {})
+        params.update(params.get("execution_parameters", {}) or {})
+        return params
+
+    _OPS = {
+        ">": operator.gt,
+        "<": operator.lt,
+        ">=": operator.ge,
+        "<=": operator.le,
+        "==": operator.eq,
+    }
+
+    def _resolve_rule_value(row: pd.Series, rule: Dict[str, Any]) -> float:
+        if "ref" in rule:
+            base = row.get(rule.get("ref"), np.nan)
+            try:
+                base = float(base)
+            except Exception:
+                return float("nan")
+            mult = rule.get("mult")
+            if mult is None and "val" in rule:
+                mult = rule.get("val", 1.0)
+            if mult is not None:
+                try:
+                    base *= float(mult)
+                except Exception:
+                    return float("nan")
+            return base
+        if "val" in rule:
+            try:
+                return float(rule.get("val"))
+            except Exception:
+                return float("nan")
+        return float("nan")
+
+    def _rule_pass(row: pd.Series, rule: Dict[str, Any]) -> bool:
+        col = rule.get("col")
+        op = _OPS.get(rule.get("op"))
+        if not col or op is None:
+            return False
+        val_a = row.get(col, np.nan)
+        try:
+            val_a = float(val_a)
+        except Exception:
+            return False
+        val_b = _resolve_rule_value(row, rule)
+        if not np.isfinite(val_a) or not np.isfinite(val_b):
+            return False
+        return bool(op(val_a, val_b))
+
     strategies = strategy if isinstance(strategy, (list, tuple)) else [strategy]
     strategies = [s for s in strategies if s is not None]
     if not strategies:
@@ -605,7 +670,7 @@ def _legacy_run_backtest(
     compiled_strategies = []
     for strat in strategies:
         raw_params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
-        params = _unwrap_genome(raw_params)
+        params = _flatten_params(raw_params)
         w = _ScoreWeights(1.0, 50.0, 20.0, 30.0)
         base_stop_mult = float(params.get("stop_loss_atr", 3.0) or 3.0)
         compiled_strategies.append((strat, w, params, base_stop_mult))
@@ -669,7 +734,7 @@ def _legacy_run_backtest(
             vcp_counted = False
             for strat, w, params, base_stop_mult in compiled_strategies:
                 # Genome Filters
-                min_rs = float(params.get("rs_rating", 80))
+                min_rs = max(90.0, float(params.get("rs_rating", 80)))
                 max_bb = float(params.get("bb_width_max", 0.20))
                 
                 if rs_rating < min_rs:
@@ -726,8 +791,9 @@ def _legacy_run_backtest(
         positions = port["positions"]
         trades_list = []
         equity_curve = []
+        trade_outcomes = []
         
-        params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
+        params = _flatten_params(getattr(strat, "params", getattr(strat, "genome", {})) or {})
         max_pos = int(params.get("max_positions", 10) or 10)
         risk_per_trade = float(params.get("risk_per_trade", 0.01) or 0.01)
         max_pos_size_pct = float(params.get("max_pos_size_pct", 0.30) or 0.30)
@@ -766,20 +832,51 @@ def _legacy_run_backtest(
                     reason = "MARKET_REGIME_EXIT"
 
                 if not should_exit:
-                    # Stop Loss
-                    if current_low < pos["stop_price"]:
-                        should_exit = True
-                        exit_px = min(float(sym_data.open[loc]), pos["stop_price"])
+                    # Free Roll Rule: at +2R, move stop to breakeven (one-time)
+                    risk_per_share = float(pos.get("initial_risk", 0.0) or 0.0)
+                    if risk_per_share > 0 and not pos.get("partial_taken", False):
+                        if current_close >= pos["entry_price"] + (2.0 * risk_per_share):
+                            pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
+                            pos["partial_taken"] = True
 
-                    # Time Stop / Trailing (Generic)
-                    days_held = day_idx - pos["entry_day_idx"]
-                    if days_held > 50: # Hard max hold
-                         should_exit = True
+                if not should_exit:
+                    # AUDIT FIX: Use the Strategy's sophisticated exit logic (Trailing Stops, SMA Breaks)
+                    # AUDIT FIX: Translate Global Day Index to Local Data Index to prevent IPO crashes
+                    # pos["entry_day_idx"] is Global (e.g., 2000), but this stock might only have 500 rows.
+                    entry_loc_search = np.searchsorted(sym_data.gidx, [pos["entry_day_idx"]])
+                    entry_loc = int(entry_loc_search[0]) if len(entry_loc_search) > 0 else 0
+
+                    # Safety Clamp: Ensure we don't access out of bounds if data is misaligned
+                    if entry_loc >= len(sym_data.close):
+                        entry_loc = 0
+
+                    strat_exit, new_stop, target_px = _generic_exit_decision(
+                        params,
+                        sym_data,
+                        loc,
+                        entry_loc,
+                        pos["entry_price"],
+                        pos["stop_price"],
+                    )
+
+                    if new_stop is not None and new_stop > pos["stop_price"]:
+                        pos["stop_price"] = new_stop
+
+                    if strat_exit:
+                        should_exit = True
+                        if target_px is not None:
+                            exit_px = target_px
+                        elif current_low < pos["stop_price"]:
+                            exit_px = min(float(sym_data.open[loc]), pos["stop_price"])
+                        else:
+                            exit_px = current_close
+                        reason = "STRATEGY_EXIT"
                 
                 if should_exit:
                     shares = pos["shares"]
                     proceeds = shares * exit_px
                     cash += proceeds
+                    trade_outcomes.append(1 if (proceeds - (shares * pos["entry_price"])) > 0 else 0)
                     trades_list.append({
                         "Symbol": sym, "Entry": pos["entry_price"], "Exit": exit_px,
                         "PnL": proceeds - (shares * pos["entry_price"]),
@@ -809,10 +906,59 @@ def _legacy_run_backtest(
             for cand in day_candidates:
                 if len(positions) >= max_pos: break
                 if cand.sym in positions: continue
+
+                # Minervini Event Rule: only enter on breakout crossover
+                sym_data = enriched.get(cand.sym)
+                if sym_data is None:
+                    continue
+                signal_loc = cand.entry_i - 1
+                prev_loc = signal_loc - 1
+                if prev_loc < 0 or signal_loc >= len(sym_data.df):
+                    continue
+                row = sym_data.df.iloc[signal_loc]
+                prev_row = sym_data.df.iloc[prev_loc]
+                pivot = row.get("high_20_prev", np.nan)
+                price_today = row.get("close", np.nan)
+                price_yesterday = prev_row.get("close", np.nan)
+                if not np.isfinite(pivot) or not np.isfinite(price_today) or not np.isfinite(price_yesterday):
+                    continue
+
+                # Volume Confirmation Gate
+                vol_today = row.get("volume", np.nan)
+                vol_ma50 = row.get("vol_ma50", np.nan)
+                if not np.isfinite(vol_today) or not np.isfinite(vol_ma50) or vol_ma50 <= 0:
+                    continue
+                if vol_today < (vol_ma50 * 1.2):
+                    continue
+
+                # Strict crossover: price_today > pivot and price_yesterday < pivot
+                if not (price_today > pivot and price_yesterday < pivot):
+                    continue
+
+                # AUDIT FIX: Enforce Strategy Entry Rules (e.g., Breakout Trigger)
+                entry_rules = params.get("entry_rules", [])
+                if entry_rules:
+                    rules_ok = True
+                    for rule in entry_rules:
+                        if not isinstance(rule, dict):
+                            continue
+                        if not _rule_pass(row, rule):
+                            rules_ok = False
+                            break
+                    if not rules_ok:
+                        continue
                 
                 mtm_equity = cash + sum(p["shares"] * p["last_price"] for p in positions.values())
-                
-                risk_amt = mtm_equity * risk_per_trade
+
+                # Progressive Exposure Rule
+                if len(trade_outcomes) >= 10:
+                    recent = trade_outcomes[-10:]
+                    batting_avg = sum(recent) / len(recent)
+                    size_scalar = 0.25 if batting_avg < 0.40 else 1.0
+                else:
+                    size_scalar = 1.0
+
+                risk_amt = mtm_equity * risk_per_trade * size_scalar
                 dist = max(cand.entry_px - cand.stop_px, cand.entry_px * 0.005)
                 shares = int(risk_amt / dist)
                 
@@ -835,7 +981,9 @@ def _legacy_run_backtest(
                         "stop_price": cand.stop_px,
                         "shares": shares,
                         "entry_day_idx": day_idx,
-                        "last_price": cand.entry_px
+                        "last_price": cand.entry_px,
+                        "partial_taken": False,
+                        "initial_risk": max(cand.entry_px - cand.stop_px, cand.entry_px * 0.001),
                     }
 
             # 3. Record Equity (Lazy Timestamp)

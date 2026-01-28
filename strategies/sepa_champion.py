@@ -16,6 +16,8 @@ class SEPAChampionStrategy(GenericStrategy):
                 {"col": "bb_width", "op": "<", "val": 0.25},
                 # Trend Reinforcement
                 {"col": "close", "op": ">", "ref": "sma50"},
+                # Breakout Trigger: Close > Yesterday's 20-day high
+                {"col": "close", "op": ">", "ref": "high_20_prev", "val": 0.99},
             ],
             # --- RISK MANAGEMENT ---
             "risk_parameters": {

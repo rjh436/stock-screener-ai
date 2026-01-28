@@ -399,6 +399,12 @@
         "col": "close",
         "op": ">",
         "ref": "sma50"
+      },
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "high_20_prev",
+        "val": 0.99
       }
     ],
     "risk_parameters": {
