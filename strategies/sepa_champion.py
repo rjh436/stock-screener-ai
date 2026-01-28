@@ -2,7 +2,11 @@ from strategies.generic import GenericStrategy
 
 
 class SEPAChampionStrategy(GenericStrategy):
-    def __init__(self):
+    def __init__(self, config=None):
+        if config:
+            super().__init__(config)
+            return
+
         # The "DNA" evolved by the Genetic Algorithm (Gen 50/50)
         # 2008 Drawdown: 0.0% | 2020 Return: 25.7%
         genome = {

@@ -216,6 +216,7 @@ def _compute_indicators(
             df["spy_close"] = spy_aligned
             df["spy_sma20"] = spy_aligned.rolling(20).mean()
             df["spy_sma50"] = spy_aligned.rolling(50).mean()
+            df["rs_ratio_sma50"] = df["rs_ratio"].rolling(50).mean()
             if "sma200" in spy_df.columns:
                 df["spy_sma200"] = spy_df["sma200"].reindex(df.index).ffill().bfill()
             else:
@@ -226,6 +227,7 @@ def _compute_indicators(
             df["spy_sma20"] = np.nan
             df["spy_sma50"] = np.nan
             df["spy_sma200"] = np.nan
+            df["rs_ratio_sma50"] = np.nan
 
         if vix_df is not None and not vix_df.empty and "close" in vix_df.columns:
             vix_aligned = vix_df["close"].reindex(df.index).ffill().bfill()
@@ -377,6 +379,9 @@ class _SymbolArrays:
     highest10_1: np.ndarray
     clv: np.ndarray
     trend_mask: np.ndarray # AUDIT FIX: Vectorized Gate
+    adx: np.ndarray
+    rs_ratio: np.ndarray
+    rs_ratio_sma50: np.ndarray
 
 
 @dataclass(slots=True)
@@ -458,7 +463,13 @@ def prepare_backtest_data(
             high52_arr = _get_np_col(df, "high_52w", np.nan, length=n)
             low52_arr = _get_np_col(df, "low_52w", np.nan, length=n)
             bb_w_arr = _get_np_col(df, "bb_width", 100.0, length=n)
+            bb_w_arr = _get_np_col(df, "bb_width", 100.0, length=n)
             natr_arr = _get_np_col(df, "natr", 100.0, length=n)
+            
+            # Phase 4 Upgrades
+            adx_arr = _get_np_col(df, "adx", 0.0, length=n)
+            rs_ratio_arr = _get_np_col(df, "rs_ratio", 0.0, length=n)
+            rs_ratio_sma50_arr = _get_np_col(df, "rs_ratio_sma50", 0.0, length=n)
 
             if not np.isfinite(low_arr).any():
                 low_arr = open_arr
@@ -524,7 +535,10 @@ def prepare_backtest_data(
                 prev_high=_get_np_col(df, "prev_high", 0.0, length=n),
                 highest10_1=_get_np_col(df, "highest10_1", 0.0, length=n),
                 clv=_get_np_col(df, "clv", 0.5, length=n),
-                trend_mask=trend_mask 
+                trend_mask=trend_mask,
+                adx=adx_arr,
+                rs_ratio=rs_ratio_arr,
+                rs_ratio_sma50=rs_ratio_sma50_arr
             )
         except Exception:
             continue
@@ -689,6 +703,7 @@ def _legacy_run_backtest(
             global_spy_close = spy_aligned["close"].fillna(0).to_numpy(dtype=np.float64)
             global_spy_sma200 = spy_aligned["sma200"].fillna(0).to_numpy(dtype=np.float64)
 
+
     # --- MAIN LOOP (Optimized) ---
     for sym, sd in enriched.items():
         n_bars = len(sd.index)
@@ -717,29 +732,44 @@ def _legacy_run_backtest(
             spy_c = global_spy_close[day_idx - 1]
             spy_200 = global_spy_sma200[day_idx - 1]
             
-            # === MARKET REGIME FILTER (SPY STAGE GATE) ===
-            # Prevent trading when the broad market (SPY) is in correction/bear mode.
-            # Only trade when SPY > 200-day SMA (Stage 2 or higher).
-            if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
-                DBG(f"{sym}: REJECTED - SPY Filter")
-                continue
-            # =============================================
+            # Market Regime Filter moved below RS calc for exception logic
 
             rs_rating = float(sd.rsrating[prev_i])
             if not np.isfinite(rs_rating) or rs_rating <= 0:
                 # Fail-open if RS rating was not computed (diagnostic safety).
                 rs_rating = 99.0
 
+            # === MARKET REGIME FILTER (SPY STAGE GATE) ===
+            # BEAR MARKET RULE: If SPY < 200-day SMA, STOP BUYING.
+            if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
+                # EXCEPTION: Allow "Super Leaders" (RS > 98) to bypass the red light.
+                if rs_rating < 98.0:
+                    # DBG(f"{sym}: REJECTED - Market in Downtrend (SPY < SMA200) and RS {rs_rating} < 98")
+                    continue
+
             rs_counted = False
             vcp_counted = False
             for strat, w, params, base_stop_mult in compiled_strategies:
                 # Genome Filters
-                min_rs = max(90.0, float(params.get("rs_rating", 80)))
+                min_rs = float(params.get("rs_floor", 90.0))
+                vol_mult = float(params.get("vol_mult", 2.0))
+                adx_min = float(params.get("adx_min", 20.0))
                 max_bb = float(params.get("bb_width_max", 0.20))
                 
                 if rs_rating < min_rs:
-                    DBG(f"{sym}: REJECTED - RS Rating {rs_rating} < {min_rs}")
                     continue
+                    
+                # --- PHASE 4: BLUE LINE TEST (RS LINE TREND) ---
+                # Rule: RS Ratio > RS Ratio SMA50 (Minervini)
+                if sd.rs_ratio[prev_i] < sd.rs_ratio_sma50[prev_i]:
+                    # DBG(f"{sym}: REJECTED - Blue Line Failure (RS Trend Down)")
+                    continue
+                    
+                # --- PHASE 4: ADX TREND STRENGTH ---
+                if sd.adx[prev_i] < adx_min:
+                    # DBG(f"{sym}: REJECTED - ADX Weak ({sd.adx[prev_i]:.1f} < {adx_min})")
+                    continue
+
                 if not rs_counted:
                     debug_counts["n_rs"][day_idx] += 1
                     rs_counted = True
@@ -757,6 +787,13 @@ def _legacy_run_backtest(
                 entry_px = open_px
                 stop_px = 0.0
                 
+                # Volume Gate
+                vol_today = float(sd.volume[prev_i])
+                vol_ma50 = float(sd.volma50[prev_i])
+                if vol_today < (vol_ma50 * vol_mult):
+                    continue
+                
+                # Revert to ATR Stop (Run 5 was better than Run 6)
                 stop_type = str(params.get("stop_loss_type", "atr")).lower()
                 if "low" in stop_type:
                     day_low = float(sd.low[curr_i])
@@ -832,10 +869,44 @@ def _legacy_run_backtest(
                     reason = "MARKET_REGIME_EXIT"
 
                 if not should_exit:
-                    # Free Roll Rule: at +2R, move stop to breakeven (one-time)
+                    # SQUAT EXIT: If Day 1 Close < Pivot, Exit Immediately at Open
+                    # We are on Day 2 (day_idx). Entry was Day 1 (entry_day_idx).
+                    if (day_idx - pos["entry_day_idx"]) == 1:
+                        if loc > 0:
+                            entry_day_close = float(sym_data.close[loc - 1])
+                            pivot_val = pos.get("pivot", -1.0)
+                            if pivot_val > 0 and entry_day_close < pivot_val:
+                                should_exit = True
+                                exit_px = float(sym_data.open[loc]) # Exit at Open
+                                reason = "SQUAT_EXIT_DAY1"
+
+                if not should_exit:
+                    # Free Roll Rule: DISABLED for Phase 4 (Let it Run)
+                    # risk_per_share = float(pos.get("initial_risk", 0.0) or 0.0)
+                    # if risk_per_share > 0 and not pos.get("partial_taken", False):
+                    #     target_2r = pos["entry_price"] + (2.0 * risk_per_share)
+                    #     if current_close >= target_2r:
+                    # Free Roll Rule: at +2R, Sell 50% and move stop to breakeven
                     risk_per_share = float(pos.get("initial_risk", 0.0) or 0.0)
                     if risk_per_share > 0 and not pos.get("partial_taken", False):
-                        if current_close >= pos["entry_price"] + (2.0 * risk_per_share):
+                        target_2r = pos["entry_price"] + (2.0 * risk_per_share)
+                        if current_close >= target_2r:
+                            # 1. Sell 50%
+                            shares_to_sell = int(pos["shares"] * 0.5)
+                            if shares_to_sell > 0:
+                                proceeds = shares_to_sell * current_close
+                                cash += proceeds
+                                pos["shares"] -= shares_to_sell
+                                
+                                # Log the partial trade (optional, but good for stats)
+                                trades_list.append({
+                                    "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
+                                    "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
+                                    "Return %": (current_close/pos["entry_price"] - 1)*100,
+                                    "Reason": "PARTIAL_PROFIT_2R"
+                                })
+
+                            # 2. Move Stop on REmaining to Breakeven
                             pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
                             pos["partial_taken"] = True
 
@@ -923,17 +994,36 @@ def _legacy_run_backtest(
                 if not np.isfinite(pivot) or not np.isfinite(price_today) or not np.isfinite(price_yesterday):
                     continue
 
-                # Volume Confirmation Gate
-                vol_today = row.get("volume", np.nan)
-                vol_ma50 = row.get("vol_ma50", np.nan)
-                if not np.isfinite(vol_today) or not np.isfinite(vol_ma50) or vol_ma50 <= 0:
+                # Volume Confirmation Gate (Moved Upstream)
+                # vol_today = row.get("volume", np.nan)
+                # ...
+                pass
+                    
+                # ADR Gate: High Octane Only
+                adr_val = row.get("adr_pct", 0.0)
+                if adr_val < 3.5:
                     continue
-                if vol_today < (vol_ma50 * 1.2):
+                    
+                # CLV Gate: Must close in top 40% of range (Strong Breakout)
+                clv_val = row.get("clv", 0.5)
+                if clv_val < 0.60:
                     continue
 
                 # Strict crossover: price_today > pivot and price_yesterday < pivot
+
+                # Strict crossover: price_today > pivot and price_yesterday < pivot
+                # Changed from <= to < to prevent Machine Gun Re-entry on day T+1
                 if not (price_today > pivot and price_yesterday < pivot):
                     continue
+                    
+                # Minervini Hard Rule: Price > SMA200 (With IPO Whitelist)
+                sma200_val = row.get("sma200", np.nan)
+                is_ipo = len(sym_data.df) < 250
+                
+                # Only enforce SMA200 if it's NOT an IPO
+                if not is_ipo:
+                    if not np.isfinite(sma200_val) or row.get("close", 0) < sma200_val:
+                        continue
 
                 # AUDIT FIX: Enforce Strategy Entry Rules (e.g., Breakout Trigger)
                 entry_rules = params.get("entry_rules", [])
@@ -984,6 +1074,7 @@ def _legacy_run_backtest(
                         "last_price": cand.entry_px,
                         "partial_taken": False,
                         "initial_risk": max(cand.entry_px - cand.stop_px, cand.entry_px * 0.001),
+                        "pivot": pivot,
                     }
 
             # 3. Record Equity (Lazy Timestamp)
@@ -1081,7 +1172,7 @@ def _run_cli() -> int:
         if not result: return 1
         result = result[0]
 
-    print(f"Final Value: ${result['final_value']:,.2f} | Trades: {result['total_trades']}")
+    print(f"Final Value: ${result['final_value']:,.2f} | Trades: {result['total_trades']} | Win Rate: {result['hit_rate']:.1f}%")
     return 0
 
 if __name__ == "__main__":

@@ -388,7 +388,7 @@
       {
         "col": "rs_rating",
         "op": ">",
-        "val": 85
+        "val": 90
       },
       {
         "col": "bb_width",
@@ -416,7 +416,10 @@
     },
     "execution_parameters": {
       "time_stop": 30,
-      "partial_profit_day": 5
+      "partial_profit_day": 5,
+      "rs_floor": 90.0,
+      "vol_mult": 1.5,
+      "adx_min": 25.0
     },
     "exit_rules": [
       {

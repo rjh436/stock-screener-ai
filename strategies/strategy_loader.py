@@ -24,7 +24,7 @@ def load_strategies(configs: List[Dict]) -> List[object]:
         # Priority: Respect explicit strategy class mapping by name
         strategy_cls = STRATEGY_CLASSES.get(config.get("name"))
         if strategy_cls is not None:
-            strategy = strategy_cls()
+            strategy = strategy_cls(config)
         elif config.get("type") == "wealth":
             strategy = ApexWealthStrategy(config)
         else:
