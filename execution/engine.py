@@ -833,12 +833,22 @@ def _legacy_run_backtest(
         if not df_trades.empty:
             win_rate = (len(df_trades[df_trades["PnL"] > 0]) / len(df_trades)) * 100
 
+        # AUDIT FIX: Use Calendar Days for accurate CAGR, not Trading Days
+        if len(all_dates) > 10:
+            start_d = pd.Timestamp(all_dates[0])
+            end_d = pd.Timestamp(all_dates[-1])
+            days_total = (end_d - start_d).days
+            years = max(days_total / 365.25, 0.1)  # Avoid div/0
+            cagr = ((final_val / start_cash) ** (1 / years) - 1) * 100
+        else:
+            cagr = 0.0
+
         res = _empty_result(strat.name, start_cash, params)
         res.update({
             "final_value": final_val,
             "total_trades": len(trades_list),
             "hit_rate": win_rate,
-            "cagr": ((final_val / start_cash) ** (365 / len(all_dates)) - 1) * 100 if len(all_dates) > 365 else 0.0,
+            "cagr": cagr,
             "equity_curve": equity_curve,
             "trades_list": trades_list
         })
