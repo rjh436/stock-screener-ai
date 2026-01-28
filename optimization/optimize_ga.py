@@ -17,7 +17,7 @@ from strategies.generic import GenericStrategy
 
 # --- CONFIGURATION (M3 MAX OPTIMIZED) ---
 POPULATION_SIZE = 50
-GENERATIONS = 15
+GENERATIONS = 50
 WORKERS = 10  # Increased for M3 Max 12-core
 
 # AUDIT-ALIGNED GENOME (SEPA V18)
@@ -148,8 +148,16 @@ def evaluate_genome(genome, prepared_data, global_data):
         if dd_2008 < -20.0:
             score -= (abs(dd_2008) * 10) # Heavy penalty for drawdown
 
+        # 2. PATIENCE PENALTY (Gradient) [AUDIT FIX APPLIED]
+        # Previous hard cliff (-200) replaced with progressive penalty.
+        # This rewards the GA for reducing trades from 100 -> 80 -> 60 -> 50.
         if trades_2015 > 50 and res_b['final_value'] < 100000:
-            score -= 200 # Overtrading penalty in chop
+            excess_trades = trades_2015 - 50
+            # Formula: Base Penalty (50) + (4 points per excess trade)
+            # Example: 51 trades = -54 penalty
+            # Example: 100 trades = -250 penalty (High deterrent)
+            penalty = 50.0 + (excess_trades * 4.0)
+            score -= penalty
 
         # AUDIT FIX: Zero trades in 2008 is GOOD (Defensive).
         # Zero trades in 2020 is BAD.
