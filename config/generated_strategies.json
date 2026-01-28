@@ -17,7 +17,7 @@
       {
         "col": "clv",
         "op": ">",
-        "val": 0.60
+        "val": 0.6
       },
       {
         "col": "adr_pct",
@@ -80,7 +80,7 @@
       {
         "col": "clv",
         "op": ">",
-        "val": 0.60
+        "val": 0.6
       },
       {
         "col": "adr_pct",
@@ -143,7 +143,7 @@
       {
         "col": "clv",
         "op": ">",
-        "val": 0.60
+        "val": 0.6
       },
       {
         "col": "adr_pct",
@@ -207,7 +207,7 @@
       {
         "col": "clv",
         "op": ">",
-        "val": 0.60
+        "val": 0.6
       },
       {
         "col": "adr_pct",
@@ -271,7 +271,7 @@
       {
         "col": "clv",
         "op": ">",
-        "val": 0.60
+        "val": 0.6
       },
       {
         "col": "adr_pct",
@@ -335,7 +335,7 @@
       {
         "col": "clv",
         "op": ">",
-        "val": 0.60
+        "val": 0.6
       },
       {
         "col": "adr_pct",
@@ -380,5 +380,45 @@
       "status": "V17 High Octane",
       "notes": "ADR > 3.5%, Vol > 3x, 1% Risk, Hybrid Exit"
     }
+  },
+  {
+    "name": "Apex SEPA Champion (2026)",
+    "use_fundamentals": false,
+    "entry_rules": [
+      {
+        "col": "rs_rating",
+        "op": ">",
+        "val": 94
+      },
+      {
+        "col": "bb_width",
+        "op": "<",
+        "val": 0.1
+      },
+      {
+        "col": "close",
+        "op": ">",
+        "ref": "sma50"
+      }
+    ],
+    "risk_parameters": {
+      "risk_per_trade": 0.014,
+      "max_pos_size_pct": 0.2,
+      "stop_loss_type": "atr",
+      "stop_loss_atr": 2.75,
+      "max_positions": 5
+    },
+    "execution_parameters": {
+      "time_stop": 30,
+      "partial_profit_day": 5
+    },
+    "exit_rules": [
+      {
+        "col": "close",
+        "op": "<",
+        "ref": "sma10"
+      }
+    ],
+    "type": "generic"
   }
 ]

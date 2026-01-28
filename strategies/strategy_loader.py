@@ -2,6 +2,11 @@ from typing import List, Dict
 
 from .generic import GenericStrategy
 from .apex_wealth import ApexWealthStrategy
+from .sepa_champion import SEPAChampionStrategy
+
+STRATEGY_CLASSES = {
+    "Apex SEPA Champion (2026)": SEPAChampionStrategy,
+}
 
 def load_strategies(configs: List[Dict]) -> List[object]:
     """
@@ -16,8 +21,11 @@ def load_strategies(configs: List[Dict]) -> List[object]:
     """
     strategies = []
     for config in configs or []:
-        # Priority: Respect the 'type' tag from JSON
-        if config.get("type") == "wealth":
+        # Priority: Respect explicit strategy class mapping by name
+        strategy_cls = STRATEGY_CLASSES.get(config.get("name"))
+        if strategy_cls is not None:
+            strategy = strategy_cls()
+        elif config.get("type") == "wealth":
             strategy = ApexWealthStrategy(config)
         else:
             strategy = GenericStrategy(config)
