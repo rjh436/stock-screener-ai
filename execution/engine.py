@@ -593,6 +593,13 @@ def _legacy_run_backtest(
     if not enriched:
         return _empty_result(strategy_label, float(start_cash), strategies[0].params if strategies else {})
 
+    debug_counts = {
+        "n_universe": np.full(len(all_dates), len(enriched), dtype=np.int32),
+        "n_trend": np.zeros(len(all_dates), dtype=np.int32),
+        "n_rs": np.zeros(len(all_dates), dtype=np.int32),
+        "n_vcp": np.zeros(len(all_dates), dtype=np.int32),
+    }
+
     candidates_by_day: List[List[_Candidate]] = [[] for _ in range(len(all_dates))]
 
     compiled_strategies = []
@@ -640,6 +647,8 @@ def _legacy_run_backtest(
             day_idx = sd.gidx[curr_i]
             if day_idx < 1 or day_idx >= len(all_dates): continue
 
+            debug_counts["n_trend"][day_idx] += 1
+
             spy_c = global_spy_close[day_idx - 1]
             spy_200 = global_spy_sma200[day_idx - 1]
             
@@ -656,6 +665,8 @@ def _legacy_run_backtest(
                 # Fail-open if RS rating was not computed (diagnostic safety).
                 rs_rating = 99.0
 
+            rs_counted = False
+            vcp_counted = False
             for strat, w, params, base_stop_mult in compiled_strategies:
                 # Genome Filters
                 min_rs = float(params.get("rs_rating", 80))
@@ -664,11 +675,17 @@ def _legacy_run_backtest(
                 if rs_rating < min_rs:
                     DBG(f"{sym}: REJECTED - RS Rating {rs_rating} < {min_rs}")
                     continue
+                if not rs_counted:
+                    debug_counts["n_rs"][day_idx] += 1
+                    rs_counted = True
                 # VCP CHECK RE-INSERTED HERE (Soft Gate):
                 width = float(sd.bbwidth[prev_i])
                 if width > max_bb:
                     DBG(f"{sym}: REJECTED - VCP Width {width} > {max_bb}")
                     continue
+                if not vcp_counted:
+                    debug_counts["n_vcp"][day_idx] += 1
+                    vcp_counted = True
 
                 # Calculate Entry/Stop
                 open_px = float(sd.open[curr_i])
@@ -834,14 +851,14 @@ def _legacy_run_backtest(
             win_rate = (len(df_trades[df_trades["PnL"] > 0]) / len(df_trades)) * 100
 
         # AUDIT FIX: Use Calendar Days for accurate CAGR, not Trading Days
-        if len(all_dates) > 10:
-            start_d = pd.Timestamp(all_dates[0])
-            end_d = pd.Timestamp(all_dates[-1])
-            days_total = (end_d - start_d).days
-            years = max(days_total / 365.25, 0.1)  # Avoid div/0
-            cagr = ((final_val / start_cash) ** (1 / years) - 1) * 100
+        if start_date and end_date:
+            total_days = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days
+        elif len(all_dates) > 1:
+            total_days = (pd.Timestamp(all_dates[-1]) - pd.Timestamp(all_dates[0])).days
         else:
-            cagr = 0.0
+            total_days = 0
+        years = max(total_days / 365.25, 0.1)  # Avoid div/0
+        cagr = ((final_val / start_cash) ** (1 / years)) - 1
 
         res = _empty_result(strat.name, start_cash, params)
         res.update({
@@ -855,7 +872,23 @@ def _legacy_run_backtest(
         final_results.append(res)
 
     if len(final_results) == 1:
+        avg_universe = float(np.mean(debug_counts["n_universe"])) if len(all_dates) else 0.0
+        avg_trend = float(np.mean(debug_counts["n_trend"])) if len(all_dates) else 0.0
+        avg_rs = float(np.mean(debug_counts["n_rs"])) if len(all_dates) else 0.0
+        avg_vcp = float(np.mean(debug_counts["n_vcp"])) if len(all_dates) else 0.0
+        print(f"Avg Universe: {avg_universe:.1f}")
+        print(f"Avg Trend Candidates: {avg_trend:.1f}")
+        print(f"Avg RS Candidates: {avg_rs:.1f}")
+        print(f"Avg VCP Candidates: {avg_vcp:.1f}")
         return final_results[0]
+    avg_universe = float(np.mean(debug_counts["n_universe"])) if len(all_dates) else 0.0
+    avg_trend = float(np.mean(debug_counts["n_trend"])) if len(all_dates) else 0.0
+    avg_rs = float(np.mean(debug_counts["n_rs"])) if len(all_dates) else 0.0
+    avg_vcp = float(np.mean(debug_counts["n_vcp"])) if len(all_dates) else 0.0
+    print(f"Avg Universe: {avg_universe:.1f}")
+    print(f"Avg Trend Candidates: {avg_trend:.1f}")
+    print(f"Avg RS Candidates: {avg_rs:.1f}")
+    print(f"Avg VCP Candidates: {avg_vcp:.1f}")
     return final_results
 
 # Backwards compatibility
@@ -887,6 +920,8 @@ def _run_cli() -> int:
 
     strategies = load_strategies(strat_configs)
     symbols = get_universe_symbols("RUSSELL3000")
+    if len(symbols) < 100:
+        raise ValueError("CRITICAL: Universe failed to load. Aborting backtest.")
     
     data = fetch_data_pack(symbols, days=5040, backtest_mode=True) or {}
     g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=5040, backtest_mode=True) or {}
