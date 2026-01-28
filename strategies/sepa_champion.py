@@ -11,9 +11,9 @@ class SEPAChampionStrategy(GenericStrategy):
             # --- EXECUTION FILTERS ---
             "entry_rules": [
                 # The "Elitist" Filter: Only Top 6% of Market
-                {"col": "rs_rating", "op": ">", "val": 90},
+                {"col": "rs_rating", "op": ">", "val": 85},
                 # The "Coiled Spring" Filter: 10% Max Volatility Contraction
-                {"col": "bb_width", "op": "<", "val": 0.15},
+                {"col": "bb_width", "op": "<", "val": 0.25},
                 # Trend Reinforcement
                 {"col": "close", "op": ">", "ref": "sma50"},
             ],

@@ -388,12 +388,12 @@
       {
         "col": "rs_rating",
         "op": ">",
-        "val": 90
+        "val": 85
       },
       {
         "col": "bb_width",
         "op": "<",
-        "val": 0.15
+        "val": 0.25
       },
       {
         "col": "close",

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import sys
 import concurrent.futures
 import json
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -11,6 +9,11 @@ import numpy as np
 import pandas as pd
 from ta.momentum import StochasticOscillator
 from ta.trend import ADXIndicator, CCIIndicator, SMAIndicator
+
+# FIX: Add project root to path so we can import 'strategies'
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from strategies.generic import GenericStrategy
 from strategies.strategy_loader import load_strategies
@@ -21,7 +24,7 @@ from execution.parity import (
 from execution.shared_logic import _generic_exit_decision
 
 # --- CONFIGURATION ---
-MIN_BARS = 200
+MIN_BARS = 60
 MIN_ENTRY_SCORE = 120.0
 SUPER_SIGNAL_NAME = "SUPER SIGNAL (Wealth + Income)"
 
@@ -453,20 +456,33 @@ def prepare_backtest_data(
             if not np.isfinite(high_arr).any():
                 high_arr = open_arr
 
-            # --- MINERVINI TREND TEMPLATE (STAGE 2 UPTREND) ---
-            # V18.5 PRODUCTION: Strict alignment with SEPA V18 Stage 2 criteria.
-            # Tolerance: 2% for SMA crossovers to survive minor shakeouts.
-            with np.errstate(invalid='ignore'):
-                trend_mask = (
-                    (close_arr > (sma50_arr * 0.98)) &        # Price above 50-day (2% tolerance)
-                    (sma50_arr > (sma150_arr * 0.98)) &       # 50 > 150 (2% tolerance)
-                    (sma150_arr > sma200_arr) &               # 150 > 200 (strict)
-                    (slope_arr > 0) &                         # 200-day rising (Stage 2 confirmation)
-                    (close_arr > 0.75 * high52_arr) &         # Within 25% of 52-week high
-                    (close_arr > 1.30 * low52_arr)            # Above 30% of 52-week low
-                )
+            # AUDIT FIX: "IPO Green Pass" - Allow young stocks if they show power.
+            has_200 = np.isfinite(sma200_arr)
+
+            # Path A: Mature Stocks (Standard Minervini)
+            mature_trend = (
+                has_200 &
+                (close_arr > sma50_arr) &
+                (sma50_arr > sma150_arr) &
+                (sma150_arr > sma200_arr) &
+                (slope_arr > 0)
+            )
+
+            # Path B: IPOs / Young Stocks (No 200-day MA yet)
+            # Require price strength (above 50SMA) and trading near highs.
+            ipo_trend = (
+                (~has_200) &
+                (close_arr > sma50_arr) &
+                (close_arr > 0.90 * high52_arr)
+            )
+
+            # Combined Gate: Must be in Uptrend AND near Highs AND above Lows
+            trend_mask = (
+                (mature_trend | ipo_trend) &
+                (close_arr > 0.75 * high52_arr) &
+                (close_arr > 1.30 * low52_arr)
+            )
             trend_mask = np.nan_to_num(trend_mask, nan=False).astype(bool)
-            # -------------------------------------------------------
 
             enriched[sym] = _SymbolArrays(
                 df=df,
@@ -666,7 +682,7 @@ def _legacy_run_backtest(
                 else:
                     atr = float(sd.atr14[prev_i])
                     stop_px = entry_px - (atr * base_stop_mult)
-                    stop_px = max(stop_px, entry_px * 0.92)
+                    stop_px = max(stop_px, entry_px * 0.93)
 
                 score = _score_row_dual_core(
                     sd.rsi14[prev_i], sd.bbwidth[prev_i], sd.natr[prev_i],
