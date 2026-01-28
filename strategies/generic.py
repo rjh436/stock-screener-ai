@@ -261,6 +261,7 @@ class GenericStrategy(BaseStrategy):
         days_held = i - entry_i
         close_px = row.get("close", entry_price)
         pnl_pct = ((close_px - entry_price) / entry_price) * 100
+        pnl_ratio = (close_px - entry_price) / entry_price
         use_bb_exit = bool(self.genome.get("use_bb_exit", False))
 
         # === DYNAMIC TRAILING STOP ===
@@ -268,8 +269,19 @@ class GenericStrategy(BaseStrategy):
         stop_mult = float(self.genome.get("stop_loss_atr", 3.0))
         trailing_stop = close_px - (atr * stop_mult)
 
-        # Hard floor: Never lose more than 12% (tightened to prevent gap-down slippage)
-        hard_floor = entry_price * 0.88
+        # Hard floor: Never lose more than 7% (tightened to prevent gap-down slippage)
+        hard_floor = entry_price * 0.93
+
+        # Free Roll: Take partial profits once at +20% and tighten stop to breakeven.
+        state_map = getattr(self, "_exit_state", None)
+        if state_map is None:
+            state_map = {}
+            self._exit_state = state_map
+        state_key = (id(df), entry_i, float(entry_price))
+        state = state_map.setdefault(state_key, {"partial_taken": False})
+        if pnl_ratio > 0.20 and not state.get("partial_taken"):
+            state["partial_taken"] = True
+            return False, max(stop_price, entry_price)
 
         # Use the HIGHEST stop (tightest protection)
         effective_stop = max(trailing_stop, hard_floor, stop_price)

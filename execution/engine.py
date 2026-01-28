@@ -57,7 +57,7 @@ def inject_market_rs_rank(enriched, all_dates, lookbacks=(63, 126, 189, 252),
 
     # AUDIT FIX: Dynamic min_names to handle small universes (Diagnostic Mode)
     if min_names is None:
-        min_names = min(50, max(1, int(n_syms * 0.5)))
+        min_names = 1
     
     # Build matrix: rows=dates, cols=symbols
     close_mat = np.full((n_days, n_syms), np.nan, dtype=np.float32)
@@ -666,6 +666,7 @@ def _legacy_run_backtest(
                 else:
                     atr = float(sd.atr14[prev_i])
                     stop_px = entry_px - (atr * base_stop_mult)
+                    stop_px = max(stop_px, entry_px * 0.92)
 
                 score = _score_row_dual_core(
                     sd.rsi14[prev_i], sd.bbwidth[prev_i], sd.natr[prev_i],
@@ -723,16 +724,24 @@ def _legacy_run_backtest(
                 # Exit Logic
                 should_exit = False
                 exit_px = current_close
-                
-                # Stop Loss
-                if current_low < pos["stop_price"]:
+                reason = None
+
+                # Market Regime Exit (force liquidation in bear regime)
+                if global_spy_close[day_idx] < global_spy_sma200[day_idx]:
                     should_exit = True
-                    exit_px = min(float(sym_data.open[loc]), pos["stop_price"])
-                
-                # Time Stop / Trailing (Generic)
-                days_held = day_idx - pos["entry_day_idx"]
-                if days_held > 50: # Hard max hold
-                     should_exit = True
+                    exit_px = current_close
+                    reason = "MARKET_REGIME_EXIT"
+
+                if not should_exit:
+                    # Stop Loss
+                    if current_low < pos["stop_price"]:
+                        should_exit = True
+                        exit_px = min(float(sym_data.open[loc]), pos["stop_price"])
+
+                    # Time Stop / Trailing (Generic)
+                    days_held = day_idx - pos["entry_day_idx"]
+                    if days_held > 50: # Hard max hold
+                         should_exit = True
                 
                 if should_exit:
                     shares = pos["shares"]
@@ -741,7 +750,8 @@ def _legacy_run_backtest(
                     trades_list.append({
                         "Symbol": sym, "Entry": pos["entry_price"], "Exit": exit_px,
                         "PnL": proceeds - (shares * pos["entry_price"]),
-                        "Return %": (exit_px/pos["entry_price"] - 1)*100
+                        "Return %": (exit_px/pos["entry_price"] - 1)*100,
+                        "Reason": reason
                     })
                     to_remove.append(sym)
                     continue
