@@ -545,13 +545,11 @@ def _legacy_run_backtest(
     end_date=None,
     **kwargs
 ):
-    # --- SMART LOGGER: Only print logs for Test Years ---
-    TARGET_YEARS = {"2008", "2015", "2020"}
-    _debug_fired = {"done": False}
-
+    # --- SILENT MODE (OPTIMIZATION SPEED) ---
+    # Logs disabled to prevent terminal crashes and maximize CPU for math.
     def DBG(msg: str) -> None:
-        if any(y in msg for y in TARGET_YEARS):
-            print(f"\nDBG {msg}")
+        pass
+    # ----------------------------------------
 
     if hasattr(data, "enriched"):
         pre_calculated_data = data
