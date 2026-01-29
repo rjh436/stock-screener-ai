@@ -38,9 +38,9 @@ MAX_WORKERS = 6
 GENE_SPACE = {
     # 1. SELECTION (Quality)
     "rs_floor": [85, 87, 90, 93, 95],         # Tighter = Less Churn
-    "vol_mult": [1.5, 2.0, 2.5, 3.0],         # Volume Quality
-    "adx_min": [15, 20, 25, 30],              # Trend Strength
-    "bb_width_max": [0.15, 0.20, 0.25],       # VCP Tightness (Crucial for 30%)
+    "vol_mult": [1.5, 2.0],                   # Volume Quality (Looser)
+    "adx_min": [15, 20, 25],                  # Trend Strength (Catch trends earlier)
+    "bb_width_max": [0.20, 0.25, 0.30],       # VCP Tightness (Looser for velocity)
     
     # 2. MARKET TIMING (Survival)
     "regime_ma": ["sma150", "sma200"],        # Bear Market Filter
@@ -185,11 +185,15 @@ def evaluate_genome(genome_id_and_genome):
         cagr = (final_val / 100000.0) ** (1/years) - 1
         cagr_pct = cagr * 100
         
+        # Validating Drawdown Calculation
+        print(f"DEBUG: Gen {genome_id} | Final: {final_val} | DD: {max_dd}")
+
         # Scoring Logic
         # We want CAGR > 20%, but huge penalty for DD > 30%
         score = cagr_pct
         
         # Penalties
+        if cagr_pct < 15.0: score *= 0.1 # Force Growth
         if max_dd > 25.0: score *= 0.5   # Soft ceiling
         if max_dd > 40.0: score = -10.0  # Hard reject
         if trades < 50: score = 0.0      # Inactive
