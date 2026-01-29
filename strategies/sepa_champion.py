@@ -25,20 +25,21 @@ class SEPAChampionStrategy(GenericStrategy):
             ],
             # --- RISK MANAGEMENT ---
             "risk_parameters": {
-                "risk_per_trade": 0.014,  # 1.4% Risk
-                "max_pos_size_pct": 0.20,  # 20% Max Position Size (Concentrated)
+                "risk_per_trade": 0.025,  # 2.5% Risk (Aggressive)
+                "max_pos_size_pct": 0.25,  # 25% Max Position Size (Concentration)
                 "stop_loss_type": "atr",
-                "stop_loss_atr": 2.75,  # 2.75x ATR (Room to breathe)
-                "max_positions": 5,  # Focus on best ideas
+                "stop_loss_atr": 3.0,  # 3.0x ATR (Wide for Volatility)
+                "max_positions": 4,  # Focus on top 4 ideas
             },
             # --- EXIT LOGIC ---
             "execution_parameters": {
-                "time_stop": 30,  # Get out if not working in 30 days
-                "partial_profit_day": 5,  # Take some off the table early
+                "time_stop": 120,  # 120 days (Ride trends)
+                "partial_profit_day": 999,  # DISABLED (Let it ride)
+                "partial_profit_r": 100.0, # EFFECTIVELY DISABLED
             },
             "exit_rules": [
-                # Qullamaggie Trail: Exit if Close < 10-day SMA
-                {"col": "close", "op": "<", "ref": "sma10"},
+                # Trend Following: Ride the 50-day line
+                {"col": "close", "op": "<", "ref": "sma50"},
             ],
         }
         super().__init__(genome)

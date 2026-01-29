@@ -25,13 +25,13 @@ NUM_PROCESSES = min(multiprocessing.cpu_count(), 8)
 
 # --- GENOME BOUNDS ---
 GENE_RANGES = {
-    "rs_floor": (85.0, 99.0),          # Float
-    "vol_multiplier": (1.2, 4.0),     # Float
-    "adx_threshold": (15, 40),        # Int
-    "max_positions": [4, 5, 6, 8, 10],# Choice
+    "rs_floor": (80.0, 99.0),          # Float (Wider)
+    "vol_multiplier": (1.0, 5.0),     # Float (Wider)
+    "adx_threshold": (10, 50),        # Int (Wider)
+    "max_positions": [4, 5, 6],       # Concentrated
     "stop_loss_atr": (2.0, 5.0),      # Float
-    "take_profit_r_multiple": (2.0, 6.0), # Float
-    "use_trailing_stop": [True, False]# Choice
+    "take_profit_r_multiple": (100.0, 100.0), # FIXED: NO PARTIALS
+    "use_trailing_stop": [True]       # FIXED: ALWAYS TRAIL
 }
 
 def random_gene(name):
@@ -70,21 +70,22 @@ def genome_to_config(genome):
              {"col": "close", "op": ">", "ref": "high_20_prev", "val": 0.99}
         ],
         "risk_parameters": {
+             "risk_per_trade": 0.025, # AGGRESSIVE: 2.5% Risk
              "stop_loss_type": "atr",
              "stop_loss_atr": genome["stop_loss_atr"],
              "max_positions": genome["max_positions"],
              "max_pos_size_pct": min(1.0, (1.0 / genome["max_positions"]) * 1.1)
         },
         "execution_parameters": {
-             "time_stop": 30,
-             "partial_profit_day": 5,
-             "partial_profit_r": genome["take_profit_r_multiple"],
+             "time_stop": 120, # AGGRESSIVE: 120 Days
+             "partial_profit_day": 999, # DISABLED
+             "partial_profit_r": 100.0, # DISABLED
              "vol_mult": genome["vol_multiplier"],
              "rs_floor": genome["rs_floor"],
              "adx_min": float(genome["adx_threshold"]),
-             "use_trailing_stop": genome["use_trailing_stop"]
+             "use_trailing_stop": True
         },
-        "exit_rules": [{"col": "close", "op": "<", "ref": "sma10"}]
+        "exit_rules": [{"col": "close", "op": "<", "ref": "sma50"}] # AGGRESSIVE: SMA50
     }
     return config
 
@@ -96,22 +97,26 @@ def evaluate_genome(genome, prepared_data, g_data):
             strat,
             data=prepared_data,
             start_cash=100000.0,
-            start_date="2015-01-01",
-            end_date="2021-01-01",
+            start_date="2020-01-01",
+            end_date="2022-01-01",
             global_data=g_data
         )
-        if not res: return 0.0, 0.0, 0, {}
+        if not res: return 0.001, 0.0, 0, 0, {} # Anti-Extinction
         res = res if isinstance(res, dict) else res[0]
         
         cagr = res.get("cagr", 0.0) * 100
         dd = res.get("max_drawdown_pct", 1.0) * 100
         trades = res.get("total_trades", 0)
         
-        # Fitness Function
-        score = (cagr * 2.0) - dd
+        # AGGRESSIVE FITNESS FUNCTION
+        # Reward: Geometric Growth (CAGR^2)
+        # Penalty: Drawdown (Linear)
+        # Anti-Extinction: If trades < 20, score is tiny but non-zero
         
-        # Constraints
-        if trades < 50: score = 0.0
+        if trades < 20: 
+            score = 0.001
+        else:
+            score = (cagr ** 2) / max(dd, 1.0)
         
         return score, cagr, dd, trades, res
     except Exception as e:

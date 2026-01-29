@@ -975,7 +975,14 @@ def _legacy_run_backtest(
             # --- FIX: BYPASS NAME CHECK FOR SINGLE STRATEGY (GA MODE) ---
             # Prevents string mismatch bugs (e.g. Risk0.01 vs Risk0.010) from killing trades.
             # Minervini filters (RS/VCP) have already run upstream, so these candidates are valid.
-            if len(strategies) == 1:
+            
+            # MARKET REGIME FILTER: OFFENSE (Buy Side)
+            # If SPY < SMA200, we do NOT open new positions. Defense mode only.
+            in_bear_market = global_spy_close[day_idx] < global_spy_sma200[day_idx]
+            
+            if in_bear_market:
+                day_candidates = []
+            elif len(strategies) == 1:
                 day_candidates = candidates
             else:
                 day_candidates = [c for c in candidates if c.strategy_name == strat.name]

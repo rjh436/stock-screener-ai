@@ -388,7 +388,7 @@
       {
         "col": "rs_rating",
         "op": ">",
-        "val": 89.31
+        "val": 84.25
       },
       {
         "col": "bb_width",
@@ -408,25 +408,26 @@
       }
     ],
     "risk_parameters": {
-      "risk_per_trade": 0.014,
-      "max_pos_size_pct": 0.2,
+      "risk_per_trade": 0.025,
       "stop_loss_type": "atr",
-      "stop_loss_atr": 2.75,
-      "max_positions": 5
+      "stop_loss_atr": 4.31,
+      "max_positions": 4,
+      "max_pos_size_pct": 0.275
     },
     "execution_parameters": {
-      "time_stop": 30,
-      "partial_profit_day": 5,
-      "rs_floor": 90.0,
-      "vol_mult": 1.5,
-      "adx_min": 20.0,
-      "partial_profit_r": 2.0
+      "time_stop": 120,
+      "partial_profit_day": 999,
+      "partial_profit_r": 100.0,
+      "vol_mult": 1.72,
+      "rs_floor": 84.25,
+      "adx_min": 21.0,
+      "use_trailing_stop": true
     },
     "exit_rules": [
       {
         "col": "close",
         "op": "<",
-        "ref": "sma10"
+        "ref": "sma50"
       }
     ],
     "type": "generic"
