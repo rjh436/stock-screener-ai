@@ -377,6 +377,7 @@ class _SymbolArrays:
     adr_pct: np.ndarray
     prev_high: np.ndarray
     highest10_1: np.ndarray
+    gap_pct: np.ndarray # Start with gap logic
     clv: np.ndarray
     trend_mask: np.ndarray # AUDIT FIX: Vectorized Gate
     adx: np.ndarray
@@ -459,6 +460,7 @@ def prepare_backtest_data(
             sma50_arr = _get_np_col(df, "sma50", np.nan, length=n)
             sma150_arr = _get_np_col(df, "sma150", np.nan, length=n)
             sma200_arr = _get_np_col(df, "sma200", np.nan, length=n)
+            gap_pct_arr = _get_np_col(df, "gap_pct", 0.0, length=n)
             slope_arr = _get_np_col(df, "sma200_slope", 0.0, length=n)
             high52_arr = _get_np_col(df, "high_52w", np.nan, length=n)
             low52_arr = _get_np_col(df, "low_52w", np.nan, length=n)
@@ -534,6 +536,7 @@ def prepare_backtest_data(
                 adr_pct=_get_np_col(df, "adr_pct", 0.0, length=n),
                 prev_high=_get_np_col(df, "prev_high", 0.0, length=n),
                 highest10_1=_get_np_col(df, "highest10_1", 0.0, length=n),
+                gap_pct=gap_pct_arr,
                 clv=_get_np_col(df, "clv", 0.5, length=n),
                 trend_mask=trend_mask,
                 adx=adx_arr,
@@ -808,6 +811,8 @@ def _legacy_run_backtest(
                     sd.close[prev_i], sd.high52w[prev_i], {"rsi_factor":1.0}
                 )
 
+
+
                 candidates_by_day[day_idx].append(
                     _Candidate(sym, entry_px, stop_px, score, strat.name, curr_i)
                 )
@@ -835,6 +840,7 @@ def _legacy_run_backtest(
         risk_per_trade = float(params.get("risk_per_trade", 0.01) or 0.01)
         max_pos_size_pct = float(params.get("max_pos_size_pct", 0.30) or 0.30)
         partial_profit_day = int(params.get("partial_profit_day", 4) or 4)
+        partial_profit_r = float(params.get("partial_profit_r", 2.0))
 
         for day_idx, candidates in enumerate(candidates_by_day):
             # AUDIT FIX: Respect Start/End dates
@@ -889,8 +895,8 @@ def _legacy_run_backtest(
                     # Free Roll Rule: at +2R, Sell 50% and move stop to breakeven
                     risk_per_share = float(pos.get("initial_risk", 0.0) or 0.0)
                     if risk_per_share > 0 and not pos.get("partial_taken", False):
-                        target_2r = pos["entry_price"] + (2.0 * risk_per_share)
-                        if current_close >= target_2r:
+                        target_r = pos["entry_price"] + (partial_profit_r * risk_per_share)
+                        if current_close >= target_r:
                             # 1. Sell 50%
                             shares_to_sell = int(pos["shares"] * 0.5)
                             if shares_to_sell > 0:
@@ -903,7 +909,7 @@ def _legacy_run_backtest(
                                     "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
                                     "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
                                     "Return %": (current_close/pos["entry_price"] - 1)*100,
-                                    "Reason": "PARTIAL_PROFIT_2R"
+                                    "Reason": f"PARTIAL_PROFIT_{partial_profit_r}R"
                                 })
 
                             # 2. Move Stop on REmaining to Breakeven

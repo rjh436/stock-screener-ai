@@ -419,7 +419,7 @@
       "partial_profit_day": 5,
       "rs_floor": 90.0,
       "vol_mult": 1.5,
-      "adx_min": 25.0
+      "adx_min": 20.0
     },
     "exit_rules": [
       {
