@@ -885,8 +885,6 @@ def _legacy_run_backtest(
                             if pivot_val > 0 and entry_day_close < pivot_val:
                                 should_exit = True
                                 exit_px = float(sym_data.open[loc]) # Exit at Open
-                                reason = "SQUAT_EXIT_DAY1"
-
                 if not should_exit:
                     # Free Roll Rule: DISABLED for Phase 4 (Let it Run)
                     # risk_per_share = float(pos.get("initial_risk", 0.0) or 0.0)
