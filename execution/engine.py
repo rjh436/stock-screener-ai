@@ -460,6 +460,7 @@ def prepare_backtest_data(
             sma50_arr = _get_np_col(df, "sma50", np.nan, length=n)
             sma150_arr = _get_np_col(df, "sma150", np.nan, length=n)
             sma200_arr = _get_np_col(df, "sma200", np.nan, length=n)
+            sma20_arr = _get_np_col(df, "sma20", np.nan, length=n)
             gap_pct_arr = _get_np_col(df, "gap_pct", 0.0, length=n)
             slope_arr = _get_np_col(df, "sma200_slope", 0.0, length=n)
             high52_arr = _get_np_col(df, "high_52w", np.nan, length=n)
@@ -520,7 +521,7 @@ def prepare_backtest_data(
                 natr=natr_arr,
                 volma50=_get_np_col(df, "vol_ma50", 1.0, length=n),
                 sma10=_get_np_col(df, "sma10", np.nan, length=n),
-                sma20=_get_np_col(df, "sma20", np.nan, length=n),
+                sma20=sma20_arr,
                 sma50=sma50_arr,
                 sma150=sma150_arr,
                 sma200=sma200_arr,
@@ -966,6 +967,8 @@ def _legacy_run_backtest(
                 
                 # Update MTM
                 pos["last_price"] = current_close
+
+
 
             for sym in to_remove:
                 del positions[sym]
