@@ -1,286 +1,203 @@
-from __future__ import annotations
-import os
-import sys
-import random
-import json
-import copy
-import traceback
-import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# 1. Setup Project Path
+import sys
+import os
+import json
+import random
+import copy
+import multiprocessing
+import pandas as pd
+import numpy as np
+from typing import List, Dict, Any
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from strategies.sepa_champion import SEPAChampionStrategy
+from execution.engine import run_backtest, prepare_backtest_data
 from data.loader import fetch_data_pack
-from execution.engine import DEFAULT_SCORING_WEIGHTS, prepare_backtest_data, run_backtest
-from strategies.generic import GenericStrategy
+from data.universe import get_universe_symbols
 
-# --- CONFIGURATION (M3 MAX OPTIMIZED) ---
-POPULATION_SIZE = 50
-GENERATIONS = 50
-WORKERS = 10  # Increased for M3 Max 12-core
+# --- GENETIC CONFIG ---
+POPULATION_SIZE = 20
+GENERATIONS = 10
+ELITE_SIZE = 5
+MUTATION_RATE = 0.3
+NUM_PROCESSES = min(multiprocessing.cpu_count(), 8)
 
-# AUDIT-ALIGNED GENOME (SEPA V18)
-# We are optimizing the 'Risk Kernel' while the logic is hard-coded in the engine.
+# --- GENOME BOUNDS ---
 GENE_RANGES = {
-    "rs_rating": (85, 99, 1),            # Minervini Proxy (High RS)
-    "bb_width_max": (0.10, 0.20, 0.01),  # VCP Tightness (0.15 standard)
-    "risk_per_trade": (0.005, 0.015, 0.001), # Conservative (0.5% - 1.5%)
-    "max_pos_size_pct": (0.20, 0.30, 0.05),  # Hard Cap (20% - 30%)
-    "stop_loss_type": ["low_of_day", "atr"], # LOD vs ATR
-    "stop_loss_atr": (1.5, 3.5, 0.25),   # Buffer if ATR used
-    "partial_profit_day": (3, 5, 1)      # Fast profit taking
+    "rs_floor": (85.0, 99.0),          # Float
+    "vol_multiplier": (1.2, 4.0),     # Float
+    "adx_threshold": (15, 40),        # Int
+    "max_positions": [4, 5, 6, 8, 10],# Choice
+    "stop_loss_atr": (2.0, 5.0),      # Float
+    "take_profit_r_multiple": (2.0, 6.0), # Float
+    "use_trailing_stop": [True, False]# Choice
 }
 
-# The 3 Test Regimes (Regime-Weighted Sortino)
-SLICES = {
-    "A": {"start": "2008-01-01", "end": "2008-12-31"},  # Survival (GFC)
-    "B": {"start": "2015-01-01", "end": "2015-12-31"},  # Patience (Chop)
-    "C": {"start": "2020-04-01", "end": "2021-02-01"}   # Alpha (Post-Covid Run)
-}
+def random_gene(name):
+    bounds = GENE_RANGES[name]
+    if isinstance(bounds, list):
+        return random.choice(bounds)
+    if name == "adx_threshold":
+        return random.randint(bounds[0], bounds[1])
+    return round(random.uniform(bounds[0], bounds[1]), 2)
 
-# SEPA V18 Hybrid Template
-BASE_STRATEGY = {
-    "name": "Apex SEPA V18",
-    "type": "breakout",
-    "entry_rules": [
-        # Hard filters are now in engine.py (Trend Template).
-        # We just reinforce the genome here.
-    ],
-    "exit_rules": [{"col": "close", "op": "<", "ref": "sma10"}], # Qullamaggie Trail
-    "risk_parameters": {
-        "max_positions": 10
-    },
-    "execution_parameters": {"time_stop": 30}
-}
-
-
-def generate_random_genome():
-    genome = {}
-    for key, range_def in GENE_RANGES.items():
-        if isinstance(range_def, list):
-            genome[key] = random.choice(range_def)
-        else:
-            min_val, max_val, step = range_def
-            if isinstance(step, int):
-                val = random.randrange(min_val, max_val + step, step)
-            else:
-                steps = int((max_val - min_val) / step)
-                val = min_val + (random.randint(0, steps) * step)
-                val = round(val, 3)
-            genome[key] = val
-    return genome
-
-
-def genome_to_strategy(genome):
-    strat = copy.deepcopy(BASE_STRATEGY)
-    strat["name"] = f"SEPA_RS{int(genome['rs_rating'])}_Risk{genome['risk_per_trade']}"
-
-    # Inject Genes into Strategy Config
-    strat["entry_rules"] = [
-        {"col": "rs_rating", "op": ">", "val": int(genome['rs_rating'])},
-        {"col": "bb_width", "op": "<", "val": genome['bb_width_max']},
-        {"col": "close", "op": ">", "ref": "sma50"} # Reinforce Trend
-    ]
-
-    strat["risk_parameters"]["risk_per_trade"] = genome['risk_per_trade']
-    strat["risk_parameters"]["max_pos_size_pct"] = genome['max_pos_size_pct']
-    strat["risk_parameters"]["stop_loss_type"] = genome['stop_loss_type']
-    strat["risk_parameters"]["stop_loss_atr"] = genome['stop_loss_atr']
-    strat["execution_parameters"]["partial_profit_day"] = int(genome['partial_profit_day'])
-
-    return strat
-
-
-def evaluate_genome(genome, prepared_data, global_data):
-    try:
-        strat = GenericStrategy(genome_to_strategy(genome))
-
-        def run_slice(start, end):
-            res = run_backtest(
-                strategy=strat,
-                data=prepared_data,
-                start_cash=100000.0,
-                start_date=start,
-                end_date=end,
-                global_data=global_data,
-                scoring_weights=DEFAULT_SCORING_WEIGHTS
-            )
-            # --- BUG FIX: HANDLE DICT RETURN ---
-            # Engine returns a dict for single-strategy runs, but GA expected a list.
-            if isinstance(res, dict):
-                return res
-            # -----------------------------------
-
-            if isinstance(res, list) and res:
-                return res[0]
-
-            # AUDIT FIX: Don't fail on None, return empty result
-            return {"total_trades": 0, "final_value": 100000.0, "max_drawdown_pct": 0.0}
-
-        # Run 3 Slices
-        res_a = run_slice(SLICES["A"]["start"], SLICES["A"]["end"])
-        res_b = run_slice(SLICES["B"]["start"], SLICES["B"]["end"])
-        res_c = run_slice(SLICES["C"]["start"], SLICES["C"]["end"])
-
-        # Metrics Extraction
-        dd_2008 = res_a['max_drawdown_pct'] * 100
-        trades_2015 = res_b['total_trades'] # AUDIT FIX: Corrected from res_a to res_b
-        ret_2020 = ((res_c['final_value'] - 100000) / 100000) * 100
-
-        metrics = {
-            "2020_Ret": ret_2020,
-            "2008_DD": dd_2008,
-            "2015_Trades": trades_2015
-        }
-
-        total_trades = res_a.get("total_trades", 0) + res_b.get("total_trades", 0) + res_c.get("total_trades", 0)
-        if total_trades == 0:
-            return 0.0, metrics
-
-        # Scoring Logic:
-        # 1. Survival: 2008 DD must be < 20%
-        # 2. Patience: 2015 should have few trades OR break-even
-        # 3. Alpha: 2020 should rip (> 50%)
-        score = ret_2020
-
-        # Penalties
-        if dd_2008 < -20.0:
-            score -= (abs(dd_2008) * 10) # Heavy penalty for drawdown
-
-        # 2. PATIENCE PENALTY (Gradient) [AUDIT FIX APPLIED]
-        # Previous hard cliff (-200) replaced with progressive penalty.
-        # This rewards the GA for reducing trades from 100 -> 80 -> 60 -> 50.
-        if trades_2015 > 50 and res_b['final_value'] < 100000:
-            excess_trades = trades_2015 - 50
-            # Formula: Base Penalty (50) + (4 points per excess trade)
-            # Example: 51 trades = -54 penalty
-            # Example: 100 trades = -250 penalty (High deterrent)
-            penalty = 50.0 + (excess_trades * 4.0)
-            score -= penalty
-
-        # AUDIT FIX: Zero trades in 2008 is GOOD (Defensive).
-        # Zero trades in 2020 is BAD.
-        if res_c['total_trades'] < 5:
-            score -= 500
-
-        return score, metrics
-
-    except Exception:
-        return -9999, {}
-
-
-def evaluate_population(population, prepared_data, global_data):
-    results = []
-    with ThreadPoolExecutor(max_workers=WORKERS) as executor:
-        future_to_genome = {
-            executor.submit(evaluate_genome, genome, prepared_data, global_data): genome
-            for genome in population
-        }
-        for future in as_completed(future_to_genome):
-            genome = future_to_genome[future]
-            try:
-                score, metrics = future.result()
-                if score <= -9000:
-                    continue
-                results.append(
-                    (
-                        genome,
-                        score,
-                        metrics.get("2020_Ret"),
-                        metrics.get("2008_DD"),
-                    )
-                )
-            except Exception:
-                continue
-    return results
-
+def create_random_genome():
+    return {k: random_gene(k) for k in GENE_RANGES}
 
 def mutate(genome):
-    new = genome.copy()
-    key = random.choice(list(GENE_RANGES.keys()))
-    range_def = GENE_RANGES[key]
+    mutant = genome.copy()
+    for gene in genome:
+        if random.random() < MUTATION_RATE:
+            mutant[gene] = random_gene(gene)
+    return mutant
 
-    if isinstance(range_def, list):
-        new[key] = random.choice(range_def)
-    else:
-        min_v, max_v, step = range_def
-        current = new[key]
-        shift = random.choice([-step, step])
-        new_val = max(min_v, min(max_v, current + shift))
-        new[key] = round(new_val, 3)
-
-    return new
-
-
-def crossover(p1, p2):
+def crossover(parent1, parent2):
     child = {}
-    for k in GENE_RANGES:
-        child[k] = random.choice([p1[k], p2[k]])
+    for gene in parent1:
+        child[gene] = parent1[gene] if random.random() > 0.5 else parent2[gene]
     return child
 
+def genome_to_config(genome):
+    # Base Config
+    config = {
+        "name": "Apex GA Candidate",
+        "use_fundamentals": False,
+        "entry_rules": [
+             {"col": "rs_rating", "op": ">", "val": genome["rs_floor"]}, 
+             {"col": "bb_width", "op": "<", "val": 0.25}, # Keep VCP fixed
+             {"col": "close", "op": ">", "ref": "sma50"},
+             {"col": "close", "op": ">", "ref": "high_20_prev", "val": 0.99}
+        ],
+        "risk_parameters": {
+             "stop_loss_type": "atr",
+             "stop_loss_atr": genome["stop_loss_atr"],
+             "max_positions": genome["max_positions"],
+             "max_pos_size_pct": min(1.0, (1.0 / genome["max_positions"]) * 1.1)
+        },
+        "execution_parameters": {
+             "time_stop": 30,
+             "partial_profit_day": 5,
+             "partial_profit_r": genome["take_profit_r_multiple"],
+             "vol_mult": genome["vol_multiplier"],
+             "rs_floor": genome["rs_floor"],
+             "adx_min": float(genome["adx_threshold"]),
+             "use_trailing_stop": genome["use_trailing_stop"]
+        },
+        "exit_rules": [{"col": "close", "op": "<", "ref": "sma10"}]
+    }
+    return config
+
+def evaluate_genome(genome, prepared_data, g_data):
+    try:
+        config = genome_to_config(genome)
+        strat = SEPAChampionStrategy(config)
+        res = run_backtest(
+            strat,
+            data=prepared_data,
+            start_cash=100000.0,
+            start_date="2015-01-01",
+            end_date="2021-01-01",
+            global_data=g_data
+        )
+        if not res: return 0.0, 0.0, 0, {}
+        res = res if isinstance(res, dict) else res[0]
+        
+        cagr = res.get("cagr", 0.0) * 100
+        dd = res.get("max_drawdown_pct", 1.0) * 100
+        trades = res.get("total_trades", 0)
+        
+        # Fitness Function
+        score = (cagr * 2.0) - dd
+        
+        # Constraints
+        if trades < 50: score = 0.0
+        
+        return score, cagr, dd, trades, res
+    except Exception as e:
+        return 0.0, 0.0, 0, 0, {}
 
 def main():
-    print("🚀 Starting Apex SEPA V18 Optimization (M3 Max Mode)")
+    print("🧬 Starting Genetic Optimization (Phase 6)...")
+    
+    # Load Data (Memoized by engine logic, but loaded here for passing)
+    print("📦 Loading Data Pack...")
+    symbols = get_universe_symbols("RUSSELL3000")
+    data = fetch_data_pack(symbols, days=252*7, backtest_mode=True) or {}
+    g_data = fetch_data_pack(["SPY", "VIX"], days=252*7, backtest_mode=True) or {}
+    print("⚙️  Preparing Enriched Data...")
+    prepared = prepare_backtest_data(data, symbols, None, g_data)
 
-    # 1. Load Russell 3000
-    cache_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "cache_indices", "russell3000_iwv.json"))
-
-    universe = []
-    if os.path.exists(cache_path):
-        with open(cache_path, "r") as f:
-            universe = json.load(f)
-        print(f"✅ Loaded {len(universe)} symbols from cache.")
-    else:
-        # Fallback Universe
-        universe = ["NVDA", "TSLA", "AAPL", "AMD", "META", "AMZN", "GOOGL", "MSFT", "NFLX", "ENPH"]
-
-    # 2. Fetch Data
-    print(f"📉 Fetching data for {len(universe)} symbols...")
-    data_map = fetch_data_pack(universe, days=7300, backtest_mode=True)
-    g_data = fetch_data_pack(["SPY", "VIX"], days=7300, backtest_mode=True)
-
-    if not data_map:
-        print("❌ Error: No data returned.")
-        return
-
-    print("⚙️  Preparing Backtest Data (Injecting SEPA Metrics)...")
-    prepared = prepare_backtest_data(data_map, None, None, g_data)
-
-    # 3. Evolution Loop
-    population = [generate_random_genome() for _ in range(POPULATION_SIZE)]
-    best_score = -9999
+    # Init Population
+    population = [create_random_genome() for _ in range(POPULATION_SIZE)]
+    best_overall_genome = None
+    best_overall_score = -9999.0
 
     for gen in range(GENERATIONS):
-        print(f"\n🧬 Generation {gen + 1}/{GENERATIONS}")
-        results = evaluate_population(population, prepared, g_data)
-        if not results:
-            continue
+        print(f"\n🧬 Generation {gen+1}/{GENERATIONS}")
+        
+        scored_pop = []
+        for i, genome in enumerate(population):
+            # Sequential for simplicity unless we want to deal with pickling huge data
+            score, cagr, dd, tr, _ = evaluate_genome(genome, prepared, g_data)
+            scored_pop.append((score, genome, cagr, dd, tr))
+            if gen % 1 == 0 and i % 5 == 0: 
+                print(f"   Candidate {i+1}: Score={score:.1f} (CAGR={cagr:.1f}%, DD={dd:.1f}%, Tr={tr})")
 
-        results.sort(key=lambda x: x[1], reverse=True)
-        top_genome, top_score, top_ret, top_dd = results[0]
+        # Sort
+        scored_pop.sort(key=lambda x: x[0], reverse=True)
+        
+        best_gen_score, best_gen_genome, b_cagr, b_dd, b_tr = scored_pop[0]
+        print(f"🏆 Best of Gen {gen+1}: Score={best_gen_score:.1f} | CAGR={b_cagr:.1f}% | DD={b_dd:.1f}% | Tr={b_tr}")
+        print(f"   DNA: {best_gen_genome}")
 
-        print(f"   🏆 Best: Score {top_score:.2f} | 2020 Ret: {top_ret:.1f}% | 2008 DD: {top_dd:.1f}%")
-        print(f"      RS: {top_genome['rs_rating']} | Risk: {top_genome['risk_per_trade']} | Stop: {top_genome['stop_loss_type']}")
+        if best_gen_score > best_overall_score:
+            best_overall_score = best_gen_score
+            best_overall_genome = best_gen_genome
 
-        if top_score > best_score:
-            best_score = top_score
-            output_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", "best_sepa_genome.json"))
-            with open(output_path, "w") as f:
-                json.dump(top_genome, f, indent=4)
+        # Elitism
+        elites = [x[1] for x in scored_pop[:ELITE_SIZE]]
+        
+        # Selection & Crossover
+        next_gen = elites[:]
+        while len(next_gen) < POPULATION_SIZE:
+            parent1 = random.choice(elites)
+            parent2 = random.choice(elites)
+            child = crossover(parent1, parent2)
+            child = mutate(child)
+            next_gen.append(child)
+            
+        population = next_gen
+        
+    print("\n🏁 EVOLUTION COMPLETE.")
+    print(f"👑 Ultimate Winner (Score: {best_overall_score:.1f})")
+    print(json.dumps(best_overall_genome, indent=2))
+    
+    # Save winner to file
+    with open("alpha_dna.json", "w") as f:
+        json.dump(best_overall_genome, f, indent=2)
 
-        # Breed
-        survivors = [r[0] for r in results[:10]]
-        new_pop = survivors[:]
-        while len(new_pop) < POPULATION_SIZE:
-            child = crossover(random.choice(survivors), random.choice(survivors))
-            if random.random() < 0.2:
-                child = mutate(child)
-            new_pop.append(child)
-        population = new_pop
-
-    print("\n🏁 SEPA GA COMPLETE.")
-
+    # AUTO-UPDATE generated_strategies (Dangerous but requested)
+    config_path = os.path.join("config", "generated_strategies.json")
+    with open(config_path, "r") as f:
+        strategies = json.load(f)
+        
+    # Find SEPA
+    for s in strategies:
+        if s["name"] == "Apex SEPA Champion (2026)":
+            winner_cfg = genome_to_config(best_overall_genome)
+            # Update specific fields
+            s["risk_parameters"] = winner_cfg["risk_parameters"]
+            s["execution_parameters"] = winner_cfg["execution_parameters"]
+            # Update entry rules specifically too
+            for rule in s["entry_rules"]:
+                if rule.get("col") == "rs_rating":
+                    rule["val"] = winner_cfg["execution_parameters"]["rs_floor"]
+            break
+            
+    with open(config_path, "w") as f:
+        json.dump(strategies, f, indent=2)
+    print("✅ Strategy Updated.")
 
 if __name__ == "__main__":
     main()

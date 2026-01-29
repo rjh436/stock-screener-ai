@@ -388,7 +388,7 @@
       {
         "col": "rs_rating",
         "op": ">",
-        "val": 90
+        "val": 89.31
       },
       {
         "col": "bb_width",
@@ -419,7 +419,8 @@
       "partial_profit_day": 5,
       "rs_floor": 90.0,
       "vol_mult": 1.5,
-      "adx_min": 20.0
+      "adx_min": 20.0,
+      "partial_profit_r": 2.0
     },
     "exit_rules": [
       {

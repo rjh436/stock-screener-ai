@@ -1,0 +1,9 @@
+{
+  "rs_floor": 89.31,
+  "vol_multiplier": 2.46,
+  "adx_threshold": 25,
+  "max_positions": 6,
+  "stop_loss_atr": 4.26,
+  "take_profit_r_multiple": 5.79,
+  "use_trailing_stop": true
+}

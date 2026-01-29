@@ -937,7 +937,8 @@ def _legacy_run_backtest(
                     )
 
                     if new_stop is not None and new_stop > pos["stop_price"]:
-                        pos["stop_price"] = new_stop
+                        if params.get("use_trailing_stop", True):
+                            pos["stop_price"] = new_stop
 
                     if strat_exit:
                         should_exit = True
@@ -1103,11 +1104,21 @@ def _legacy_run_backtest(
         else:
             total_days = 0
         years = max(total_days / 365.25, 0.1)  # Avoid div/0
+        years = max(total_days / 365.25, 0.1)  # Avoid div/0
         cagr = ((final_val / start_cash) ** (1 / years)) - 1
+        
+        # Calculate Max Drawdown from Equity Curve
+        max_dd = 0.0
+        if equity_curve:
+            peaks = pd.Series([x["Equity"] for x in equity_curve]).cummax()
+            drawdowns = (pd.Series([x["Equity"] for x in equity_curve]) - peaks) / peaks
+            max_dd = abs(drawdowns.min()) if not drawdowns.empty else 0.0
 
         res = _empty_result(strat.name, start_cash, params)
         res.update({
             "final_value": final_val,
+            "max_drawdown_pct": max_dd,
+            "total_trades": len(trades_list),
             "total_trades": len(trades_list),
             "hit_rate": win_rate,
             "cagr": cagr,
