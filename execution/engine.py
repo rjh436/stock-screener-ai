@@ -1002,6 +1002,29 @@ def _legacy_run_backtest(
                 if prev_loc < 0 or signal_loc >= len(sym_data.df):
                     continue
                 row = sym_data.df.iloc[signal_loc]
+                
+                # === [PATCH] FORCE STRATEGY ENTRY VALIDATION ===
+                # The engine was skipping the strategy's vote. We must ask it explicitly.
+                # Since we are running single-strategy optimization, we use strategies[0].
+                current_strat = strategies[0]
+                
+                # 1. Ask the strategy: "Do we buy?"
+                # We pass the full dataframe and the specific index
+                entry_signal = current_strat.entry(sym_data.df, signal_loc)
+                
+                # 2. If Strategy says NO (None/False), skipping execution
+                if not entry_signal:
+                    # DEBUG: Uncomment to see rejections
+                    # print(f"Rejected: {cand.sym} by Strategy Rules")
+                    continue
+                    
+                # 3. If Strategy says YES, ensure we respect its sizing if provided
+                if isinstance(entry_signal, dict):
+                    # Extract custom stop loss if the strategy calculated one dynamically
+                    if 'stop_loss_atr' in entry_signal:
+                        # Update the stop loss logic for this trade here if needed
+                        pass
+                # ===============================================
                 prev_row = sym_data.df.iloc[prev_loc]
                 pivot = row.get("high_20_prev", np.nan)
                 price_today = row.get("close", np.nan)

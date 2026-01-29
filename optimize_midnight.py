@@ -111,6 +111,10 @@ def evaluate_genome(genome_id_and_genome):
                 "bb_width_threshold": genome["bb_width_max"],
                 "regime_ma": genome["regime_ma"]
             },
+            "entry_rules": [
+                {"col": "close", "op": ">", "ref": "high_20_prev", "val": 0.99},
+                {"col": "close", "op": ">", "ref": "sma50"}
+            ],
             "risk_management": {
                 "stop_loss_atr": genome["stop_loss_atr"],
                 "max_positions": genome["max_positions"],
@@ -200,7 +204,39 @@ if __name__ == "__main__":
     g_data = fetch_data_pack(["SPY", "VIX"], days=5800, backtest_mode=True)
     
     print("...Preparing & Compressing...")
-    prepared = prepare_backtest_data(data, symbols, None, g_data)
+    # Define Looser Config for Data Prep to ensure we get candidates
+    WIDE_NET_CONFIG = {
+        "parameters": {
+            "min_rs": 70,           # Catch falling stars / recovery plays
+            "adx_threshold": 10,    # Allow chopping stocks
+            "vol_ma_ratio": 1.0,    # Allow normal volume
+            "bb_width_threshold": 0.40  # Allow loose expansions
+        }
+    }
+    prepared = prepare_backtest_data(data, symbols, WIDE_NET_CONFIG, g_data)
+    print(f"📊 DATA POOL: {len(prepared.enriched)} tickers passed Wide Net filter.")
+    
+    # --- DATA PATCHING LOOP ---
+    print("🔧 MANUAL PATCH: Calculating 'high_20_prev' and 'atr' for all symbols...")
+    # --- DATA PATCHING LOOP ---
+    for sym, s_data in prepared.enriched.items():
+        df = s_data.df
+        # Calculate 20-day high shifted by 1 (required for Breakout Entry)
+        if 'high' in df.columns:
+            df['high_20_prev'] = df['high'].rolling(window=20).max().shift(1)
+        
+        # Calculate ATR if missing (required for Stop Loss)
+        if 'atr' not in df.columns and 'high' in df.columns and 'low' in df.columns and 'close' in df.columns:
+            # User requested TR calculation using np.maximum
+            df['tr'] = np.maximum(
+                df['high'] - df['low'], 
+                np.maximum(
+                    abs(df['high'] - df['close'].shift(1)), 
+                    abs(df['low'] - df['close'].shift(1))
+                )
+            )
+            df['atr'] = df['tr'].rolling(window=14).mean()
+    
     prepared = compress_data(prepared)
     
     population = [generate_random_genome() for _ in range(POPULATION_SIZE)]
