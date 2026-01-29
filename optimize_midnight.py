@@ -1,279 +1,286 @@
-
-import sys
 import os
+import sys
 import json
 import random
-import copy
-import multiprocessing
-import concurrent.futures
+import time
 import pandas as pd
 import numpy as np
-import time
+import concurrent.futures
+import multiprocessing
+from datetime import datetime
+import pickle
 
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+# Add project root to path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from strategies.sepa_champion import SEPAChampionStrategy
-from execution.engine import run_backtest, prepare_backtest_data
+# --- IMPORTS (DEBUG MODE - NO ERROR CATCHING) ---
+# We removed the try/except block to see the REAL error trace.
+from execution.engine import prepare_backtest_data, run_backtest
 from data.loader import fetch_data_pack
 from data.universe import get_universe_symbols
+from strategies.strategy_loader import load_strategies
 
-# --- MIDNIGHT CONFIG ---
+# --- CONFIGURATION (M3 MAX OPTIMIZED) ---
+RESULTS_FILE = "midnight_results.csv"
+BEST_GENOME_FILE = "config/midnight_winner.json"
 POPULATION_SIZE = 50
 GENERATIONS = 100
-ELITE_SIZE = 5
-MUTATION_RATE = 0.3
-NUM_WORKERS = max(1, os.cpu_count() - 2) # Leave some room for OS
+START_DATE = "2010-01-01"  # Full Cycle
+END_DATE = "2025-12-31"
 
-# --- SEARCH SPACE ---
-GENE_RANGES = {
-    "rs_floor": [80, 85, 87, 90, 93, 95],
-    "ma_exit": ["sma10", "sma20", "sma50"],
-    "stop_loss_atr": (2.0, 5.0),
-    "regime_ma": ["sma150", "sma200"],
-    "adx_threshold": [15, 20, 25, 30],
-    "max_positions": [4, 5, 8, 10]
+# HARDWARE TUNING:
+# M3 Max has ~14 cores, but 36GB RAM limits us.
+# With float32 compression, we can safely run 6-8 workers.
+MAX_WORKERS = 6 
+
+# --- THE "ALPHAG" SEARCH SPACE ---
+# Audit Findings: Added "Concentration" and "Velocity" genes.
+GENE_SPACE = {
+    # 1. SELECTION (Quality)
+    "rs_floor": [85, 87, 90, 93, 95],         # Tighter = Less Churn
+    "vol_mult": [1.5, 2.0, 2.5, 3.0],         # Volume Quality
+    "adx_min": [15, 20, 25, 30],              # Trend Strength
+    "bb_width_max": [0.15, 0.20, 0.25],       # VCP Tightness (Crucial for 30%)
+    
+    # 2. MARKET TIMING (Survival)
+    "regime_ma": ["sma150", "sma200"],        # Bear Market Filter
+    
+    # 3. EXIT MECHANICS (Velocity)
+    "exit_sma": ["sma10", "sma20", "sma50"],
+    "stop_loss_atr": [2.0, 3.0, 4.0, 5.0],
+    "partial_profit_day": [3, 5, 10, 999],    # 999 = Disabled. 3-5 = High Velocity.
+    
+    # 4. SIZING (Concentration - The Key to 30%)
+    "max_positions": [4, 5, 6],               # FORCE CONCENTRATION. No 10-stock portfolios.
+    "risk_per_trade": [0.015, 0.020, 0.025]   # Bet bigger on fewer stocks.
 }
 
-def random_gene(name):
-    bounds = GENE_RANGES[name]
-    if isinstance(bounds, list):
-        return random.choice(bounds)
-    if isinstance(bounds, tuple):
-        return round(random.uniform(bounds[0], bounds[1]), 2)
-    return bounds
-
-def create_random_genome():
-    return {k: random_gene(k) for k in GENE_RANGES}
-
-def mutate(genome):
-    mutant = genome.copy()
-    for gene in genome:
-        if random.random() < MUTATION_RATE:
-            mutant[gene] = random_gene(gene)
-    return mutant
-
-def crossover(parent1, parent2):
-    child = {}
-    for gene in parent1:
-        child[gene] = parent1[gene] if random.random() > 0.5 else parent2[gene]
-    return child
-
-def genome_to_config(genome):
-    config = {
-        "name": "Midnight Candidate",
-        "use_fundamentals": False,
-        "entry_rules": [
-             {"col": "rs_rating", "op": ">", "val": genome["rs_floor"]}, 
-             {"col": "bb_width", "op": "<", "val": 0.25},
-             # Trend Reinforcement default
-             {"col": "close", "op": ">", "ref": "sma50"},
-             {"col": "close", "op": ">", "ref": "high_20_prev", "val": 0.99}
-        ],
-        "risk_parameters": {
-             "risk_per_trade": 1.0, # Placeholder, will be autoscaled by max_pos_size constraints in engine? 
-             # Wait, user said "NO LEVERAGE". 
-             # We should set risk_per_trade so that we don't exceed 1.0 exposure.
-             # If max_positions=4, roughly 0.25 size.
-             # Ideally let's set risk appropriately or use max_pos_size_pct.
-             "stop_loss_type": "atr",
-             "stop_loss_atr": genome["stop_loss_atr"],
-             "max_positions": genome["max_positions"],
-             # Ensure no leverage:
-             "max_pos_size_pct": float(1.0 / genome["max_positions"])
-        },
-        "execution_parameters": {
-             "time_stop": 60, # Reasonable default for robustness
-             "partial_profit_day": 999,
-             "partial_profit_r": 100.0,
-             "vol_mult": 1.5, # Fixed for midnight
-             "rs_floor": genome["rs_floor"],
-             "adx_min": float(genome["adx_threshold"]),
-             "use_trailing_stop": True
-        },
-        "exit_rules": [{"col": "close", "op": "<", "ref": genome["ma_exit"]}]
-    }
-    return config
-
-# Global storage for worker processes to access read-only data
-# This avoids pickling huge dataframes for every task
+# --- GLOBAL DATA REF (For Workers) ---
 _prepared_data_ref = None
 _g_data_ref = None
 
+def generate_random_genome():
+    return {k: random.choice(v) for k, v in GENE_SPACE.items()}
+
+def mutate_genome(genome):
+    new_genome = genome.copy()
+    # Mutate 1-2 genes
+    for _ in range(random.randint(1, 2)):
+        gene = random.choice(list(GENE_SPACE.keys()))
+        new_genome[gene] = random.choice(GENE_SPACE[gene])
+    return new_genome
+
+def crossover(parent1, parent2):
+    child = {}
+    for key in GENE_SPACE.keys():
+        child[key] = parent1[key] if random.random() > 0.5 else parent2[key]
+    return child
+
+def compress_data(prepared_obj):
+    """
+    TURBO PATCH: Downcast all float64 to float32.
+    Reduces RAM usage by ~45%, preventing M3 Max crashes.
+    """
+    print("🗜️  Compressing Data for M3 Max (float64 -> float32)...")
+    for sym, s_data in prepared_obj.enriched.items():
+        # Downcast DataFrame
+        cols = s_data.df.select_dtypes(include=['float64']).columns
+        s_data.df[cols] = s_data.df[cols].astype('float32')
+        
+        # Downcast Dataclass Arrays
+        # (Assuming _SymbolArrays structure from engine.py)
+        try:
+            # Common attributes in SymbolArrays
+            for attr in ['close', 'high', 'low', 'open', 'volume', 'rs_rating', 'adx', 'sma50', 'sma200']:
+                if hasattr(s_data, attr):
+                    val = getattr(s_data, attr)
+                    if isinstance(val, np.ndarray) and val.dtype == 'float64':
+                        setattr(s_data, attr, val.astype('float32'))
+        except Exception:
+            pass # Safety pass
+            
+    return prepared_obj
+
 def init_worker(prepared_data, g_data):
+    """Initializes global state for each worker process to avoid pickling overhead."""
     global _prepared_data_ref
     global _g_data_ref
     _prepared_data_ref = prepared_data
     _g_data_ref = g_data
 
-def evaluate_genome(genome):
-    # Use global data reference
+def evaluate_genome(genome_id_and_genome):
+    """Worker function to test a strategy."""
+    genome_id, genome = genome_id_and_genome
     global _prepared_data_ref
     global _g_data_ref
     
-    if _prepared_data_ref is None or _g_data_ref is None:
-        return -999.0, 0.0, 0.0, 0, {}
+    if _prepared_data_ref is None:
+        return {"id": genome_id, "score": -999, "error": "Worker init failed"}
 
     try:
-        config = genome_to_config(genome)
+        # 1. DYNAMIC CONFIG GENERATION
+        # We construct a full config dictionary based on the genes
         
-        # REGIME MA SWITCHING HACK
-        # engine.py expects 'global_spy_sma200'. 
-        # If genome wants SMA150, we point 'sma200' in g_data to valid data?
-        # Run_backtest extracts from 'global_data["SPY"]'.
+        # Calculate sizing based on concentration
+        # If max_pos=4, size=0.25. If max_pos=5, size=0.20
+        pos_size = 1.0 / genome["max_positions"] 
         
-        # We need to make a localized shallow copy of g_data for this run
-        g_data_run = _g_data_ref.copy()
+        strategy_config = {
+            "name": f"Midnight_Gen_{genome_id}",
+            "strategy_id": f"gen_{genome_id}",
+            "parameters": {
+                "min_rs": genome["rs_floor"],
+                "vol_ma_ratio": genome["vol_mult"],
+                "adx_threshold": genome["adx_min"],
+                "bb_width_threshold": genome["bb_width_max"],
+                "regime_ma": genome["regime_ma"]
+            },
+            "risk_management": {
+                "stop_loss_atr": genome["stop_loss_atr"],
+                "max_positions": genome["max_positions"],
+                "risk_per_trade": genome["risk_per_trade"],
+                "max_pos_size_pct": pos_size
+            },
+            "execution": {
+                "exit_sma": genome["exit_sma"],
+                "partial_profit_day": int(genome["partial_profit_day"]),
+                "partial_profit_ratio": 0.5 # Sell half if taking partials
+            }
+        }
         
-        if genome["regime_ma"] == "sma150":
-            # Check if we have spy dataframe
-            spy_df = g_data_run.get("SPY")
-            if spy_df is not None:
-                # We need to trick the engine. 
-                # The engine looks for 'sma200'.
-                # We can swap the columns in a copy of the dataframe.
-                spy_run = spy_df.copy()
-                if "sma150" in spy_run.columns:
-                    spy_run["sma200"] = spy_run["sma150"] # The Swap
-                g_data_run["SPY"] = spy_run
-
-        strat = SEPAChampionStrategy(config)
-        res = run_backtest(
-            strat,
-            data=_prepared_data_ref,
+        # HACK: Because engine.py expects specific object structures, 
+        # we will load a Default Template and INJECT values.
+        strategies = load_strategies([strategy_config])
+        strat = strategies[0]
+        
+        # Manually force attributes that might not map 1:1 in loader
+        strat.min_rs = genome["rs_floor"]
+        strat.vol_ma_ratio = genome["vol_mult"]
+        strat.adx_threshold = genome["adx_min"]
+        
+        # 2. RUN BACKTEST
+        # Use our worker-local data references
+        result = run_backtest(
+            [strat], 
+            _prepared_data_ref, 
             start_cash=100000.0, 
-            start_date="2010-01-01",
-            end_date="2025-12-31",
-            global_data=g_data_run
+            start_date=START_DATE, 
+            end_date=END_DATE,
+            global_data=_g_data_ref
         )
         
-        if not res: return 0.0, 0.0, 0.0, 0, {}
-        res = res if isinstance(res, dict) else res[0]
-        
-        cagr = res.get("cagr", 0.0) * 100
-        dd = res.get("max_drawdown_pct", 1.0) * 100
-        trades = res.get("total_trades", 0)
-        
-        # MINERVINI FITNESS
-        # Score = CAGR * (1 - (Max_Drawdown / 100))
-        # Penalty for low trades
-        
-        if trades < 50:
-            score = 0.0
-        else:
-            # Survivability factor
-            survivability = 1.0 - (dd / 100.0)
-            score = cagr * survivability
-            
-            # Turnover Bonus: If > 500 trades, small boost (e.g., 5%)
-            if trades > 500:
-                score *= 1.05
+        if not result:
+            return {"id": genome_id, "score": 0, "error": "No result"}
 
-        return score, cagr, dd, trades, res
+        # Handle list vs dict return
+        metrics = result[0] if isinstance(result, list) else result
         
+        # 3. CALCULATE FITNESS (The "Minervini Score")
+        final_val = metrics.get("final_value", 100000)
+        max_dd = metrics.get("max_drawdown", 0)
+        trades = metrics.get("total_trades", 0)
+        
+        # CAGR
+        years = 16 # 2010 to 2026
+        cagr = (final_val / 100000.0) ** (1/years) - 1
+        cagr_pct = cagr * 100
+        
+        # Scoring Logic
+        # We want CAGR > 20%, but huge penalty for DD > 30%
+        score = cagr_pct
+        
+        # Penalties
+        if max_dd > 25.0: score *= 0.5   # Soft ceiling
+        if max_dd > 40.0: score = -10.0  # Hard reject
+        if trades < 50: score = 0.0      # Inactive
+        
+        # Bonuses
+        if trades > 300: score *= 1.1    # Reward velocity
+        if cagr_pct > 25: score *= 1.2   # Reward superperformance
+
+        return {
+            "id": genome_id,
+            "genome": genome,
+            "score": score,
+            "cagr": cagr_pct,
+            "dd": max_dd,
+            "trades": trades,
+            "final_value": final_val
+        }
+
     except Exception as e:
-        # print(f"Error in worker: {e}")
-        return 0.0, 0.0, 0.0, 0, {}
+        return {"id": genome_id, "score": -999, "error": str(e)}
 
+# --- MAIN LOOP ---
+if __name__ == "__main__":
+    # 1. OPTIMIZE FOR M3
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
 
-def main():
-    print("🌙 Starting OPERATION MIDNIGHT (20-Year Robustness)...")
-    print(f"Workers: {NUM_WORKERS}")
+    print(f"🚀 OPERATION MIDNIGHT: GOLD MASTER EDITION")
+    print(f"HARDWARE: M3 Max | WORKERS: {MAX_WORKERS} | DATA: 16 Years (Compressed)")
     
-    # 1. Load Data
-    print("📦 Loading DEEP HISTORY (2010-2025)...")
+    # 2. LOAD DATA
+    print("...Loading Universe...")
     symbols = get_universe_symbols("RUSSELL3000")
+    data = fetch_data_pack(symbols, days=5800, backtest_mode=True)
+    g_data = fetch_data_pack(["SPY", "VIX"], days=5800, backtest_mode=True)
     
-    # Approx 16 years (2010-2026). Loader uses 1.6x multiplier for calendar days.
-    # 4000 * 1.6 = 6400 days = 17.5 years. Covers 2009+.
-    data = fetch_data_pack(symbols, days=4000, backtest_mode=True) or {}
-    g_data = fetch_data_pack(["SPY", "VIX"], days=4000, backtest_mode=True) or {}
-    
-    # Ensure SPY has SMA150 computed
-    if "SPY" in g_data:
-        spy = g_data["SPY"]
-        spy.columns = spy.columns.str.lower()
-        if "sma150" not in spy.columns:
-            spy["sma150"] = spy["close"].rolling(150).mean()
-        if "sma200" not in spy.columns:
-            spy["sma200"] = spy["close"].rolling(200).mean()
-    
-    print("⚙️  Pre-calculating Indicators (Cache)...")
+    print("...Preparing Data...")
     prepared = prepare_backtest_data(data, symbols, None, g_data)
     
-    # 2. Init Population
-    population = [create_random_genome() for _ in range(POPULATION_SIZE)]
-    best_overall_genome = None
-    best_overall_score = -9999.0
+    # 3. APPLY COMPRESSION (The Fix)
+    prepared = compress_data(prepared)
     
-    results_log = []
-
-    # 3. Process Pool
-    # We use 'fork' on Linux, 'spawn' on Mac.
-    # To pass data to workers, we can stick it in a global or use initializer.
-    # Initializer is cleaner for large read-only data.
+    # 4. START EVOLUTION
+    population = [generate_random_genome() for _ in range(POPULATION_SIZE)]
     
-    with concurrent.futures.ProcessPoolExecutor(max_workers=NUM_WORKERS, initializer=init_worker, initargs=(prepared, g_data)) as executor:
+    for gen in range(GENERATIONS):
+        print(f"\n🧬 GENERATION {gen+1} / {GENERATIONS}")
+        start_time = time.time()
         
-        for gen in range(GENERATIONS):
-            print(f"\n🧬 Generation {gen+1}/{GENERATIONS}")
-            start_time = time.time()
-            
-            # Map evaluation
-            futures = {executor.submit(evaluate_genome, genome): genome for genome in population}
-            
-            scored_pop = []
+        tasks = [(i, g) for i, g in enumerate(population)]
+        results = []
+        
+        with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS, initializer=init_worker, initargs=(prepared, g_data)) as executor:
+            futures = [executor.submit(evaluate_genome, t) for t in tasks]
             for future in concurrent.futures.as_completed(futures):
-                genome = futures[future]
-                try:
-                    score, cagr, dd, tr, _ = future.result()
-                    scored_pop.append((score, genome, cagr, dd, tr))
-                except Exception as e:
-                    print(f"Worker Error: {e}")
-                    scored_pop.append((-999.0, genome, 0.0, 0.0, 0))
-
-            # Sort
-            scored_pop.sort(key=lambda x: x[0], reverse=True)
+                res = future.result()
+                results.append(res)
+                # Live stream results to terminal
+                if "error" not in res:
+                    print(f"   > [G{gen+1}] Trades: {res['trades']} | CAGR: {res['cagr']:.1f}% | DD: {res['dd']:.1f}%")
+        
+        # Filter failures
+        valid_results = [r for r in results if "error" not in r]
+        if not valid_results:
+            print("CRITICAL: All strategies failed.")
+            break
             
-            best_gen_score, best_gen_genome, b_cagr, b_dd, b_tr = scored_pop[0]
-            elapsed = time.time() - start_time
-            print(f"🏆 Gen {gen+1} Winner: Score={best_gen_score:.2f} | CAGR={b_cagr:.1f}% | DD={b_dd:.1f}% | Tr={b_tr} | {elapsed:.1f}s")
-            print(f"   DNA: {best_gen_genome}")
+        # Sort and Save
+        valid_results.sort(key=lambda x: x["score"], reverse=True)
+        winner = valid_results[0]
+        
+        print(f"🏆 GEN {gen+1} WINNER: CAGR {winner['cagr']:.2f}% | DD {winner['dd']:.2f}% | {winner['genome']}")
+        
+        # Save persistence
+        with open(BEST_GENOME_FILE, "w") as f:
+            json.dump(winner["genome"], f, indent=4)
+        
+        # CSV Log
+        with open(RESULTS_FILE, "a") as f:
+            f.write(f"{gen+1},{winner['cagr']},{winner['dd']},{winner['trades']},\"{winner['genome']}\"\n")
             
-            # Log
-            results_log.append({
-                "Gen": gen+1,
-                "Score": best_gen_score,
-                "CAGR": b_cagr,
-                "Drawdown": b_dd,
-                "Trades": b_tr,
-                "Genome": json.dumps(best_gen_genome)
-            })
-            pd.DataFrame(results_log).to_csv("midnight_results.csv", index=False)
-
-            if best_gen_score > best_overall_score:
-                best_overall_score = best_gen_score
-                best_overall_genome = best_gen_genome
-                with open("config/midnight_winner.json", "w") as f:
-                    json.dump(best_overall_genome, f, indent=2)
-
-            # Evolution
-            elites = [x[1] for x in scored_pop[:ELITE_SIZE]]
-            next_gen = elites[:]
-            
-            while len(next_gen) < POPULATION_SIZE:
-                parent1 = random.choice(elites)
-                parent2 = random.choice(elites) # Or sample from broader population
-                child = crossover(parent1, parent2)
-                child = mutate(child)
-                next_gen.append(child)
-            
-            population = next_gen
-
-    print("\n🏁 MIDNIGHT RUN COMPLETE.")
-    print(f"👑 Ultimate Winner (Score: {best_overall_score:.2f})")
-    print(json.dumps(best_overall_genome, indent=2))
-
-if __name__ == "__main__":
-    if sys.platform == "darwin":
-        multiprocessing.set_start_method("spawn")
-    main()
+        # Breeding (Elitism)
+        next_gen = [r["genome"] for r in valid_results[:10]] # Keep top 10
+        while len(next_gen) < POPULATION_SIZE:
+            p1 = random.choice(valid_results[:15])["genome"]
+            p2 = random.choice(valid_results[:15])["genome"]
+            child = crossover(p1, p2)
+            if random.random() < 0.3: child = mutate_genome(child)
+            next_gen.append(child)
+        population = next_gen
+        
+        print(f"⏱️  Gen Time: {time.time()-start_time:.1f}s")
