@@ -1,12 +1,14 @@
 {
-    "rs_floor": 88,
-    "vol_mult": 1.25,
-    "adx_min": 15,
-    "bb_width_max": 0.3,
+    "rs_floor": 90,
+    "vol_mult": 2.0,
+    "adx_min": 20,
+    "bb_width_max": 0.2,
     "regime_ma": "sma200",
-    "exit_sma": "sma20",
-    "stop_loss_atr": 4.0,
-    "partial_profit_day": 5,
+    "exit_sma": "sma10",
+    "stop_loss_atr": 3.0,
+    "enable_partial_profit": true,
+    "partial_profit_r": 4.0,
+    "move_stop_to_be": false,
     "max_positions": 5,
     "risk_per_trade": 0.02
 }

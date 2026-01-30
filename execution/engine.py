@@ -695,6 +695,7 @@ def _legacy_run_backtest(
 
     global_spy_close = np.zeros(len(all_dates), dtype=np.float64)
     global_spy_sma200 = np.zeros(len(all_dates), dtype=np.float64)
+    global_spy_sma150 = np.zeros(len(all_dates), dtype=np.float64)
 
     if global_data and "SPY" in global_data:
         spy_df_raw = global_data["SPY"]
@@ -703,9 +704,12 @@ def _legacy_run_backtest(
             spy_df_raw.columns = spy_df_raw.columns.str.lower()
             if "sma200" not in spy_df_raw.columns:
                  spy_df_raw["sma200"] = spy_df_raw["close"].rolling(200).mean()
+            if "sma150" not in spy_df_raw.columns:
+                 spy_df_raw["sma150"] = spy_df_raw["close"].rolling(150).mean()
             spy_aligned = spy_df_raw.reindex(all_dates).ffill().bfill()
             global_spy_close = spy_aligned["close"].fillna(0).to_numpy(dtype=np.float64)
             global_spy_sma200 = spy_aligned["sma200"].fillna(0).to_numpy(dtype=np.float64)
+            global_spy_sma150 = spy_aligned["sma150"].fillna(0).to_numpy(dtype=np.float64)
 
 
     # --- MAIN LOOP (Optimized) ---
@@ -840,7 +844,9 @@ def _legacy_run_backtest(
         max_pos = int(params.get("max_positions", 10) or 10)
         risk_per_trade = float(params.get("risk_per_trade", 0.01) or 0.01)
         max_pos_size_pct = float(params.get("max_pos_size_pct", 0.30) or 0.30)
-        partial_profit_day = int(params.get("partial_profit_day", 4) or 4)
+        partial_profit_day = int(params.get("partial_profit_day", 999)) # Legacy support default to 999
+        enable_partial_profit = bool(params.get("enable_partial_profit", True))
+        move_stop_to_be = bool(params.get("move_stop_to_be", True))
         partial_profit_r = float(params.get("partial_profit_r", 2.0))
 
         for day_idx, candidates in enumerate(candidates_by_day):
@@ -870,7 +876,10 @@ def _legacy_run_backtest(
                 reason = None
 
                 # Market Regime Exit (force liquidation in bear regime)
-                if global_spy_close[day_idx] < global_spy_sma200[day_idx]:
+                regime_ma_type = params.get("regime_ma", "sma200")
+                regime_threshold = global_spy_sma150[day_idx] if regime_ma_type == "sma150" else global_spy_sma200[day_idx]
+
+                if global_spy_close[day_idx] < regime_threshold:
                     should_exit = True
                     exit_px = current_close
                     reason = "MARKET_REGIME_EXIT"
@@ -894,26 +903,31 @@ def _legacy_run_backtest(
                     # Free Roll Rule: at +2R, Sell 50% and move stop to breakeven
                     risk_per_share = float(pos.get("initial_risk", 0.0) or 0.0)
                     if risk_per_share > 0 and not pos.get("partial_taken", False):
-                        target_r = pos["entry_price"] + (partial_profit_r * risk_per_share)
-                        if current_close >= target_r:
-                            # 1. Sell 50%
-                            shares_to_sell = int(pos["shares"] * 0.5)
-                            if shares_to_sell > 0:
-                                proceeds = shares_to_sell * current_close
-                                cash += proceeds
-                                pos["shares"] -= shares_to_sell
-                                
-                                # Log the partial trade (optional, but good for stats)
-                                trades_list.append({
-                                    "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
-                                    "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
-                                    "Return %": (current_close/pos["entry_price"] - 1)*100,
-                                    "Reason": f"PARTIAL_PROFIT_{partial_profit_r}R"
-                                })
+                        # EXPLICIT LOGIC: Check if this strategy allows partial profits
+                        if enable_partial_profit:
+                            target_r = pos["entry_price"] + (partial_profit_r * risk_per_share)
+                            
+                            if current_close >= target_r:
+                                # 1. Sell 50%
+                                shares_to_sell = int(pos["shares"] * 0.5)
+                                if shares_to_sell > 0:
+                                    proceeds = shares_to_sell * current_close
+                                    cash += proceeds
+                                    pos["shares"] -= shares_to_sell
+                                    
+                                    # Log the partial trade (optional, but good for stats)
+                                    trades_list.append({
+                                        "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
+                                        "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
+                                        "Return %": (current_close/pos["entry_price"] - 1)*100,
+                                        "Reason": f"PARTIAL_PROFIT_{partial_profit_r}R"
+                                    })
 
-                            # 2. Move Stop on REmaining to Breakeven
-                            pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
-                            pos["partial_taken"] = True
+                                    # 2. Move Stop on Remaining to Breakeven (Optional)
+                                    if move_stop_to_be:
+                                        pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
+                                    
+                                    pos["partial_taken"] = True
 
                 if not should_exit:
                     # AUDIT FIX: Use the Strategy's sophisticated exit logic (Trailing Stops, SMA Breaks)

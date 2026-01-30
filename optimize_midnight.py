@@ -36,22 +36,26 @@ MAX_WORKERS = 6
 # Removed "Safe" options to force the AI to take risks
 GENE_SPACE = {
     # SELECTION: Looser filters to get more "At Bats"
-    "rs_floor": [70, 75, 80, 85, 88],         # WIDENED: 70+ allowed
-    "vol_mult": [1.0, 1.25, 1.5, 2.0],        # WIDENED: Normal vol allowed
-    "adx_min": [10, 12, 15, 20, 25],          # WIDENED: Lower trend req
-    "bb_width_max": [0.20, 0.25, 0.30, 0.35], # WIDENED: Looser bands
+    "rs_floor": [80, 85, 87, 90, 95],         # High quality, but allow 80 to prevent starvation
+    "vol_mult": [1.0, 1.25, 1.5, 2.0],        
+    "adx_min": [10, 12, 15, 20, 25],          
+    "bb_width_max": [0.20, 0.25, 0.30, 0.35], 
     
     # TIMING
-    "regime_ma": ["sma200"],                  # Hardcode to 200 for now
+    "regime_ma": ["sma150", "sma200"],        
     
     # EXIT MECHANICS
-    "exit_sma": ["sma20", "sma50"],
-    "stop_loss_atr": [2.0, 2.5, 3.0, 4.0, 5.0], # WIDENED: Tighter stops allowed
-    "partial_profit_day": [3, 5, 8, 10],      # WIDENED
+    "exit_sma": ["sma10", "sma20"],           
+    "stop_loss_atr": [2.0, 2.5, 3.0],         # REFINED: Stabilize risk
+    
+    # PROFIT TAKING (The Control Switch)
+    "enable_partial_profit": [True, False],   # Let Winners Run Switch
+    "partial_profit_r": [2.0, 3.0, 4.0],      # Standard targets
+    "move_stop_to_be": [True, False],         # Tail preservation
     
     # SIZING: Forced Concentration
-    "max_positions": [4, 5, 6],               # WIDENED slightly
-    "risk_per_trade": [0.015, 0.02, 0.025]    # WIDENED: Lower risk allowed
+    "max_positions": [4, 5, 6],
+    "risk_per_trade": [0.02, 0.025, 0.03]     
 }
 
 # --- GLOBAL DATA REF ---
@@ -120,8 +124,9 @@ def evaluate_genome(genome_id_and_genome):
             },
             "execution_parameters": {
                 "exit_sma": genome["exit_sma"],
-                "partial_profit_day": int(genome["partial_profit_day"]),
-                "partial_profit_ratio": 0.5
+                "enable_partial_profit": genome["enable_partial_profit"],
+                "move_stop_to_be": genome["move_stop_to_be"],
+                "partial_profit_r": genome["partial_profit_r"]
             }
         })
         
@@ -162,31 +167,18 @@ def evaluate_genome(genome_id_and_genome):
         years = 16 
         cagr_pct = ((final_val / 100000.0) ** (1/years) - 1) * 100
         
-        # --- NEW FITNESS FUNCTION (Risk-Adjusted Growth) ---
-        # Goal: Reward smooth, consistent growth using a Calmar-like Ratio
+        # --- NEW FITNESS FUNCTION (Smart Scoring) ---
+        # Formula: (CAGR ^ 1.5) - (DD * 0.5)
+        # Soft Penalty: If DD > 25.0, score -= (DD - 25.0) * 50.0
         
-        # Base Score is CAGR
-        score = cagr_pct
-        
-        # Apply Multiplier for Sharpness (Efficiency)
-        # Verify we have positive returns before applying ratio logic
         if cagr_pct > 0:
-            # 1. Reward High Returns causing minimal drawdown
-            # Using a modified generic ratio: Return / (MaxDD + 5%)
-            # The +5% buffer prevents division by zero and smooths extreme low-DD anomalies
-            risk_adj_ratio = cagr_pct / (max_dd + 5.0)
-            score = (cagr_pct * 1.0) + (risk_adj_ratio * 20.0)
-            
-            # 2. Activity Bonus (Logarithmic)
-            # We want statistically significant trades, but diminishing returns after ~200
-            import math
-            trade_score = math.log(trades + 1) * 5.0
-            score += trade_score
-            
+            score = (cagr_pct ** 1.5) - (max_dd * 0.5)
         else:
-            # Penalize losses, but essentially rank by "least bad"
-            # Score will be negative
-            score = cagr_pct - max_dd
+            score = cagr_pct - max_dd # Linear punishment for losers
+            
+        if max_dd > 25.0:
+            penalty = (max_dd - 25.0) * 50.0
+            score -= penalty
 
         return {
             "id": genome_id,
@@ -218,7 +210,7 @@ if __name__ == "__main__":
     # Define Looser Config for Data Prep to ensure we get candidates
     WIDE_NET_CONFIG = {
         "parameters": {
-            "min_rs": 70,           # Catch falling stars / recovery plays
+            "min_rs": 60,           # Catch falling stars / recovery plays (Updated per instructions)
             "adx_threshold": 10,    # Allow chopping stocks
             "vol_ma_ratio": 1.0,    # Allow normal volume
             "bb_width_threshold": 0.40  # Allow loose expansions
