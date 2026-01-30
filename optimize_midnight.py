@@ -36,7 +36,7 @@ MAX_WORKERS = 6
 # Removed "Safe" options to force the AI to take risks
 GENE_SPACE = {
     # SELECTION: Looser filters to get more "At Bats"
-    "rs_floor": [80, 85, 87, 90, 95],         # High quality, but allow 80 to prevent starvation
+    "rs_floor": [85, 87, 90, 93, 95],         # High Quality
     "vol_mult": [1.0, 1.25, 1.5, 2.0],        
     "adx_min": [10, 12, 15, 20, 25],          
     "bb_width_max": [0.20, 0.25, 0.30, 0.35], 
@@ -45,17 +45,18 @@ GENE_SPACE = {
     "regime_ma": ["sma150", "sma200"],        
     
     # EXIT MECHANICS
-    "exit_sma": ["sma10", "sma20"],           
-    "stop_loss_atr": [2.0, 2.5, 3.0],         # REFINED: Stabilize risk
+    "exit_sma": ["sma50"],                    # Loose Hold for Runners
+    "stop_loss_atr": [1.5, 1.75, 2.0, 2.25],  # Tight Risk
     
     # PROFIT TAKING (The Control Switch)
-    "enable_partial_profit": [True, False],   # Let Winners Run Switch
-    "partial_profit_r": [2.0, 3.0, 4.0],      # Standard targets
-    "move_stop_to_be": [True, False],         # Tail preservation
+    "enable_partial_profit": [True],          # Force Hybrid Model
+    "partial_profit_r": [2.0, 2.25, 2.5, 3.0],# Achievable Targets
+    "move_stop_to_be": [True, False],         # Let AI decide on Breakeven
+    "partial_profit_day": [0, 3, 5],          # Minimal time gating
     
     # SIZING: Forced Concentration
     "max_positions": [4, 5, 6],
-    "risk_per_trade": [0.02, 0.025, 0.03]     
+    "risk_per_trade": [0.02, 0.025, 0.03]  
 }
 
 # --- GLOBAL DATA REF ---
@@ -126,7 +127,8 @@ def evaluate_genome(genome_id_and_genome):
                 "exit_sma": genome["exit_sma"],
                 "enable_partial_profit": genome["enable_partial_profit"],
                 "move_stop_to_be": genome["move_stop_to_be"],
-                "partial_profit_r": genome["partial_profit_r"]
+                "partial_profit_r": genome["partial_profit_r"],
+                "partial_profit_day": int(genome["partial_profit_day"])
             }
         })
         
