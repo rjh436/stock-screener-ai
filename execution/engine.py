@@ -1003,27 +1003,20 @@ def _legacy_run_backtest(
                     continue
                 row = sym_data.df.iloc[signal_loc]
                 
-                # === [PATCH] FORCE STRATEGY ENTRY VALIDATION ===
-                # The engine was skipping the strategy's vote. We must ask it explicitly.
-                # Since we are running single-strategy optimization, we use strategies[0].
-                current_strat = strategies[0]
+                # --- PATCH: FORCE STRATEGY CONSULTATION ---
+                # The strategy knows the rules. We must ask it.
+                # strategies[0] is our active genome.
+                decision = strategies[0].entry(sym_data.df, signal_loc)
                 
-                # 1. Ask the strategy: "Do we buy?"
-                # We pass the full dataframe and the specific index
-                entry_signal = current_strat.entry(sym_data.df, signal_loc)
-                
-                # 2. If Strategy says NO (None/False), skipping execution
-                if not entry_signal:
-                    # DEBUG: Uncomment to see rejections
-                    # print(f"Rejected: {cand.sym} by Strategy Rules")
+                # If strategy returns None/False, SKIP this trade.
+                if not decision:
                     continue
                     
-                # 3. If Strategy says YES, ensure we respect its sizing if provided
-                if isinstance(entry_signal, dict):
-                    # Extract custom stop loss if the strategy calculated one dynamically
-                    if 'stop_loss_atr' in entry_signal:
-                        # Update the stop loss logic for this trade here if needed
-                        pass
+                # If strategy returns a dict, it might have sizing info (optional)
+                if isinstance(decision, dict):
+                    # Pass for now, just accept the True signal
+                    pass
+                # ------------------------------------------
                 # ===============================================
                 prev_row = sym_data.df.iloc[prev_loc]
                 pivot = row.get("high_20_prev", np.nan)
