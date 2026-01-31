@@ -9,7 +9,7 @@
     "stop_loss_atr": 2.25,
     "enable_partial_profit": true,
     "partial_profit_r": 2.25,
-    "move_stop_to_be": true,
+    "move_stop_to_be": false,
     "partial_profit_day": 0,
     "max_positions": 6,
     "risk_per_trade": 0.02
