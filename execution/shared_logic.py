@@ -363,6 +363,7 @@ def _generic_exit_decision(
     entry_loc: int,
     entry_px: float,
     current_stop: float,
+    partial_taken: bool = False,
 ) -> Tuple[bool, float, Optional[float]]:
     """
     Centralized exit logic for both backtesting and live execution.
@@ -439,6 +440,26 @@ def _generic_exit_decision(
             row_last = row_df.iloc[loc]
         except Exception:
             row_last = None
+        
+        # --- ZOMBIE RUNNER FIX ---
+        # If partial profit taken, we switch to "Loose Hold" (SMA50)
+        # Otherwise use the genome's configured exit (e.g., SMA10 or SMA20)
+        active_exit_sma = params.get("exit_sma", "sma20")
+        if partial_taken:
+            active_exit_sma = "sma50"
+            
+        # Check SMA Exit Logic
+        # We need to find the rule corresponding to the active SMA
+        # This is a bit indirect because params['exit_rules'] is a list of dicts.
+        # But we can also look up the SMA value directly if we know the string.
+        
+        # Simplified Check for SMA Breach:
+        # If the 'active_exit_sma' column exists and Close < SMA, EXIT.
+        if active_exit_sma in ["sma10", "sma20", "sma50"]:
+             sma_val = float(sd.df.iloc[loc].get(active_exit_sma, 0))
+             if 0 < sma_val and close_px < sma_val:
+                 return True, new_stop, None
+
         for rule in params.get("exit_rules", []) or []:
             if not isinstance(rule, dict):
                 continue

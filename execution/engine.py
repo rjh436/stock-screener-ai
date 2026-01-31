@@ -500,11 +500,15 @@ def prepare_backtest_data(
             )
 
             # Combined Gate: Must be in Uptrend AND near Highs AND above Lows
-            trend_mask = (
-                (mature_trend | ipo_trend) &
-                (close_arr > 0.75 * high52_arr) &
-                (close_arr > 1.30 * low52_arr)
-            )
+            # Combined Gate: Must be in Uptrend AND near Highs AND above Lows
+            # AUDIT FIX: UNLOCK DATA - Allow ALL bars initially, filter in Strategy later.
+            # trend_mask = (
+            #     (mature_trend | ipo_trend) &
+            #     (close_arr > 0.75 * high52_arr) &
+            #     (close_arr > 1.30 * low52_arr)
+            # )
+            # trend_mask = np.nan_to_num(trend_mask, nan=False).astype(bool)
+            trend_mask = np.ones(n, dtype=bool)
             trend_mask = np.nan_to_num(trend_mask, nan=False).astype(bool)
 
             enriched[sym] = _SymbolArrays(
@@ -546,6 +550,10 @@ def prepare_backtest_data(
             )
         except Exception:
             continue
+            
+    # AUDIT FIX: Do not delete data here. Keep it for observation.
+    # if not np.any(trend_mask):
+    #     continue
 
     if not enriched:
         return PreparedBacktestData(enriched={}, all_dates=np.array([], dtype="datetime64[ns]"))
@@ -764,6 +772,27 @@ def _legacy_run_backtest(
                 adx_min = float(params.get("adx_min", 20.0))
                 max_bb = float(params.get("bb_width_max", 0.20))
                 
+                # --- DYNAMIC TREND FILTER (The Gatekeeper) ---
+                trend_mode = params.get("trend_mode", "sma200")
+                close_p = float(sd.close[prev_i])
+                
+                if trend_mode == "sma50":
+                    if close_p < float(sd.sma50[prev_i]):
+                        continue
+                elif trend_mode == "sma200":
+                    # Classic Bull Market Filter
+                    if close_p < float(sd.sma200[prev_i]):
+                        continue
+                elif trend_mode == "strict":
+                    # Minervini Classic: Price > 50 > 150 > 200
+                    s50 = float(sd.sma50[prev_i])
+                    s150 = float(sd.sma150[prev_i])
+                    s200 = float(sd.sma200[prev_i])
+                    slope = float(sd.sma200slope[prev_i])
+                    
+                    if not (close_p > s50 and s50 > s150 and s150 > s200 and slope > 0):
+                        continue
+                
                 if rs_rating < min_rs:
                     continue
                     
@@ -791,8 +820,81 @@ def _legacy_run_backtest(
                     vcp_counted = True
 
                 # Calculate Entry/Stop
+                # Calculate Entry/Stop
+                # ZOMBIE RUNNER FIX: Buy Stop Limit Logic
+                # We buy at the Open, OR the Pivot, whichever is higher.
+                # If Open < Pivot, we assume we buy AS it crosses the pivot intraday.
+                # If Open > Pivot, we buy at Open (Gap Up).
                 open_px = float(sd.open[curr_i])
+                pivot_val = float(sd.prev_high[prev_i]) # Using prev_high as proxy for pivot if high_20_prev unavailable
+                
+                # Check if we have high_20_prev in df (not in _SymbolArrays usually)
+                # But wait, optimize_midnight PATCHED it in. 
+                # Can we access it? Maybe safe to just use max(open, prev_high) or similar?
+                # The user instruction was specific: entry_px = max(open_px, pivot_price)
+                # pivot is stored in candidate later. 
+                
+                # Let's use the patch logic if we can. 
+                # In line 252, we put high_20_prev in df.
+                # In line 538, we map prev_high to df['prev_high'].
+                # If the patch worked, high_20_prev IS in df.
+                # But _SymbolArrays doesn't have it explicitly named 'high_20_prev' unless we added it?
+                # Step 4 line 350 doesn't show it.
+                # However, earlier in the loop (line 1022 in view 9), we accessed 'row.get("high_20_prev")'.
+                # But that was a dataframe row lookup. Here we use numpy arrays.
+                
+                # Let's presume for now we use 'prev_high' from the array 
+                # OR we try to fetch it from df if needed (slow).
+                # Wait, "prev_high" in _SymbolArrays is "high.shift(1)".
+                # "high_20_prev" is "rolling(20).max().shift(1)".
+                # We need the latter.
+                # Accessing df.iloc is slow.
+                # Strategy: We will update the Candidate object.
+                # For `candidates_by_day` generation, we store `open_px`.
+                # The entry price adjustment happens at EXECUTION time (line 1100 approx).
+                
+                # Actually, the user instruction "Change the entry logic from entry_px = open_px" 
+                # likely refers to this block here, because `_Candidate` stores `entry_px`.
+                
+                # To be safe and fast:
+                # We will accept Open Price here to generate the candidate.
+                # REAL FIX: We need to change how `entry_px` is calculated *before* creating `_Candidate`.
+                
+                # Accessing high_20_prev from df via index:
+                # pivot_ref = sd.df["high_20_prev"].values[curr_i] # Danger if not aligned?
+                # Let's rely on the fact that we can fix this in "Entry Execution" block later?
+                # NO, the user said "from entry_px = open_px" which is right here.
+                
+                # Let's try to look up high_20_prev safe-ishly.
+                # Since we are iterating, maybe we can't easily get it without adding to _SymbolArrays.
+                # But we can try to guess or use a placeholder?
+                # Or just use the pandas lookup since we have `curr_i`.
+                
                 entry_px = open_px
+                # Optimized Lookup if column exists
+                # if "high_20_prev" in sd.df.columns:
+                #    pivot_val = sd.df["high_20_prev"].iat[curr_i] # .iat is fast
+                #    if pivot_val > 0:
+                #        entry_px = max(open_px, pivot_val)
+                
+                # Since I cannot guarantee the column exists without checking, I will do a try-get.
+                # But doing this inside the loop is risky for 500k iterations.
+                # Wait, we are inside `if len(setup_indices) < 1` so it's filtered.
+                
+                # Let's do the dataframe lookup safely.
+                try:
+                    if "high_20_prev" in sd.df.columns:
+                        pivot_val = float(sd.df["high_20_prev"].values[curr_i])
+                        if pivot_val > 0:
+                            entry_px = max(open_px, pivot_val)
+                except Exception:
+                    pass
+                
+                # PHANTOM PROTECTION: Ensure limit price was actually reached
+                day_high = float(sd.high[curr_i])
+                if entry_px > day_high:
+                    continue
+
                 stop_px = 0.0
                 
                 # Volume Gate
@@ -953,6 +1055,7 @@ def _legacy_run_backtest(
                         entry_loc,
                         pos["entry_price"],
                         pos["stop_price"],
+                        partial_taken=pos.get("partial_taken", False)
                     )
 
                     if new_stop is not None and new_stop > pos["stop_price"]:

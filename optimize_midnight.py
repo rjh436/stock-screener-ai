@@ -42,7 +42,9 @@ GENE_SPACE = {
     "bb_width_max": [0.20, 0.25, 0.30, 0.35], 
     
     # TIMING
+    # TIMING
     "regime_ma": ["sma150", "sma200"],        
+    "trend_mode": ["sma50", "sma200", "strict"], # NEW: Dynamic Trend Definition        
     
     # EXIT MECHANICS
     "exit_sma": ["sma50"],                    # Loose Hold for Runners
@@ -128,7 +130,9 @@ def evaluate_genome(genome_id_and_genome):
                 "enable_partial_profit": genome["enable_partial_profit"],
                 "move_stop_to_be": genome["move_stop_to_be"],
                 "partial_profit_r": genome["partial_profit_r"],
-                "partial_profit_day": int(genome["partial_profit_day"])
+                "partial_profit_r": genome["partial_profit_r"],
+                "partial_profit_day": int(genome["partial_profit_day"]),
+                "trend_mode": genome["trend_mode"]
             }
         })
         
