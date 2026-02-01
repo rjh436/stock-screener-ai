@@ -27,7 +27,7 @@ except ImportError as e:
 RESULTS_FILE = "midnight_results.csv"
 BEST_GENOME_FILE = "config/midnight_winner.json"
 POPULATION_SIZE = 40  # Reduced slightly for speed
-GENERATIONS = 50
+GENERATIONS = 20
 START_DATE = "2010-01-01"
 END_DATE = "2025-12-31"
 MAX_WORKERS = 6 
@@ -35,30 +35,29 @@ MAX_WORKERS = 6
 # --- THE "AGGRESSIVE" SEARCH SPACE ---
 # Removed "Safe" options to force the AI to take risks
 GENE_SPACE = {
-    # SELECTION: Looser filters to get more "At Bats"
-    "rs_floor": [85, 87, 90, 93, 95],         # High Quality
-    "vol_mult": [1.0, 1.25, 1.5, 2.0],        
-    "adx_min": [10, 12, 15, 20, 25],          
-    "bb_width_max": [0.20, 0.25, 0.30, 0.35], 
+    # SELECTION: ELITE FILTERS ONLY
+    "rs_floor": [90, 95, 97],             # SUPREME STRENGTH (Was 80-95)
+    "vol_mult": [2.0, 3.0, 4.0],          # EXPLOSIVE VOLUME (Was 1.0-2.0)
+    "adx_min": [25, 30],                  # POWER TRENDS (Was 20-25)
+    "bb_width_max": [0.10, 0.15],         # TIGHT BASES ONLY (Was 0.10-0.20)
     
     # TIMING
-    # TIMING
-    "regime_ma": ["sma150", "sma200"],        
-    "trend_mode": ["sma50", "sma200", "strict"], # NEW: Dynamic Trend Definition        
+    "regime_ma": ["sma200"],              # HARD DEFENSE
+    "trend_mode": ["strict"], 
     
     # EXIT MECHANICS
-    "exit_sma": ["sma50"],                    # Loose Hold for Runners
-    "stop_loss_atr": [1.5, 1.75, 2.0, 2.25],  # Tight Risk
+    "exit_sma": ["sma10", "sma20"],       
+    "stop_loss_atr": [1.5, 2.0],          
     
-    # PROFIT TAKING (The Control Switch)
-    "enable_partial_profit": [True],          # Force Hybrid Model
-    "partial_profit_r": [2.0, 2.25, 2.5, 3.0],# Achievable Targets
-    "move_stop_to_be": [True, False],         # Let AI decide on Breakeven
-    "partial_profit_day": [0, 3, 5],          # Minimal time gating
+    # PROFIT TAKING
+    "enable_partial_profit": [True],
+    "partial_profit_r": [2.0, 2.5, 3.0],
+    "move_stop_to_be": [True],            # FORCE BREAKEVEN (No Free Rides)
+    "partial_profit_day": [3, 5],
     
-    # SIZING: Forced Concentration
-    "max_positions": [4, 5, 6],
-    "risk_per_trade": [0.02, 0.025, 0.03]  
+    # SIZING
+    "max_positions": [10, 12, 15],        # Diversify
+    "risk_per_trade": [0.01]              # Fixed 1% Risk
 }
 
 # --- GLOBAL DATA REF ---
