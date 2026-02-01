@@ -38,28 +38,28 @@ CHECKPOINT_FILE = "optimizer_checkpoint.pkl"
 # Combined "Sweet Spot" (Cycle 5) + "High Octane" (Apex)
 GENE_SPACE = {
     # SELECTION
-    "rs_floor": [80, 85, 90],             # Expanded: 80 (Volume) to 90 (Quality)
-    "vol_mult": [2.0, 3.0, 4.0],          # Expanded: Allow extreme volume bursts
-    "adx_min": [15, 20, 25],              # Expanded: Allow strong trends
-    "bb_width_max": [0.15, 0.20, 0.25],   # Expanded: Allow slightly looser setups
+    "rs_floor": [70, 75, 80],             # LOOSENED: 70+ (Massive Liveness Boost)
+    "vol_mult": [1.2, 1.5, 2.0],          # LOOSENED: 1.2x (Subtle breakouts)
+    "adx_min": [10, 15, 20],              # LOOSENED: 10+ (Catch early moves)
+    "bb_width_max": [0.15, 0.20, 0.25, 0.30], # EXPANDED: Looser VCPs
     
     # TIMING
     "regime_ma": ["sma200"],              
-    "trend_mode": ["sma50"],              # Keep SMA50 for now (proven liveness)
+    "trend_mode": ["sma50", "sma200"],    
     
     # EXIT MECHANICS
     "exit_sma": ["sma10", "sma20"],       
-    "stop_loss_atr": [1.5, 2.0, 2.5],     # Added 2.5 back (give room to run?)
+    "stop_loss_atr": [2.0, 2.5, 3.0],     # LOOSENED: Room to breathe
     
     # PROFIT TAKING
-    "enable_partial_profit": [True],      
+    "enable_partial_profit": [True, False],      
     "partial_profit_r": [2.0, 2.5, 3.0],
-    "move_stop_to_be": [True],            
+    "move_stop_to_be": [True, False],            
     "partial_profit_day": [3, 5],
     
     # SIZING
-    "max_positions": [10, 12, 15],        
-    "risk_per_trade": [0.015, 0.02]       # INCREASED RISK: 1.5% to 2.0% (Go big or go home)
+    "max_positions": [10, 15, 20],        # INCREASED: More shots on goal
+    "risk_per_trade": [0.015, 0.02]       
 }
 
 # --- APEX INJECTION ---
@@ -297,9 +297,9 @@ if __name__ == "__main__":
     prepared = compress_data(prepared)
 
     # --- CHECKPOINT RESUME LOGIC ---
-    checkpoint = load_checkpoint()
+    # checkpoint = load_checkpoint()
+    checkpoint = None
     if checkpoint:
-        start_gen, population, best_winner = checkpoint
         start_gen += 1 # Resume from the NEXT generation
     else:
         start_gen = 0

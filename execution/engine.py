@@ -304,7 +304,7 @@ def _score_row_dual_core(
     elif natr < 2.5:
         score += 15.0
     elif natr > 3.0:
-        score -= 50.0 # Harsher penalty for loose stocks (Scenario B)
+        score -= 100.0 # Harsher penalty for loose stocks (Scenario B)
         
     if close_px >= (high_52w * 0.85):
         score += 30.0
@@ -771,6 +771,15 @@ def _legacy_run_backtest(
                 # --- PHASE 4: ADX TREND STRENGTH ---
                 if sd.adx[prev_i] < adx_min:
                     # DBG(f"{sym}: REJECTED - ADX Weak ({sd.adx[prev_i]:.1f} < {adx_min})")
+                    continue
+
+                # --- VOLUME FILTER (CRITICAL FIX) ---
+                # Compare Current Volume (curr_i) vs Average (prev_i or curr_i).
+                # Breakout volume must be high TODAY.
+                vol_today = float(sd.volume[curr_i])
+                vol_avg = float(sd.volma50[prev_i])
+                if vol_today < (vol_avg * vol_mult):
+                    # DBG(f"{sym}: REJECTED - Low Volume")
                     continue
 
                 if not rs_counted:
