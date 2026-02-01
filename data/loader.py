@@ -190,6 +190,13 @@ def fetch_single_symbol(
                 # We allow a 30-day buffer. If cache starts AFTER the required date, it's a miss.
                 first_date = df.index.min()
                 if first_date > (start_naive + timedelta(days=30)):
+                    if cache_only:
+                        print(f"⚠️ Cache shallow for {sym} (Starts {first_date.date()}). Using available data (Backtest Mode).")
+                        if df.index.tz is not None:
+                            df.index = df.index.tz_localize(None)
+                        df = df[df.index >= first_date] 
+                        return df
+                    
                     print(
                         f"⚠️ Cache shallow for {sym} (Starts {first_date.date()}, "
                         f"Need {start_naive.date()}). Auto-downloading..."
@@ -247,6 +254,11 @@ def fetch_single_symbol(
             if df.index.min() <= start_naive:
                 return inject_live_quote(df[df.index >= start_naive], sym, prefetched_quote=prefetched_quote) if inject_live else df[df.index >= start_naive]
 
+    if cache_only:
+        if df is None:
+            # print(f"⚠️ {sym} not found in cache. Skipping (Backtest Mode).")
+            return None
+            
     try:
         candles = sd.price_daily(sym, start_datetime=fetch_start, end_datetime=end)
         if candles:

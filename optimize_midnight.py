@@ -9,6 +9,7 @@ import concurrent.futures
 import multiprocessing
 from datetime import datetime
 import pickle
+import gc
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -30,27 +31,28 @@ POPULATION_SIZE = 40  # Reduced slightly for speed
 GENERATIONS = 20
 START_DATE = "2010-01-01"
 END_DATE = "2025-12-31"
-MAX_WORKERS = 6 
+MAX_WORKERS = 3
+CHECKPOINT_FILE = "optimizer_checkpoint.pkl" 
 
 # --- THE "AGGRESSIVE" SEARCH SPACE ---
 # Removed "Safe" options to force the AI to take risks
 GENE_SPACE = {
     # SELECTION: ELITE FILTERS ONLY
-    "rs_floor": [90, 95, 97],             # SUPREME STRENGTH (Was 80-95)
-    "vol_mult": [2.0, 3.0, 4.0],          # EXPLOSIVE VOLUME (Was 1.0-2.0)
-    "adx_min": [25, 30],                  # POWER TRENDS (Was 20-25)
-    "bb_width_max": [0.10, 0.15],         # TIGHT BASES ONLY (Was 0.10-0.20)
+    "rs_floor": [80, 85],                 # SWEET SPOT (Was 70-90)
+    "vol_mult": [2.0, 3.0],               
+    "adx_min": [15, 20],                  
+    "bb_width_max": [0.15, 0.20],         # TIGHTER (Was 0.20-0.30)
     
     # TIMING
-    "regime_ma": ["sma200"],              # HARD DEFENSE
-    "trend_mode": ["strict"], 
+    "regime_ma": ["sma200"],              
+    "trend_mode": ["sma50"],              # FORCED SMA50 
     
     # EXIT MECHANICS
     "exit_sma": ["sma10", "sma20"],       
-    "stop_loss_atr": [1.5, 2.0],          
+    "stop_loss_atr": [1.5, 2.0],          # REMOVED 2.5 (Scenario B)
     
     # PROFIT TAKING
-    "enable_partial_profit": [True],
+    "enable_partial_profit": [True],      # FORCED (Scenario C)
     "partial_profit_r": [2.0, 2.5, 3.0],
     "move_stop_to_be": [True],            # FORCE BREAKEVEN (No Free Rides)
     "partial_profit_day": [3, 5],
@@ -63,6 +65,33 @@ GENE_SPACE = {
 # --- GLOBAL DATA REF ---
 _prepared_data_ref = None
 _g_data_ref = None
+
+def save_checkpoint(generation, population, best_genome_so_far):
+    """Saves the current state of the optimizer to a pickle file."""
+    try:
+        checkpoint_data = {
+            "generation": generation,
+            "population": population,
+            "best_genome": best_genome_so_far
+        }
+        with open(CHECKPOINT_FILE, "wb") as f:
+            pickle.dump(checkpoint_data, f)
+        print(f"💾 Checkpoint saved for Generation {generation}")
+    except Exception as e:
+        print(f"⚠️ Failed to save checkpoint: {e}")
+
+def load_checkpoint():
+    """Loads the optimizer state from a pickle file if it exists."""
+    if os.path.exists(CHECKPOINT_FILE):
+        try:
+            with open(CHECKPOINT_FILE, "rb") as f:
+                checkpoint_data = pickle.load(f)
+            print(f"🚀 RESUMING from Generation {checkpoint_data['generation'] + 1}...")
+            return checkpoint_data["generation"], checkpoint_data["population"], checkpoint_data.get("best_genome")
+        except Exception as e:
+            print(f"⚠️ Checkpoint found but failed to load: {e}")
+            return None
+    return None
 
 def generate_random_genome():
     return {k: random.choice(v) for k, v in GENE_SPACE.items()}
@@ -194,9 +223,10 @@ def evaluate_genome(genome_id_and_genome):
             "trades": trades,
             "raw_metrics_keys": list(metrics.keys()) # DEBUG INFO
         }
-
     except Exception as e:
         return {"id": genome_id, "score": -999, "error": str(e)}
+    finally:
+        gc.collect()
 
 if __name__ == "__main__":
     try:
@@ -208,8 +238,8 @@ if __name__ == "__main__":
     
     print("...Loading Data...")
     symbols = get_universe_symbols("RUSSELL3000")
-    data = fetch_data_pack(symbols, days=5800, backtest_mode=True)
-    g_data = fetch_data_pack(["SPY", "VIX"], days=5800, backtest_mode=True)
+    data = fetch_data_pack(symbols, days=4200, backtest_mode=True)
+    g_data = fetch_data_pack(["SPY", "VIX"], days=4200, backtest_mode=True)
     
     print("...Preparing & Compressing...")
     # Define Looser Config for Data Prep to ensure we get candidates
@@ -246,10 +276,18 @@ if __name__ == "__main__":
             df['atr'] = df['tr'].rolling(window=14).mean()
     
     prepared = compress_data(prepared)
+
+    # --- CHECKPOINT RESUME LOGIC ---
+    checkpoint = load_checkpoint()
+    if checkpoint:
+        start_gen, population, best_winner = checkpoint
+        start_gen += 1 # Resume from the NEXT generation
+    else:
+        start_gen = 0
+        population = [generate_random_genome() for _ in range(POPULATION_SIZE)]
+        best_winner = None
     
-    population = [generate_random_genome() for _ in range(POPULATION_SIZE)]
-    
-    for gen in range(GENERATIONS):
+    for gen in range(start_gen, GENERATIONS):
         print(f"\n🧬 GEN {gen+1}/{GENERATIONS}")
         start_time = time.time()
         
@@ -316,4 +354,8 @@ if __name__ == "__main__":
             
             next_gen.append(child)
         population = next_gen
+        
+        # Save Checkpoint & Cleanup
+        save_checkpoint(gen, population, winner)
+        gc.collect()
         print(f"⏱️  {time.time()-start_time:.1f}s")

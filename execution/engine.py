@@ -303,8 +303,8 @@ def _score_row_dual_core(
         score += 30.0
     elif natr < 2.5:
         score += 15.0
-    elif natr > 4.0:
-        score -= 20.0 # Penalize loose stocks
+    elif natr > 3.0:
+        score -= 50.0 # Harsher penalty for loose stocks (Scenario B)
         
     if close_px >= (high_52w * 0.85):
         score += 30.0
