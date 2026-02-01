@@ -35,31 +35,49 @@ MAX_WORKERS = 3
 CHECKPOINT_FILE = "optimizer_checkpoint.pkl" 
 
 # --- THE "AGGRESSIVE" SEARCH SPACE ---
-# Removed "Safe" options to force the AI to take risks
+# Combined "Sweet Spot" (Cycle 5) + "High Octane" (Apex)
 GENE_SPACE = {
-    # SELECTION: ELITE FILTERS ONLY
-    "rs_floor": [80, 85],                 # SWEET SPOT (Was 70-90)
-    "vol_mult": [2.0, 3.0],               
-    "adx_min": [15, 20],                  
-    "bb_width_max": [0.15, 0.20],         # TIGHTER (Was 0.20-0.30)
+    # SELECTION
+    "rs_floor": [80, 85, 90],             # Expanded: 80 (Volume) to 90 (Quality)
+    "vol_mult": [2.0, 3.0, 4.0],          # Expanded: Allow extreme volume bursts
+    "adx_min": [15, 20, 25],              # Expanded: Allow strong trends
+    "bb_width_max": [0.15, 0.20, 0.25],   # Expanded: Allow slightly looser setups
     
     # TIMING
     "regime_ma": ["sma200"],              
-    "trend_mode": ["sma50"],              # FORCED SMA50 
+    "trend_mode": ["sma50"],              # Keep SMA50 for now (proven liveness)
     
     # EXIT MECHANICS
     "exit_sma": ["sma10", "sma20"],       
-    "stop_loss_atr": [1.5, 2.0],          # REMOVED 2.5 (Scenario B)
+    "stop_loss_atr": [1.5, 2.0, 2.5],     # Added 2.5 back (give room to run?)
     
     # PROFIT TAKING
-    "enable_partial_profit": [True],      # FORCED (Scenario C)
+    "enable_partial_profit": [True],      
     "partial_profit_r": [2.0, 2.5, 3.0],
-    "move_stop_to_be": [True],            # FORCE BREAKEVEN (No Free Rides)
+    "move_stop_to_be": [True],            
     "partial_profit_day": [3, 5],
     
     # SIZING
-    "max_positions": [10, 12, 15],        # Diversify
-    "risk_per_trade": [0.01]              # Fixed 1% Risk
+    "max_positions": [10, 12, 15],        
+    "risk_per_trade": [0.015, 0.02]       # INCREASED RISK: 1.5% to 2.0% (Go big or go home)
+}
+
+# --- APEX INJECTION ---
+APEX_DNA = {
+    "rs_floor": 90,
+    "vol_mult": 3.0,
+    "adx_min": 25,
+    "bb_width_max": 0.15,
+    "regime_ma": "sma200",
+    "trend_mode": "sma50",
+    "exit_sma": "sma10",
+    "stop_loss_atr": 2.0,
+    "enable_partial_profit": True,
+    "partial_profit_r": 3.0,
+    "move_stop_to_be": True,
+    "partial_profit_day": 3,
+    "max_positions": 10,
+    "risk_per_trade": 0.02
 }
 
 # --- GLOBAL DATA REF ---
@@ -235,6 +253,7 @@ if __name__ == "__main__":
 
     print(f"🚀 OPERATION UNSTUCK: Aggressive Optimization")
     print(f"HARDWARE: M3 Max | WORKERS: {MAX_WORKERS}")
+    print(f"MODE: Apex DNA Injection Active 💉")
     
     print("...Loading Data...")
     symbols = get_universe_symbols("RUSSELL3000")
@@ -284,7 +303,16 @@ if __name__ == "__main__":
         start_gen += 1 # Resume from the NEXT generation
     else:
         start_gen = 0
-        population = [generate_random_genome() for _ in range(POPULATION_SIZE)]
+        # --- APEX INJECTION ---
+        print("💉 INJECTING APEX DNA into initial population...")
+        population = []
+        # Add 5 Clones of APEX
+        for _ in range(5):
+            population.append(APEX_DNA.copy())
+        # Fill rest with random
+        for _ in range(POPULATION_SIZE - 5):
+            population.append(generate_random_genome())
+            
         best_winner = None
     
     for gen in range(start_gen, GENERATIONS):
