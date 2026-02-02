@@ -37,47 +37,49 @@ CHECKPOINT_FILE = "optimizer_checkpoint.pkl"
 # --- THE "AGGRESSIVE" SEARCH SPACE ---
 # Combined "Sweet Spot" (Cycle 5) + "High Octane" (Apex)
 GENE_SPACE = {
-    # SELECTION
-    "rs_floor": [70, 75, 80],             # LOOSENED: 70+ (Massive Liveness Boost)
-    "vol_mult": [1.2, 1.5, 2.0],          # LOOSENED: 1.2x (Subtle breakouts)
-    "adx_min": [10, 15, 20],              # LOOSENED: 10+ (Catch early moves)
-    "bb_width_max": [0.15, 0.20, 0.25, 0.30], # EXPANDED: Looser VCPs
+    # SELECTION (Forced Liveness)
+    "rs_floor": [75, 80],                 # LOCKED: No RS 90 safety net
+    "vol_mult": [1.5, 2.0],               # LOW: Keep Liveness high
+    "adx_min": [15, 20, 25],              # RESTORED: Quality Control (Filter Chop)
+    "bb_width_max": [0.20, 0.25, 0.35],   
     
     # TIMING
     "regime_ma": ["sma200"],              
     "trend_mode": ["sma50", "sma200"],    
     
     # EXIT MECHANICS
-    "exit_sma": ["sma10", "sma20"],       
-    "stop_loss_atr": [2.0, 2.5, 3.0],     # LOOSENED: Room to breathe
+    "exit_sma": ["sma50"],                # LOCKED: Trend Following Only
+    "stop_loss_atr": [2.0, 2.5, 3.0],     
     
     # PROFIT TAKING
     "enable_partial_profit": [True, False],      
-    "partial_profit_r": [2.0, 2.5, 3.0],
-    "move_stop_to_be": [True, False],            
+    "partial_profit_r": [2.0, 3.0],
+    "move_stop_to_be": [True],            
     "partial_profit_day": [3, 5],
     
-    # SIZING
-    "max_positions": [10, 15, 20],        # INCREASED: More shots on goal
-    "risk_per_trade": [0.015, 0.02]       
+    # SIZING (Forced Leverage)
+    "max_positions": [8, 10, 12],         # EXPANDED: Room to run
+    "risk_per_trade": [0.06],             # LOCKED: High Conviction
+    "max_pos_size_pct": [0.99]            # LOCKED: Full Allocation
 }
 
 # --- APEX INJECTION ---
 APEX_DNA = {
-    "rs_floor": 90,
-    "vol_mult": 3.0,
-    "adx_min": 25,
+    "rs_floor": 80,
+    "vol_mult": 1.5, 
+    "adx_min": 25, # RESTORED: Quality Control
     "bb_width_max": 0.15,
     "regime_ma": "sma200",
     "trend_mode": "sma50",
-    "exit_sma": "sma10",
+    "exit_sma": "sma50",  # Trend Following
     "stop_loss_atr": 2.0,
     "enable_partial_profit": True,
     "partial_profit_r": 3.0,
     "move_stop_to_be": True,
     "partial_profit_day": 3,
     "max_positions": 10,
-    "risk_per_trade": 0.02
+    "risk_per_trade": 0.06,
+    "max_pos_size_pct": 0.99
 }
 
 # --- GLOBAL DATA REF ---
@@ -153,7 +155,7 @@ def evaluate_genome(genome_id_and_genome):
 
     try:
         # Construct Config - FLATTENED for Engine Compatibility
-        pos_size = 1.0 / genome["max_positions"]
+        # pos_size = 1.0 / genome["max_positions"] # REMOVED: Respect genome sizing
         
         # Merge genome directly into config so engine finds keys like 'rs_floor' at top level
         strategy_config = genome.copy()
@@ -169,14 +171,14 @@ def evaluate_genome(genome_id_and_genome):
                 "stop_loss_atr": genome["stop_loss_atr"],
                 "max_positions": genome["max_positions"],
                 "risk_per_trade": genome["risk_per_trade"],
-                "max_pos_size_pct": pos_size
+                "max_pos_size_pct": genome["max_pos_size_pct"] # FIXED: Use genome value
             },
             "execution_parameters": {
                 "exit_sma": genome["exit_sma"],
                 "enable_partial_profit": genome["enable_partial_profit"],
                 "move_stop_to_be": genome["move_stop_to_be"],
                 "partial_profit_r": genome["partial_profit_r"],
-                "partial_profit_r": genome["partial_profit_r"],
+                # partial_profit_r duplicate removed
                 "partial_profit_day": int(genome["partial_profit_day"]),
                 "trend_mode": genome["trend_mode"]
             }
