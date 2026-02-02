@@ -37,49 +37,49 @@ CHECKPOINT_FILE = "optimizer_checkpoint.pkl"
 # --- THE "AGGRESSIVE" SEARCH SPACE ---
 # Combined "Sweet Spot" (Cycle 5) + "High Octane" (Apex)
 GENE_SPACE = {
-    # SELECTION (Forced Liveness)
-    "rs_floor": [75, 80],                 # LOCKED: No RS 90 safety net
-    "vol_mult": [1.5, 2.0],               # LOW: Keep Liveness high
-    "adx_min": [15, 20, 25],              # RESTORED: Quality Control (Filter Chop)
-    "bb_width_max": [0.20, 0.25, 0.35],   
+    # SELECTION (Balanced Flow)
+    "rs_floor": [80],                     # STANDARD: High but not Extreme
+    "vol_mult": [1.5],                    # LOCKED: Liveness Engine
+    "adx_min": [15],                      # FLOW: Allow "Good" trends
+    "bb_width_max": [0.15, 0.25],         
     
     # TIMING
     "regime_ma": ["sma200"],              
     "trend_mode": ["sma50", "sma200"],    
     
-    # EXIT MECHANICS
-    "exit_sma": ["sma50"],                # LOCKED: Trend Following Only
-    "stop_loss_atr": [2.0, 2.5, 3.0],     
+    # EXIT MECHANICS (Sniper / Swing)
+    "exit_sma": ["sma10", "sma20"],       # FAST: Qullamaggie Style
+    "stop_loss_atr": [1.0, 1.5, 2.0],     # TIGHT: Cut losers fast
     
     # PROFIT TAKING
-    "enable_partial_profit": [True, False],      
+    "enable_partial_profit": [True],      # LOCKED: Free Roll
     "partial_profit_r": [2.0, 3.0],
     "move_stop_to_be": [True],            
     "partial_profit_day": [3, 5],
     
-    # SIZING (Forced Leverage)
-    "max_positions": [8, 10, 12],         # EXPANDED: Room to run
-    "risk_per_trade": [0.06],             # LOCKED: High Conviction
-    "max_pos_size_pct": [0.99]            # LOCKED: Full Allocation
+    # SIZING (Balanced Portfolio)
+    "max_positions": [10],                # BALANCED: 10 Slots
+    "risk_per_trade": [0.02],             # STANDARD: 2% Risk
+    "max_pos_size_pct": [0.10]            # STANDARD: 10% Allocation
 }
 
 # --- APEX INJECTION ---
 APEX_DNA = {
     "rs_floor": 80,
     "vol_mult": 1.5, 
-    "adx_min": 25, # RESTORED: Quality Control
+    "adx_min": 15,    # Flow
     "bb_width_max": 0.15,
     "regime_ma": "sma200",
     "trend_mode": "sma50",
-    "exit_sma": "sma50",  # Trend Following
-    "stop_loss_atr": 2.0,
+    "exit_sma": "sma10",  # Sniper Exit
+    "stop_loss_atr": 2.0, # Medium Tight
     "enable_partial_profit": True,
     "partial_profit_r": 3.0,
     "move_stop_to_be": True,
     "partial_profit_day": 3,
-    "max_positions": 10,
-    "risk_per_trade": 0.06,
-    "max_pos_size_pct": 0.99
+    "max_positions": 10,  # Balanced
+    "risk_per_trade": 0.02,
+    "max_pos_size_pct": 0.10
 }
 
 # --- GLOBAL DATA REF ---
