@@ -830,6 +830,8 @@ class PaperTrader:
             "strategy_name": strat_obj.name, "strategy_obj": strat_obj, "score": score, "genome": genome,
             "entry_i": cand.get("entry_i"),
             "atr": cand.get("atr"),
+            "stop_limit_pct": cand.get("stop_limit_pct"),
+            "signal_mode": cand.get("signal_mode"),
             "vix": cand.get("vix", 0),
             "close": cand.get("close", price),
             "sma20": cand.get("sma20", 0),
@@ -1042,7 +1044,9 @@ class PaperTrader:
                     if not np.isfinite(signal_sma200) or signal_close < signal_sma200:
                         continue
 
-                    if not strat.entry(df_ind, signal_idx): continue
+                    decision = strat.entry(df_ind, signal_idx)
+                    if not decision:
+                        continue
                     params = getattr(strat, "params", {}) or {}
                     weights = get_strategy_weights(params)
                     raw_score = calculate_backtest_quality_score(row_signal, strat.name, weights=weights)
@@ -1058,7 +1062,8 @@ class PaperTrader:
                         is_breakout_type = "breakout" in str(getattr(strat, "type", "")).lower()
                     except Exception:
                         is_breakout_type = False
-                    if is_breakout_type and current_i > signal_idx:
+                    signal_mode = str(params.get("signal_mode", "after_close")).lower()
+                    if is_breakout_type and signal_mode not in {"after_close"} and current_i > signal_idx:
                         curr_high = float(df_ind.iloc[current_i].get("high", 0))
                         prev_high = float(df_ind.iloc[signal_idx].get("high", 0))
                         trigger_price = prev_high * 1.0005
@@ -1074,15 +1079,33 @@ class PaperTrader:
                     signal_close = float(row_signal["close"])
                     signal_open = float(row_signal["open"])
                     prev_high = float(row_signal.get("high", 0) or 0)
-                    trigger = (prev_high * 1.0005) if prev_high > 0 else signal_close
+                    trigger = None
+                    stop_price = None
+                    stop_limit_pct = params.get("stop_limit_pct", 0.02)
+                    if isinstance(decision, dict):
+                        trigger = decision.get("trigger_price") or trigger
+                        stop_price = decision.get("stop_price") or stop_price
+                        stop_limit_pct = decision.get("stop_limit_pct", stop_limit_pct)
+
+                    if trigger is None:
+                        stop_buy_ref = params.get("stop_buy_ref")
+                        if stop_buy_ref and stop_buy_ref in row_signal:
+                            try:
+                                trigger = float(row_signal.get(stop_buy_ref)) * float(params.get("stop_buy_mult", 1.0))
+                            except Exception:
+                                trigger = None
+
+                    if trigger is None:
+                        trigger = (prev_high * 1.0005) if prev_high > 0 else signal_close
                     mode_key = str(params.get("scoring_type") or params.get("type") or strat.name or "").lower()
                     is_breakout = any(token in mode_key for token in ("breakout", "momentum", "vcp", "kinetic"))
                     order_price = trigger if is_breakout else signal_close
 
                     # Stop Loss (Estimation only - Recalculated on fill)
                     atr = float(row_signal.get("atr14", signal_close * 0.02))
-                    stop_mult = float(getattr(strat, "params", {}).get("stop_loss_atr", 3.0))
-                    stop_price = signal_close - (atr * stop_mult)
+                    if stop_price is None:
+                        stop_mult = float(getattr(strat, "params", {}).get("stop_loss_atr", 3.0))
+                        stop_price = signal_close - (atr * stop_mult)
                     partial_profit_day = int(params.get("partial_profit_day", 3) or 3)
 
                     candidates.append({
@@ -1095,6 +1118,8 @@ class PaperTrader:
                         "atr": atr,
                         "vix": float(row_signal.get("vix", 0)),
                         "sma20": float(row_signal.get("sma20", 0)),
+                        "stop_limit_pct": stop_limit_pct,
+                        "signal_mode": signal_mode,
                         "strategy_name": strat.name,
                         "strategy_obj": strat,
                         "genome": strat_genome,

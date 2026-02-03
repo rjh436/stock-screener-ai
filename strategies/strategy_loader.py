@@ -3,9 +3,15 @@ from typing import List, Dict
 from .generic import GenericStrategy
 from .apex_wealth import ApexWealthStrategy
 from .sepa_champion import SEPAChampionStrategy
+from .qullamaggie_breakout import QullamaggieBreakoutStrategy
+from .qullamaggie_ep import QullamaggieEpisodicPivotStrategy
+from .minervini_sepa import MinerviniSEPAStrategy
 
 STRATEGY_CLASSES = {
     "Apex SEPA Champion (2026)": SEPAChampionStrategy,
+    "Qullamaggie Breakout (Daily)": QullamaggieBreakoutStrategy,
+    "Qullamaggie EP (Daily)": QullamaggieEpisodicPivotStrategy,
+    "Minervini SEPA (Daily)": MinerviniSEPAStrategy,
 }
 
 def load_strategies(configs: List[Dict]) -> List[object]:

@@ -1,7 +1,9 @@
 import os
 import sys
+import json
 import numpy as np
 import pandas as pd
+from datetime import datetime, timedelta
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -16,84 +18,50 @@ except ImportError as e:
     sys.exit(1)
 
 def verify_minervini():
-    print("🚀 VERIFY_MINERVINI: Starting Zombie Runner Check...")
+    print("🚀 VERIFY_MINERVINI: Starting SEPA Verification...")
     
     # 1. Load Data
-    print("...Loading Data (Russell 3000, 2020-2025)...")
+    print("...Loading Data (Russell 3000, ~20 years)...")
     symbols = get_universe_symbols("RUSSELL3000")
-    # Fetching enough days to cover 2020-2025 (approx 1500 trading days + buffer)
-    # User asked for 2500 days.
-    data = fetch_data_pack(symbols, days=2500, backtest_mode=True)
-    g_data = fetch_data_pack(["SPY", "VIX"], days=2500, backtest_mode=True)
+    years = 20
+    start_date = (datetime.utcnow().date() - timedelta(days=365 * years)).isoformat()
+    days = (252 * years) + 250  # trading days + buffer
+    data = fetch_data_pack(symbols, days=days, backtest_mode=True)
+    g_data = fetch_data_pack(["SPY", "VIX"], days=days, backtest_mode=True)
     
-    # 2. Prepare Data & Apply Critical Patch
-    print("...Preparing Data & Patching...")
-    prepared = prepare_backtest_data(data, symbols, start_date="2020-01-01", global_data=g_data)
-    
-    # --- CRITICAL PATCH (Copied from optimize_midnight.py) ---
-    print("🔧 Applying 'high_20_prev' and 'atr' Patch...")
-    for sym, s_data in prepared.enriched.items():
-        df = s_data.df
-        # Breakout Entry calc
-        if 'high' in df.columns:
-            df['high_20_prev'] = df['high'].rolling(window=20).max().shift(1)
-            
-        # ATR calc for Stop Loss
-        if 'atr' not in df.columns and 'high' in df.columns and 'low' in df.columns and 'close' in df.columns:
-             df['tr'] = np.maximum(
-                df['high'] - df['low'], 
-                np.maximum(
-                    abs(df['high'] - df['close'].shift(1)), 
-                    abs(df['low'] - df['close'].shift(1))
-                )
-            )
-             df['atr'] = df['tr'].rolling(window=14).mean()
-    # ---------------------------------------------------------
+    # 2. Prepare Data
+    print("...Preparing Data...")
+    prepared = prepare_backtest_data(data, symbols, start_date=start_date, global_data=g_data)
 
-    # 3. Define Golden Rules Strategy
-    strategy_config = {
-        "name": "Minervini_Verifier_V1",
-        "entry_rules": [
-             {"col": "close", "op": ">", "ref": "high_20_prev", "val": 0.99},
-             {"col": "close", "op": ">", "ref": "sma50"} 
-        ],
-        "exit_rules": [], # Logic handled by engine params
-        "risk_parameters": {
-            "stop_loss_atr": 2.0,
-            "max_positions": 5,
-            "risk_per_trade": 0.02, 
-            "max_pos_size_pct": 0.20
-        },
-        "execution_parameters": {
-            "exit_sma": "sma10",        # Initial Tight Leash
-            "enable_partial_profit": True,
-            "partial_profit_r": 2.0,
-            "move_stop_to_be": True,
-            "partial_profit_day": 0,    # Immediate profit taking allowed
-            "regime_ma": "sma200"
-        },
-        # Legacy/Helper Params
-        "min_rs": 85,
-        "vol_ma_ratio": 1.0,
-        "adx_threshold": 15
-    }
+    # 3. Load Strategy from Config
+    print("...Loading Strategy Config...")
+    config_path = "config/generated_strategies.json"
+    try:
+        with open(config_path, "r") as f:
+            strategies_config = json.load(f)
+    except Exception as e:
+        print(f"CRITICAL: Failed to load {config_path}: {e}")
+        return
 
-    print(f"🛡️  Strategy Config: {strategy_config['execution_parameters']}")
+    target_name = "Minervini SEPA (Daily)"
+    strat_configs = [s for s in strategies_config if s.get("name") == target_name]
+    if not strat_configs:
+        print(f"ERROR: Strategy '{target_name}' not found.")
+        print("Available:", [s.get("name") for s in strategies_config])
+        return
+
+    print(f"🛡️  Strategy: {target_name}")
 
     # 4. Run Backtest
     print("...Running Backtest...")
-    strat = load_strategies([strategy_config])[0]
-    # Force Attributes just in case
-    strat.min_rs = 85
-    strat.vol_ma_ratio = 1.0
-    strat.adx_threshold = 15
+    strat = load_strategies(strat_configs)[0]
     
     results = run_backtest(
         [strat],
         prepared,
         start_cash=100000.0,
-        start_date="2020-01-01",
-        end_date="2025-12-31",
+        start_date=start_date,
+        end_date=None,
         global_data=g_data
     )
     
@@ -109,6 +77,9 @@ def verify_minervini():
     
     print("\n" + "="*40)
     print(f"🏁 RESULT: CAGR: {cagr:.2f}% | DD: {dd:.2f}% | Trades: {trades}")
+    gate_audit = res.get("gate_audit")
+    if isinstance(gate_audit, dict):
+        print(f"Gate Audit: {gate_audit}")
     print("="*40)
     
     if cagr > 15.0:

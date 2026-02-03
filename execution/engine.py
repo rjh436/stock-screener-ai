@@ -38,6 +38,43 @@ _VCP_BB_WIDTH_THRESH = 0.15
 _DEBUG_TRAIL_ACTIVATION = os.environ.get("APEX_DEBUG_TRAIL_ACTIVATION", "").strip() not in ("", "0", "false", "False")
 
 
+def compute_stop_fill(open_px: float, high_px: float, trigger_px: float, stop_limit_pct: Optional[float]) -> Tuple[bool, float]:
+    """
+    Daily-bar approximation for buy-stop-limit fills.
+    - If the day gaps above the limit, no fill.
+    - If open >= trigger and open <= limit, fill at open.
+    - If high >= trigger and open < trigger, fill at trigger.
+    """
+    try:
+        open_val = float(open_px)
+        high_val = float(high_px)
+        trig = float(trigger_px)
+    except Exception:
+        return False, float("nan")
+
+    if not np.isfinite(open_val) or not np.isfinite(high_val) or not np.isfinite(trig):
+        return False, float("nan")
+    if trig <= 0:
+        return False, float("nan")
+
+    if stop_limit_pct is None:
+        limit_mult = 1.0
+    else:
+        try:
+            limit_mult = 1.0 + float(stop_limit_pct)
+        except Exception:
+            limit_mult = 1.0
+    limit_px = trig * limit_mult
+
+    if open_val >= limit_px:
+        return False, float("nan")
+    if open_val >= trig:
+        return True, open_val
+    if high_val >= trig:
+        return True, trig
+    return False, float("nan")
+
+
 def get_sector(symbol: str) -> str:
     tech = {"AAPL", "MSFT", "NVDA", "GOOG", "GOOGL", "META", "AMZN", "TSLA", "AVGO", "AMD"}
     symbol_upper = (symbol or "").upper()
@@ -71,6 +108,7 @@ def inject_market_rs_rank(enriched, all_dates, lookbacks=(63, 126, 189, 252),
         close_mat[sd.gidx[valid_mask], j] = sd.close[valid_mask].astype(np.float32)
 
     tmp = np.zeros((n_days, n_syms), dtype=np.float32)
+    momentum_rank = np.zeros((n_days, n_syms), dtype=np.float32)
     
     valid_hist = np.isfinite(close_mat)
     cum = np.cumsum(valid_hist, axis=0)
@@ -87,11 +125,20 @@ def inject_market_rs_rank(enriched, all_dates, lookbacks=(63, 126, 189, 252),
 
     score = np.where(enough & np.isfinite(tmp), tmp, np.nan)
     rs_rating = np.zeros((n_days, n_syms), dtype=np.float32)
+
+    # Momentum rank based on 6-month return
+    mom_lb = 126
+    shifted_mom = np.roll(close_mat, mom_lb, axis=0)
+    shifted_mom[:mom_lb, :] = np.nan
+    with np.errstate(divide='ignore', invalid='ignore'):
+        mom_ret = (close_mat / shifted_mom) - 1.0
+    mom_score = np.where(enough & np.isfinite(mom_ret), mom_ret, np.nan)
     
     chunk = 250
     for start in range(0, n_days, chunk):
         end = min(n_days, start + chunk)
         block = score[start:end, :]
+        mom_block = mom_score[start:end, :]
         
         for i in range(block.shape[0]):
             row = block[i]
@@ -108,11 +155,23 @@ def inject_market_rs_rank(enriched, all_dates, lookbacks=(63, 126, 189, 252),
             pct = (ranks / (k - 1)) if k > 1 else np.zeros(k, dtype=np.float32)
             rs_rating[start + i, m] = 1.0 + 98.0 * pct
 
+            mom_row = mom_block[i]
+            mm = np.isfinite(mom_row)
+            km = int(mm.sum())
+            if km >= min_names:
+                vals_m = mom_row[mm]
+                order_m = np.argsort(vals_m, kind="quicksort")
+                ranks_m = np.empty_like(order_m, dtype=np.int32)
+                ranks_m[order_m] = np.arange(km, dtype=np.int32)
+                pct_m = (ranks_m / (km - 1)) if km > 1 else np.zeros(km, dtype=np.float32)
+                momentum_rank[start + i, mm] = 1.0 + 98.0 * pct_m
+
     for j, sym in enumerate(syms):
         sd = enriched[sym]
         valid_indices = (sd.gidx >= 0) & (sd.gidx < n_days)
         if np.any(valid_indices):
             sd.rsrating[valid_indices] = rs_rating[sd.gidx[valid_indices], j]
+            sd.momrank[valid_indices] = momentum_rank[sd.gidx[valid_indices], j]
 
 
 def _compute_indicators(
@@ -139,6 +198,11 @@ def _compute_indicators(
             df["adr_pct"] = (df["hl_range"] / close_safe).rolling(20).mean() * 100.0
 
         df["adr_pct"] = df["adr_pct"].fillna(0.0).replace([np.inf, -np.inf], 0.0)
+
+        # Qullamaggie ADR (avg of (high/low - 1) * 100)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            adr_q = (df["high"] / df["low"].replace(0, np.nan) - 1.0) * 100.0
+        df["adr_pct_q"] = adr_q.rolling(20).mean().fillna(0.0).replace([np.inf, -np.inf], 0.0)
 
         for p in (10, 20, 50, 200):
             df[f"sma{p}"] = df["close"].rolling(p).mean()
@@ -194,6 +258,11 @@ def _compute_indicators(
         df["roc_60"] = df["close"].pct_change(60) * 100.0
         df["roc_40"] = df["close"].pct_change(40) * 100.0
         df["adr_pct_ma10"] = df["adr_pct"].rolling(10).mean()
+
+        # 1/3/6-month returns (approx trading days)
+        df["ret_1m"] = df["close"].pct_change(21) * 100.0
+        df["ret_3m"] = df["close"].pct_change(63) * 100.0
+        df["ret_6m"] = df["close"].pct_change(126) * 100.0
         
         with np.errstate(divide="ignore", invalid="ignore"):
             df["clv"] = (df["close"] - df["low"]) / (df["high"] - df["low"])
@@ -206,6 +275,8 @@ def _compute_indicators(
         df["stoch_k"] = StochasticOscillator(df["high"], df["low"], df["close"]).stoch()
         df["vol_ma20"] = df["volume"].rolling(20).mean()
         df["vol_ma50"] = df["volume"].rolling(50).mean()
+        df["vol_ma10"] = df["volume"].rolling(10).mean()
+        df["vol_dryup"] = (df["vol_ma10"] < df["vol_ma50"]).astype(float)
 
         df["highest10"] = df["high"].rolling(10).max()
         df["highest10_1"] = df["highest10"].shift(1) 
@@ -244,6 +315,12 @@ def _compute_indicators(
         df["high_52w"] = df["high"].rolling(252, min_periods=1).max()
         df["low_52w"] = df["low"].rolling(252, min_periods=1).min()
 
+        with np.errstate(divide="ignore", invalid="ignore"):
+            df["pct_off_high_52w"] = ((df["high_52w"] - df["close"]) / df["high_52w"]) * 100.0
+            df["pct_above_low_52w"] = ((df["close"] - df["low_52w"]) / df["low_52w"]) * 100.0
+        df["pct_off_high_52w"] = df["pct_off_high_52w"].fillna(0.0).replace([np.inf, -np.inf], 0.0)
+        df["pct_above_low_52w"] = df["pct_above_low_52w"].fillna(0.0).replace([np.inf, -np.inf], 0.0)
+
         # AUDIT FIX: Add Breakout Trigger (Donchian High)
         # This detects if price is breaking out of the VCP base.
         high_20 = df["high"].rolling(window=20).max()
@@ -253,9 +330,24 @@ def _compute_indicators(
         
         # AUDIT FIX: Fill NaN slope with 0.0 to prevent hard gates from rejecting all trades
         df["sma200_slope"] = df["sma200"].diff(22).fillna(0.0)
+        df["sma200_slope_1m"] = df["sma200_slope"]
         
         df["std_20"] = df["close"].rolling(20).std()
         df["bb_width"] = (4 * df["std_20"]) / (df["close"].rolling(20).mean() + 1e-9)
+
+        # Range contraction proxies for VCP
+        def _range_pct(window: int) -> pd.Series:
+            hi = df["high"].rolling(window).max()
+            lo = df["low"].rolling(window).min()
+            return ((hi - lo) / lo.replace(0, np.nan)) * 100.0
+
+        df["range_pct_5"] = _range_pct(5)
+        df["range_pct_10"] = _range_pct(10)
+        df["range_pct_20"] = _range_pct(20)
+        df["range_pct_40"] = _range_pct(40)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            df["vcp_tightness"] = df["range_pct_5"] / df["range_pct_20"].replace(0, np.nan)
+        df["vcp_tightness"] = df["vcp_tightness"].fillna(0.0).replace([np.inf, -np.inf], 0.0)
         
         if "rs_rating" not in df.columns:
             df["rs_rating"] = 0.0
@@ -381,6 +473,7 @@ class _SymbolArrays:
     spysma50: np.ndarray
     spysma200: np.ndarray
     rsrating: np.ndarray
+    momrank: np.ndarray
     adr_pct: np.ndarray
     prev_high: np.ndarray
     highest10_1: np.ndarray
@@ -400,6 +493,7 @@ class _Candidate:
     score: float
     strategy_name: str
     entry_i: int
+    stop_limit_pct: float = 0.0
     size_scalar: float = 1.0
 
 
@@ -516,6 +610,7 @@ def prepare_backtest_data(
                 spysma50=_get_np_col(df, "spy_sma50", np.nan, length=n),
                 spysma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
                 rsrating=np.zeros(n, dtype=np.float64),
+                momrank=np.zeros(n, dtype=np.float64),
                 adr_pct=_get_np_col(df, "adr_pct", 0.0, length=n),
                 prev_high=_get_np_col(df, "prev_high", 0.0, length=n),
                 highest10_1=_get_np_col(df, "highest10_1", 0.0, length=n),
@@ -552,6 +647,7 @@ def prepare_backtest_data(
     for sym_data in enriched.values():
         try:
             sym_data.df["rs_rating"] = sym_data.rsrating
+            sym_data.df["momentum_rank"] = sym_data.momrank
         except Exception:
             continue
 
@@ -717,126 +813,119 @@ def _legacy_run_backtest(
 
             debug_counts["n_trend"][day_idx] += 1
 
-            spy_c = global_spy_close[day_idx - 1]
-            spy_200 = global_spy_sma200[day_idx - 1]
-            
-            # Market Regime Filter moved below RS calc for exception logic
-
             rs_rating = float(sd.rsrating[prev_i])
             if not np.isfinite(rs_rating) or rs_rating <= 0:
                 # Fail-open if RS rating was not computed (diagnostic safety).
                 rs_rating = 99.0
 
-            # === MARKET REGIME FILTER (SPY STAGE GATE) ===
-            # BEAR MARKET RULE: If SPY < 200-day SMA, STOP BUYING.
-            if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
-                # EXCEPTION: Allow "Super Leaders" (RS > 98) to bypass the red light.
-                if rs_rating < 98.0:
-                    # DBG(f"{sym}: REJECTED - Market in Downtrend (SPY < SMA200) and RS {rs_rating} < 98")
-                    continue
-
-            rs_counted = False
-            vcp_counted = False
             for strat, w, params, base_stop_mult in compiled_strategies:
-                # Genome Filters
-                min_rs = float(params.get("rs_floor", 90.0))
-                vol_mult = float(params.get("vol_mult", 2.0))
-                adx_min = float(params.get("adx_min", 20.0))
-                max_bb = float(params.get("bb_width_max", 0.20))
-                
-                # Check Trend Mode Gene
-                mode = params.get("trend_mode", "sma200")
-                price_yesterday = float(sd.close[prev_i])
-                sma50_val = float(sd.sma50[prev_i])
-                sma200_val = float(sd.sma200[prev_i])
-                sma150_val = float(sd.sma150[prev_i])
+                # Optional market regime filter (per strategy)
+                regime_filter = bool(params.get("regime_filter", False))
+                market_mode = str(params.get("market_filter_mode", "")).lower()
+                if market_mode in {"traffic_light", "spy_sma200", "sma200"}:
+                    regime_filter = True
+                if regime_filter:
+                    spy_c = global_spy_close[day_idx - 1]
+                    spy_200 = global_spy_sma200[day_idx - 1]
+                    if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
+                        continue
 
-                if mode == "sma50":
-                    if price_yesterday < sma50_val: continue
-                elif mode == "sma200":
-                    if price_yesterday < sma200_val: continue
-                elif mode == "strict":
-                    # Re-implement the strict check here dynamically
-                    # Price > 50 > 150 > 200
-                    if not (price_yesterday > sma50_val and sma50_val > sma150_val and sma150_val > sma200_val): continue
-                
-                if rs_rating < min_rs:
-                    continue
-                    
-                # --- PHASE 4: BLUE LINE TEST (RS LINE TREND) ---
-                # Rule: RS Ratio > RS Ratio SMA50 (Minervini)
-                if sd.rs_ratio[prev_i] < sd.rs_ratio_sma50[prev_i]:
-                    # DBG(f"{sym}: REJECTED - Blue Line Failure (RS Trend Down)")
-                    continue
-                    
-                # --- PHASE 4: ADX TREND STRENGTH ---
-                if sd.adx[prev_i] < adx_min:
-                    # DBG(f"{sym}: REJECTED - ADX Weak ({sd.adx[prev_i]:.1f} < {adx_min})")
+                # Optional trend mode gate
+                mode = params.get("trend_mode")
+                if mode:
+                    price_yesterday = float(sd.close[prev_i])
+                    sma50_val = float(sd.sma50[prev_i])
+                    sma200_val = float(sd.sma200[prev_i])
+                    sma150_val = float(sd.sma150[prev_i])
+                    if mode == "sma50" and price_yesterday < sma50_val:
+                        continue
+                    if mode == "sma200" and price_yesterday < sma200_val:
+                        continue
+                    if mode == "strict":
+                        if not (price_yesterday > sma50_val and sma50_val > sma150_val and sma150_val > sma200_val):
+                            continue
+
+                # Optional RS floor
+                min_rs = params.get("rs_floor")
+                if min_rs is not None and rs_rating < float(min_rs):
                     continue
 
-                # --- VOLUME FILTER (CRITICAL FIX) ---
-                # Compare Current Volume (curr_i) vs Average (prev_i or curr_i).
-                # Breakout volume must be high TODAY.
-                vol_today = float(sd.volume[curr_i])
-                vol_avg = float(sd.volma50[prev_i])
-                if vol_today < (vol_avg * vol_mult):
-                    # DBG(f"{sym}: REJECTED - Low Volume")
+                # Optional RS ratio trend gate
+                if bool(params.get("use_rs_ratio_gate", False)):
+                    if sd.rs_ratio[prev_i] < sd.rs_ratio_sma50[prev_i]:
+                        continue
+
+                # Optional ADX gate
+                adx_min = params.get("adx_min")
+                if adx_min is not None and sd.adx[prev_i] < float(adx_min):
                     continue
 
-                if not rs_counted:
-                    debug_counts["n_rs"][day_idx] += 1
-                    rs_counted = True
-                # VCP CHECK RE-INSERTED HERE (Soft Gate):
-                width = float(sd.bbwidth[prev_i])
-                if width > max_bb:
-                    DBG(f"{sym}: REJECTED - VCP Width {width} > {max_bb}")
+                # Optional BB width gate
+                max_bb = params.get("bb_width_max")
+                if max_bb is not None and sd.bbwidth[prev_i] > float(max_bb):
                     continue
-                if not vcp_counted:
-                    debug_counts["n_vcp"][day_idx] += 1
-                    vcp_counted = True
 
-                # Calculate Entry/Stop
-                # ZOMBIE RUNNER FIX: Buy Stop Limit Logic
-                # We buy at the Open, OR the Pivot, whichever is higher.
-                # If Open < Pivot, we assume we buy AS it crosses the pivot intraday.
-                # If Open > Pivot, we buy at Open (Gap Up).
-                open_px = float(sd.open[curr_i])
-                # AUDIT FIX: Use Yesterday's High (prev_i) not Day Before Yesterday
-                pivot_val = float(sd.high[prev_i])
-                
-                # Check if we have high_20_prev in df (not in _SymbolArrays usually)
-                # But wait, optimize_midnight PATCHED it in. 
-                # Can we access it? Maybe safe to just use max(open, prev_high) or similar?
-                # The user instruction was specific: entry_px = max(open_px, pivot_price)
-                entry_px = max(open_px, pivot_val)
-                
-                stop_px = 0.0
-                
-                # Volume Gate
-                vol_today = float(sd.volume[prev_i])
-                vol_ma50 = float(sd.volma50[prev_i])
-                if vol_today < (vol_ma50 * vol_mult):
+                # Optional volume gate (signal day)
+                vol_mult = params.get("vol_mult")
+                if vol_mult is not None:
+                    vol_today = float(sd.volume[prev_i])
+                    vol_avg = float(sd.volma50[prev_i])
+                    if vol_today < (vol_avg * float(vol_mult)):
+                        continue
+
+                # Strategy-specific entry logic
+                decision = strat.entry(sd.df, prev_i)
+                if not decision:
                     continue
-                
-                # Revert to ATR Stop (Run 5 was better than Run 6)
-                stop_type = str(params.get("stop_loss_type", "atr")).lower()
-                if "low" in stop_type:
-                    day_low = float(sd.low[curr_i])
-                    stop_px = day_low * 0.99
-                else:
-                    atr = float(sd.atr14[prev_i])
-                    stop_px = entry_px - (atr * base_stop_mult)
-                    stop_px = max(stop_px, entry_px * 0.93)
+
+                row = sd.df.iloc[prev_i]
+                trigger = None
+                stop_px = None
+                stop_limit_pct = params.get("stop_limit_pct")
+
+                if isinstance(decision, dict):
+                    trigger = decision.get("trigger_price")
+                    stop_px = decision.get("stop_price")
+                    if stop_limit_pct is None:
+                        stop_limit_pct = decision.get("stop_limit_pct")
+
+                if trigger is None:
+                    stop_buy_ref = params.get("stop_buy_ref")
+                    if stop_buy_ref:
+                        pivot = row.get(stop_buy_ref, np.nan)
+                        if np.isfinite(pivot):
+                            trigger = float(pivot) * float(params.get("stop_buy_mult", 1.0))
+                if trigger is None:
+                    trigger = float(row.get("close", np.nan))
+
+                if stop_px is None:
+                    stop_type = str(params.get("stop_loss_type", "atr")).lower()
+                    if "low" in stop_type:
+                        stop_px = float(row.get("low", np.nan))
+                    else:
+                        atr = float(row.get("atr14", 0.0) or 0.0)
+                        stop_px = float(trigger) - (atr * base_stop_mult)
+
+                if not np.isfinite(trigger) or not np.isfinite(stop_px) or stop_px <= 0:
+                    continue
+
+                max_stop_pct = params.get("max_stop_pct")
+                if max_stop_pct is not None:
+                    stop_width = (float(trigger) - float(stop_px)) / float(trigger)
+                    if stop_width > float(max_stop_pct):
+                        continue
+
+                if stop_limit_pct is None:
+                    stop_limit_pct = 0.02
 
                 score = _score_row_dual_core(
                     sd.rsi14[prev_i], sd.bbwidth[prev_i], sd.natr[prev_i],
-                    sd.close[prev_i], sd.high52w[prev_i], {"rsi_factor":1.0}
+                    sd.close[prev_i], sd.high52w[prev_i], {"rsi_factor": 1.0}
                 )
 
                 candidates_by_day[day_idx].append(
-                    _Candidate(sym, entry_px, stop_px, score, strat.name, curr_i)
+                    _Candidate(sym, float(trigger), float(stop_px), score, strat.name, curr_i, float(stop_limit_pct))
                 )
-                # --- DATE-AWARE LOGGING ---
                 curr_date_str = str(all_dates[day_idx])[:10]
                 DBG(f"[{curr_date_str}] {sym}: ACCEPTED (Score: {score:.1f})")
 
@@ -910,10 +999,17 @@ def _legacy_run_backtest(
                 if not should_exit:
                     # --- PARTIAL PROFIT LOGIC (PATCHED) ---
                     # 1. Extract Flags (Default to False for safety)
+                    pp_mode = str(params.get("partial_profit_mode", "")).lower()
                     enable_pp = bool(params.get("enable_partial_profit", False))
+                    if pp_mode in {"time", "days"}:
+                        enable_pp = True
+                    if pp_mode in {"none", "off"}:
+                        enable_pp = False
+
                     move_be = bool(params.get("move_stop_to_be", True))
-                    pp_day = int(params.get("partial_profit_day", 0))
+                    pp_day = int(params.get("partial_profit_after_days", params.get("partial_profit_day", 0)) or 0)
                     pp_r = float(params.get("partial_profit_r", 2.0))
+                    pp_frac = float(params.get("partial_profit_fraction", 0.5))
                     
                     # 2. Gate Execution
                     risk_per_share = float(pos.get("initial_risk", 0.0) or 0.0)
@@ -922,31 +1018,54 @@ def _legacy_run_backtest(
                     if enable_pp and risk_per_share > 0 and not pos.get("partial_taken", False):
                         # Time Gate: Must hold for at least X days
                         if days_held >= pp_day:
-                            target_px = pos["entry_price"] + (pp_r * risk_per_share)
-                            
-                            # Price Trigger
-                            if current_close >= target_px:
-                                # Execute Sell
-                                shares_to_sell = max(1, int(pos["shares"] * 0.5))
-                                shares_to_sell = min(shares_to_sell, pos["shares"])
-                                
-                                proceeds = shares_to_sell * current_close
-                                cash += proceeds
-                                pos["shares"] -= shares_to_sell
+                            if pp_mode in {"time", "days"}:
+                                if current_close <= pos["entry_price"]:
+                                    pass
+                                else:
+                                    shares_to_sell = max(1, int(pos["shares"] * pp_frac))
+                                    shares_to_sell = min(shares_to_sell, pos["shares"])
+
+                                    proceeds = shares_to_sell * current_close
+                                    cash += proceeds
+                                    pos["shares"] -= shares_to_sell
+
+                                    trades_list.append({
+                                        "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
+                                        "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
+                                        "Return %": (current_close/pos["entry_price"] - 1)*100,
+                                        "Reason": f"PARTIAL_TIME_{pp_day}D"
+                                    })
+
+                                    if move_be:
+                                        pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
+
+                                    pos["partial_taken"] = True
+                            else:
+                                target_px = pos["entry_price"] + (pp_r * risk_per_share)
+
+                                # Price Trigger
+                                if current_close >= target_px:
+                                    # Execute Sell
+                                    shares_to_sell = max(1, int(pos["shares"] * pp_frac))
+                                    shares_to_sell = min(shares_to_sell, pos["shares"])
+                                    
+                                    proceeds = shares_to_sell * current_close
+                                    cash += proceeds
+                                    pos["shares"] -= shares_to_sell
                                 
                                 # Log
-                                trades_list.append({
-                                    "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
-                                    "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
-                                    "Return %": (current_close/pos["entry_price"] - 1)*100,
-                                    "Reason": f"PARTIAL_PROFIT_{pp_r}R"
-                                })
+                                    trades_list.append({
+                                        "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
+                                        "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
+                                        "Return %": (current_close/pos["entry_price"] - 1)*100,
+                                        "Reason": f"PARTIAL_PROFIT_{pp_r}R"
+                                    })
                                 
                                 # 3. Optional: Move Stop to Breakeven
-                                if move_be:
-                                    pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
-                                    
-                                pos["partial_taken"] = True
+                                    if move_be:
+                                        pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
+                                        
+                                    pos["partial_taken"] = True
 
                 if not should_exit:
                     # AUDIT FIX: Use the Strategy's sophisticated exit logic (Trailing Stops, SMA Breaks)
@@ -1010,13 +1129,7 @@ def _legacy_run_backtest(
             # Prevents string mismatch bugs (e.g. Risk0.01 vs Risk0.010) from killing trades.
             # Minervini filters (RS/VCP) have already run upstream, so these candidates are valid.
             
-            # MARKET REGIME FILTER: OFFENSE (Buy Side)
-            # If SPY < SMA200, we do NOT open new positions. Defense mode only.
-            in_bear_market = global_spy_close[day_idx] < global_spy_sma200[day_idx]
-            
-            if in_bear_market:
-                day_candidates = []
-            elif len(strategies) == 1:
+            if len(strategies) == 1:
                 day_candidates = candidates
             else:
                 day_candidates = [c for c in candidates if c.strategy_name == strat.name]
@@ -1027,81 +1140,30 @@ def _legacy_run_backtest(
                 if len(positions) >= max_pos: break
                 if cand.sym in positions: continue
 
-                # Minervini Event Rule: only enter on breakout crossover
                 sym_data = enriched.get(cand.sym)
                 if sym_data is None:
                     continue
-                signal_loc = cand.entry_i - 1
-                prev_loc = signal_loc - 1
-                if prev_loc < 0 or signal_loc >= len(sym_data.df):
-                    continue
-                row = sym_data.df.iloc[signal_loc]
-                
-                # --- PATCH: FORCE STRATEGY CONSULTATION ---
-                # The strategy knows the rules. We must ask it.
-                # strategies[0] is our active genome.
-                decision = strategies[0].entry(sym_data.df, signal_loc)
-                
-                # If strategy returns None/False, SKIP this trade.
-                if not decision:
-                    continue
-                    
-                # If strategy returns a dict, it might have sizing info (optional)
-                if isinstance(decision, dict):
-                    # Pass for now, just accept the True signal
-                    pass
-                # ------------------------------------------
-                # ===============================================
-                prev_row = sym_data.df.iloc[prev_loc]
-                pivot = row.get("high_20_prev", np.nan)
-                price_today = row.get("close", np.nan)
-                price_yesterday = prev_row.get("close", np.nan)
-                if not np.isfinite(pivot) or not np.isfinite(price_today) or not np.isfinite(price_yesterday):
+                entry_loc = int(cand.entry_i)
+                if entry_loc <= 0 or entry_loc >= len(sym_data.df):
                     continue
 
-                # Volume Confirmation Gate (Moved Upstream)
-                # vol_today = row.get("volume", np.nan)
-                # ...
-                pass
-                    
-                # ADR Gate: High Octane Only
-                adr_val = row.get("adr_pct", 0.0)
-                if adr_val < 3.5:
-                    continue
-                    
-                # CLV Gate: Must close in top 40% of range (Strong Breakout)
-                clv_val = row.get("clv", 0.5)
-                if clv_val < 0.60:
+                open_px = float(sym_data.open[entry_loc])
+                high_px = float(sym_data.high[entry_loc])
+
+                signal_mode = str(params.get("signal_mode", "after_close")).lower()
+                if signal_mode in {"market", "open", "moo"}:
+                    filled, fill_px = True, open_px
+                else:
+                    filled, fill_px = compute_stop_fill(open_px, high_px, cand.entry_px, cand.stop_limit_pct)
+                if not filled:
                     continue
 
-                # Strict crossover: price_today > pivot and price_yesterday < pivot
-
-                # Strict crossover: price_today > pivot and price_yesterday < pivot
-                # Changed from <= to < to prevent Machine Gun Re-entry on day T+1
-                if not (price_today > pivot and price_yesterday < pivot):
+                entry_px = float(fill_px)
+                stop_px = float(cand.stop_px)
+                if not np.isfinite(entry_px) or not np.isfinite(stop_px):
                     continue
-                    
-                # Minervini Hard Rule: Price > SMA200 (With IPO Whitelist)
-                sma200_val = row.get("sma200", np.nan)
-                is_ipo = len(sym_data.df) < 250
-                
-                # Only enforce SMA200 if it's NOT an IPO
-                if not is_ipo:
-                    if not np.isfinite(sma200_val) or row.get("close", 0) < sma200_val:
-                        continue
-
-                # AUDIT FIX: Enforce Strategy Entry Rules (e.g., Breakout Trigger)
-                entry_rules = params.get("entry_rules", [])
-                if entry_rules:
-                    rules_ok = True
-                    for rule in entry_rules:
-                        if not isinstance(rule, dict):
-                            continue
-                        if not _rule_pass(row, rule):
-                            rules_ok = False
-                            break
-                    if not rules_ok:
-                        continue
+                if stop_px >= entry_px:
+                    continue
                 
                 mtm_equity = cash + sum(p["shares"] * p["last_price"] for p in positions.values())
 
@@ -1114,15 +1176,15 @@ def _legacy_run_backtest(
                     size_scalar = 1.0
 
                 risk_amt = mtm_equity * risk_per_trade * size_scalar
-                dist = max(cand.entry_px - cand.stop_px, cand.entry_px * 0.005)
+                dist = max(entry_px - stop_px, entry_px * 0.005)
                 shares = int(risk_amt / dist)
                 
                 # Caps
                 max_cap = mtm_equity * max_pos_size_pct
-                if shares * cand.entry_px > max_cap:
-                    shares = int(max_cap / cand.entry_px)
-                if shares * cand.entry_px > cash:
-                    shares = int(cash / cand.entry_px)
+                if shares * entry_px > max_cap:
+                    shares = int(max_cap / entry_px)
+                if shares * entry_px > cash:
+                    shares = int(cash / entry_px)
                 
                 if shares == 0:
                     sym = cand.sym
@@ -1130,16 +1192,16 @@ def _legacy_run_backtest(
                     continue
 
                 if shares > 0:
-                    cash -= shares * cand.entry_px
+                    cash -= shares * entry_px
                     positions[cand.sym] = {
-                        "entry_price": cand.entry_px,
-                        "stop_price": cand.stop_px,
+                        "entry_price": entry_px,
+                        "stop_price": stop_px,
                         "shares": shares,
                         "entry_day_idx": day_idx,
-                        "last_price": cand.entry_px,
+                        "last_price": entry_px,
                         "partial_taken": False,
-                        "initial_risk": max(cand.entry_px - cand.stop_px, cand.entry_px * 0.001),
-                        "pivot": pivot,
+                        "initial_risk": max(entry_px - stop_px, entry_px * 0.001),
+                        "pivot": cand.entry_px,
                     }
 
             # 3. Record Equity (Lazy Timestamp)
@@ -1173,6 +1235,9 @@ def _legacy_run_backtest(
             max_dd = abs(drawdowns.min()) if not drawdowns.empty else 0.0
 
         res = _empty_result(strat.name, start_cash, params)
+        gate_audit = getattr(strat, "_gate_counts", None)
+        if isinstance(gate_audit, dict):
+            res["gate_audit"] = dict(gate_audit)
         res.update({
             "final_value": final_val,
             "max_drawdown_pct": max_dd,

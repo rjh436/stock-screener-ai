@@ -26,8 +26,8 @@ except ImportError as e:
 # --- CONFIGURATION ---
 RESULTS_FILE = "superperformance_results.csv"
 BEST_GENOME_FILE = "config/superperformance_winner.json"
-POPULATION_SIZE = 50
-GENERATIONS = 20
+POPULATION_SIZE = 4
+GENERATIONS = 1
 START_DATE = "2010-01-01"
 END_DATE = "2025-12-31"
 MAX_WORKERS = 4
@@ -188,8 +188,8 @@ if __name__ == "__main__":
     print(f"🚀 PROJECT APEX: Strategic Nuclear Reset")
     print(f"HARDWARE: M3 Max | WORKERS: {MAX_WORKERS}")
     
-    print("...Loading Data...")
-    symbols = get_universe_symbols("RUSSELL3000")
+    print("...Loading Data (DEBUG MODE)...")
+    symbols = get_universe_symbols("RUSSELL3000")[:20] # DEBUG: Only 20 symbols
     data = fetch_data_pack(symbols, days=4200, backtest_mode=True)
     g_data = fetch_data_pack(["SPY", "VIX"], days=4200, backtest_mode=True)
     
@@ -280,4 +280,4 @@ if __name__ == "__main__":
         population = next_gen
         save_checkpoint(gen, population, winner)
         gc.collect()
-
+        print(f"⏱️  {time.time()-start_time:.1f}s")

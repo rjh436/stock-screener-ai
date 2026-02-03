@@ -431,5 +431,84 @@
       }
     ],
     "type": "generic"
+  },
+  {
+    "name": "Qullamaggie Breakout (Daily)",
+    "type": "breakout",
+    "signal_mode": "after_close",
+    "stop_buy_ref": "high_20_prev",
+    "stop_buy_mult": 1.0,
+    "stop_limit_pct": 0.02,
+    "q_momentum_rank_pct": 98,
+    "q_premove_min": 30.0,
+    "adr_min": 3.0,
+    "max_stop_pct": 0.10,
+    "partial_profit_mode": "time",
+    "partial_profit_after_days": 4,
+    "partial_profit_fraction": 0.5,
+    "exit_ma": "sma10",
+    "exit_ma_after_partial": "sma20",
+    "risk_parameters": {
+      "risk_per_trade": 0.01,
+      "stop_loss_type": "low_of_day",
+      "stop_loss_atr": 0.0,
+      "max_positions": 8,
+      "max_pos_size_pct": 0.20
+    },
+    "execution_parameters": {
+      "time_stop": 60,
+      "regime_filter": false
+    }
+  },
+  {
+    "name": "Qullamaggie EP (Daily)",
+    "type": "breakout",
+    "signal_mode": "after_close",
+    "stop_buy_ref": "high",
+    "stop_buy_mult": 1.0,
+    "stop_limit_pct": 0.03,
+    "ep_gap_min": 10.0,
+    "ep_vol_mult": 2.0,
+    "max_stop_pct": 0.10,
+    "partial_profit_mode": "time",
+    "partial_profit_after_days": 4,
+    "partial_profit_fraction": 0.5,
+    "exit_ma": "sma10",
+    "exit_ma_after_partial": "sma20",
+    "risk_parameters": {
+      "risk_per_trade": 0.01,
+      "stop_loss_type": "low_of_day",
+      "stop_loss_atr": 0.0,
+      "max_positions": 6,
+      "max_pos_size_pct": 0.20
+    },
+    "execution_parameters": {
+      "time_stop": 60,
+      "regime_filter": false
+    }
+  },
+  {
+    "name": "Minervini SEPA (Daily)",
+    "type": "generic",
+    "signal_mode": "after_close",
+    "stop_buy_ref": "high_20_prev",
+    "stop_buy_mult": 1.0,
+    "stop_limit_pct": 0.02,
+    "max_stop_pct": 0.08,
+    "rs_min": 70.0,
+    "partial_profit_mode": "none",
+    "exit_ma": "sma20",
+    "exit_ma_after_partial": "sma50",
+    "risk_parameters": {
+      "risk_per_trade": 0.015,
+      "stop_loss_type": "low_of_day",
+      "stop_loss_atr": 0.0,
+      "max_positions": 6,
+      "max_pos_size_pct": 0.25
+    },
+    "execution_parameters": {
+      "time_stop": 120,
+      "regime_filter": true
+    }
   }
 ]
