@@ -16,7 +16,6 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from strategies.generic import GenericStrategy
 from strategies.strategy_loader import load_strategies
 from execution.parity import (
     apply_strategy_score_multipliers,
@@ -918,10 +917,20 @@ def _legacy_run_backtest(
                 if stop_limit_pct is None:
                     stop_limit_pct = 0.02
 
-                score = _score_row_dual_core(
-                    sd.rsi14[prev_i], sd.bbwidth[prev_i], sd.natr[prev_i],
-                    sd.close[prev_i], sd.high52w[prev_i], {"rsi_factor": 1.0}
-                )
+                score_mode = str(params.get("score_mode", "")).lower()
+                if score_mode == "momentum":
+                    rs_val = float(sd.rsrating[prev_i])
+                    mom_val = float(sd.momrank[prev_i])
+                    if not np.isfinite(rs_val):
+                        rs_val = 0.0
+                    if not np.isfinite(mom_val):
+                        mom_val = 0.0
+                    score = (0.7 * rs_val) + (0.3 * mom_val)
+                else:
+                    score = _score_row_dual_core(
+                        sd.rsi14[prev_i], sd.bbwidth[prev_i], sd.natr[prev_i],
+                        sd.close[prev_i], sd.high52w[prev_i], {"rsi_factor": 1.0}
+                    )
 
                 candidates_by_day[day_idx].append(
                     _Candidate(sym, float(trigger), float(stop_px), score, strat.name, curr_i, float(stop_limit_pct))

@@ -1,96 +1,137 @@
 from typing import Dict, Optional
+import math
 import pandas as pd
-import numpy as np
-from .generic import GenericStrategy
 
-class SuperperformanceStrategy(GenericStrategy):
+from .base import BaseStrategy
+
+
+def _as_float(value, default=0.0) -> float:
+    try:
+        val = float(value)
+    except Exception:
+        return default
+    if not math.isfinite(val):
+        return default
+    return val
+
+
+class SuperperformanceStrategy(BaseStrategy):
     """
-    Project Apex: Superperformance Strategy
-    Implements strict Minervini Stage 2 filters and Qullamaggie/VCP entry triggers.
+    Superperformance Strategy
+    - Minervini Trend Filter (Stage 2)
+    - Qullamaggie Breakout + Episodic Pivot triggers
+    - Hard stop: Low of breakout day or max -5%
     """
-    def __init__(self, genome: dict):
-        super().__init__(genome)
-        self._name = genome.get("name", "Superperformance")
+
+    def __init__(self, params: Dict):
+        self.params = params or {}
+        self._name = self.params.get("name", "Superperformance")
+        super().__init__(self.params)
+
+    @property
+    def name(self) -> str:
+        return self._name
 
     def entry(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
-        warmup = 200 # Need 200 MA
+        warmup = int(self.params.get("warmup_bars", 200))
         if i < warmup:
             return None
-            
+
         row = df.iloc[i]
-        
-        # --- 1. STRICT STAGE 2 FILTER (The Gatekeeper) ---
-        close = row.get("close")
-        sma50 = row.get("sma50")
-        sma150 = row.get("sma150")
-        sma200 = row.get("sma200")
-        rs_rating = row.get("rs_rating", 0)
-        
-        # Filter 1: Moving Average Alignment (Price > 50 > 200)
-        # REMOVED SMA150 check to allow early Stage 2 entries
-        if not (close > sma50 > sma200):
+        close_px = _as_float(row.get("close"), 0.0)
+        if close_px <= 0:
             return None
-            
-        # Filter 2: 200-Day Trend (Slope Positive)
-        # Look back 20 days to check slope
-        try:
-            prev_sma200 = df.iloc[i-20]["sma200"]
-            if sma200 <= prev_sma200:
+
+        # Optional trend filter (off by default for Qullamaggie)
+        require_trend = bool(self.params.get("require_trend", False))
+        rs_min = float(self.params.get("rs_min", 0.0))
+        rs_rating = _as_float(row.get("rs_rating"), 0.0)
+        if require_trend:
+            sma50 = _as_float(row.get("sma50"), 0.0)
+            sma150 = _as_float(row.get("sma150"), 0.0)
+            sma200 = _as_float(row.get("sma200"), 0.0)
+            if not (close_px > sma50 > sma150 > sma200):
                 return None
-        except:
+            high_52w = _as_float(row.get("high_52w"), 0.0)
+            if high_52w <= 0 or close_px < (0.75 * high_52w):
+                return None
+
+        if rs_min > 0 and rs_rating < rs_min:
             return None
-            
-        # Filter 3: 52-Week High/Low
-        high_52 = row.get("high_52", close) # Assuming engine calculates this, or use fallback
-        low_52 = row.get("low_52", close)
-        
-        if close < (0.75 * high_52): # Must be within 25% of highs
+
+        mom_min = float(self.params.get("mom_rank_min", 0.0))
+        mom_rank = _as_float(row.get("momentum_rank"), 0.0)
+        if mom_min > 0 and mom_rank < mom_min:
             return None
-        if close < (1.25 * low_52): # Must be 25% above lows
-            return None
-            
-        # Filter 4: Relative Strength
-        if rs_rating < 65: # Relaxed to 65 to widen the funnel
-            return None
-            
-        # --- 2. ENTRY TRIGGERS (The Spark) ---
-        # Trigger A: VCP Breakout (Tightness + Volume Dry Up)
-        natr = row.get("natr", 100)
-        vol = row.get("volume", 0)
-        vol_sma50 = row.get("vol_sma50", vol)
-        
-        # Trigger A: VCP Breakout (Tightness + Volume Dry Up BEFORE today + Breakout TODAY)
-        # Logic: 
-        # 1. Yesterday (or recent days) had low volume (Dry Up).
-        # 2. Today price is breaking out (Close > 20-Day High).
-        # 3. Volatility (NATR) is low (Tightness).
-        
-        prev_vol = df.iloc[i-1]["volume"]
-        high_20_prev = row.get("high_20_prev", 0)
-        
-        is_vcp = False
-        if natr < 3.0: # Tightness
-            if prev_vol < (vol_sma50 * 1.0): # Dry Up (Below Average is enough)
-                if close > high_20_prev: # Breakout TODAY
-                   is_vcp = True
-               
-        # Trigger B: Episodic Pivot (Power Breakout)
+
+        entry_mode = str(self.params.get("entry_mode", "") or "").lower()
+        if entry_mode not in {"breakout", "ep", "both"}:
+            entry_mode = "both"
+
+        # --- Breakout Trigger ---
+        prior_high = _as_float(row.get("highest10_1"), 0.0)
+        vol = _as_float(row.get("volume"), 0.0)
+        vol_ma50 = _as_float(row.get("vol_ma50"), vol)
+        vol_mult = float(self.params.get("vol_mult", 1.5))
+
+        is_breakout = False
+        if entry_mode in {"breakout", "both"}:
+            # Qullamaggie Visual Tightness (NATR < threshold for last N days)
+            natr_max = float(self.params.get("natr_max", 3.0))
+            natr_days = int(self.params.get("natr_days", 10))
+            if i >= natr_days:
+                natr_window = df["natr"].iloc[i - natr_days + 1 : i + 1]
+                if not natr_window.isna().any() and float(natr_window.max()) < natr_max:
+                    if prior_high > 0 and close_px > prior_high:
+                        if vol_ma50 > 0 and vol >= (vol_ma50 * vol_mult):
+                            is_breakout = True
+
+        # --- Episodic Pivot (High Volume Gap) ---
         is_ep = False
-        open_price = row.get("open")
-        prev_close = df.iloc[i-1]["close"]
-        gap_pct = (open_price - prev_close) / prev_close
-        
-        if gap_pct > 0.02: # Relaxed Gap (2%)
-            if vol > (vol_sma50 * 1.5): # Relaxed Vol (1.5x)
-                is_ep = True
-        
-        # Genome Override: Allow Genetic Algorithm to tune specific detailed triggers if needed,
-        # but for now, we fire if EITHER trigger is met.
-        if is_vcp or is_ep:
-            return {
-                "limit_ratio": 0.0, # Market Order (or Limit at Close)
-                "stop_loss_atr": self.genome.get("stop_loss_atr", 2.0),
-                "stop_loss_type": "atr"
-            }
-            
-        return None
+        if entry_mode in {"ep", "both"} and i >= 1:
+            open_px = _as_float(row.get("open"), 0.0)
+            prev_close = _as_float(df.iloc[i - 1].get("close"), 0.0)
+            if prev_close > 0 and open_px > 0:
+                gap_pct = (open_px - prev_close) / prev_close
+                ep_gap = float(self.params.get("ep_gap_pct", 0.10))
+                ep_vol_mult = float(self.params.get("ep_vol_mult", 1.5))
+                if gap_pct >= ep_gap and vol_ma50 > 0 and vol >= (vol_ma50 * ep_vol_mult):
+                    is_ep = True
+
+        if not (is_breakout or is_ep):
+            return None
+
+        # --- Entry + Risk ---
+        breakout_buffer = float(self.params.get("breakout_buffer", 0.0))
+        if is_breakout:
+            trigger_px = prior_high * (1.0 + breakout_buffer)
+        else:
+            trigger_px = _as_float(row.get("high"), 0.0)
+        low_px = _as_float(row.get("low"), 0.0)
+        if trigger_px <= 0 or low_px <= 0:
+            return None
+
+        max_stop_pct = float(self.params.get("max_stop_pct", 0.05))
+        hard_stop = trigger_px * (1.0 - max_stop_pct)
+        stop_px = max(low_px, hard_stop)
+
+        if stop_px >= trigger_px:
+            return None
+
+        return {
+            "trigger_price": trigger_px,
+            "stop_price": stop_px,
+            "stop_limit_pct": float(self.params.get("stop_limit_pct", 0.02)),
+            "stop_loss_type": "low_or_pct",
+        }
+
+    def exit(
+        self,
+        df: pd.DataFrame,
+        i: int,
+        entry_i: int,
+        entry_price: float,
+        stop_price: float,
+    ) -> bool:
+        # Engine uses centralized exit logic; keep a safe default.
+        return False

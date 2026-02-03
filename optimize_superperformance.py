@@ -26,36 +26,44 @@ except ImportError as e:
 # --- CONFIGURATION ---
 RESULTS_FILE = "superperformance_results.csv"
 BEST_GENOME_FILE = "config/superperformance_winner.json"
-POPULATION_SIZE = 50
-GENERATIONS = 20
-START_DATE = "2010-01-01"
+POPULATION_SIZE = 30
+GENERATIONS = 6
+START_DATE = "2020-01-01"
 END_DATE = "2025-12-31"
-MAX_WORKERS = 4
+MAX_WORKERS = 6
 CHECKPOINT_FILE = "optimizer_checkpoint_sp.pkl" 
 
 # --- GENOME SPACE (Optimization Variables) ---
 GENE_SPACE = {
-    # ENGINE PASS-THROUGHS (Disable Engine Filters so Strategy can decide)
-    "rs_floor": [60],         # Engine allows anything > 60
-    "vol_mult": [0.1],        # Engine allows anything > 0.1x (Disabled)
-    "adx_min": [0],           # Engine allows ADX > 0 (Disabled)
-    "bb_width_max": [1.0],    # Engine allows BB Width < 1.0 (Disabled)
+    # Optional trend filter (use sparingly)
+    "require_trend": [False, True],
+    "rs_min": [0, 70, 80, 90],
+    "mom_rank_min": [0, 80, 90, 95],
+    "use_market_filter": [True, False],
 
-    # EXIT MECHANICS (Optimizer tunes this)
-    "stop_loss_atr": [1.5, 2.0, 2.5, 3.0],
-    "exit_sma": ["sma10", "sma20", "sma50"], # Engine uses this in _generic_exit_decision
-    
-    # PROFIT TAKING
-    "enable_partial_profit": [True, False],
-    "partial_profit_r": [2.0, 3.0],
-    "move_stop_to_be": [True],
-    "partial_profit_day": [3, 5],
-    "time_stop": [30, 45, 60],
+    # Qullamaggie Tightness + Breakout
+    "natr_max": [2.0, 2.5, 3.0, 4.0, 5.0],
+    "natr_days": [10],
+    "vol_mult": [1.0, 1.2, 1.5, 2.0],
+    "breakout_buffer": [0.0, 0.002, 0.005],
 
-    # SIZING (Risk Management)
-    "max_positions": [5, 8, 10, 12, 15],
-    "risk_per_trade": [0.010, 0.015, 0.020],
-    "max_pos_size_pct": [0.10, 0.12, 0.15, 0.20]
+    # Episodic Pivot (High Volume Gap)
+    "entry_mode": ["breakout", "ep", "both"],
+    "ep_gap_pct": [0.04, 0.06, 0.08, 0.10],
+    "ep_vol_mult": [1.3, 1.5, 2.0],
+
+    # Execution / Risk
+    "max_stop_pct": [0.05],
+    "stop_limit_pct": [0.05, 0.08, 0.10, 0.12],
+
+    # Exit Discipline
+    "breakeven_at_pct": [0.08, 0.10, 0.12],
+    "trail_ma": ["sma10", "sma20"],
+
+    # Sizing
+    "max_positions": [3, 4, 5],
+    "risk_per_trade": [0.05, 0.08, 0.10, 0.15],
+    "max_pos_size_pct": [0.40, 0.60, 0.80, 1.00],
 }
 
 # --- DATA REF ---
@@ -131,6 +139,14 @@ def evaluate_genome(genome_id_and_genome):
         # Construct Strategy Config
         strategy_config = genome.copy()
         strategy_config["name"] = f"Gen_{genome_id}"
+        # Align exit SMA with trail SMA for discipline
+        if "trail_ma" in strategy_config:
+            strategy_config["exit_ma"] = strategy_config["trail_ma"]
+        # After-close scan, next-day market entry (MOO) improves fill realism
+        strategy_config["signal_mode"] = "open"
+        if strategy_config.get("use_market_filter"):
+            strategy_config["market_filter_mode"] = "spy_sma200"
+        strategy_config["score_mode"] = "momentum"
         
         # Instantiate Specific Strategy
         strat = SuperperformanceStrategy(strategy_config)
@@ -154,7 +170,8 @@ def evaluate_genome(genome_id_and_genome):
         max_dd = raw_dd * 100.0 if raw_dd < 1.0 else raw_dd
             
         # CAGR
-        years = 16 
+        years = (pd.to_datetime(END_DATE) - pd.to_datetime(START_DATE)).days / 365.25
+        years = max(years, 1.0)
         cagr_pct = ((final_val / 100000.0) ** (1/years) - 1) * 100
         
         # FITNESS FUNCTION: Minervini/Qullamaggie
@@ -164,8 +181,8 @@ def evaluate_genome(genome_id_and_genome):
         else:
             score = cagr_pct - max_dd
             
-        if max_dd > 25.0:
-            score -= (max_dd - 25.0) * 10.0 # Strict penalty
+        if max_dd > 20.0:
+            score -= (max_dd - 20.0) * 12.0  # stricter penalty toward <20% DD
 
         return {
             "id": genome_id,
@@ -190,8 +207,10 @@ if __name__ == "__main__":
     
     print("...Loading Data...")
     symbols = get_universe_symbols("RUSSELL3000")
-    data = fetch_data_pack(symbols, days=4200, backtest_mode=True)
-    g_data = fetch_data_pack(["SPY", "VIX"], days=4200, backtest_mode=True)
+    total_days = (pd.to_datetime(END_DATE) - pd.to_datetime(START_DATE)).days
+    trading_days = int((total_days / 365.25) * 252) + 400  # warmup buffer
+    data = fetch_data_pack(symbols, days=trading_days, backtest_mode=True)
+    g_data = fetch_data_pack(["SPY", "VIX"], days=trading_days, backtest_mode=True)
     
     print("...Preparing & Compressing...")
     # Strict Prep Config
@@ -206,24 +225,6 @@ if __name__ == "__main__":
     prepared = prepare_backtest_data(data, symbols, start_date=START_DATE, global_data=g_data)
     print(f"📊 DATA POOL: {len(prepared.enriched)} tickers prepared.")
     
-    # MANUAL PATCH: Calculate 'high_20_prev' and 'natr' for VCP/EP logic
-    print("🔧 MANUAL PATCH: Calculating VCP/EP Attributes...")
-    for sym, s_data in prepared.enriched.items():
-        df = s_data.df
-        if 'high' in df.columns:
-            df['high_52'] = df['high'].rolling(window=252).max()
-            df['low_52'] = df['low'].rolling(window=252).min()
-        
-        if 'atr' not in df.columns:
-             df['tr'] = np.maximum(df['high'] - df['low'], np.maximum(abs(df['high'] - df['close'].shift(1)), abs(df['low'] - df['close'].shift(1))))
-             df['atr'] = df['tr'].rolling(window=14).mean()
-             
-        if 'close' in df.columns and 'atr' in df.columns:
-            df['natr'] = (df['atr'] / df['close']) * 100.0
-            
-        if 'volume' in df.columns:
-            df['vol_sma50'] = df['volume'].rolling(window=50).mean()
-
     prepared = compress_data(prepared)
 
     checkpoint = None # START FRESH
@@ -280,4 +281,3 @@ if __name__ == "__main__":
         population = next_gen
         save_checkpoint(gen, population, winner)
         gc.collect()
-

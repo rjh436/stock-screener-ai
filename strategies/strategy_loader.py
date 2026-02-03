@@ -1,41 +1,28 @@
 from typing import List, Dict
 
-from .generic import GenericStrategy
-from .apex_wealth import ApexWealthStrategy
-from .sepa_champion import SEPAChampionStrategy
-from .qullamaggie_breakout import QullamaggieBreakoutStrategy
-from .qullamaggie_ep import QullamaggieEpisodicPivotStrategy
 from .minervini_sepa import MinerviniSEPAStrategy
+from .superperformance import SuperperformanceStrategy
 
 STRATEGY_CLASSES = {
-    "Apex SEPA Champion (2026)": SEPAChampionStrategy,
-    "Qullamaggie Breakout (Daily)": QullamaggieBreakoutStrategy,
-    "Qullamaggie EP (Daily)": QullamaggieEpisodicPivotStrategy,
+    "Superperformance": SuperperformanceStrategy,
+    "Superperformance Strategy": SuperperformanceStrategy,
+    "Minervini SEPA": MinerviniSEPAStrategy,
     "Minervini SEPA (Daily)": MinerviniSEPAStrategy,
 }
 
 def load_strategies(configs: List[Dict]) -> List[object]:
     """
-    Strategy Loader - PERFORMANCE LOCKED (Generic Mode V9)
-    
-    CRITICAL ARCHITECTURE DECISION:
-    This loader intentionally bypasses the 'StrategyApexSniper' class.
-    Audit confirmed that the specialized class enforces hardcoded 'Dip Buy' (RSI < 5) logic
-    which conflicts with the optimized 'Momentum' parameters (RSI > 15) in generated_strategies.json.
-    
-    By routing everything to GenericStrategy, we ensure the system respects the 35% CAGR configuration.
+    Strategy Loader - Superperformance + Minervini only.
+    All other strategies are archived to prevent confusion.
     """
     strategies = []
     for config in configs or []:
-        # Priority: Respect explicit strategy class mapping by name
         strategy_cls = STRATEGY_CLASSES.get(config.get("name"))
-        if strategy_cls is not None:
-            strategy = strategy_cls(config)
-        elif config.get("type") == "wealth":
-            strategy = ApexWealthStrategy(config)
-        else:
-            strategy = GenericStrategy(config)
-            
+        if strategy_cls is None:
+            # Skip unknown strategy configs in this locked-down mode.
+            continue
+
+        strategy = strategy_cls(config)
         strategies.append(strategy)
         print(f"✅ Loaded {strategy.name} as {type(strategy).__name__} (Performance Mode)")
         

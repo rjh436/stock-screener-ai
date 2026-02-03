@@ -383,7 +383,7 @@ def _generic_exit_decision(
     if low_px < current_stop:
         return True, current_stop, None
 
-    # 2. TRAILING STOP LOGIC
+    # 2. TRAILING STOP LOGIC (ATR)
     # FIX: Explicit check for None to allow 0.0 to disable trailing
     trail_raw = params.get("trail_atr")
     if trail_raw is not None:
@@ -408,6 +408,25 @@ def _generic_exit_decision(
             atr_at_entry = float(sd.atr14[entry_loc])
             if dist_from_entry >= (atr_at_entry * activation_mult):
                 new_stop = potential_stop
+
+    # 2b. BREAKEVEN + SMA TRAIL (Qullamaggie discipline)
+    profit_pct = (close_px - entry_px) / entry_px if entry_px > 0 else 0.0
+    breakeven_at = float(params.get("breakeven_at_pct", 0.0) or 0.0)
+    trail_ma = params.get("trail_ma") or params.get("trail_sma")
+    if breakeven_at > 0 and profit_pct >= breakeven_at:
+        # Move stop to breakeven first
+        if entry_px > new_stop:
+            new_stop = entry_px
+
+        # Then trail SMA10 or SMA20
+        if isinstance(trail_ma, str) and trail_ma in {"sma10", "sma20"}:
+            try:
+                ma_arr = getattr(sd, trail_ma)
+                ma_val = float(ma_arr[loc])
+            except Exception:
+                ma_val = float("nan")
+            if np.isfinite(ma_val) and ma_val > new_stop:
+                new_stop = ma_val
 
     # 3. TIME STOP
     time_stop_days = int(params.get("time_stop", 0) or 0)
@@ -453,6 +472,11 @@ def _generic_exit_decision(
             )
         if not partial_taken and params.get("exit_ma_after_profit") and close_px > entry_px:
             active_exit_sma = params.get("exit_ma_after_profit")
+
+        # If we are explicitly trailing via SMA, rely on the stop update instead of
+        # immediate SMA cross exits (avoids premature exits on minor dips).
+        if params.get("trail_ma"):
+            active_exit_sma = None
             
         # Check SMA Exit Logic
         # We need to find the rule corresponding to the active SMA
@@ -462,9 +486,9 @@ def _generic_exit_decision(
         # Simplified Check for SMA Breach:
         # If the 'active_exit_sma' column exists and Close < SMA, EXIT.
         if active_exit_sma in ["sma10", "sma20", "sma50"]:
-             sma_val = float(sd.df.iloc[loc].get(active_exit_sma, 0))
-             if 0 < sma_val and close_px < sma_val:
-                 return True, new_stop, None
+            sma_val = float(sd.df.iloc[loc].get(active_exit_sma, 0))
+            if 0 < sma_val and close_px < sma_val:
+                return True, new_stop, None
 
         for rule in params.get("exit_rules", []) or []:
             if not isinstance(rule, dict):
