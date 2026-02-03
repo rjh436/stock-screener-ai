@@ -32,43 +32,55 @@ START_DATE = "2020-01-01"
 END_DATE = "2025-12-31"
 MAX_WORKERS = 6
 CHECKPOINT_FILE = "optimizer_checkpoint_sp.pkl" 
+MAX_DD_CAP = 25.0
 
 # --- GENOME SPACE (Optimization Variables) ---
 GENE_SPACE = {
     # Optional trend filter (use sparingly)
-    "require_trend": [False, True],
-    "rs_min": [0, 70, 80, 90],
-    "mom_rank_min": [0, 80, 90, 95],
-    "use_market_filter": [True, False],
+    "require_trend": [True],
+    "rs_min": [65, 70, 80],
+    "mom_rank_min": [50, 70, 90],
 
     # Qullamaggie Tightness + Breakout
-    "natr_max": [2.0, 2.5, 3.0, 4.0, 5.0],
+    "natr_max": [2.0, 2.5, 3.0, 4.0],
     "natr_days": [10],
     "vol_mult": [1.0, 1.2, 1.5, 2.0],
     "breakout_buffer": [0.0, 0.002, 0.005],
 
     # Episodic Pivot (High Volume Gap)
-    "entry_mode": ["breakout", "ep", "both"],
+    "entry_mode": ["both"],
     "ep_gap_pct": [0.04, 0.06, 0.08, 0.10],
     "ep_vol_mult": [1.3, 1.5, 2.0],
 
     # Execution / Risk
     "max_stop_pct": [0.05],
     "stop_limit_pct": [0.05, 0.08, 0.10, 0.12],
+    "stop_loss_atr_bull": [1.5, 2.0, 2.5],
+    "stop_loss_atr_bear": [0.5, 0.75],
 
     # Exit Discipline
-    "breakeven_at_pct": [0.08, 0.10, 0.12],
-    "trail_ma": ["sma10", "sma20"],
+    "breakeven_at_pct": [0.05, 0.08],
+    "exit_sma_fast": ["sma10", "sma20"],
+    "exit_sma_slow": ["sma50"],
+    "take_profit_chunk_pct": [0.33, 0.50],
+
+    # Pyramiding
+    "pyramid_threshold": [0.05, 0.07, 0.10],
+    "pyramid_fraction": [0.5],
+    "pyramid_max_adds": [1, 2],
 
     # Sizing
-    "max_positions": [3, 4, 5],
-    "risk_per_trade": [0.05, 0.08, 0.10, 0.15],
-    "max_pos_size_pct": [0.40, 0.60, 0.80, 1.00],
+    "max_positions": [6, 8, 10],
+    "risk_per_trade": [0.015, 0.02],
+    "max_pos_size_pct": [0.25, 0.33, 0.40],
+    "max_total_exposure_pct_bull": [1.0],
+    "max_total_exposure_pct_bear": [0.7, 0.8, 0.9],
 }
 
 # --- DATA REF ---
 _prepared_data_ref = None
 _g_data_ref = None
+_max_dd_cap = MAX_DD_CAP
 
 def save_checkpoint(generation, population, best_genome_so_far):
     try:
@@ -124,14 +136,18 @@ def compress_data(prepared_obj):
         except Exception: pass
     return prepared_obj
 
-def init_worker(prepared_data, g_data):
-    global _prepared_data_ref, _g_data_ref
+def init_worker(prepared_data, g_data, dd_cap):
+    global _prepared_data_ref, _g_data_ref, _max_dd_cap
     _prepared_data_ref = prepared_data
     _g_data_ref = g_data
+    try:
+        _max_dd_cap = float(dd_cap)
+    except Exception:
+        _max_dd_cap = MAX_DD_CAP
 
 def evaluate_genome(genome_id_and_genome):
     genome_id, genome = genome_id_and_genome
-    global _prepared_data_ref, _g_data_ref
+    global _prepared_data_ref, _g_data_ref, _max_dd_cap
     
     if _prepared_data_ref is None: return {"id": genome_id, "score": -999, "error": "Init failed"}
 
@@ -139,13 +155,24 @@ def evaluate_genome(genome_id_and_genome):
         # Construct Strategy Config
         strategy_config = genome.copy()
         strategy_config["name"] = f"Gen_{genome_id}"
-        # Align exit SMA with trail SMA for discipline
-        if "trail_ma" in strategy_config:
-            strategy_config["exit_ma"] = strategy_config["trail_ma"]
         # After-close scan, next-day market entry (MOO) improves fill realism
         strategy_config["signal_mode"] = "open"
-        if strategy_config.get("use_market_filter"):
-            strategy_config["market_filter_mode"] = "spy_sma200"
+        # Hybrid exposure (scaled, not binary)
+        strategy_config["market_exposure_mode"] = "hybrid"
+        strategy_config["bear_max_positions"] = 2
+        if "stop_loss_atr_bull" in strategy_config:
+            strategy_config["stop_loss_atr"] = strategy_config.get("stop_loss_atr_bull")
+        strategy_config["split_exit"] = True
+        strategy_config["exit_ma_after_partial"] = strategy_config.get("exit_sma_slow")
+        strategy_config["partial_profit_fraction"] = float(strategy_config.get("take_profit_chunk_pct", 0.5) or 0.5)
+        strategy_config["partial_profit_pct"] = 0.20
+        strategy_config["partial_profit_mode"] = "pct"
+        strategy_config["enable_partial_profit"] = True
+        strategy_config["pyramid_stop_to_avg_cost"] = True
+        strategy_config["allow_margin"] = (
+            float(strategy_config.get("max_total_exposure_pct_bull", 1.0) or 1.0) > 1.0
+            or float(strategy_config.get("max_pos_size_pct", 1.0) or 1.0) > 1.0
+        )
         strategy_config["score_mode"] = "momentum"
         
         # Instantiate Specific Strategy
@@ -173,16 +200,26 @@ def evaluate_genome(genome_id_and_genome):
         years = (pd.to_datetime(END_DATE) - pd.to_datetime(START_DATE)).days / 365.25
         years = max(years, 1.0)
         cagr_pct = ((final_val / 100000.0) ** (1/years) - 1) * 100
+
+        # DEATH PENALTY: Disqualify high drawdown genomes
+        if max_dd > float(_max_dd_cap):
+            return {
+                "id": genome_id,
+                "genome": genome,
+                "score": -100.0,
+                "cagr": cagr_pct,
+                "dd": max_dd,
+                "trades": trades,
+                "disqualified": True
+            }
         
-        # FITNESS FUNCTION: Minervini/Qullamaggie
-        # Prioritize CAGR, Penalize Drawdown > 25%
-        if cagr_pct > 0:
-            score = (cagr_pct ** 1.5) - (max_dd * 0.5)
-        else:
-            score = cagr_pct - max_dd
-            
-        if max_dd > 20.0:
-            score -= (max_dd - 20.0) * 12.0  # stricter penalty toward <20% DD
+        # FITNESS FUNCTION: Calmar Ratio (CAGR / MaxDD)
+        dd_floor = max(max_dd, 1.0)
+        calmar = cagr_pct / dd_floor if dd_floor > 0 else cagr_pct
+        score = calmar
+        # Light penalty for extremely low activity
+        if trades < 10:
+            score *= max(trades / 10.0, 0.1)
 
         return {
             "id": genome_id,
@@ -190,6 +227,7 @@ def evaluate_genome(genome_id_and_genome):
             "score": score,
             "cagr": cagr_pct,
             "dd": max_dd,
+            "calmar": calmar,
             "trades": trades
         }
     except Exception as e:
@@ -231,6 +269,7 @@ if __name__ == "__main__":
     start_gen = 0
     
     population = [generate_random_genome() for _ in range(POPULATION_SIZE)]
+    dd_cap = MAX_DD_CAP
     
     for gen in range(start_gen, GENERATIONS):
         print(f"\n🧬 GEN {gen+1}/{GENERATIONS} (Superperformance)")
@@ -238,32 +277,49 @@ if __name__ == "__main__":
         
         tasks = [(i, g) for i, g in enumerate(population)]
         results = []
+
+        while True:
+            results = []
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=MAX_WORKERS,
+                initializer=init_worker,
+                initargs=(prepared, g_data, dd_cap),
+            ) as executor:
+                futures = [executor.submit(evaluate_genome, t) for t in tasks]
+                for future in concurrent.futures.as_completed(futures):
+                    res = future.result()
+                    results.append(res)
+                    if "error" not in res:
+                        if res.get("disqualified"):
+                            print(f"   > T:{res.get('trades', 0)} | CAGR:{res.get('cagr', 0):.1f}% | DD:{res.get('dd', 0):.1f}% | Fitness:-100 (DD Cap)")
+                        else:
+                            print(f"   > T:{res['trades']} | CAGR:{res['cagr']:.1f}% | DD:{res['dd']:.1f}% | Calmar:{res.get('calmar', 0):.2f}")
+                    else:
+                        print(f"   ⚠️  GENOME {res['id']} FAILED: {res['error']}")
+
+            valid = [r for r in results if "error" not in r and not r.get("disqualified")]
+            if valid:
+                break
+            if dd_cap < 30.0:
+                dd_cap = 30.0
+                print("⚠️  All genomes disqualified at 25% DD. Loosening cap to 30% and retrying this generation.")
+                continue
+            print("CRITICAL: All failed or disqualified.")
+            break
         
-        with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS, initializer=init_worker, initargs=(prepared, g_data)) as executor:
-            futures = [executor.submit(evaluate_genome, t) for t in tasks]
-            for future in concurrent.futures.as_completed(futures):
-                res = future.result()
-                results.append(res)
-                if "error" not in res:
-                    print(f"   > T:{res['trades']} | CAGR:{res['cagr']:.1f}% | DD:{res['dd']:.1f}%")
-                else:
-                    print(f"   ⚠️  GENOME {res['id']} FAILED: {res['error']}")
-        
-        valid = [r for r in results if "error" not in r]
         if not valid:
-            print("CRITICAL: All failed.")
             break
             
         valid.sort(key=lambda x: x["score"], reverse=True)
         winner = valid[0]
         
-        print(f"🏆 WINNER: CAGR {winner['cagr']:.2f}% | DD {winner['dd']:.2f}% | Score: {winner['score']:.1f}")
+        print(f"🏆 WINNER: CAGR {winner['cagr']:.2f}% | DD {winner['dd']:.2f}% | Calmar {winner.get('calmar', 0):.2f} | Score: {winner['score']:.2f}")
         print(f"🧬 DNA: {winner['genome']}")
         
         with open(BEST_GENOME_FILE, "w") as f:
             json.dump(winner["genome"], f, indent=4)
         with open(RESULTS_FILE, "a") as f:
-            f.write(f"{gen+1},{winner['cagr']},{winner['dd']},{winner['trades']},\"{winner['genome']}\"\n")
+            f.write(f"{gen+1},{winner['cagr']},{winner['dd']},{winner.get('calmar', 0)},{winner['trades']},\"{winner['genome']}\"\n")
             
         # Breeding
         next_gen = [r["genome"] for r in valid[:5]] # Keep Elites

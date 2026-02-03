@@ -463,11 +463,17 @@ def _generic_exit_decision(
         # --- ZOMBIE RUNNER FIX ---
         # If partial profit taken, we switch to "Loose Hold" (SMA50)
         # Otherwise use the genome's configured exit (e.g., SMA10 or SMA20)
-        active_exit_sma = params.get("exit_ma") or params.get("exit_sma") or "sma20"
+        active_exit_sma = (
+            params.get("exit_ma")
+            or params.get("exit_sma")
+            or params.get("exit_sma_fast")
+            or "sma20"
+        )
         if partial_taken:
             active_exit_sma = (
                 params.get("exit_ma_after_partial")
                 or params.get("exit_sma_after_partial")
+                or params.get("exit_sma_slow")
                 or active_exit_sma
             )
         if not partial_taken and params.get("exit_ma_after_profit") and close_px > entry_px:

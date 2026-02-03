@@ -82,6 +82,85 @@ def get_sector(symbol: str) -> str:
     return "Unknown"
 
 
+_SECTOR_MAP: Dict[str, str] | None = None
+
+
+def _load_sector_map() -> Dict[str, str]:
+    global _SECTOR_MAP
+    if _SECTOR_MAP is not None:
+        return _SECTOR_MAP
+    path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", "sectors.json"))
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        _SECTOR_MAP = {str(k).upper(): str(v) for k, v in (data or {}).items()}
+    except Exception:
+        _SECTOR_MAP = {}
+    return _SECTOR_MAP
+
+
+def _compute_sector_rs(enriched: Dict[str, "_SymbolArrays"], all_dates: np.ndarray) -> Dict[str, np.ndarray]:
+    sector_map = _load_sector_map()
+    n_dates = len(all_dates)
+    if n_dates == 0:
+        return {}
+
+    sector_sum: Dict[str, np.ndarray] = {}
+    sector_cnt: Dict[str, np.ndarray] = {}
+    for sym, sd in enriched.items():
+        sec = sector_map.get(sym.upper())
+        if not sec:
+            sec = get_sector(sym)
+        if not sec:
+            continue
+        if sec not in sector_sum:
+            sector_sum[sec] = np.zeros(n_dates, dtype=np.float32)
+            sector_cnt[sec] = np.zeros(n_dates, dtype=np.int32)
+        close = sd.close
+        gidx = sd.gidx
+        valid = np.isfinite(close)
+        if not np.any(valid):
+            continue
+        np.add.at(sector_sum[sec], gidx[valid], close[valid].astype(np.float32))
+        np.add.at(sector_cnt[sec], gidx[valid], 1)
+
+    if not sector_sum:
+        return {}
+
+    sector_names = list(sector_sum.keys())
+    ret_mat = np.full((n_dates, len(sector_names)), np.nan, dtype=np.float32)
+    lookback = 63  # ~3 months
+    for j, sec in enumerate(sector_names):
+        sum_arr = sector_sum[sec]
+        cnt_arr = sector_cnt[sec]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            close = np.where(cnt_arr > 0, sum_arr / cnt_arr, np.nan)
+        shifted = np.roll(close, lookback)
+        shifted[:lookback] = np.nan
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ret = (close / shifted) - 1.0
+        ret_mat[:, j] = ret
+
+    sector_rs = {sec: np.zeros(n_dates, dtype=np.float32) for sec in sector_names}
+    for i in range(n_dates):
+        row = ret_mat[i]
+        m = np.isfinite(row)
+        k = int(m.sum())
+        if k < 1:
+            continue
+        vals = row[m]
+        order = np.argsort(vals, kind="quicksort")
+        ranks = np.empty_like(order, dtype=np.int32)
+        ranks[order] = np.arange(k, dtype=np.int32)
+        pct = (ranks / (k - 1)) if k > 1 else np.zeros(k, dtype=np.float32)
+        rating = 1.0 + 98.0 * pct
+        idxs = np.where(m)[0]
+        for idx, r in zip(idxs, rating):
+            sec = sector_names[idx]
+            sector_rs[sec][i] = r
+    return sector_rs
+
+
 def inject_market_rs_rank(enriched, all_dates, lookbacks=(63, 126, 189, 252),
                           weights=(0.40, 0.20, 0.20, 0.20),
                           min_history=252, min_names=None):
@@ -650,6 +729,20 @@ def prepare_backtest_data(
         except Exception:
             continue
 
+    # --- INJECT SECTOR RELATIVE STRENGTH ---
+    sector_rs_map = _compute_sector_rs(enriched, all_dates)
+    sector_map = _load_sector_map()
+    for sym, sym_data in enriched.items():
+        try:
+            sec = sector_map.get(sym.upper()) or get_sector(sym)
+            rs_arr = sector_rs_map.get(sec)
+            if rs_arr is None:
+                sym_data.df["sector_rs"] = 50.0
+            else:
+                sym_data.df["sector_rs"] = rs_arr[sym_data.gidx]
+        except Exception:
+            sym_data.df["sector_rs"] = 50.0
+
     return PreparedBacktestData(enriched=enriched, all_dates=all_dates)
 
 
@@ -767,7 +860,7 @@ def _legacy_run_backtest(
         raw_params = getattr(strat, "params", getattr(strat, "genome", {})) or {}
         params = _flatten_params(raw_params)
         w = _ScoreWeights(1.0, 50.0, 20.0, 30.0)
-        base_stop_mult = float(params.get("stop_loss_atr", 3.0) or 3.0)
+        base_stop_mult = float(params.get("stop_loss_atr_bull", params.get("stop_loss_atr", 3.0)) or 3.0)
         compiled_strategies.append((strat, w, params, base_stop_mult))
 
     global_spy_close = np.zeros(len(all_dates), dtype=np.float64)
@@ -819,10 +912,14 @@ def _legacy_run_backtest(
 
             for strat, w, params, base_stop_mult in compiled_strategies:
                 # Optional market regime filter (per strategy)
+                exposure_mode = str(params.get("market_exposure_mode", "")).lower()
                 regime_filter = bool(params.get("regime_filter", False))
                 market_mode = str(params.get("market_filter_mode", "")).lower()
                 if market_mode in {"traffic_light", "spy_sma200", "sma200"}:
                     regime_filter = True
+                # Hybrid exposure skips hard regime gating
+                if exposure_mode in {"hybrid", "scaled", "exposure"}:
+                    regime_filter = False
                 if regime_filter:
                     spy_c = global_spy_close[day_idx - 1]
                     spy_200 = global_spy_sma200[day_idx - 1]
@@ -966,6 +1063,28 @@ def _legacy_run_backtest(
             if start_ts and current_dt_np < start_ts.to_datetime64(): continue
             if end_ts and current_dt_np > end_ts.to_datetime64(): break
 
+            # Market exposure regime (hybrid scaling)
+            exposure_mode = str(params.get("market_exposure_mode", "")).lower()
+            spy_c = global_spy_close[day_idx]
+            spy_200 = global_spy_sma200[day_idx]
+            market_is_bull = True
+            if spy_c > 0 and spy_200 > 0:
+                market_is_bull = spy_c >= spy_200
+
+            max_pos_today = max_pos
+            if exposure_mode in {"hybrid", "scaled", "exposure"} and not market_is_bull:
+                bear_max = int(params.get("bear_max_positions", 2) or 2)
+                max_pos_today = max(1, min(max_pos, bear_max))
+
+            stop_loss_atr_bull = float(params.get("stop_loss_atr_bull", params.get("stop_loss_atr", 3.0)) or 3.0)
+            stop_loss_atr_bear = float(params.get("stop_loss_atr_bear", params.get("bear_stop_loss_atr", 0.5)) or 0.5)
+
+            base_max_total = float(params.get("max_total_exposure_pct", 1.0) or 1.0)
+            max_total_bull = float(params.get("max_total_exposure_pct_bull", base_max_total) or base_max_total)
+            max_total_bear = float(params.get("max_total_exposure_pct_bear", base_max_total) or base_max_total)
+            max_total_exposure_pct = max_total_bull if market_is_bull else max_total_bear
+            allow_margin = bool(params.get("allow_margin", False) or max_total_exposure_pct > 1.0 or max_pos_size_pct > 1.0)
+
             # 1. Manage Positions
             to_remove = []
             for sym, pos in positions.items():
@@ -980,20 +1099,82 @@ def _legacy_run_backtest(
 
                 current_close = float(sym_data.close[loc])
                 current_low = float(sym_data.low[loc])
+                current_open = float(sym_data.open[loc])
+                current_high = float(sym_data.high[loc])
+
+                # Execute pending pyramid add (next-day at open)
+                if pos.get("pyramid_pending") and pos.get("pyramid_pending_day") is not None:
+                    if day_idx > int(pos.get("pyramid_pending_day")):
+                        pos["pyramid_pending"] = False
+                        add_fraction = float(pos.get("pyramid_fraction", 0.5) or 0.5)
+                        add_shares = int(pos.get("shares", 0) * add_fraction)
+                        if add_shares > 0 and len(positions) < max_pos_today:
+                            mtm_equity = cash + sum(p["shares"] * p.get("last_price", 0.0) for p in positions.values())
+                            if mtm_equity <= 0:
+                                mtm_equity = cash
+                            max_cap = mtm_equity * max_pos_size_pct
+                            current_value = pos.get("shares", 0) * current_open
+                            remaining_cap = max_cap - current_value
+                            if remaining_cap > 0:
+                                cap_shares = int(remaining_cap / current_open)
+                                add_shares = min(add_shares, cap_shares)
+
+                            gross_exposure = sum(p["shares"] * p.get("last_price", 0.0) for p in positions.values())
+                            max_gross = mtm_equity * max_total_exposure_pct
+                            remaining_gross = max_gross - gross_exposure
+                            if remaining_gross > 0:
+                                cap_gross_shares = int(remaining_gross / current_open)
+                                add_shares = min(add_shares, cap_gross_shares)
+
+                            if add_shares > 0:
+                                add_cost = add_shares * current_open
+                                if (not allow_margin) and add_cost > cash:
+                                    add_shares = int(cash / current_open)
+                                    add_cost = add_shares * current_open
+
+                            if add_shares > 0:
+                                cash -= add_cost
+                                old_shares = pos.get("shares", 0)
+                                old_cost = old_shares * pos.get("entry_price", current_open)
+                                new_total_shares = old_shares + add_shares
+                                if new_total_shares > 0:
+                                    pos["entry_price"] = (old_cost + add_cost) / new_total_shares
+                                    pos["shares"] = new_total_shares
+                                    if pos.get("pyramid_stop_to_avg_cost", True):
+                                        pos["stop_price"] = pos["entry_price"]
+                                    pos["pyramids"] = int(pos.get("pyramids", 0) or 0) + 1
+                                    pos["initial_risk"] = max(pos["entry_price"] - pos["stop_price"], pos["entry_price"] * 0.001)
+                                    trades_list.append({
+                                        "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_open,
+                                        "PnL": 0.0,
+                                        "Return %": 0.0,
+                                        "Reason": "PYRAMID_ADD"
+                                    })
                 
                 # Exit Logic
                 should_exit = False
                 exit_px = current_close
                 reason = None
+                
+                # Hybrid regime: tighten stops in bear markets instead of forcing liquidation
+                if exposure_mode in {"hybrid", "scaled", "exposure"} and not market_is_bull:
+                    atr_val = float(sym_data.atr14[loc] or 0.0)
+                    if atr_val > 0:
+                        tight_stop = current_close - (atr_val * stop_loss_atr_bear)
+                        if np.isfinite(tight_stop) and tight_stop > pos["stop_price"]:
+                            pos["stop_price"] = tight_stop
 
-                # Market Regime Exit (force liquidation in bear regime)
-                regime_ma_type = params.get("regime_ma", "sma200")
-                regime_threshold = global_spy_sma150[day_idx] if regime_ma_type == "sma150" else global_spy_sma200[day_idx]
-
-                if global_spy_close[day_idx] < regime_threshold:
-                    should_exit = True
-                    exit_px = current_close
-                    reason = "MARKET_REGIME_EXIT"
+                # Optional forced regime exit (legacy behavior)
+                enforce_regime_exit = bool(params.get("regime_exit", False))
+                if exposure_mode in {"filter", "hard"}:
+                    enforce_regime_exit = True
+                if enforce_regime_exit:
+                    regime_ma_type = params.get("regime_ma", "sma200")
+                    regime_threshold = global_spy_sma150[day_idx] if regime_ma_type == "sma150" else global_spy_sma200[day_idx]
+                    if global_spy_close[day_idx] < regime_threshold:
+                        should_exit = True
+                        exit_px = current_close
+                        reason = "MARKET_REGIME_EXIT"
 
                 if not should_exit:
                     # SQUAT EXIT: If Day 1 Close < Pivot, Exit Immediately at Open
@@ -1006,6 +1187,15 @@ def _legacy_run_backtest(
                                 should_exit = True
                                 exit_px = float(sym_data.open[loc]) # Exit at Open
                 if not should_exit:
+                    # TIME STOP: If Day 3 and profit < 1%, exit
+                    days_held = day_idx - int(pos.get("entry_day_idx", day_idx))
+                    if days_held == 3:
+                        profit_pct = (current_close - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0.0
+                        if profit_pct < 0.01:
+                            should_exit = True
+                            exit_px = current_close
+                            reason = "TIME_STOP_3D"
+                if not should_exit:
                     # --- PARTIAL PROFIT LOGIC (PATCHED) ---
                     # 1. Extract Flags (Default to False for safety)
                     pp_mode = str(params.get("partial_profit_mode", "")).lower()
@@ -1016,9 +1206,11 @@ def _legacy_run_backtest(
                         enable_pp = False
 
                     move_be = bool(params.get("move_stop_to_be", True))
+                    breakeven_at = float(params.get("breakeven_at_pct", 0.0) or 0.0)
                     pp_day = int(params.get("partial_profit_after_days", params.get("partial_profit_day", 0)) or 0)
                     pp_r = float(params.get("partial_profit_r", 2.0))
                     pp_frac = float(params.get("partial_profit_fraction", 0.5))
+                    pp_pct = float(params.get("partial_profit_pct", 0.0) or 0.0)
                     
                     # 2. Gate Execution
                     risk_per_share = float(pos.get("initial_risk", 0.0) or 0.0)
@@ -1046,35 +1238,91 @@ def _legacy_run_backtest(
                                     })
 
                                     if move_be:
-                                        pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
+                                        profit_pct = (current_close - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0.0
+                                        if breakeven_at <= 0 or profit_pct >= breakeven_at:
+                                            pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
 
                                     pos["partial_taken"] = True
                             else:
-                                target_px = pos["entry_price"] + (pp_r * risk_per_share)
+                                if pp_pct > 0 and pp_mode in {"pct", "percent", "percentage"}:
+                                    target_px = pos["entry_price"] * (1.0 + pp_pct)
+                                    if current_close >= target_px:
+                                        shares_to_sell = max(1, int(pos["shares"] * pp_frac))
+                                        shares_to_sell = min(shares_to_sell, pos["shares"])
+
+                                        proceeds = shares_to_sell * current_close
+                                        cash += proceeds
+                                        pos["shares"] -= shares_to_sell
+
+                                        trades_list.append({
+                                            "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
+                                            "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
+                                            "Return %": (current_close/pos["entry_price"] - 1)*100,
+                                            "Reason": f"PARTIAL_PCT_{pp_pct:.2f}"
+                                        })
+
+                                        if move_be:
+                                            profit_pct = (current_close - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0.0
+                                            if breakeven_at <= 0 or profit_pct >= breakeven_at:
+                                                pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
+
+                                        pos["partial_taken"] = True
+                                else:
+                                    target_px = pos["entry_price"] + (pp_r * risk_per_share)
 
                                 # Price Trigger
-                                if current_close >= target_px:
-                                    # Execute Sell
-                                    shares_to_sell = max(1, int(pos["shares"] * pp_frac))
-                                    shares_to_sell = min(shares_to_sell, pos["shares"])
-                                    
-                                    proceeds = shares_to_sell * current_close
-                                    cash += proceeds
-                                    pos["shares"] -= shares_to_sell
-                                
-                                # Log
-                                    trades_list.append({
-                                        "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
-                                        "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
-                                        "Return %": (current_close/pos["entry_price"] - 1)*100,
-                                        "Reason": f"PARTIAL_PROFIT_{pp_r}R"
-                                    })
-                                
-                                # 3. Optional: Move Stop to Breakeven
-                                    if move_be:
-                                        pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
+                                    if current_close >= target_px:
+                                        # Execute Sell
+                                        shares_to_sell = max(1, int(pos["shares"] * pp_frac))
+                                        shares_to_sell = min(shares_to_sell, pos["shares"])
                                         
-                                    pos["partial_taken"] = True
+                                        proceeds = shares_to_sell * current_close
+                                        cash += proceeds
+                                        pos["shares"] -= shares_to_sell
+                                    
+                                        # Log
+                                        trades_list.append({
+                                            "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
+                                            "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
+                                            "Return %": (current_close/pos["entry_price"] - 1)*100,
+                                            "Reason": f"PARTIAL_PROFIT_{pp_r}R"
+                                        })
+                                    
+                                        # 3. Optional: Move Stop to Breakeven
+                                        if move_be:
+                                            profit_pct = (current_close - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0.0
+                                            if breakeven_at <= 0 or profit_pct >= breakeven_at:
+                                                pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
+                                            
+                                        pos["partial_taken"] = True
+
+                if not should_exit:
+                    # --- SPLIT EXIT LOGIC (Fast SMA partial, Slow SMA full) ---
+                    split_exit = bool(params.get("split_exit", False) or params.get("exit_sma_fast") or params.get("exit_sma_slow"))
+                    if split_exit and not pos.get("partial_taken", False):
+                        fast_sma = params.get("exit_sma_fast") or params.get("exit_ma") or "sma20"
+                        fast_val = float(sym_data.df.iloc[loc].get(fast_sma, 0.0))
+                        if fast_val > 0 and current_close < fast_val:
+                            frac = float(params.get("partial_profit_fraction", 0.5) or 0.5)
+                            shares_to_sell = max(1, int(pos["shares"] * frac))
+                            shares_to_sell = min(shares_to_sell, pos["shares"])
+                            proceeds = shares_to_sell * current_close
+                            cash += proceeds
+                            pos["shares"] -= shares_to_sell
+                            trades_list.append({
+                                "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
+                                "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
+                                "Return %": (current_close/pos["entry_price"] - 1)*100,
+                                "Reason": f"PARTIAL_{fast_sma.upper()}"
+                            })
+                            # Optional breakeven stop after meaningful profit
+                            move_be = bool(params.get("move_stop_to_be", True))
+                            breakeven_at = float(params.get("breakeven_at_pct", 0.0) or 0.0)
+                            if move_be:
+                                profit_pct = (current_close - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0.0
+                                if breakeven_at <= 0 or profit_pct >= breakeven_at:
+                                    pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
+                            pos["partial_taken"] = True
 
                 if not should_exit:
                     # AUDIT FIX: Use the Strategy's sophisticated exit logic (Trailing Stops, SMA Breaks)
@@ -1087,8 +1335,13 @@ def _legacy_run_backtest(
                     if entry_loc >= len(sym_data.close):
                         entry_loc = 0
 
+                    exit_params = params
+                    if params.get("exit_sma_slow") and not params.get("exit_ma_after_partial"):
+                        exit_params = dict(params)
+                        exit_params["exit_ma_after_partial"] = params.get("exit_sma_slow")
+
                     strat_exit, new_stop, target_px = _generic_exit_decision(
-                        params,
+                        exit_params,
                         sym_data,
                         loc,
                         entry_loc,
@@ -1110,6 +1363,34 @@ def _legacy_run_backtest(
                         else:
                             exit_px = current_close
                         reason = "STRATEGY_EXIT"
+
+                if not should_exit:
+                    # Schedule pyramiding for next session (after-close decision)
+                    pyramid_cfg = None
+                    if hasattr(strat, "pyramid"):
+                        try:
+                            pyramid_cfg = strat.pyramid(sym_data.df, loc, pos)
+                        except Exception:
+                            pyramid_cfg = None
+                    if pyramid_cfg is None:
+                        threshold = float(params.get("pyramid_threshold", 0.0) or 0.0)
+                        if threshold > 0:
+                            entry_px = float(pos.get("entry_price", 0.0) or 0.0)
+                            if entry_px > 0:
+                                profit_pct = (current_close - entry_px) / entry_px
+                                if profit_pct >= threshold:
+                                    pyramid_cfg = {
+                                        "add_fraction": float(params.get("pyramid_fraction", 0.5) or 0.5),
+                                        "stop_to_avg_cost": bool(params.get("pyramid_stop_to_avg_cost", True)),
+                                    }
+
+                    if pyramid_cfg and len(positions) < max_pos_today:
+                        max_adds = int(params.get("pyramid_max_adds", 1) or 1)
+                        if int(pos.get("pyramids", 0) or 0) < max_adds and not pos.get("pyramid_pending", False):
+                            pos["pyramid_pending"] = True
+                            pos["pyramid_pending_day"] = day_idx
+                            pos["pyramid_fraction"] = float(pyramid_cfg.get("add_fraction", 0.5) or 0.5)
+                            pos["pyramid_stop_to_avg_cost"] = bool(pyramid_cfg.get("stop_to_avg_cost", True))
                 
                 if should_exit:
                     shares = pos["shares"]
@@ -1146,7 +1427,7 @@ def _legacy_run_backtest(
             day_candidates.sort(key=lambda x: x.score, reverse=True)
 
             for cand in day_candidates:
-                if len(positions) >= max_pos: break
+                if len(positions) >= max_pos_today: break
                 if cand.sym in positions: continue
 
                 sym_data = enriched.get(cand.sym)
@@ -1171,6 +1452,15 @@ def _legacy_run_backtest(
                 stop_px = float(cand.stop_px)
                 if not np.isfinite(entry_px) or not np.isfinite(stop_px):
                     continue
+
+                # Hybrid bear regime: tighten stop using ATR
+                if exposure_mode in {"hybrid", "scaled", "exposure"} and not market_is_bull:
+                    atr_val = float(sym_data.atr14[entry_loc] or 0.0)
+                    if atr_val > 0:
+                        tight_stop = entry_px - (atr_val * stop_loss_atr_bear)
+                        if np.isfinite(tight_stop) and tight_stop > stop_px:
+                            stop_px = tight_stop
+
                 if stop_px >= entry_px:
                     continue
                 
@@ -1192,7 +1482,17 @@ def _legacy_run_backtest(
                 max_cap = mtm_equity * max_pos_size_pct
                 if shares * entry_px > max_cap:
                     shares = int(max_cap / entry_px)
-                if shares * entry_px > cash:
+                gross_exposure = sum(p["shares"] * p.get("last_price", 0.0) for p in positions.values())
+                max_gross = mtm_equity * max_total_exposure_pct
+                remaining_gross = max_gross - gross_exposure
+                if remaining_gross <= 0:
+                    shares = 0
+                else:
+                    max_gross_shares = int(remaining_gross / entry_px)
+                    if shares > max_gross_shares:
+                        shares = max_gross_shares
+
+                if (not allow_margin) and shares * entry_px > cash:
                     shares = int(cash / entry_px)
                 
                 if shares == 0:
@@ -1209,6 +1509,8 @@ def _legacy_run_backtest(
                         "entry_day_idx": day_idx,
                         "last_price": entry_px,
                         "partial_taken": False,
+                        "pyramids": 0,
+                        "pyramid_pending": False,
                         "initial_risk": max(entry_px - stop_px, entry_px * 0.001),
                         "pivot": cand.entry_px,
                     }
