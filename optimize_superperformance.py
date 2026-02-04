@@ -30,7 +30,7 @@ POPULATION_SIZE = 30
 GENERATIONS = 6
 START_DATE = "2020-01-01"
 END_DATE = "2025-12-31"
-MAX_WORKERS = 6
+MAX_WORKERS = 8
 CHECKPOINT_FILE = "optimizer_checkpoint_sp.pkl" 
 MAX_DD_CAP = 25.0
 
@@ -38,7 +38,7 @@ MAX_DD_CAP = 25.0
 GENE_SPACE = {
     # Optional trend filter (use sparingly)
     "require_trend": [True],
-    "rs_min": [65, 70, 80],
+    "market_cap_min": [500_000_000],
     "mom_rank_min": [50, 70, 90],
 
     # Qullamaggie Tightness + Breakout
@@ -63,6 +63,8 @@ GENE_SPACE = {
     "exit_sma_fast": ["sma10", "sma20"],
     "exit_sma_slow": ["sma50"],
     "take_profit_chunk_pct": [0.33, 0.50],
+    "profit_target_pct": [0.08, 0.10, 0.12],
+    "time_stop_days": [5, 7, 10],
 
     # Pyramiding
     "pyramid_threshold": [0.05, 0.07, 0.10],
@@ -71,7 +73,7 @@ GENE_SPACE = {
 
     # Sizing
     "max_positions": [6, 8, 10],
-    "risk_per_trade": [0.015, 0.02],
+    "risk_per_trade": [0.03],
     "max_pos_size_pct": [0.25, 0.33, 0.40],
     "max_total_exposure_pct_bull": [1.0],
     "max_total_exposure_pct_bear": [0.7, 0.8, 0.9],
@@ -155,8 +157,8 @@ def evaluate_genome(genome_id_and_genome):
         # Construct Strategy Config
         strategy_config = genome.copy()
         strategy_config["name"] = f"Gen_{genome_id}"
-        # After-close scan, next-day market entry (MOO) improves fill realism
-        strategy_config["signal_mode"] = "open"
+        # After-close scan, next-day stop order (EP overrides with same-day close)
+        strategy_config["signal_mode"] = "after_close"
         # Hybrid exposure (scaled, not binary)
         strategy_config["market_exposure_mode"] = "hybrid"
         strategy_config["bear_max_positions"] = 2
@@ -165,15 +167,20 @@ def evaluate_genome(genome_id_and_genome):
         strategy_config["split_exit"] = True
         strategy_config["exit_ma_after_partial"] = strategy_config.get("exit_sma_slow")
         strategy_config["partial_profit_fraction"] = float(strategy_config.get("take_profit_chunk_pct", 0.5) or 0.5)
-        strategy_config["partial_profit_pct"] = 0.20
+        strategy_config["partial_profit_pct"] = float(strategy_config.get("profit_target_pct", 0.08) or 0.08)
         strategy_config["partial_profit_mode"] = "pct"
         strategy_config["enable_partial_profit"] = True
+        strategy_config["move_stop_to_be"] = True
         strategy_config["pyramid_stop_to_avg_cost"] = True
         strategy_config["allow_margin"] = (
             float(strategy_config.get("max_total_exposure_pct_bull", 1.0) or 1.0) > 1.0
             or float(strategy_config.get("max_pos_size_pct", 1.0) or 1.0) > 1.0
         )
         strategy_config["score_mode"] = "momentum"
+        strategy_config["batch_size"] = 100
+        # Entry-type sizing caps
+        strategy_config["vcp_max_pos_size_pct"] = 0.25
+        strategy_config["ep_max_pos_size_pct"] = 0.15
         
         # Instantiate Specific Strategy
         strat = SuperperformanceStrategy(strategy_config)

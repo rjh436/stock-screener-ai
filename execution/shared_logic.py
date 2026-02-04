@@ -262,9 +262,9 @@ def rehydrate_exit_state(row, strategies_map, history_map=None):
                     effective_stop = round(effective_stop, 2)
 
     try:
-        time_stop = int(strat.get("time_stop", 45) or 45)
+        time_stop = int(strat.get("time_stop_days", strat.get("time_stop", 7)) or 7)
     except Exception:
-        time_stop = 45
+        time_stop = 7
     time_stop = max(1, time_stop)
     days_left = time_stop - days_held
     time_compression = days_held >= int(time_stop * 0.8)
@@ -428,15 +428,13 @@ def _generic_exit_decision(
             if np.isfinite(ma_val) and ma_val > new_stop:
                 new_stop = ma_val
 
-    # 3. TIME STOP
-    time_stop_days = int(params.get("time_stop", 0) or 0)
+    # 3. TIME STOP (Dynamic Patience)
+    time_stop_days = int(params.get("time_stop_days", params.get("time_stop", 7)) or 7)
     if time_stop_days > 0:
         days_held = loc - entry_loc
         if days_held >= time_stop_days:
-            # Only exit if not profitable? Or hard exit?
-            # Standard logic: if trade is dead money (below 1ATR profit)
             pnl_pct = (close_px - entry_px) / entry_px
-            if pnl_pct < 0.05:  # 5% threshold for dead money
+            if pnl_pct < 0.005:  # 0.5% threshold for dead money
                 return True, new_stop, None
 
     # 4. PROFIT TARGET (Partial or Full)

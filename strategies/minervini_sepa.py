@@ -20,7 +20,21 @@ def _contraction_ok(row: pd.Series) -> bool:
     rp10 = _as_float(row.get("range_pct_10"), 999.0)
     rp20 = _as_float(row.get("range_pct_20"), 999.0)
     rp40 = _as_float(row.get("range_pct_40"), 999.0)
-    return rp5 < rp10 < rp20 < rp40
+
+    # Last contraction must be tight (<10%)
+    last_contraction = min(rp5, rp10)
+    if not math.isfinite(last_contraction) or last_contraction > 10.0:
+        return False
+
+    # Contraction count (min 2). We don't require perfect monotonicity.
+    contractions = 0
+    if math.isfinite(rp10) and rp10 <= 20.0:
+        contractions += 1
+    if math.isfinite(rp20) and rp20 <= 25.0:
+        contractions += 1
+    if math.isfinite(rp40) and rp40 <= 30.0:
+        contractions += 1
+    return contractions >= 2
 
 
 class MinerviniSEPAStrategy(BaseStrategy):
@@ -61,6 +75,19 @@ class MinerviniSEPAStrategy(BaseStrategy):
         if close_px <= 0 or sma50 <= 0 or sma150 <= 0 or sma200 <= 0:
             return None
 
+        # Market cap filter (if available)
+        market_cap_min = float(self.params.get("market_cap_min", 0.0) or 0.0)
+        if market_cap_min > 0:
+            market_cap = _as_float(
+                row.get("market_cap")
+                or row.get("mkt_cap")
+                or row.get("marketcap")
+                or row.get("mktcap"),
+                0.0,
+            )
+            if market_cap > 0 and market_cap < market_cap_min:
+                return None
+
         # Minervini Trend Filter (Strict)
         if not (close_px > sma50 > sma150 > sma200):
             return None
@@ -76,11 +103,15 @@ class MinerviniSEPAStrategy(BaseStrategy):
 
         self._gate_counts["trend_template_pass"] += 1
 
-        # VCP proxy: contraction + volume dry-up
+        # VCP proxy: contraction + volume dry-up (relaxed)
         if not _contraction_ok(row):
             return None
-        if _as_float(row.get("vol_dryup"), 0.0) < 1.0:
-            return None
+        if i > 0:
+            prev_row = df.iloc[i - 1]
+            vol_prev = _as_float(prev_row.get("volume"), 0.0)
+            vol_ma50_prev = _as_float(prev_row.get("vol_ma50"), 0.0)
+            if vol_ma50_prev > 0 and vol_prev > (vol_ma50_prev * 0.75):
+                return None
 
         self._gate_counts["vcp_pass"] += 1
 
@@ -118,6 +149,7 @@ class MinerviniSEPAStrategy(BaseStrategy):
             "stop_price": stop_px,
             "stop_limit_pct": float(self.params.get("stop_limit_pct", 0.02)),
             "stop_loss_type": "low_or_pct",
+            "entry_type": "vcp",
         }
 
     def exit(

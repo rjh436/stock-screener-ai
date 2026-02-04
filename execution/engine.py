@@ -305,7 +305,9 @@ def _compute_indicators(
             ],
             axis=1,
         ).max(axis=1)
+        df["true_range"] = tr
         df["atr14"] = tr.rolling(14).mean()
+        df["tr_ma50"] = tr.rolling(50).mean()
         df["natr"] = (df["atr14"] / df["close"]) * 100.0
 
         df["highest20"] = df["high"].rolling(20).max()
@@ -573,6 +575,8 @@ class _Candidate:
     entry_i: int
     stop_limit_pct: float = 0.0
     size_scalar: float = 1.0
+    signal_mode: str = ""
+    entry_type: str = ""
 
 
 @dataclass(slots=True)
@@ -883,157 +887,243 @@ def _legacy_run_backtest(
 
 
     # --- MAIN LOOP (Optimized) ---
-    for sym, sd in enriched.items():
-        n_bars = len(sd.index)
-        if n_bars < 2: continue
+    batch_size = 0
+    if compiled_strategies:
+        try:
+            batch_size = int(compiled_strategies[0][2].get("batch_size", 0) or 0)
+        except Exception:
+            batch_size = 0
+    items = list(enriched.items())
+    if batch_size and batch_size > 0:
+        batches = [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
+    else:
+        batches = [items]
 
-        # UNLOCK: evaluate all possible setup days
-        setup_indices = np.arange(0, n_bars - 1, dtype=np.int32)
-        if len(setup_indices) < 1:
-            DBG(f"{sym}: REJECTED - Trend Mask Empty")
-            continue
-
-        for prev_i in setup_indices:
-            curr_i = prev_i + 1
-
-            # Boundary Safety
-            if curr_i >= n_bars:
+    for batch in batches:
+        for sym, sd in batch:
+            n_bars = len(sd.index)
+            if n_bars < 2:
                 continue
 
-            day_idx = sd.gidx[curr_i]
-            if day_idx < 1 or day_idx >= len(all_dates): continue
+            # UNLOCK: evaluate all possible setup days
+            setup_indices = np.arange(0, n_bars - 1, dtype=np.int32)
+            if len(setup_indices) < 1:
+                DBG(f"{sym}: REJECTED - Trend Mask Empty")
+                continue
 
-            debug_counts["n_trend"][day_idx] += 1
+            for prev_i in setup_indices:
+                curr_i = prev_i + 1
 
-            rs_rating = float(sd.rsrating[prev_i])
-            if not np.isfinite(rs_rating) or rs_rating <= 0:
-                # Fail-open if RS rating was not computed (diagnostic safety).
-                rs_rating = 99.0
+                # Boundary Safety
+                if curr_i >= n_bars:
+                    continue
 
-            for strat, w, params, base_stop_mult in compiled_strategies:
-                # Optional market regime filter (per strategy)
-                exposure_mode = str(params.get("market_exposure_mode", "")).lower()
-                regime_filter = bool(params.get("regime_filter", False))
-                market_mode = str(params.get("market_filter_mode", "")).lower()
-                if market_mode in {"traffic_light", "spy_sma200", "sma200"}:
-                    regime_filter = True
-                # Hybrid exposure skips hard regime gating
-                if exposure_mode in {"hybrid", "scaled", "exposure"}:
-                    regime_filter = False
-                if regime_filter:
-                    spy_c = global_spy_close[day_idx - 1]
-                    spy_200 = global_spy_sma200[day_idx - 1]
-                    if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
-                        continue
+                day_idx = sd.gidx[curr_i]
+                if day_idx < 1 or day_idx >= len(all_dates):
+                    continue
 
-                # Optional trend mode gate
-                mode = params.get("trend_mode")
-                if mode:
-                    price_yesterday = float(sd.close[prev_i])
-                    sma50_val = float(sd.sma50[prev_i])
-                    sma200_val = float(sd.sma200[prev_i])
-                    sma150_val = float(sd.sma150[prev_i])
-                    if mode == "sma50" and price_yesterday < sma50_val:
-                        continue
-                    if mode == "sma200" and price_yesterday < sma200_val:
-                        continue
-                    if mode == "strict":
-                        if not (price_yesterday > sma50_val and sma50_val > sma150_val and sma150_val > sma200_val):
+                debug_counts["n_trend"][day_idx] += 1
+
+                rs_rating = float(sd.rsrating[prev_i])
+                if not np.isfinite(rs_rating) or rs_rating <= 0:
+                    # Fail-open if RS rating was not computed (diagnostic safety).
+                    rs_rating = 99.0
+                else:
+                    debug_counts["n_rs"][day_idx] += 1
+
+                for strat, w, params, base_stop_mult in compiled_strategies:
+                    # Optional market regime filter (per strategy)
+                    exposure_mode = str(params.get("market_exposure_mode", "")).lower()
+                    regime_filter = bool(params.get("regime_filter", False))
+                    market_mode = str(params.get("market_filter_mode", "")).lower()
+                    if market_mode in {"traffic_light", "spy_sma200", "sma200"}:
+                        regime_filter = True
+                    # Hybrid exposure skips hard regime gating
+                    if exposure_mode in {"hybrid", "scaled", "exposure"}:
+                        regime_filter = False
+                    if regime_filter:
+                        spy_c = global_spy_close[day_idx - 1]
+                        spy_200 = global_spy_sma200[day_idx - 1]
+                        if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
                             continue
 
-                # Optional RS floor
-                min_rs = params.get("rs_floor")
-                if min_rs is not None and rs_rating < float(min_rs):
-                    continue
+                    # Optional trend mode gate
+                    mode = params.get("trend_mode")
+                    if mode:
+                        price_yesterday = float(sd.close[prev_i])
+                        sma50_val = float(sd.sma50[prev_i])
+                        sma200_val = float(sd.sma200[prev_i])
+                        sma150_val = float(sd.sma150[prev_i])
+                        if mode == "sma50" and price_yesterday < sma50_val:
+                            continue
+                        if mode == "sma200" and price_yesterday < sma200_val:
+                            continue
+                        if mode == "strict":
+                            if not (price_yesterday > sma50_val and sma50_val > sma150_val and sma150_val > sma200_val):
+                                continue
 
-                # Optional RS ratio trend gate
-                if bool(params.get("use_rs_ratio_gate", False)):
-                    if sd.rs_ratio[prev_i] < sd.rs_ratio_sma50[prev_i]:
+                    # Optional RS floor
+                    min_rs = params.get("rs_floor")
+                    if min_rs is not None and rs_rating < float(min_rs):
                         continue
 
-                # Optional ADX gate
-                adx_min = params.get("adx_min")
-                if adx_min is not None and sd.adx[prev_i] < float(adx_min):
-                    continue
+                    # Optional RS ratio trend gate
+                    if bool(params.get("use_rs_ratio_gate", False)):
+                        if sd.rs_ratio[prev_i] < sd.rs_ratio_sma50[prev_i]:
+                            continue
 
-                # Optional BB width gate
-                max_bb = params.get("bb_width_max")
-                if max_bb is not None and sd.bbwidth[prev_i] > float(max_bb):
-                    continue
-
-                # Optional volume gate (signal day)
-                vol_mult = params.get("vol_mult")
-                if vol_mult is not None:
-                    vol_today = float(sd.volume[prev_i])
-                    vol_avg = float(sd.volma50[prev_i])
-                    if vol_today < (vol_avg * float(vol_mult)):
+                    # Optional ADX gate
+                    adx_min = params.get("adx_min")
+                    if adx_min is not None and sd.adx[prev_i] < float(adx_min):
                         continue
 
-                # Strategy-specific entry logic
-                decision = strat.entry(sd.df, prev_i)
-                if not decision:
-                    continue
+                    # Optional BB width gate
+                    max_bb = params.get("bb_width_max")
+                    if max_bb is not None and sd.bbwidth[prev_i] > float(max_bb):
+                        continue
 
-                row = sd.df.iloc[prev_i]
-                trigger = None
-                stop_px = None
-                stop_limit_pct = params.get("stop_limit_pct")
+                    # Optional volume gate (signal day)
+                    vol_mult = params.get("vol_mult")
+                    if vol_mult is not None:
+                        vol_today = float(sd.volume[prev_i])
+                        vol_avg = float(sd.volma50[prev_i])
+                        if vol_today < (vol_avg * float(vol_mult)):
+                            continue
 
-                if isinstance(decision, dict):
-                    trigger = decision.get("trigger_price")
-                    stop_px = decision.get("stop_price")
+                    # VCP candidate density (base structure) — debug only
+                    row = sd.df.iloc[prev_i]
+                    try:
+                        rp5 = float(row.get("range_pct_5", np.nan))
+                        rp10 = float(row.get("range_pct_10", np.nan))
+                        rp20 = float(row.get("range_pct_20", np.nan))
+                        rp40 = float(row.get("range_pct_40", np.nan))
+                        base_depth = float(row.get("range_pct_20", np.nan))
+                        last_contraction = min(rp5, rp10)
+                        contractions = 0
+                        if np.isfinite(rp10) and rp10 <= 20.0:
+                            contractions += 1
+                        if np.isfinite(rp20) and rp20 <= 25.0:
+                            contractions += 1
+                        if np.isfinite(rp40) and rp40 <= 30.0:
+                            contractions += 1
+                        vol_prev = float(sd.volume[prev_i - 1]) if prev_i > 0 else np.nan
+                        vol_ma50_prev = float(sd.volma50[prev_i - 1]) if prev_i > 0 else np.nan
+                        vcp_candidate = (
+                            np.isfinite(last_contraction)
+                            and last_contraction <= 10.0
+                            and np.isfinite(base_depth)
+                            and base_depth <= 30.0
+                            and contractions >= 2
+                            and (
+                                not np.isfinite(vol_ma50_prev)
+                                or vol_ma50_prev <= 0
+                                or vol_prev <= (vol_ma50_prev * 0.75)
+                            )
+                        )
+                        if vcp_candidate:
+                            rs_floor = params.get("rs_min", params.get("rs_floor", 0.0)) or 0.0
+                            if rs_floor <= 0 or rs_rating >= float(rs_floor):
+                                debug_counts["n_vcp"][day_idx] += 1
+                    except Exception:
+                        pass
+
+                    # Strategy-specific entry logic
+                    decision = strat.entry(sd.df, prev_i)
+                    if not decision:
+                        continue
+
+                    row = sd.df.iloc[prev_i]
+                    trigger = None
+                    stop_px = None
+                    stop_limit_pct = params.get("stop_limit_pct")
+                    entry_day_idx = day_idx
+                    entry_i = curr_i
+                    cand_signal_mode = str(params.get("signal_mode", "after_close"))
+                    entry_type = ""
+
+                    if isinstance(decision, dict):
+                        trigger = decision.get("trigger_price")
+                        stop_px = decision.get("stop_price")
+                        if stop_limit_pct is None:
+                            stop_limit_pct = decision.get("stop_limit_pct")
+                        entry_type = str(decision.get("entry_type", "") or "")
+                        entry_timing = decision.get("entry_timing") or decision.get("signal_mode")
+                        if isinstance(entry_timing, str):
+                            timing = entry_timing.lower()
+                            if timing in {"same_day", "same_day_open", "same_day_close"}:
+                                entry_i = prev_i
+                                entry_day_idx = sd.gidx[prev_i]
+                                if timing == "same_day_close":
+                                    cand_signal_mode = "close"
+                                else:
+                                    cand_signal_mode = "open"
+                            elif timing in {"open", "close"}:
+                                cand_signal_mode = timing
+
+                    if trigger is None:
+                        stop_buy_ref = params.get("stop_buy_ref")
+                        if stop_buy_ref:
+                            pivot = row.get(stop_buy_ref, np.nan)
+                            if np.isfinite(pivot):
+                                trigger = float(pivot) * float(params.get("stop_buy_mult", 1.0))
+                    if trigger is None:
+                        trigger = float(row.get("close", np.nan))
+
+                    if stop_px is None:
+                        stop_type = str(params.get("stop_loss_type", "atr")).lower()
+                        if "low" in stop_type:
+                            stop_px = float(row.get("low", np.nan))
+                        else:
+                            atr = float(row.get("atr14", 0.0) or 0.0)
+                            stop_px = float(trigger) - (atr * base_stop_mult)
+
+                    if not np.isfinite(trigger) or not np.isfinite(stop_px) or stop_px <= 0:
+                        continue
+
+                    max_stop_pct = params.get("max_stop_pct")
+                    if isinstance(decision, dict) and decision.get("max_stop_pct") is not None:
+                        max_stop_pct = decision.get("max_stop_pct")
+                    if max_stop_pct is not None:
+                        stop_width = (float(trigger) - float(stop_px)) / float(trigger)
+                        if stop_width > float(max_stop_pct):
+                            continue
+
                     if stop_limit_pct is None:
-                        stop_limit_pct = decision.get("stop_limit_pct")
+                        stop_limit_pct = 0.02
 
-                if trigger is None:
-                    stop_buy_ref = params.get("stop_buy_ref")
-                    if stop_buy_ref:
-                        pivot = row.get(stop_buy_ref, np.nan)
-                        if np.isfinite(pivot):
-                            trigger = float(pivot) * float(params.get("stop_buy_mult", 1.0))
-                if trigger is None:
-                    trigger = float(row.get("close", np.nan))
-
-                if stop_px is None:
-                    stop_type = str(params.get("stop_loss_type", "atr")).lower()
-                    if "low" in stop_type:
-                        stop_px = float(row.get("low", np.nan))
+                    score_mode = str(params.get("score_mode", "")).lower()
+                    if score_mode == "momentum":
+                        rs_val = float(sd.rsrating[prev_i])
+                        mom_val = float(sd.momrank[prev_i])
+                        if not np.isfinite(rs_val):
+                            rs_val = 0.0
+                        if not np.isfinite(mom_val):
+                            mom_val = 0.0
+                        score = (0.7 * rs_val) + (0.3 * mom_val)
                     else:
-                        atr = float(row.get("atr14", 0.0) or 0.0)
-                        stop_px = float(trigger) - (atr * base_stop_mult)
+                        score = _score_row_dual_core(
+                            sd.rsi14[prev_i], sd.bbwidth[prev_i], sd.natr[prev_i],
+                            sd.close[prev_i], sd.high52w[prev_i], {"rsi_factor": 1.0}
+                        )
 
-                if not np.isfinite(trigger) or not np.isfinite(stop_px) or stop_px <= 0:
-                    continue
-
-                max_stop_pct = params.get("max_stop_pct")
-                if max_stop_pct is not None:
-                    stop_width = (float(trigger) - float(stop_px)) / float(trigger)
-                    if stop_width > float(max_stop_pct):
+                    if entry_day_idx < 0 or entry_day_idx >= len(all_dates):
                         continue
-
-                if stop_limit_pct is None:
-                    stop_limit_pct = 0.02
-
-                score_mode = str(params.get("score_mode", "")).lower()
-                if score_mode == "momentum":
-                    rs_val = float(sd.rsrating[prev_i])
-                    mom_val = float(sd.momrank[prev_i])
-                    if not np.isfinite(rs_val):
-                        rs_val = 0.0
-                    if not np.isfinite(mom_val):
-                        mom_val = 0.0
-                    score = (0.7 * rs_val) + (0.3 * mom_val)
-                else:
-                    score = _score_row_dual_core(
-                        sd.rsi14[prev_i], sd.bbwidth[prev_i], sd.natr[prev_i],
-                        sd.close[prev_i], sd.high52w[prev_i], {"rsi_factor": 1.0}
+                    candidates_by_day[entry_day_idx].append(
+                        _Candidate(
+                            sym,
+                            float(trigger),
+                            float(stop_px),
+                            score,
+                            strat.name,
+                            entry_i,
+                            float(stop_limit_pct),
+                            1.0,
+                            str(cand_signal_mode),
+                            entry_type,
+                        )
                     )
-
-                candidates_by_day[day_idx].append(
-                    _Candidate(sym, float(trigger), float(stop_px), score, strat.name, curr_i, float(stop_limit_pct))
-                )
-                curr_date_str = str(all_dates[day_idx])[:10]
-                DBG(f"[{curr_date_str}] {sym}: ACCEPTED (Score: {score:.1f})")
+                    curr_date_str = str(all_dates[entry_day_idx])[:10]
+                    DBG(f"[{curr_date_str}] {sym}: ACCEPTED (Score: {score:.1f})")
 
     # --- SIMULATION LOOP ---
     portfolio = {s.name: {"cash": float(start_cash), "positions": {}} for s in strategies}
@@ -1187,14 +1277,15 @@ def _legacy_run_backtest(
                                 should_exit = True
                                 exit_px = float(sym_data.open[loc]) # Exit at Open
                 if not should_exit:
-                    # TIME STOP: If Day 3 and profit < 1%, exit
+                    # TIME STOP: Dynamic patience window
                     days_held = day_idx - int(pos.get("entry_day_idx", day_idx))
-                    if days_held == 3:
+                    time_stop_days = int(params.get("time_stop_days", params.get("time_stop", 7)) or 7)
+                    if days_held >= time_stop_days:
                         profit_pct = (current_close - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0.0
-                        if profit_pct < 0.01:
+                        if profit_pct < 0.005:
                             should_exit = True
                             exit_px = current_close
-                            reason = "TIME_STOP_3D"
+                            reason = "TIME_STOP"
                 if not should_exit:
                     # --- PARTIAL PROFIT LOGIC (PATCHED) ---
                     # 1. Extract Flags (Default to False for safety)
@@ -1439,10 +1530,14 @@ def _legacy_run_backtest(
 
                 open_px = float(sym_data.open[entry_loc])
                 high_px = float(sym_data.high[entry_loc])
+                close_px = float(sym_data.close[entry_loc])
+                entry_type = str(getattr(cand, "entry_type", "") or "").lower()
 
-                signal_mode = str(params.get("signal_mode", "after_close")).lower()
+                signal_mode = str(cand.signal_mode or params.get("signal_mode", "after_close")).lower()
                 if signal_mode in {"market", "open", "moo"}:
                     filled, fill_px = True, open_px
+                elif signal_mode in {"close", "moc"}:
+                    filled, fill_px = True, close_px
                 else:
                     filled, fill_px = compute_stop_fill(open_px, high_px, cand.entry_px, cand.stop_limit_pct)
                 if not filled:
@@ -1454,7 +1549,7 @@ def _legacy_run_backtest(
                     continue
 
                 # Hybrid bear regime: tighten stop using ATR
-                if exposure_mode in {"hybrid", "scaled", "exposure"} and not market_is_bull:
+                if exposure_mode in {"hybrid", "scaled", "exposure"} and not market_is_bull and entry_type != "ep":
                     atr_val = float(sym_data.atr14[entry_loc] or 0.0)
                     if atr_val > 0:
                         tight_stop = entry_px - (atr_val * stop_loss_atr_bear)
@@ -1478,8 +1573,14 @@ def _legacy_run_backtest(
                 dist = max(entry_px - stop_px, entry_px * 0.005)
                 shares = int(risk_amt / dist)
                 
-                # Caps
-                max_cap = mtm_equity * max_pos_size_pct
+                # Caps (entry-type specific)
+                local_max_pos = max_pos_size_pct
+                if entry_type == "ep":
+                    local_max_pos = min(local_max_pos, float(params.get("ep_max_pos_size_pct", 0.15) or 0.15))
+                elif entry_type == "vcp":
+                    local_max_pos = min(local_max_pos, float(params.get("vcp_max_pos_size_pct", 0.25) or 0.25))
+
+                max_cap = mtm_equity * local_max_pos
                 if shares * entry_px > max_cap:
                     shares = int(max_cap / entry_px)
                 gross_exposure = sum(p["shares"] * p.get("last_price", 0.0) for p in positions.values())
@@ -1569,7 +1670,7 @@ def _legacy_run_backtest(
         print(f"Avg Universe: {avg_universe:.1f}")
         print(f"Avg Trend Candidates: {avg_trend:.1f}")
         print(f"Avg RS Candidates: {avg_rs:.1f}")
-        print(f"Avg VCP Candidates: {avg_vcp:.1f}")
+        print(f"Avg VCP Candidates: {avg_vcp:.2f}")
         return final_results[0]
     avg_universe = float(np.mean(debug_counts["n_universe"])) if len(all_dates) else 0.0
     avg_trend = float(np.mean(debug_counts["n_trend"])) if len(all_dates) else 0.0
@@ -1578,7 +1679,7 @@ def _legacy_run_backtest(
     print(f"Avg Universe: {avg_universe:.1f}")
     print(f"Avg Trend Candidates: {avg_trend:.1f}")
     print(f"Avg RS Candidates: {avg_rs:.1f}")
-    print(f"Avg VCP Candidates: {avg_vcp:.1f}")
+    print(f"Avg VCP Candidates: {avg_vcp:.2f}")
     return final_results
 
 # Backwards compatibility
