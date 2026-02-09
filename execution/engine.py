@@ -315,7 +315,7 @@ def _maybe_take_partial_profit(
     if pos.get("partial_taken", False):
         return cash
 
-    split_exit = bool(params.get("split_exit", False) or params.get("exit_sma_fast") or params.get("exit_sma_slow"))
+    split_exit = bool(params.get("split_exit", False))
     if not split_exit:
         return cash
 
@@ -375,20 +375,28 @@ def _evaluate_exit_state_machine(
         trades_list=trades_list,
     )
 
-    # 3) Time stop
+    # 3) Time stop (dead-money rule)
     days_held = day_idx - int(pos.get("entry_day_idx", day_idx))
-    raw_time_stop = params.get("time_stop_days", params.get("time_stop", 0))
+    raw_dead_money_days = params.get("dead_money_days", params.get("time_stop_days", 5))
     try:
-        time_stop_days = int(raw_time_stop) if raw_time_stop is not None else 0
+        dead_money_days = int(raw_dead_money_days) if raw_dead_money_days is not None else 5
     except Exception:
-        time_stop_days = 0
-    if time_stop_days < 0:
-        time_stop_days = 0
-    if time_stop_days > 0 and days_held >= time_stop_days:
+        dead_money_days = 5
+    if dead_money_days < 0:
+        dead_money_days = 0
+    try:
+        dead_money_profit = float(
+            params.get("dead_money_profit_pct", params.get("time_stop_profit_pct", 0.01)) or 0.01
+        )
+    except Exception:
+        dead_money_profit = 0.01
+    if dead_money_profit > 1.0:
+        dead_money_profit /= 100.0
+    if dead_money_days > 0 and days_held >= dead_money_days:
         entry_px = float(pos.get("entry_price", 0.0) or 0.0)
         profit_pct = ((current_close - entry_px) / entry_px) if entry_px > 0 else 0.0
-        if profit_pct < 0.005:
-            return True, current_close, "TIME_STOP", cash
+        if profit_pct < dead_money_profit:
+            return True, current_close, "DEAD_MONEY_STOP", cash
 
     # 4) Trailing/strategy exits
     entry_loc_search = np.searchsorted(sym_data.gidx, [pos.get("entry_day_idx", day_idx)])
@@ -405,6 +413,7 @@ def _evaluate_exit_state_machine(
         # Time stop has already been checked in this state machine.
         exit_params["time_stop_days"] = 0
         exit_params["time_stop"] = 0
+        exit_params["dead_money_days"] = 0
 
     strat_exit, new_stop, target_px = _generic_exit_decision(
         exit_params,
@@ -1494,6 +1503,49 @@ def _legacy_run_backtest(
             return False
         return bool(op(val_a, val_b))
 
+    class _TraceLogger:
+        def __init__(self, enabled: bool, file_path: str):
+            self.enabled = bool(enabled)
+            self.file_path = str(file_path or "")
+            self._seen: set[tuple[str, str, str]] = set()
+            if self.enabled and self.file_path:
+                os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
+
+        def log_reject(self, *, date_val: Any, symbol: str, reason: str) -> None:
+            if not self.enabled or not self.file_path:
+                return
+            sym = str(symbol or "").upper()
+            if not sym:
+                return
+            msg = str(reason or "").strip() or "unknown_reject"
+            try:
+                dt = pd.Timestamp(date_val).strftime("%Y-%m-%d")
+            except Exception:
+                dt = str(date_val)
+            key = (dt, sym, msg)
+            if key in self._seen:
+                return
+            self._seen.add(key)
+            with open(self.file_path, "a", encoding="utf-8") as f:
+                f.write(f"Reject: {sym} | Date: {dt} | Reason: {msg}\n")
+
+    known_winner_syms = {
+        s.strip().upper()
+        for s in str(os.getenv("APEX_KNOWN_WINNERS", "NVDA,TSLA,SMCI") or "").split(",")
+        if s.strip()
+    }
+    trace_rejects_enabled = str(
+        os.getenv("APEX_TRACE_KNOWN_WINNER_REJECTS", "1") or "1"
+    ).strip().lower() in {"1", "true", "yes"}
+    trace_path = str(
+        os.getenv(
+            "APEX_TRACE_REJECTS_PATH",
+            os.path.join("logs", "known_winner_rejections.log"),
+        )
+        or os.path.join("logs", "known_winner_rejections.log")
+    )
+    trace_logger = _TraceLogger(trace_rejects_enabled and bool(known_winner_syms), trace_path)
+
     strategies = strategy if isinstance(strategy, (list, tuple)) else [strategy]
     strategies = [s for s in strategies if s is not None]
     if not strategies:
@@ -1711,6 +1763,19 @@ def _legacy_run_backtest(
                     # Strategy-specific entry logic
                     decision = strat.entry(sd.df, prev_i)
                     if not decision:
+                        if sym.upper() in known_winner_syms:
+                            reject_reason = ""
+                            try:
+                                reject_reason = str(getattr(strat, "last_reject_reason", "") or "").strip()
+                            except Exception:
+                                reject_reason = ""
+                            if not reject_reason:
+                                reject_reason = "setup_rejected"
+                            trace_logger.log_reject(
+                                date_val=all_dates[day_idx],
+                                symbol=sym,
+                                reason=reject_reason,
+                            )
                         continue
 
                     row = sd.df.iloc[prev_i]

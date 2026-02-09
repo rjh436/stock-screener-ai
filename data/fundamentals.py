@@ -6,6 +6,10 @@ from typing import Dict, Iterable, List, Sequence
 
 import numpy as np
 import pandas as pd
+try:
+    import polars as pl
+except Exception:
+    pl = None  # type: ignore[assignment]
 
 from .schwab_client import sd
 
@@ -19,6 +23,12 @@ FUNDAMENTAL_METRIC_COLUMNS: List[str] = [
 
 _FUND_CACHE_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "cache", "fundamentals_history.csv")
+)
+_EDGAR_BASE_DIR = os.path.abspath(
+    os.getenv(
+        "FUNDAMENTAL_EDGAR_DIR",
+        os.path.join(os.path.dirname(__file__), "fundamentals", "edgar_income"),
+    )
 )
 _DEFAULT_TTL_HOURS = 24
 _API_CHUNK_SIZE = 200
@@ -121,6 +131,62 @@ def _normalize_symbols(symbols: Sequence[str]) -> List[str]:
         seen.add(s)
         cleaned.append(s)
     return cleaned
+
+
+def _empty_symbol_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=FUNDAMENTAL_METRIC_COLUMNS)
+
+
+def _edgar_partition_path(symbol: str) -> str:
+    return os.path.join(_EDGAR_BASE_DIR, f"ticker={symbol}", "fundamentals.parquet")
+
+
+def _load_edgar_symbol_frame(symbol: str) -> pd.DataFrame:
+    path = _edgar_partition_path(symbol)
+    if not os.path.exists(path):
+        return _empty_symbol_frame()
+
+    try:
+        if pl is not None:
+            edf = pl.read_parquet(path)
+            if edf.is_empty():
+                return _empty_symbol_frame()
+            pdf = edf.to_pandas()
+        else:
+            pdf = pd.read_parquet(path)
+    except Exception:
+        return _empty_symbol_frame()
+
+    if pdf is None or pdf.empty:
+        return _empty_symbol_frame()
+
+    quarter_col = "quarter_end" if "quarter_end" in pdf.columns else "report_date"
+    if quarter_col not in pdf.columns:
+        return _empty_symbol_frame()
+
+    frame = pd.DataFrame(
+        {
+            "report_date": pd.to_datetime(pdf[quarter_col], errors="coerce"),
+            "eps_growth_qoq": pd.to_numeric(pdf.get("eps_qoq_growth_pct"), errors="coerce"),
+            "eps_growth_yoy": pd.to_numeric(pdf.get("eps_yoy_growth_pct"), errors="coerce"),
+            "sales_growth_qoq": pd.to_numeric(pdf.get("revenue_qoq_growth_pct"), errors="coerce"),
+            "sales_growth_yoy": pd.to_numeric(pdf.get("revenue_yoy_growth_pct"), errors="coerce"),
+            "institutional_sponsorship": np.nan,
+        }
+    )
+    frame = frame.dropna(subset=["report_date"]).sort_values("report_date")
+    if frame.empty:
+        return _empty_symbol_frame()
+    frame = frame.drop_duplicates(subset=["report_date"], keep="last")
+    frame = frame.set_index("report_date")[FUNDAMENTAL_METRIC_COLUMNS].sort_index()
+    return frame
+
+
+def _load_edgar_fundamental_data(symbols: Sequence[str]) -> Dict[str, pd.DataFrame]:
+    out: Dict[str, pd.DataFrame] = {}
+    for sym in symbols:
+        out[sym] = _load_edgar_symbol_frame(sym)
+    return out
 
 
 def _latest_fetched_map(cache_df: pd.DataFrame) -> Dict[str, pd.Timestamp]:
@@ -287,6 +353,9 @@ def fetch_fundamental_data(symbols: Sequence[str]) -> Dict[str, pd.DataFrame]:
     if not symbols:
         return {}
 
+    edgar_data = _load_edgar_fundamental_data(symbols)
+    edgar_covered = {sym for sym, frame in edgar_data.items() if frame is not None and not frame.empty}
+
     cache_df = _load_cache()
     latest_map = _latest_fetched_map(cache_df)
 
@@ -299,7 +368,8 @@ def fetch_fundamental_data(symbols: Sequence[str]) -> Dict[str, pd.DataFrame]:
 
     stale_symbols = [
         sym for sym in symbols
-        if (sym not in latest_map) or pd.isna(latest_map[sym]) or latest_map[sym] < cutoff
+        if sym not in edgar_covered
+        and ((sym not in latest_map) or pd.isna(latest_map[sym]) or latest_map[sym] < cutoff)
     ]
 
     cache_only = str(
@@ -331,26 +401,25 @@ def fetch_fundamental_data(symbols: Sequence[str]) -> Dict[str, pd.DataFrame]:
             _save_cache(cache_df)
 
     out: Dict[str, pd.DataFrame] = {}
-    if cache_df.empty:
-        for sym in symbols:
-            out[sym] = pd.DataFrame(columns=FUNDAMENTAL_METRIC_COLUMNS)
-        return out
+    grouped = {}
+    if not cache_df.empty:
+        subset = cache_df[cache_df["symbol"].isin(symbols)].copy()
+        if not subset.empty:
+            subset = subset.sort_values(["symbol", "report_date", "fetched_at"])
+            subset = subset.drop_duplicates(subset=["symbol", "report_date"], keep="last")
+            grouped = {sym: grp for sym, grp in subset.groupby("symbol")}
 
-    subset = cache_df[cache_df["symbol"].isin(symbols)].copy()
-    if subset.empty:
-        for sym in symbols:
-            out[sym] = pd.DataFrame(columns=FUNDAMENTAL_METRIC_COLUMNS)
-        return out
-
-    subset = subset.sort_values(["symbol", "report_date", "fetched_at"])
-    subset = subset.drop_duplicates(subset=["symbol", "report_date"], keep="last")
-
-    grouped = {sym: grp for sym, grp in subset.groupby("symbol")}
     for sym in symbols:
+        edf = edgar_data.get(sym)
+        if edf is not None and not edf.empty:
+            out[sym] = edf
+            continue
+
         grp = grouped.get(sym)
         if grp is None or grp.empty:
-            out[sym] = pd.DataFrame(columns=FUNDAMENTAL_METRIC_COLUMNS)
+            out[sym] = _empty_symbol_frame()
             continue
+
         frame = grp.set_index("report_date")[FUNDAMENTAL_METRIC_COLUMNS].sort_index()
         for col in FUNDAMENTAL_METRIC_COLUMNS:
             frame[col] = pd.to_numeric(frame[col], errors="coerce")

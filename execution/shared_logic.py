@@ -410,65 +410,30 @@ def _generic_exit_decision(
             if dist_from_entry >= (atr_at_entry * activation_mult):
                 new_stop = potential_stop
 
-    # 2b. BREAKEVEN + SMA TRAIL (Qullamaggie discipline)
+    # 2b. NUCLEAR RESET TRAILING SCHEDULE
+    # >20%: stop to breakeven | >40%: trail SMA50 | >100%: trail SMA10.
     profit_pct = (close_px - entry_px) / entry_px if entry_px > 0 else 0.0
-    breakeven_at = float(params.get("breakeven_at_pct", 0.0) or 0.0)
-    trail_ma = params.get("trail_ma") or params.get("trail_sma")
-    if breakeven_at > 0 and profit_pct >= breakeven_at:
-        # Move stop to breakeven first
-        if entry_px > new_stop:
-            new_stop = entry_px
 
-        # Then trail SMA10 or SMA20
-        if isinstance(trail_ma, str) and trail_ma in {"sma10", "sma20"}:
-            try:
-                ma_arr = getattr(sd, trail_ma)
-                ma_val = float(ma_arr[loc])
-            except Exception:
-                ma_val = float("nan")
-            if np.isfinite(ma_val) and ma_val > new_stop:
-                new_stop = ma_val
+    be_threshold = _as_float(params.get("breakeven_profit_pct", 0.20), 0.20)
+    if be_threshold > 1.0:
+        be_threshold /= 100.0
+    if profit_pct >= max(0.0, be_threshold) and entry_px > new_stop:
+        new_stop = entry_px
 
-    # 2c. DYNAMIC TRAIL (Parabolic Gear)
-    # Switch to SMA20 at 2R and EMA10 at 4R or ATR expansion.
-    dynamic_trail_active = False
-    init_risk = _as_float(initial_risk, 0.0)
-    if init_risk <= 0 and entry_px > 0 and current_stop > 0:
-        fallback_risk = entry_px - current_stop
-        if fallback_risk > 0:
-            init_risk = fallback_risk
-
-    tr_val = float("nan")
-    tr_ma50_val = float("nan")
-    try:
-        tr_val = float(sd.true_range[loc])
-    except Exception:
-        pass
-    try:
-        tr_ma50_val = float(sd.tr_ma50[loc])
-    except Exception:
-        pass
-    if not np.isfinite(tr_val) or not np.isfinite(tr_ma50_val):
-        row_df_local = getattr(sd, "df", None)
-        if row_df_local is not None:
-            try:
-                row_last_local = row_df_local.iloc[loc]
-                if not np.isfinite(tr_val):
-                    tr_val = float(row_last_local.get("true_range", float("nan")))
-                if not np.isfinite(tr_ma50_val):
-                    tr_ma50_val = float(row_last_local.get("tr_ma50", float("nan")))
-            except Exception:
-                pass
-
-    atr_expansion = np.isfinite(tr_val) and np.isfinite(tr_ma50_val) and tr_ma50_val > 0 and tr_val > (tr_ma50_val * 1.25)
-    r_mult = (close_px - entry_px) / init_risk if init_risk > 0 else 0.0
+    sma50_threshold = _as_float(params.get("sma50_trail_profit_pct", 0.40), 0.40)
+    sma10_threshold = _as_float(params.get("sma10_trail_profit_pct", 1.00), 1.00)
+    if sma50_threshold > 1.0:
+        sma50_threshold /= 100.0
+    if sma10_threshold > 1.0:
+        sma10_threshold /= 100.0
 
     trail_choice = None
-    if r_mult >= 4.0 or atr_expansion:
-        trail_choice = "ema10"
-    elif r_mult >= 2.0:
-        trail_choice = "sma20"
+    if profit_pct >= sma10_threshold:
+        trail_choice = "sma10"
+    elif profit_pct >= sma50_threshold:
+        trail_choice = "sma50"
 
+    dynamic_trail_active = False
     if trail_choice:
         try:
             ma_arr = getattr(sd, trail_choice)
@@ -482,37 +447,39 @@ def _generic_exit_decision(
                     ma_val = float(row_df_local.iloc[loc].get(trail_choice, float("nan")))
                 except Exception:
                     ma_val = float("nan")
-        buffer = float(params.get("trail_ma_buffer", 1.0) or 1.0)
-        if not np.isfinite(buffer) or buffer <= 0:
-            buffer = 1.0
-        if np.isfinite(ma_val):
-            adj_ma = ma_val * buffer
-            if adj_ma > new_stop:
-                new_stop = adj_ma
+        if np.isfinite(ma_val) and ma_val > new_stop:
+            new_stop = ma_val
             dynamic_trail_active = True
 
-    # 3. TIME STOP (Dynamic Patience)
-    time_stop_days = int(params.get("time_stop_days", params.get("time_stop", 7)) or 7)
-    if time_stop_days > 0:
+    # 3. TIME STOP (Dead-Money Rule)
+    dead_money_days = int(params.get("dead_money_days", params.get("time_stop_days", 5)) or 5)
+    if dead_money_days < 0:
+        dead_money_days = 0
+    dead_money_profit_pct = _as_float(
+        params.get("dead_money_profit_pct", params.get("time_stop_profit_pct", 0.01)),
+        0.01,
+    )
+    if dead_money_profit_pct > 1.0:
+        dead_money_profit_pct /= 100.0
+    if dead_money_days > 0:
         days_held = loc - entry_loc
-        if days_held >= time_stop_days:
-            pnl_pct = (close_px - entry_px) / entry_px
-            if pnl_pct < 0.005:  # 0.5% threshold for dead money
-                return True, new_stop, None
+        if days_held >= dead_money_days and profit_pct < dead_money_profit_pct:
+            return True, new_stop, None
 
-    # 4. PROFIT TARGET (Partial or Full)
-    # Simple full exit at profit target if defined
-    profit_target = float(params.get("profit_target", 0.0) or 0.0)
+    # 4. FIXED PROFIT TARGETS (Legacy opt-in only)
     target_px = None
-    if profit_target > 0:
-        target_mult = profit_target if profit_target >= 1.0 else (1.0 + profit_target)
-        target_px = entry_px * target_mult
-    if target_px is None:
-        mult = _best_profit_target_multiple(params.get("exit_rules"))
-        if mult is not None:
-            target_px = entry_px * mult
-    if target_px is not None and high_px >= target_px:
-        return True, new_stop, target_px
+    allow_profit_target_exit = bool(params.get("allow_profit_target_exit", False))
+    if allow_profit_target_exit:
+        profit_target = float(params.get("profit_target", 0.0) or 0.0)
+        if profit_target > 0:
+            target_mult = profit_target if profit_target >= 1.0 else (1.0 + profit_target)
+            target_px = entry_px * target_mult
+        if target_px is None:
+            mult = _best_profit_target_multiple(params.get("exit_rules"))
+            if mult is not None:
+                target_px = entry_px * mult
+        if target_px is not None and high_px >= target_px:
+            return True, new_stop, target_px
 
     row_df = getattr(sd, "df", None)
     if row_df is not None:

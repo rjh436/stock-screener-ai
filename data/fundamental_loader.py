@@ -169,6 +169,25 @@ def _read_tickers(path: Path) -> List[str]:
     return deduped
 
 
+def _existing_tickers(output_dir: Path) -> set[str]:
+    if not output_dir.exists():
+        return set()
+    out: set[str] = set()
+    try:
+        for child in output_dir.iterdir():
+            if not child.is_dir():
+                continue
+            name = child.name
+            if not name.startswith("ticker="):
+                continue
+            ticker = _normalize_ticker(name.split("=", 1)[1])
+            if ticker:
+                out.add(ticker)
+    except Exception:
+        return set()
+    return out
+
+
 def _filings_to_list(filings_obj: Any, limit: int) -> List[Any]:
     if filings_obj is None:
         return []
@@ -446,13 +465,26 @@ def _process_ticker(
         company = _build_company(symbol)
 
         try:
-            filings_obj = company.get_filings(form=["10-Q", "10-K"], is_xbrl=True)
+            filings_obj = company.get_filings(
+                form=["10-Q", "10-K"],
+                is_xbrl=True,
+                amendments=False,
+            )
         except TypeError:
-            filings_obj = company.get_filings(form=["10-Q", "10-K"])
+            try:
+                filings_obj = company.get_filings(
+                    form=["10-Q", "10-K"],
+                    is_xbrl=True,
+                )
+            except TypeError:
+                filings_obj = company.get_filings(form=["10-Q", "10-K"])
         filings = _filings_to_list(filings_obj, max_filings_per_ticker)
         if not filings:
             # Fallback path for older APIs that do not accept `is_xbrl`.
-            filings_obj = company.get_filings(form=["10-Q", "10-K"])
+            try:
+                filings_obj = company.get_filings(form=["10-Q", "10-K"], amendments=False)
+            except TypeError:
+                filings_obj = company.get_filings(form=["10-Q", "10-K"])
             filings = _filings_to_list(filings_obj, max_filings_per_ticker)
 
         rows: List[Dict[str, Any]] = []
@@ -468,6 +500,19 @@ def _process_ticker(
         if df.is_empty():
             return {"ticker": symbol, "rows": [], "error": "empty_frame"}
 
+        # Normalize schema to avoid mixed-type errors from sparse XBRL payloads.
+        if "quarter_end" in df.columns:
+            df = df.with_columns(pl.col("quarter_end").cast(pl.Utf8, strict=False))
+        if "filing_date" in df.columns:
+            df = df.with_columns(pl.col("filing_date").cast(pl.Utf8, strict=False))
+        if "form" in df.columns:
+            df = df.with_columns(pl.col("form").cast(pl.Utf8, strict=False))
+        for metric in ("revenue", "net_income", "eps"):
+            if metric not in df.columns:
+                df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias(metric))
+            else:
+                df = df.with_columns(pl.col(metric).cast(pl.Float64, strict=False))
+
         # De-duplicate by quarter end, keeping the newest filing row.
         if "filing_date" in df.columns:
             df = df.sort(["quarter_end", "filing_date"], descending=[False, False])
@@ -477,16 +522,17 @@ def _process_ticker(
         df = df.sort("quarter_end")
 
         for metric in ("revenue", "net_income", "eps"):
-            prior_q = pl.col(metric).shift(1)
-            prior_y = pl.col(metric).shift(4)
+            metric_col = pl.col(metric).cast(pl.Float64, strict=False)
+            prior_q = metric_col.shift(1)
+            prior_y = metric_col.shift(4)
 
             qoq_expr = pl.when(
                 prior_q.is_not_null() & (prior_q.abs() > 1e-12)
-            ).then(((pl.col(metric) / prior_q) - 1.0) * 100.0).otherwise(None)
+            ).then(((metric_col / prior_q) - 1.0) * 100.0).otherwise(None)
 
             yoy_expr = pl.when(
                 prior_y.is_not_null() & (prior_y.abs() > 1e-12)
-            ).then(((pl.col(metric) / prior_y) - 1.0) * 100.0).otherwise(None)
+            ).then(((metric_col / prior_y) - 1.0) * 100.0).otherwise(None)
 
             df = df.with_columns(
                 qoq_expr.alias(f"{metric}_qoq_growth_pct"),
@@ -734,6 +780,24 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Reduce progress logging.",
     )
+    parser.add_argument(
+        "--skip-existing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip symbols that already have parquet partitions (default: true).",
+    )
+    parser.add_argument(
+        "--shard-count",
+        type=int,
+        default=1,
+        help="Split work into N shards for resumable/distributed runs.",
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="0-based shard index to process when --shard-count > 1.",
+    )
     return parser.parse_args(argv)
 
 
@@ -760,8 +824,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.limit and args.limit > 0:
         tickers = tickers[: int(args.limit)]
 
+    output_dir = Path(str(args.output_dir))
+    if bool(args.skip_existing):
+        already = _existing_tickers(output_dir)
+        if already:
+            tickers = [t for t in tickers if t not in already]
+            if not bool(args.quiet):
+                print(f"[fundamental_loader] skip-existing filtered {len(already)} already-loaded tickers")
+
+    shard_count = max(1, int(args.shard_count))
+    shard_index = int(args.shard_index)
+    if shard_index < 0 or shard_index >= shard_count:
+        raise ValueError(f"Invalid shard index: {shard_index} (shard_count={shard_count})")
+    if shard_count > 1:
+        tickers = [t for idx, t in enumerate(tickers) if (idx % shard_count) == shard_index]
+        if not bool(args.quiet):
+            print(f"[fundamental_loader] shard {shard_index+1}/{shard_count} has {len(tickers)} tickers")
+
     cfg = LoaderConfig(
-        output_dir=Path(str(args.output_dir)),
+        output_dir=output_dir,
         identity=str(args.identity or ""),
         max_workers=int(args.max_workers),
         sec_rate_limit=int(args.sec_rate_limit),

@@ -9,6 +9,7 @@ import concurrent.futures
 import multiprocessing
 import pickle
 import gc
+from pathlib import Path
 
 # Add project root to path
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -48,69 +49,123 @@ MIN_TRADES_FLOOR = int(os.getenv("APEX_MIN_TRADES_FLOOR", "120") or "120")
 MAX_TRADES_SOFT = int(os.getenv("APEX_MAX_TRADES_SOFT", "700") or "700")
 IMMIGRANT_FRAC = float(os.getenv("APEX_IMMIGRANT_FRAC", "0.30") or "0.30")
 ELITE_COUNT = int(os.getenv("APEX_ELITE_COUNT", "5") or "5")
+FUNDAMENTAL_PARQUET_DIR = str(
+    os.getenv("APEX_FUNDAMENTAL_PARQUET_DIR", os.path.join("data", "fundamentals", "edgar_income"))
+)
+MIN_FUNDAMENTAL_COVERAGE = float(os.getenv("APEX_MIN_FUNDAMENTAL_COVERAGE", "0.75") or "0.75")
+ALLOW_LOW_FUND_COVERAGE = str(os.getenv("APEX_ALLOW_LOW_FUND_COVERAGE", "0") or "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+AUTO_LOAD_FUNDAMENTALS = str(os.getenv("APEX_AUTO_LOAD_FUNDAMENTALS", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 # --- GENOME SPACE (Optimization Variables) ---
 GENE_SPACE = {
     "require_trend": [True],
-    "rs_gate_min": [70, 75, 80, 85, 90],
-    "market_cap_min": [500_000_000],
-    "mom_rank_min": [75, 80, 90, 95],
-    "runup_3m_min_pct": [15, 20, 30, 40, 50],
-    "adr_min": [2, 2.5, 3, 3.5, 4],
-    "template_low_52w_min_pct": [25, 30, 35],
-    "template_off_high_52w_max_pct": [20, 25, 30],
-    "sma200_trend_lookback": [20, 30],
-    "sma200_trend_min_pct": [0, 0.5, 1],
-    "min_price": [2, 5],
-    "min_avg_volume_30": [100000, 250000, 500000],
-    "require_rs_line_trend": [True],
-
-    "natr_max": [2, 2.5, 3],
-    "natr_days": [10],
-    "natr_entry_max_pct": [7, 9, 12],
-    "vol_mult": [1.25, 1.5, 2, 2.5],
-    "breakout_buffer": [0, 0.001],
-    "vcp_last_contraction_max_pct": [10, 12, 14, 16],
-    "vcp_required_contractions": [1],
-    "vcp_damping_ratio": [0.85, 0.9, 0.95],
-    "vcp_volume_dryup_max_ratio": [0.9, 1, 1.1],
-    "vcp_vol_contraction_ratio": [0.9, 1],
-    "vcp_require_pre_breakout": [True],
-    "vcp_not_breakout_buffer": [0, 0.002],
-
-    "entry_mode": ["both"],
-    "ep_gap_pct": [0.015, 0.02, 0.03, 0.04, 0.05, 0.06],
-    "ep_vol_mult": [1.5, 2, 2.5, 3],
+    "rs_gate_min": [85, 88, 90, 92, 95],
+    "min_price": [5, 8, 10],
+    "min_avg_volume_30": [200000, 500000, 1000000],
+    "fundamental_growth_min_pct": [20, 25, 30],
+    "high_tight_flag_override_pct": [95, 97, 99],
+    "entry_mode": ["both", "vcp", "ep"],
+    "vcp_lookback_bars": [60, 80, 100],
+    "vcp_extrema_order": [2, 3, 4],
+    "vcp_breakout_volume_mult": [1.5, 2.0, 2.5],
+    "breakout_buffer": [0, 0.001, 0.002],
+    "ep_gap_pct": [8, 10, 12],
+    "ep_vol_mult": [3, 4, 5],
+    "ep_close_near_high_min": [0.80, 0.85, 0.90],
+    "ep_entry_mode": ["close", "open"],
+    "ep_max_stop_pct": [0.12, 0.15, 0.18],
     "score_mode": ['dual_core'],
-    "technical_weight": [0.60, 0.70, 0.80],
-    "fundamental_weight": [0.40, 0.30, 0.20],
-    "min_entry_score": [75, 80, 85, 90, 95],
-
-    "max_stop_pct": [0.04, 0.05, 0.06, 0.07],
-    "stop_limit_pct": [0.02, 0.03, 0.05],
-    "stop_loss_atr_bull": [3, 3.5, 4, 5],
+    "technical_weight": [0.55, 0.65, 0.75],
+    "fundamental_weight": [0.45, 0.35, 0.25],
+    "min_entry_score": [60, 65, 70, 75],
+    "max_stop_pct": [0.05, 0.06, 0.08],
+    "stop_limit_pct": [0.02, 0.03],
+    "stop_loss_atr_bull": [3, 4, 5],
     "stop_loss_atr_bear": [0.5, 0.75],
-
-    "breakeven_at_pct": [0.15, 0.2, 0.25, 0.3],
-    "exit_sma_fast": ['ema10', 'ema20'],
-    "exit_sma_slow": ['ema10', 'ema20', 'sma50'],
-    "enable_partial_profit": [True],
-    "partial_profit_mode": ['r'],
-    "partial_profit_r": [3, 4, 5],
-    "take_profit_chunk_pct": [0.33, 0.5],
-    "profit_target_pct": [0.15, 0.2, 0.25, 0.3, 0.4],
-    "time_stop_days": [0, 90, 120, 180],
-
-    "pyramid_threshold": [0.05, 0.07, 0.10, 0.12],
+    "breakeven_at_pct": [0.20],
+    "exit_sma_fast": ['sma50'],
+    "exit_sma_slow": ['sma50'],
+    "time_stop_days": [5],
+    "pyramid_threshold": [0.08, 0.10, 0.12],
     "pyramid_fraction": [0.5],
-    "pyramid_max_adds": [2, 3],
-
-    "max_positions": [3, 4, 5, 6],
-    "risk_per_trade": [0.0125, 0.015, 0.02, 0.025],
-    "max_pos_size_pct": [0.15, 0.2, 0.25],
-    "max_total_exposure_pct_bull": [0.8, 0.9, 1],
+    "pyramid_max_adds": [1, 2],
+    "max_positions": [4, 6, 8],
+    "risk_per_trade": [0.01, 0.0125, 0.015],
+    "max_pos_size_pct": [0.10, 0.15, 0.20],
+    "max_total_exposure_pct_bull": [0.8, 1.0],
     "max_total_exposure_pct_bear": [0, 0.05, 0.1],
 }
+
+
+def _edgar_partition_exists(symbol: str) -> bool:
+    path = Path(FUNDAMENTAL_PARQUET_DIR) / f"ticker={str(symbol).upper()}" / "fundamentals.parquet"
+    return path.exists()
+
+
+def _fundamental_coverage(symbols):
+    syms = [str(s).upper() for s in symbols or [] if str(s or "").strip()]
+    if not syms:
+        return 0.0, [], []
+    covered = [s for s in syms if _edgar_partition_exists(s)]
+    missing = [s for s in syms if s not in set(covered)]
+    return (len(covered) / float(len(syms))), covered, missing
+
+
+def _ensure_fundamental_coverage(symbols):
+    coverage, covered, missing = _fundamental_coverage(symbols)
+    print(
+        f"📚 Fundamental coverage: {len(covered)}/{len(symbols)} ({coverage:.1%}) "
+        f"from {FUNDAMENTAL_PARQUET_DIR}"
+    )
+
+    if coverage >= MIN_FUNDAMENTAL_COVERAGE:
+        return
+
+    if AUTO_LOAD_FUNDAMENTALS and missing:
+        identity = str(os.getenv("SEC_EDGAR_IDENTITY", "") or "").strip()
+        if identity:
+            print(f"🧾 Loading missing fundamentals for {len(missing)} symbols from SEC EDGAR...")
+            try:
+                from data.fundamental_loader import LoaderConfig, refresh_fundamentals
+
+                cfg = LoaderConfig(
+                    output_dir=Path(FUNDAMENTAL_PARQUET_DIR),
+                    identity=identity,
+                    max_workers=int(os.getenv("APEX_FUND_MAX_WORKERS", "8") or "8"),
+                    sec_rate_limit=int(os.getenv("APEX_FUND_RATE_LIMIT", "8") or "8"),
+                    max_filings_per_ticker=int(os.getenv("APEX_FUND_MAX_FILINGS", "8") or "8"),
+                    max_tasks_per_child=int(os.getenv("APEX_FUND_MAX_TASKS_PER_CHILD", "8") or "8"),
+                    request_pause_sec=max(
+                        0.0,
+                        float(os.getenv("APEX_FUND_REQUEST_PAUSE_MS", "120") or "120") / 1000.0,
+                    ),
+                    overwrite=False,
+                    verbose=True,
+                )
+                refresh_fundamentals(missing, cfg)
+            except Exception as exc:
+                print(f"⚠️ Fundamental auto-load failed: {exc}")
+        else:
+            print("⚠️ SEC_EDGAR_IDENTITY missing; skipping auto fundamental load.")
+
+        coverage, covered, missing = _fundamental_coverage(symbols)
+        print(
+            f"📚 Fundamental coverage after load: {len(covered)}/{len(symbols)} ({coverage:.1%})"
+        )
+
+    if coverage < MIN_FUNDAMENTAL_COVERAGE and not ALLOW_LOW_FUND_COVERAGE:
+        raise RuntimeError(
+            f"Fundamental coverage too low: {coverage:.1%} < {MIN_FUNDAMENTAL_COVERAGE:.1%}. "
+            "Set SEC_EDGAR_IDENTITY and rerun, or override with APEX_ALLOW_LOW_FUND_COVERAGE=1."
+        )
 
 # --- WORKER STATE (Initializer Pattern) ---
 _worker_data = None
@@ -227,34 +282,43 @@ def evaluate_genome(genome_id_and_genome):
         strategy_config["signal_mode"] = "after_close"
         # Default to bull-deploy/bear-cash behavior for superperformance tuning.
         exposure_mode = str(
-            os.getenv("APEX_MARKET_EXPOSURE_MODE", strategy_config.get("market_exposure_mode", "filter"))
-            or "filter"
+            os.getenv("APEX_MARKET_EXPOSURE_MODE", strategy_config.get("market_exposure_mode", "hybrid"))
+            or "hybrid"
         ).strip().lower()
         if exposure_mode not in {"filter", "hard", "hybrid", "scaled", "exposure"}:
-            exposure_mode = "filter"
+            exposure_mode = "hybrid"
         strategy_config["market_exposure_mode"] = exposure_mode
+        genome_adj["market_exposure_mode"] = exposure_mode
         strategy_config["bear_max_positions"] = int(os.getenv("APEX_BEAR_MAX_POSITIONS", "1") or "1")
-        strategy_config["regime_filter"] = True
-        strategy_config["regime_exit"] = True
+        strategy_config["regime_filter"] = exposure_mode in {"filter", "hard"}
+        strategy_config["regime_exit"] = exposure_mode in {"filter", "hard"}
         strategy_config["market_filter_mode"] = "sma200"
         strategy_config["regime_ma"] = "sma200"
-        strategy_config["use_market_regime_traffic_light"] = True
+        use_traffic_light = str(os.getenv("APEX_USE_TRAFFIC_LIGHT", "0") or "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        strategy_config["use_market_regime_traffic_light"] = use_traffic_light
+        genome_adj["use_market_regime_traffic_light"] = use_traffic_light
         if "stop_loss_atr_bull" in strategy_config:
             strategy_config["stop_loss_atr"] = strategy_config.get("stop_loss_atr_bull")
-        partial_enabled = bool(strategy_config.get("enable_partial_profit", True))
-        strategy_config["split_exit"] = partial_enabled
-        strategy_config["exit_ma_after_partial"] = strategy_config.get("exit_sma_slow")
-        strategy_config["partial_profit_fraction"] = float(strategy_config.get("take_profit_chunk_pct", 0.5) or 0.5)
-        strategy_config["partial_profit_pct"] = float(strategy_config.get("profit_target_pct", 0.08) or 0.08)
-        pp_mode = str(strategy_config.get("partial_profit_mode", "r") or "r").lower().strip()
-        if pp_mode not in {"r", "pct", "time"}:
-            pp_mode = "r"
-        strategy_config["partial_profit_mode"] = pp_mode
-        pp_r = float(strategy_config.get("partial_profit_r", 3.0) or 3.0)
-        if not np.isfinite(pp_r) or pp_r <= 0:
-            pp_r = 3.0
-        strategy_config["partial_profit_r"] = pp_r
-        strategy_config["enable_partial_profit"] = partial_enabled
+        strategy_config["split_exit"] = False
+        strategy_config["enable_partial_profit"] = False
+        strategy_config["partial_profit_mode"] = "off"
+        strategy_config["partial_profit_r"] = 0.0
+        strategy_config["partial_profit_pct"] = 0.0
+        strategy_config["partial_profit_fraction"] = 0.0
+        strategy_config["profit_target"] = 0.0
+        strategy_config["profit_target_pct"] = 0.0
+        strategy_config["allow_profit_target_exit"] = False
+        strategy_config["dead_money_days"] = int(strategy_config.get("time_stop_days", 5) or 5)
+        strategy_config["dead_money_profit_pct"] = 0.01
+        strategy_config["breakeven_profit_pct"] = 0.20
+        strategy_config["sma50_trail_profit_pct"] = 0.40
+        strategy_config["sma10_trail_profit_pct"] = 1.00
+        strategy_config["exit_sma_fast"] = "sma50"
+        strategy_config["exit_sma_slow"] = "sma50"
         strategy_config["move_stop_to_be"] = True
         strategy_config["pyramid_stop_to_avg_cost"] = True
         strategy_config["allow_margin"] = (
@@ -440,6 +504,7 @@ if __name__ == "__main__":
     if universe_limit > 0:
         symbols = symbols[:universe_limit]
     print(f"...Universe: {universe_name} ({len(symbols)} symbols)")
+    _ensure_fundamental_coverage(symbols)
     total_days = (pd.to_datetime(END_DATE) - pd.to_datetime(START_DATE)).days
     trading_days = int((total_days / 365.25) * 252) + 400  # warmup buffer
 

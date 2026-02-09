@@ -207,15 +207,18 @@ class SuperperformanceStrategy(BaseStrategy):
         return None
 
     def _resolve_rs_percentile(self, row: pd.Series) -> float:
-        return _first_finite(
-            [
-                row.get("rs_percentile"),
-                row.get("relative_strength_percentile"),
-                row.get("momentum_rank"),
-                row.get("rs_rating"),
-            ],
-            default=0.0,
-        )
+        candidates = [
+            row.get("rs_percentile"),
+            row.get("relative_strength_percentile"),
+            row.get("momentum_rank"),
+            row.get("rs_rating"),
+        ]
+        for value in candidates:
+            out = _as_float(value, float("nan"))
+            if math.isfinite(out):
+                return out
+        # Fail-open when no cross-sectional RS field exists.
+        return 100.0
 
     def _resolve_price_action_percentile(self, row: pd.Series, rs_percentile: float) -> float:
         # If explicit price-action percentile exists, prefer it.
@@ -302,6 +305,53 @@ class SuperperformanceStrategy(BaseStrategy):
             "signal_mode": "open" if ep_entry_mode == "open" else "close",
             "signal_strength": float(vol_multiple + (gap_pct / 10.0)),
         }
+
+    def _ep_failure_reason(self, df: pd.DataFrame, i: int) -> str:
+        if i < 1:
+            return "ep:no_prev_bar"
+
+        row = df.iloc[i]
+        prev_row = df.iloc[i - 1]
+        prev_close = _as_float(prev_row.get("close"), 0.0)
+        open_px = _as_float(row.get("open"), 0.0)
+        high_px = _as_float(row.get("high"), 0.0)
+        low_px = _as_float(row.get("low"), 0.0)
+        close_px = _as_float(row.get("close"), 0.0)
+        vol = _as_float(row.get("volume"), 0.0)
+        vol_ma50 = _as_float(row.get("vol_ma50"), 0.0)
+        if prev_close <= 0 or open_px <= 0 or high_px <= 0 or low_px <= 0 or close_px <= 0:
+            return "ep:invalid_ohlc"
+
+        gap_pct = ((open_px - prev_close) / prev_close) * 100.0
+        ep_gap_min = _as_percent_threshold(self.params.get("ep_gap_pct", 8.0), 8.0)
+        ep_vol_mult = max(3.0, float(self.params.get("ep_vol_mult", 3.0) or 3.0))
+        close_near_high_min = float(self.params.get("ep_close_near_high_min", 0.80) or 0.80)
+
+        day_range = high_px - low_px
+        clv = _as_float(row.get("clv"), float("nan"))
+        if not math.isfinite(clv):
+            clv = ((close_px - low_px) / day_range) if day_range > 0 else 0.0
+        vol_multiple = (vol / vol_ma50) if vol_ma50 > 0 else 0.0
+
+        if gap_pct < ep_gap_min:
+            return f"ep:gap_pct={gap_pct:.2f}<{ep_gap_min:.2f}"
+        if vol_ma50 <= 0:
+            return "ep:vol_ma50<=0"
+        if vol_multiple < ep_vol_mult:
+            return f"ep:vol_mult={vol_multiple:.2f}<{ep_vol_mult:.2f}"
+        if clv < close_near_high_min:
+            return f"ep:close_near_high={clv:.2f}<{close_near_high_min:.2f}"
+
+        ep_entry_mode = str(self.params.get("ep_entry_mode", "close") or "close").lower()
+        trigger_px = open_px if ep_entry_mode == "open" else close_px
+        stop_px = low_px
+        if trigger_px <= 0 or stop_px <= 0 or stop_px >= trigger_px:
+            return "ep:invalid_stop"
+        ep_max_stop_pct = float(self.params.get("ep_max_stop_pct", 0.15) or 0.15)
+        stop_width = (trigger_px - stop_px) / trigger_px
+        if stop_width > ep_max_stop_pct:
+            return f"ep:stop_width={stop_width:.3f}>{ep_max_stop_pct:.3f}"
+        return "ep:unknown"
 
     def _vcp_candidate(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
         row = df.iloc[i]
@@ -436,6 +486,9 @@ class SuperperformanceStrategy(BaseStrategy):
         allow_ep = entry_mode in {"both", "ep", "episodic_pivot"}
 
         candidates: List[Dict] = []
+        vcp_candidate: Optional[Dict] = None
+        ep_candidate: Optional[Dict] = None
+        ep_failure = ""
         if allow_vcp:
             vcp_candidate = self._vcp_candidate(df, i)
             if vcp_candidate is not None:
@@ -445,8 +498,17 @@ class SuperperformanceStrategy(BaseStrategy):
             ep_candidate = self._ep_candidate(df, i)
             if ep_candidate is not None:
                 candidates.append(ep_candidate)
+            else:
+                ep_failure = self._ep_failure_reason(df, i)
 
         if not candidates:
+            details: List[str] = []
+            if allow_vcp and vcp_candidate is None:
+                details.append("vcp:no_breakout")
+            if allow_ep and ep_candidate is None:
+                details.append(ep_failure or "ep:no_signal")
+            if details:
+                return self._reject("archetype_none " + " | ".join(details))
             return self._reject("archetype_none")
 
         selected = max(candidates, key=lambda c: float(c.get("signal_strength", 0.0)))
