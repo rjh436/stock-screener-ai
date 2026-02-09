@@ -86,3 +86,10 @@ backups/*.tar.gz
 
 # Local cache artifact (too large for git/GitHub)
 data/cache_indicators.pkl
+
+# Runtime artifacts and local secrets (never commit)
+.git-credentials
+logs/*.pid
+logs/*.logpath
+config/_tmp_*.json
+data/schwab_tokens.json
