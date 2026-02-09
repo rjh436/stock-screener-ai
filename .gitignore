@@ -83,3 +83,6 @@ Temporary Items
 .apdisk
 data/.schwab_creds.json
 backups/*.tar.gz
+
+# Local cache artifact (too large for git/GitHub)
+data/cache_indicators.pkl

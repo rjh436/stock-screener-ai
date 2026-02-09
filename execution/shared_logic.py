@@ -364,6 +364,7 @@ def _generic_exit_decision(
     entry_px: float,
     current_stop: float,
     partial_taken: bool = False,
+    initial_risk: Optional[float] = None,
 ) -> Tuple[bool, float, Optional[float]]:
     """
     Centralized exit logic for both backtesting and live execution.
@@ -428,6 +429,68 @@ def _generic_exit_decision(
             if np.isfinite(ma_val) and ma_val > new_stop:
                 new_stop = ma_val
 
+    # 2c. DYNAMIC TRAIL (Parabolic Gear)
+    # Switch to SMA20 at 2R and EMA10 at 4R or ATR expansion.
+    dynamic_trail_active = False
+    init_risk = _as_float(initial_risk, 0.0)
+    if init_risk <= 0 and entry_px > 0 and current_stop > 0:
+        fallback_risk = entry_px - current_stop
+        if fallback_risk > 0:
+            init_risk = fallback_risk
+
+    tr_val = float("nan")
+    tr_ma50_val = float("nan")
+    try:
+        tr_val = float(sd.true_range[loc])
+    except Exception:
+        pass
+    try:
+        tr_ma50_val = float(sd.tr_ma50[loc])
+    except Exception:
+        pass
+    if not np.isfinite(tr_val) or not np.isfinite(tr_ma50_val):
+        row_df_local = getattr(sd, "df", None)
+        if row_df_local is not None:
+            try:
+                row_last_local = row_df_local.iloc[loc]
+                if not np.isfinite(tr_val):
+                    tr_val = float(row_last_local.get("true_range", float("nan")))
+                if not np.isfinite(tr_ma50_val):
+                    tr_ma50_val = float(row_last_local.get("tr_ma50", float("nan")))
+            except Exception:
+                pass
+
+    atr_expansion = np.isfinite(tr_val) and np.isfinite(tr_ma50_val) and tr_ma50_val > 0 and tr_val > (tr_ma50_val * 1.25)
+    r_mult = (close_px - entry_px) / init_risk if init_risk > 0 else 0.0
+
+    trail_choice = None
+    if r_mult >= 4.0 or atr_expansion:
+        trail_choice = "ema10"
+    elif r_mult >= 2.0:
+        trail_choice = "sma20"
+
+    if trail_choice:
+        try:
+            ma_arr = getattr(sd, trail_choice)
+            ma_val = float(ma_arr[loc])
+        except Exception:
+            ma_val = float("nan")
+        if not np.isfinite(ma_val):
+            row_df_local = getattr(sd, "df", None)
+            if row_df_local is not None:
+                try:
+                    ma_val = float(row_df_local.iloc[loc].get(trail_choice, float("nan")))
+                except Exception:
+                    ma_val = float("nan")
+        buffer = float(params.get("trail_ma_buffer", 1.0) or 1.0)
+        if not np.isfinite(buffer) or buffer <= 0:
+            buffer = 1.0
+        if np.isfinite(ma_val):
+            adj_ma = ma_val * buffer
+            if adj_ma > new_stop:
+                new_stop = adj_ma
+            dynamic_trail_active = True
+
     # 3. TIME STOP (Dynamic Patience)
     time_stop_days = int(params.get("time_stop_days", params.get("time_stop", 7)) or 7)
     if time_stop_days > 0:
@@ -479,7 +542,8 @@ def _generic_exit_decision(
 
         # If we are explicitly trailing via SMA, rely on the stop update instead of
         # immediate SMA cross exits (avoids premature exits on minor dips).
-        if params.get("trail_ma"):
+        # Also suppress SMA exits when dynamic parabolic trailing is active.
+        if params.get("trail_ma") or dynamic_trail_active:
             active_exit_sma = None
             
         # Check SMA Exit Logic

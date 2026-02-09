@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import operator
+import pickle
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -17,6 +18,11 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from strategies.strategy_loader import load_strategies
+from data.fundamentals import (
+    FUNDAMENTAL_METRIC_COLUMNS,
+    fetch_fundamental_data,
+)
+from execution.market_regime import analyze_market_health, compute_regime_series
 from execution.parity import (
     apply_strategy_score_multipliers,
     DEFAULT_SCORING_WEIGHTS,
@@ -35,12 +41,25 @@ _VOL_REL_THRESH = 1.5
 _VCP_BB_WIDTH_THRESH = 0.15
 
 _DEBUG_TRAIL_ACTIVATION = os.environ.get("APEX_DEBUG_TRAIL_ACTIVATION", "").strip() not in ("", "0", "false", "False")
+_DEBUG_FUND_SCORING = os.environ.get("APEX_DEBUG_FUND_SCORING", "").strip() not in ("", "0", "false", "False")
+
+_INDICATOR_CACHE_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "data", "cache_indicators.pkl")
+)
+
+_FUND_COLS = tuple(FUNDAMENTAL_METRIC_COLUMNS)
 
 
-def compute_stop_fill(open_px: float, high_px: float, trigger_px: float, stop_limit_pct: Optional[float]) -> Tuple[bool, float]:
+def compute_stop_fill(
+    open_px: float,
+    high_px: float,
+    trigger_px: float,
+    stop_limit_pct: Optional[float],
+    limit_price: Optional[float] = None,
+) -> Tuple[bool, float]:
     """
     Daily-bar approximation for buy-stop-limit fills.
-    - If the day gaps above the limit, no fill.
+    - If the day gaps above the limit, no fill (gap protection).
     - If open >= trigger and open <= limit, fill at open.
     - If high >= trigger and open < trigger, fill at trigger.
     """
@@ -56,22 +75,362 @@ def compute_stop_fill(open_px: float, high_px: float, trigger_px: float, stop_li
     if trig <= 0:
         return False, float("nan")
 
-    if stop_limit_pct is None:
-        limit_mult = 1.0
-    else:
+    if limit_price is not None:
         try:
-            limit_mult = 1.0 + float(stop_limit_pct)
+            limit_px = float(limit_price)
         except Exception:
-            limit_mult = 1.0
-    limit_px = trig * limit_mult
+            limit_px = float("nan")
+        if not np.isfinite(limit_px) or limit_px <= 0:
+            limit_px = trig * 1.005
+    else:
+        if stop_limit_pct is None:
+            limit_px = trig * 1.005
+        else:
+            try:
+                limit_px = trig * (1.0 + float(stop_limit_pct))
+            except Exception:
+                limit_px = trig * 1.005
 
-    if open_val >= limit_px:
+    if open_val > limit_px:
         return False, float("nan")
     if open_val >= trig:
         return True, open_val
     if high_val >= trig:
         return True, trig
     return False, float("nan")
+
+
+def _merge_fundamentals_into_df(df: pd.DataFrame, fundamental_df: Optional[pd.DataFrame]) -> None:
+    if df is None or df.empty:
+        return
+
+    for col in _FUND_COLS:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    if fundamental_df is None or fundamental_df.empty:
+        return
+
+    try:
+        fdf = fundamental_df.copy()
+        fdf.index = pd.to_datetime(fdf.index, errors="coerce")
+        fdf = fdf[~fdf.index.isna()]
+        if fdf.empty:
+            return
+        if fdf.index.tz is not None:
+            fdf.index = fdf.index.tz_localize(None)
+        fdf = fdf[~fdf.index.duplicated(keep="last")].sort_index()
+        aligned = fdf.reindex(df.index, method="ffill")
+        for col in _FUND_COLS:
+            if col in aligned.columns:
+                df[col] = pd.to_numeric(aligned[col], errors="coerce")
+    except Exception:
+        return
+
+
+def _inject_fundamentals_into_enriched(
+    enriched: Dict[str, "_SymbolArrays"],
+    symbols: Optional[Sequence[str]] = None,
+) -> None:
+    if not enriched:
+        return
+    key_lookup = {str(k).upper(): k for k in enriched.keys()}
+    if symbols:
+        symbol_list: List[str] = []
+        seen = set()
+        for sym in symbols:
+            s = str(sym or "").upper()
+            if not s or s in seen:
+                continue
+            if s in key_lookup:
+                symbol_list.append(s)
+                seen.add(s)
+    else:
+        symbol_list = list(key_lookup.keys())
+    if not symbol_list:
+        return
+    try:
+        fundamentals = fetch_fundamental_data(symbol_list)
+    except Exception:
+        fundamentals = {}
+
+    for sym in symbol_list:
+        actual_key = key_lookup.get(sym, sym)
+        sym_data = enriched.get(actual_key)
+        if sym_data is None:
+            continue
+        fdf = fundamentals.get(sym)
+        if fdf is None:
+            fdf = fundamentals.get(sym.upper())
+        _merge_fundamentals_into_df(sym_data.df, fdf)
+
+
+def _prepared_has_fundamentals(prepared: "PreparedBacktestData") -> bool:
+    if prepared is None or not prepared.enriched:
+        return False
+    for sym_data in prepared.enriched.values():
+        df = getattr(sym_data, "df", None)
+        if isinstance(df, pd.DataFrame):
+            return all(col in df.columns for col in _FUND_COLS)
+    return False
+
+
+def _prepared_needs_rs_refresh(prepared: "PreparedBacktestData") -> bool:
+    if prepared is None or not prepared.enriched:
+        return False
+    checked = 0
+    nonzero_found = False
+    for sym_data in prepared.enriched.values():
+        rs_arr = getattr(sym_data, "rsrating", None)
+        if not isinstance(rs_arr, np.ndarray) or rs_arr.size == 0:
+            continue
+        checked += 1
+        try:
+            if np.nanmax(rs_arr) > 0:
+                nonzero_found = True
+                break
+        except Exception:
+            continue
+        if checked >= 12:
+            break
+    if checked == 0:
+        return False
+    return not nonzero_found
+
+
+def _partial_sale_shares(total_shares: int, fraction: float) -> int:
+    if total_shares <= 1:
+        return 0
+    frac = float(fraction)
+    if not np.isfinite(frac) or frac <= 0:
+        frac = 0.5
+    shares_to_sell = max(1, int(total_shares * frac))
+    return max(0, min(shares_to_sell, total_shares - 1))
+
+
+def _execute_partial_sale(
+    sym: str,
+    pos: Dict[str, Any],
+    cash: float,
+    sell_px: float,
+    sell_fraction: float,
+    reason: str,
+    trades_list: List[Dict[str, Any]],
+) -> Tuple[float, float]:
+    total_shares_before = int(pos.get("shares", 0) or 0)
+    shares_to_sell = _partial_sale_shares(total_shares_before, sell_fraction)
+    if shares_to_sell <= 0:
+        return cash, 0.0
+
+    proceeds = shares_to_sell * sell_px
+    cash += proceeds
+    pos["shares"] = total_shares_before - shares_to_sell
+
+    entry_px = float(pos.get("entry_price", 0.0) or 0.0)
+    ret_pct = ((sell_px / entry_px) - 1.0) * 100.0 if entry_px > 0 else 0.0
+    trades_list.append(
+        {
+            "Symbol": sym,
+            "Entry": entry_px,
+            "Exit": sell_px,
+            "PnL": proceeds - (shares_to_sell * entry_px),
+            "Return %": ret_pct,
+            "Reason": reason,
+        }
+    )
+    sold_fraction = shares_to_sell / float(max(1, total_shares_before))
+    pos["partial_taken"] = True
+    return cash, sold_fraction
+
+
+def _maybe_take_partial_profit(
+    *,
+    sym: str,
+    pos: Dict[str, Any],
+    params: Dict[str, Any],
+    sym_data: "_SymbolArrays",
+    loc: int,
+    day_idx: int,
+    current_close: float,
+    cash: float,
+    trades_list: List[Dict[str, Any]],
+) -> float:
+    if pos.get("partial_taken", False):
+        return cash
+
+    pp_mode = str(params.get("partial_profit_mode", "")).lower()
+    enable_pp = bool(params.get("enable_partial_profit", False))
+    if pp_mode in {"time", "days"}:
+        enable_pp = True
+    if pp_mode in {"none", "off"}:
+        enable_pp = False
+
+    move_be = bool(params.get("move_stop_to_be", True))
+    breakeven_at = float(params.get("breakeven_at_pct", 0.0) or 0.0)
+    pp_day = int(params.get("partial_profit_after_days", params.get("partial_profit_day", 0)) or 0)
+    pp_r = float(params.get("partial_profit_r", 2.0) or 2.0)
+    pp_frac = float(params.get("partial_profit_fraction", 0.5) or 0.5)
+    pp_pct = float(params.get("partial_profit_pct", 0.0) or 0.0)
+    risk_per_share = float(pos.get("initial_risk", 0.0) or 0.0)
+    entry_px = float(pos.get("entry_price", 0.0) or 0.0)
+    days_held = day_idx - int(pos.get("entry_day_idx", day_idx))
+
+    hit_partial = False
+    partial_reason = ""
+    r_mode = False
+
+    if enable_pp and risk_per_share > 0 and days_held >= pp_day:
+        if pp_mode in {"time", "days"}:
+            hit_partial = current_close > entry_px
+            partial_reason = f"PARTIAL_TIME_{pp_day}D"
+        elif pp_pct > 0 and pp_mode in {"pct", "percent", "percentage"}:
+            hit_partial = current_close >= (entry_px * (1.0 + pp_pct))
+            partial_reason = f"PARTIAL_PCT_{pp_pct:.2f}"
+        else:
+            target_px = entry_px + (pp_r * risk_per_share)
+            hit_partial = current_close >= target_px
+            partial_reason = f"PARTIAL_PROFIT_{pp_r:g}R"
+            r_mode = True
+
+    if hit_partial:
+        cash, sold_fraction = _execute_partial_sale(
+            sym=sym,
+            pos=pos,
+            cash=cash,
+            sell_px=current_close,
+            sell_fraction=pp_frac,
+            reason=partial_reason,
+            trades_list=trades_list,
+        )
+        if sold_fraction > 0:
+            # Free-roll enforcement: once 50% is sold at >=3R, remaining stop must be breakeven.
+            force_breakeven = r_mode and pp_r >= 3.0 and sold_fraction >= 0.5
+            if force_breakeven:
+                pos["stop_price"] = max(float(pos.get("stop_price", 0.0) or 0.0), entry_px)
+            elif move_be:
+                profit_pct = ((current_close - entry_px) / entry_px) if entry_px > 0 else 0.0
+                if breakeven_at <= 0 or profit_pct >= breakeven_at:
+                    pos["stop_price"] = max(float(pos.get("stop_price", 0.0) or 0.0), entry_px)
+
+    if pos.get("partial_taken", False):
+        return cash
+
+    split_exit = bool(params.get("split_exit", False) or params.get("exit_sma_fast") or params.get("exit_sma_slow"))
+    if not split_exit:
+        return cash
+
+    fast_sma = params.get("exit_sma_fast") or params.get("exit_ma") or "sma20"
+    try:
+        fast_val = float(sym_data.df.iloc[loc].get(fast_sma, 0.0))
+    except Exception:
+        fast_val = 0.0
+    if fast_val <= 0 or current_close >= fast_val:
+        return cash
+
+    cash, sold_fraction = _execute_partial_sale(
+        sym=sym,
+        pos=pos,
+        cash=cash,
+        sell_px=current_close,
+        sell_fraction=float(params.get("partial_profit_fraction", 0.5) or 0.5),
+        reason=f"PARTIAL_{str(fast_sma).upper()}",
+        trades_list=trades_list,
+    )
+    if sold_fraction > 0 and move_be:
+        profit_pct = ((current_close - entry_px) / entry_px) if entry_px > 0 else 0.0
+        if breakeven_at <= 0 or profit_pct >= breakeven_at:
+            pos["stop_price"] = max(float(pos.get("stop_price", 0.0) or 0.0), entry_px)
+    return cash
+
+
+def _evaluate_exit_state_machine(
+    *,
+    sym: str,
+    pos: Dict[str, Any],
+    params: Dict[str, Any],
+    sym_data: "_SymbolArrays",
+    loc: int,
+    day_idx: int,
+    current_open: float,
+    current_low: float,
+    current_close: float,
+    cash: float,
+    trades_list: List[Dict[str, Any]],
+) -> Tuple[bool, float, Optional[str], float]:
+    # 1) Hard stop
+    stop_px = float(pos.get("stop_price", 0.0) or 0.0)
+    if stop_px > 0 and current_low < stop_px:
+        return True, min(current_open, stop_px), "HARD_STOP", cash
+
+    # 2) Partial target(s)
+    cash = _maybe_take_partial_profit(
+        sym=sym,
+        pos=pos,
+        params=params,
+        sym_data=sym_data,
+        loc=loc,
+        day_idx=day_idx,
+        current_close=current_close,
+        cash=cash,
+        trades_list=trades_list,
+    )
+
+    # 3) Time stop
+    days_held = day_idx - int(pos.get("entry_day_idx", day_idx))
+    raw_time_stop = params.get("time_stop_days", params.get("time_stop", 0))
+    try:
+        time_stop_days = int(raw_time_stop) if raw_time_stop is not None else 0
+    except Exception:
+        time_stop_days = 0
+    if time_stop_days < 0:
+        time_stop_days = 0
+    if time_stop_days > 0 and days_held >= time_stop_days:
+        entry_px = float(pos.get("entry_price", 0.0) or 0.0)
+        profit_pct = ((current_close - entry_px) / entry_px) if entry_px > 0 else 0.0
+        if profit_pct < 0.005:
+            return True, current_close, "TIME_STOP", cash
+
+    # 4) Trailing/strategy exits
+    entry_loc_search = np.searchsorted(sym_data.gidx, [pos.get("entry_day_idx", day_idx)])
+    entry_loc = int(entry_loc_search[0]) if len(entry_loc_search) > 0 else 0
+    if entry_loc >= len(sym_data.close):
+        entry_loc = 0
+
+    exit_params = params
+    if params.get("exit_sma_slow") and not params.get("exit_ma_after_partial"):
+        exit_params = dict(params)
+        exit_params["exit_ma_after_partial"] = params.get("exit_sma_slow")
+    if isinstance(exit_params, dict):
+        exit_params = dict(exit_params)
+        # Time stop has already been checked in this state machine.
+        exit_params["time_stop_days"] = 0
+        exit_params["time_stop"] = 0
+
+    strat_exit, new_stop, target_px = _generic_exit_decision(
+        exit_params,
+        sym_data,
+        loc,
+        entry_loc,
+        float(pos.get("entry_price", 0.0) or 0.0),
+        float(pos.get("stop_price", 0.0) or 0.0),
+        partial_taken=bool(pos.get("partial_taken", False)),
+        initial_risk=pos.get("initial_risk"),
+    )
+
+    if new_stop is not None and new_stop > float(pos.get("stop_price", 0.0) or 0.0):
+        if params.get("use_trailing_stop", True):
+            pos["stop_price"] = float(new_stop)
+
+    if strat_exit:
+        if target_px is not None:
+            exit_px = float(target_px)
+        elif current_low < float(pos.get("stop_price", 0.0) or 0.0):
+            exit_px = min(current_open, float(pos.get("stop_price", 0.0) or 0.0))
+        else:
+            exit_px = current_close
+        return True, exit_px, "STRATEGY_EXIT", cash
+
+    return False, current_close, None, cash
 
 
 def get_sector(symbol: str) -> str:
@@ -148,24 +507,136 @@ def _compute_sector_rs(enriched: Dict[str, "_SymbolArrays"], all_dates: np.ndarr
         k = int(m.sum())
         if k < 1:
             continue
+        idxs = np.where(m)[0]
+        if k < 3:
+            for idx in idxs:
+                sec = sector_names[idx]
+                sector_rs[sec][i] = 50.0
+            continue
         vals = row[m]
         order = np.argsort(vals, kind="quicksort")
         ranks = np.empty_like(order, dtype=np.int32)
         ranks[order] = np.arange(k, dtype=np.int32)
         pct = (ranks / (k - 1)) if k > 1 else np.zeros(k, dtype=np.float32)
         rating = 1.0 + 98.0 * pct
-        idxs = np.where(m)[0]
         for idx, r in zip(idxs, rating):
             sec = sector_names[idx]
             sector_rs[sec][i] = r
     return sector_rs
 
 
+def _build_spy_proxy_from_enriched(
+    enriched: Dict[str, "_SymbolArrays"],
+    n_days: int,
+) -> np.ndarray:
+    spy_proxy = np.full(n_days, np.nan, dtype=np.float64)
+    for sd in enriched.values():
+        valid = (
+            (sd.gidx >= 0)
+            & (sd.gidx < n_days)
+            & np.isfinite(sd.spyclose)
+            & (sd.spyclose > 0)
+        )
+        if not np.any(valid):
+            continue
+        spy_proxy[sd.gidx[valid]] = sd.spyclose[valid]
+    if np.isfinite(spy_proxy).any():
+        spy_proxy = pd.Series(spy_proxy).ffill().bfill().to_numpy(dtype=np.float64)
+    return spy_proxy
+
+
+def _calculate_rs_metrics(
+    close_mat: np.ndarray,
+    score: np.ndarray,
+    mom_score: np.ndarray,
+    enough: np.ndarray,
+    min_names: int,
+    spy_proxy: np.ndarray,
+    *,
+    diagnostic_universe_min: int = 50,
+) -> Tuple[np.ndarray, np.ndarray]:
+    n_days, n_syms = close_mat.shape
+    rs_rating = np.zeros((n_days, n_syms), dtype=np.float32)
+    momentum_rank = np.zeros((n_days, n_syms), dtype=np.float32)
+
+    # Diagnostic mode (small universe): cross-sectional percentile is unstable.
+    # Use raw RS versus SPY and normalize each symbol to [0..100] on a rolling 252-day range.
+    use_diagnostic_rs = n_syms < int(max(1, diagnostic_universe_min))
+    spy_ready = np.isfinite(spy_proxy).any() and np.nanmax(spy_proxy) > 0
+    if use_diagnostic_rs and spy_ready:
+        min_periods = 20
+        for j in range(n_syms):
+            ratio = np.full(n_days, np.nan, dtype=np.float64)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ratio = (close_mat[:, j].astype(np.float64) / spy_proxy) * 100.0
+            ratio = np.where(np.isfinite(ratio), ratio, np.nan)
+
+            ratio_s = pd.Series(ratio)
+            roll_min = ratio_s.rolling(252, min_periods=min_periods).min().to_numpy(dtype=np.float64)
+            roll_max = ratio_s.rolling(252, min_periods=min_periods).max().to_numpy(dtype=np.float64)
+            denom = roll_max - roll_min
+            with np.errstate(divide="ignore", invalid="ignore"):
+                norm = ((ratio - roll_min) / denom) * 100.0
+            norm = np.where(np.isfinite(norm), np.clip(norm, 0.0, 100.0), np.nan)
+            rs_rating[:, j] = np.nan_to_num(norm, nan=50.0).astype(np.float32)
+
+            shifted = np.roll(ratio, 126)
+            shifted[:126] = np.nan
+            with np.errstate(divide="ignore", invalid="ignore"):
+                mom_raw = (ratio / shifted) - 1.0
+            mom_s = pd.Series(mom_raw)
+            mom_min = mom_s.rolling(252, min_periods=min_periods).min().to_numpy(dtype=np.float64)
+            mom_max = mom_s.rolling(252, min_periods=min_periods).max().to_numpy(dtype=np.float64)
+            mom_den = mom_max - mom_min
+            with np.errstate(divide="ignore", invalid="ignore"):
+                mom_norm = ((mom_raw - mom_min) / mom_den) * 100.0
+            mom_norm = np.where(np.isfinite(mom_norm), np.clip(mom_norm, 0.0, 100.0), np.nan)
+            momentum_rank[:, j] = np.nan_to_num(mom_norm, nan=50.0).astype(np.float32)
+        return rs_rating, momentum_rank
+
+    # Normal mode: cross-sectional percentile RS.
+    chunk = 250
+    for start in range(0, n_days, chunk):
+        end = min(n_days, start + chunk)
+        block = score[start:end, :]
+        mom_block = mom_score[start:end, :]
+
+        for i in range(block.shape[0]):
+            row = block[i]
+            m = np.isfinite(row)
+            k = int(m.sum())
+            if k < min_names:
+                continue
+
+            vals = row[m]
+            order = np.argsort(vals, kind="quicksort")
+            ranks = np.empty_like(order, dtype=np.int32)
+            ranks[order] = np.arange(k, dtype=np.int32)
+            pct = (ranks / (k - 1)) if k > 1 else np.zeros(k, dtype=np.float32)
+            rs_rating[start + i, m] = 1.0 + 98.0 * pct
+
+            mom_row = mom_block[i]
+            mm = np.isfinite(mom_row)
+            km = int(mm.sum())
+            if km < min_names:
+                continue
+            vals_m = mom_row[mm]
+            order_m = np.argsort(vals_m, kind="quicksort")
+            ranks_m = np.empty_like(order_m, dtype=np.int32)
+            ranks_m[order_m] = np.arange(km, dtype=np.int32)
+            pct_m = (ranks_m / (km - 1)) if km > 1 else np.zeros(km, dtype=np.float32)
+            momentum_rank[start + i, mm] = 1.0 + 98.0 * pct_m
+
+    return rs_rating, momentum_rank
+
+
 def inject_market_rs_rank(enriched, all_dates, lookbacks=(63, 126, 189, 252),
                           weights=(0.40, 0.20, 0.20, 0.20),
                           min_history=252, min_names=None):
     """
-    Creates rs_rating in [1..99] for each symbol/day using cross-sectional percentile rank.
+    Creates RS metrics for each symbol/day.
+    - Normal universe: cross-sectional percentile rank in [1..99]
+    - Diagnostic/small universe: raw RS vs SPY normalized to [0..100]
     """
     syms = list(enriched.keys())
     n_days = len(all_dates)
@@ -174,11 +645,9 @@ def inject_market_rs_rank(enriched, all_dates, lookbacks=(63, 126, 189, 252),
     if n_syms == 0:
         return
 
-    # AUDIT FIX: Dynamic min_names to handle small universes (Diagnostic Mode)
     if min_names is None:
         min_names = 1
-    
-    # Build matrix: rows=dates, cols=symbols
+
     close_mat = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     for j, sym in enumerate(syms):
         sd = enriched[sym]
@@ -186,8 +655,6 @@ def inject_market_rs_rank(enriched, all_dates, lookbacks=(63, 126, 189, 252),
         close_mat[sd.gidx[valid_mask], j] = sd.close[valid_mask].astype(np.float32)
 
     tmp = np.zeros((n_days, n_syms), dtype=np.float32)
-    momentum_rank = np.zeros((n_days, n_syms), dtype=np.float32)
-    
     valid_hist = np.isfinite(close_mat)
     cum = np.cumsum(valid_hist, axis=0)
     enough = cum >= min_history
@@ -195,54 +662,28 @@ def inject_market_rs_rank(enriched, all_dates, lookbacks=(63, 126, 189, 252),
     for lb, w in zip(lookbacks, weights):
         shifted = np.roll(close_mat, lb, axis=0)
         shifted[:lb, :] = np.nan
-        
         with np.errstate(divide='ignore', invalid='ignore'):
             ret = (close_mat / shifted) - 1.0
-        
         tmp += w * ret
 
     score = np.where(enough & np.isfinite(tmp), tmp, np.nan)
-    rs_rating = np.zeros((n_days, n_syms), dtype=np.float32)
 
-    # Momentum rank based on 6-month return
     mom_lb = 126
     shifted_mom = np.roll(close_mat, mom_lb, axis=0)
     shifted_mom[:mom_lb, :] = np.nan
     with np.errstate(divide='ignore', invalid='ignore'):
         mom_ret = (close_mat / shifted_mom) - 1.0
     mom_score = np.where(enough & np.isfinite(mom_ret), mom_ret, np.nan)
-    
-    chunk = 250
-    for start in range(0, n_days, chunk):
-        end = min(n_days, start + chunk)
-        block = score[start:end, :]
-        mom_block = mom_score[start:end, :]
-        
-        for i in range(block.shape[0]):
-            row = block[i]
-            m = np.isfinite(row)
-            k = int(m.sum())
-            if k < min_names:
-                continue
-                
-            vals = row[m]
-            order = np.argsort(vals, kind="quicksort")
-            ranks = np.empty_like(order, dtype=np.int32)
-            ranks[order] = np.arange(k, dtype=np.int32)
 
-            pct = (ranks / (k - 1)) if k > 1 else np.zeros(k, dtype=np.float32)
-            rs_rating[start + i, m] = 1.0 + 98.0 * pct
-
-            mom_row = mom_block[i]
-            mm = np.isfinite(mom_row)
-            km = int(mm.sum())
-            if km >= min_names:
-                vals_m = mom_row[mm]
-                order_m = np.argsort(vals_m, kind="quicksort")
-                ranks_m = np.empty_like(order_m, dtype=np.int32)
-                ranks_m[order_m] = np.arange(km, dtype=np.int32)
-                pct_m = (ranks_m / (km - 1)) if km > 1 else np.zeros(km, dtype=np.float32)
-                momentum_rank[start + i, mm] = 1.0 + 98.0 * pct_m
+    spy_proxy = _build_spy_proxy_from_enriched(enriched, n_days)
+    rs_rating, momentum_rank = _calculate_rs_metrics(
+        close_mat,
+        score,
+        mom_score,
+        enough,
+        int(min_names),
+        spy_proxy,
+    )
 
     for j, sym in enumerate(syms):
         sd = enriched[sym]
@@ -354,8 +795,10 @@ def _compute_indicators(
         df["cci"] = CCIIndicator(df["high"], df["low"], df["close"]).cci()
         df["stoch_k"] = StochasticOscillator(df["high"], df["low"], df["close"]).stoch()
         df["vol_ma20"] = df["volume"].rolling(20).mean()
+        df["vol_ma30"] = df["volume"].rolling(30).mean()
         df["vol_ma50"] = df["volume"].rolling(50).mean()
         df["vol_ma10"] = df["volume"].rolling(10).mean()
+        df["vol_ma5"] = df["volume"].rolling(5).mean()
         df["vol_dryup"] = (df["vol_ma10"] < df["vol_ma50"]).astype(float)
 
         df["highest10"] = df["high"].rolling(10).max()
@@ -465,23 +908,141 @@ def _score_row_dual_core(
     close_px: float,
     high_52w: float,
     weights: Dict[str, float],
-) -> float:
-    rsi_factor = float(weights.get("rsi_factor", 1.0))
-    score = (rsi14 * rsi_factor)
-    if bb_width < 0.15:
-        score += 50.0
-    # AUDIT FIX: REWARD TIGHTNESS (Low Volatility)
-    if natr < 1.5:
-        score += 30.0
-    elif natr < 2.5:
-        score += 15.0
-    elif natr > 3.0:
-        # score -= 100.0 # Disabled: Allow high volatility for "Operation Leverage"
-        pass
-        
-    if close_px >= (high_52w * 0.85):
-        score += 30.0
-    return max(0.0, float(score))
+    *,
+    rs_rating: float = np.nan,
+    vcp_tightness: float = np.nan,
+    eps_growth_qoq: float = np.nan,
+    eps_growth_yoy: float = np.nan,
+    sales_growth_yoy: float = np.nan,
+    institutional_sponsorship: float = np.nan,
+    gap_pct: float = np.nan,
+    volume: float = np.nan,
+    vol_ma50: float = np.nan,
+    technical_weight: float = 0.60,
+    fundamental_weight: float = 0.40,
+    return_components: bool = False,
+) -> float | Tuple[float, float, float, bool]:
+    def _clamp_0_100(val: float, fallback: float = 50.0) -> float:
+        if not np.isfinite(val):
+            return float(np.clip(fallback, 0.0, 100.0))
+        return float(np.clip(val, 0.0, 100.0))
+
+    # --- Technical subscore (0..100), weighted to 60% in final composite ---
+    rsi_factor = float(weights.get("rsi_factor", 1.0) or 1.0)
+    rsi_score = _clamp_0_100(float(rsi14) * rsi_factor)
+    rs_score = _clamp_0_100(float(rs_rating), fallback=50.0 if not np.isfinite(rs_rating) or rs_rating <= 0 else rs_rating)
+
+    if np.isfinite(vcp_tightness):
+        vcp_norm = 1.0 - (float(np.clip(vcp_tightness, 0.0, 1.2)) / 1.2)
+        vcp_score = _clamp_0_100(vcp_norm * 100.0, fallback=50.0)
+    elif np.isfinite(bb_width):
+        if bb_width <= 0.12:
+            vcp_score = 90.0
+        elif bb_width <= 0.20:
+            vcp_score = 70.0
+        elif bb_width <= 0.30:
+            vcp_score = 50.0
+        else:
+            vcp_score = 30.0
+    else:
+        vcp_score = 50.0
+
+    structure_score = 50.0
+    if np.isfinite(natr):
+        if natr < 1.5:
+            structure_score += 20.0
+        elif natr < 2.5:
+            structure_score += 10.0
+        elif natr > 4.0:
+            structure_score -= 15.0
+    if np.isfinite(close_px) and np.isfinite(high_52w) and high_52w > 0:
+        proximity = close_px / high_52w
+        if proximity >= 0.95:
+            structure_score += 20.0
+        elif proximity >= 0.85:
+            structure_score += 12.0
+        elif proximity >= 0.75:
+            structure_score += 5.0
+        else:
+            structure_score -= 10.0
+    structure_score = _clamp_0_100(structure_score)
+
+    technical_score = _clamp_0_100(
+        (0.30 * rsi_score)
+        + (0.35 * rs_score)
+        + (0.20 * vcp_score)
+        + (0.15 * structure_score)
+    )
+
+    # --- Fundamental subscore (0..100), weighted to 40% in final composite ---
+    fund_values = [
+        eps_growth_yoy,
+        sales_growth_yoy,
+        eps_growth_qoq,
+        institutional_sponsorship,
+    ]
+    fundamentals_available = any(np.isfinite(v) for v in fund_values)
+
+    fundamental_score = 0.0
+    if np.isfinite(eps_growth_yoy) and eps_growth_yoy > 20.0:
+        fundamental_score += 25.0
+    if np.isfinite(sales_growth_yoy) and sales_growth_yoy > 20.0:
+        fundamental_score += 25.0
+    if np.isfinite(eps_growth_qoq) and eps_growth_qoq > 0.0:
+        fundamental_score += 25.0
+    if np.isfinite(institutional_sponsorship) and institutional_sponsorship > 0.0:
+        fundamental_score += 25.0
+    fundamental_score = _clamp_0_100(fundamental_score, fallback=0.0)
+
+    tech_w = float(technical_weight) if np.isfinite(technical_weight) else 0.60
+    fund_w = float(fundamental_weight) if np.isfinite(fundamental_weight) else 0.40
+    tech_w = max(0.0, tech_w)
+    fund_w = max(0.0, fund_w)
+    w_sum = tech_w + fund_w
+    if w_sum <= 0.0:
+        tech_w, fund_w = 1.0, 0.0
+    else:
+        tech_w /= w_sum
+        fund_w /= w_sum
+
+    # Aggressive override: if technicals are exceptional, cap fundamentals at 20%.
+    if fundamentals_available and technical_score >= 90.0:
+        fund_w = min(fund_w, 0.20)
+        tech_w = max(1.0 - fund_w, 0.80)
+        w_sum = tech_w + fund_w
+        if w_sum > 0:
+            tech_w /= w_sum
+            fund_w /= w_sum
+
+    if fundamentals_available:
+        composite_score = (tech_w * technical_score) + (fund_w * fundamental_score)
+    else:
+        # If historical fundamentals are missing, allow a proxy-fundamental override
+        # for true episodic pivots: >=4% gap with >=2.5x 50-day relative volume.
+        proxy_fundamental_signal = (
+            np.isfinite(gap_pct)
+            and float(gap_pct) >= 4.0
+            and np.isfinite(volume)
+            and np.isfinite(vol_ma50)
+            and float(vol_ma50) > 0.0
+            and float(volume) >= (2.5 * float(vol_ma50))
+        )
+        if proxy_fundamental_signal:
+            fundamental_score = 100.0
+            composite_score = (tech_w * technical_score) + (fund_w * fundamental_score)
+        else:
+            # Ghost-fundamentals fallback:
+            # if fundamentals are entirely missing, scale technicals to full-score range.
+            # Example: with default 60/40 split, technical 60 maps to composite 100.
+            if tech_w > 0:
+                composite_score = technical_score / tech_w
+            else:
+                composite_score = technical_score
+
+    composite_score = _clamp_0_100(composite_score, fallback=0.0)
+    if return_components:
+        return composite_score, technical_score, fundamental_score, fundamentals_available
+    return composite_score
 
 
 def calculate_backtest_quality_score(
@@ -504,6 +1065,17 @@ def calculate_backtest_quality_score(
         bb_width = float(row.get("bb_width", np.nan))
         close_px = float(row.get("close", 0.0) or 0.0)
         high_52w = float(row.get("high_52w", np.nan))
+        rs_rating = float(row.get("rs_rating", row.get("rsrating", np.nan)))
+        vcp_tightness = float(row.get("vcp_tightness", np.nan))
+        eps_growth_qoq = float(row.get("eps_growth_qoq", np.nan))
+        eps_growth_yoy = float(row.get("eps_growth_yoy", np.nan))
+        sales_growth_yoy = float(row.get("sales_growth_yoy", np.nan))
+        institutional_sponsorship = float(row.get("institutional_sponsorship", np.nan))
+        gap_pct = float(row.get("gap_pct", np.nan))
+        volume_val = float(row.get("volume", np.nan))
+        vol_ma50_val = float(row.get("vol_ma50", np.nan))
+        technical_weight = float(row.get("technical_weight", kwargs.get("technical_weight", 0.60)))
+        fundamental_weight = float(row.get("fundamental_weight", kwargs.get("fundamental_weight", 0.40)))
         natr = row.get("natr")
         if natr is None or not np.isfinite(natr):
             atr14 = float(row.get("atr14", 0.0) or 0.0)
@@ -515,6 +1087,17 @@ def calculate_backtest_quality_score(
         bb_width = float(kwargs.get("bb_width", np.nan))
         close_px = float(kwargs.get("close", 0.0) or 0.0)
         high_52w = float(kwargs.get("high_52w", np.nan))
+        rs_rating = float(kwargs.get("rs_rating", np.nan))
+        vcp_tightness = float(kwargs.get("vcp_tightness", np.nan))
+        eps_growth_qoq = float(kwargs.get("eps_growth_qoq", np.nan))
+        eps_growth_yoy = float(kwargs.get("eps_growth_yoy", np.nan))
+        sales_growth_yoy = float(kwargs.get("sales_growth_yoy", np.nan))
+        institutional_sponsorship = float(kwargs.get("institutional_sponsorship", np.nan))
+        gap_pct = float(kwargs.get("gap_pct", np.nan))
+        volume_val = float(kwargs.get("volume", np.nan))
+        vol_ma50_val = float(kwargs.get("vol_ma50", np.nan))
+        technical_weight = float(kwargs.get("technical_weight", 0.60))
+        fundamental_weight = float(kwargs.get("fundamental_weight", 0.40))
         natr = kwargs.get("natr")
         if natr is None or not np.isfinite(natr):
             atr14 = float(kwargs.get("atr14", 0.0) or 0.0)
@@ -522,7 +1105,25 @@ def calculate_backtest_quality_score(
         else:
             natr = float(natr)
 
-    return _score_row_dual_core(rsi14, bb_width, natr, close_px, high_52w, merged)
+    return _score_row_dual_core(
+        rsi14,
+        bb_width,
+        natr,
+        close_px,
+        high_52w,
+        merged,
+        rs_rating=rs_rating,
+        vcp_tightness=vcp_tightness,
+        eps_growth_qoq=eps_growth_qoq,
+        eps_growth_yoy=eps_growth_yoy,
+        sales_growth_yoy=sales_growth_yoy,
+        institutional_sponsorship=institutional_sponsorship,
+        gap_pct=gap_pct,
+        volume=volume_val,
+        vol_ma50=vol_ma50_val,
+        technical_weight=technical_weight,
+        fundamental_weight=fundamental_weight,
+    )
 
 
 @dataclass(slots=True)
@@ -602,6 +1203,54 @@ def prepare_backtest_data(
     if symbol_universe:
         universe_set = set(symbol_universe)
         symbols = [s for s in symbols if s in universe_set]
+
+    requested_symbols = symbols if symbols else list(symbol_universe or [])
+    requested_upper = {str(s).upper() for s in requested_symbols if str(s).strip()}
+
+    # Speed hack: reuse cached indicator computations if present
+    disable_indicator_cache = os.environ.get("APEX_DISABLE_INDICATOR_CACHE", "").strip() in ("1", "true", "True", "yes", "YES")
+    min_cache_coverage = float(os.environ.get("APEX_MIN_CACHE_COVERAGE", "0.60") or "0.60")
+    if (not disable_indicator_cache) and os.path.exists(_INDICATOR_CACHE_PATH):
+        try:
+            with open(_INDICATOR_CACHE_PATH, "rb") as f:
+                cached = pickle.load(f)
+            prepared_cached: Optional[PreparedBacktestData] = None
+            if isinstance(cached, PreparedBacktestData):
+                prepared_cached = cached
+            elif isinstance(cached, dict) and isinstance(cached.get("prepared"), PreparedBacktestData):
+                prepared_cached = cached["prepared"]
+            if prepared_cached is not None:
+                if requested_upper:
+                    filtered_enriched: Dict[str, _SymbolArrays] = {}
+                    for sym, sym_data in prepared_cached.enriched.items():
+                        if str(sym).upper() in requested_upper:
+                            filtered_enriched[sym] = sym_data
+                    if filtered_enriched:
+                        prepared_cached = PreparedBacktestData(
+                            enriched=filtered_enriched,
+                            all_dates=prepared_cached.all_dates,
+                        )
+                    else:
+                        prepared_cached = None
+                if prepared_cached is not None and requested_upper and len(requested_upper) >= 50:
+                    coverage = len(prepared_cached.enriched) / float(len(requested_upper))
+                    if coverage < min_cache_coverage:
+                        prepared_cached = None
+                if prepared_cached is None:
+                    raise ValueError("Cached prepared data does not cover requested symbols.")
+                if (len(prepared_cached.enriched) < 50) or _prepared_needs_rs_refresh(prepared_cached):
+                    inject_market_rs_rank(prepared_cached.enriched, prepared_cached.all_dates)
+                    for sym_data in prepared_cached.enriched.values():
+                        try:
+                            sym_data.df["rs_rating"] = sym_data.rsrating
+                            sym_data.df["momentum_rank"] = sym_data.momrank
+                        except Exception:
+                            continue
+                if not _prepared_has_fundamentals(prepared_cached):
+                    _inject_fundamentals_into_enriched(prepared_cached.enriched, requested_symbols)
+                return prepared_cached
+        except Exception:
+            pass
 
     vix_df = global_data.get("VIX") if global_data else None
     spy_df = global_data.get("SPY") if global_data else None
@@ -747,7 +1396,19 @@ def prepare_backtest_data(
         except Exception:
             sym_data.df["sector_rs"] = 50.0
 
-    return PreparedBacktestData(enriched=enriched, all_dates=all_dates)
+    # Inject quarterly fundamentals and align to daily bars by forward-fill only.
+    _inject_fundamentals_into_enriched(enriched)
+
+    prepared = PreparedBacktestData(enriched=enriched, all_dates=all_dates)
+    if not disable_indicator_cache:
+        try:
+            os.makedirs(os.path.dirname(_INDICATOR_CACHE_PATH), exist_ok=True)
+            with open(_INDICATOR_CACHE_PATH, "wb") as f:
+                pickle.dump(prepared, f, protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception:
+            pass
+
+    return prepared
 
 
 def _legacy_run_backtest(
@@ -850,12 +1511,19 @@ def _legacy_run_backtest(
     if not enriched:
         return _empty_result(strategy_label, float(start_cash), strategies[0].params if strategies else {})
 
+    start_ts = pd.Timestamp(start_date) if start_date else None
+    end_ts = pd.Timestamp(end_date) if end_date else None
+    start_np = start_ts.to_datetime64() if start_ts is not None else None
+    end_np = end_ts.to_datetime64() if end_ts is not None else None
+
     debug_counts = {
         "n_universe": np.full(len(all_dates), len(enriched), dtype=np.int32),
         "n_trend": np.zeros(len(all_dates), dtype=np.int32),
         "n_rs": np.zeros(len(all_dates), dtype=np.int32),
         "n_vcp": np.zeros(len(all_dates), dtype=np.int32),
     }
+    scoring_log_count = 0
+    regime_skip_log_count = 0
 
     candidates_by_day: List[List[_Candidate]] = [[] for _ in range(len(all_dates))]
 
@@ -870,6 +1538,7 @@ def _legacy_run_backtest(
     global_spy_close = np.zeros(len(all_dates), dtype=np.float64)
     global_spy_sma200 = np.zeros(len(all_dates), dtype=np.float64)
     global_spy_sma150 = np.zeros(len(all_dates), dtype=np.float64)
+    market_regime_by_day = np.full(len(all_dates), "RED", dtype=object)
 
     if global_data and "SPY" in global_data:
         spy_df_raw = global_data["SPY"]
@@ -884,6 +1553,12 @@ def _legacy_run_backtest(
             global_spy_close = spy_aligned["close"].fillna(0).to_numpy(dtype=np.float64)
             global_spy_sma200 = spy_aligned["sma200"].fillna(0).to_numpy(dtype=np.float64)
             global_spy_sma150 = spy_aligned["sma150"].fillna(0).to_numpy(dtype=np.float64)
+            regime_series = compute_regime_series(spy_df_raw)
+            _ = analyze_market_health(spy_df_raw)
+            if not regime_series.empty:
+                all_dates_idx = pd.to_datetime(all_dates)
+                regime_aligned = regime_series.reindex(all_dates_idx, method="ffill").fillna("RED")
+                market_regime_by_day = regime_aligned.astype(str).str.upper().to_numpy(dtype=object)
 
 
     # --- MAIN LOOP (Optimized) ---
@@ -920,6 +1595,11 @@ def _legacy_run_backtest(
 
                 day_idx = sd.gidx[curr_i]
                 if day_idx < 1 or day_idx >= len(all_dates):
+                    continue
+                day_dt = all_dates[day_idx]
+                if start_np is not None and day_dt < start_np:
+                    continue
+                if end_np is not None and day_dt > end_np:
                     continue
 
                 debug_counts["n_trend"][day_idx] += 1
@@ -984,7 +1664,8 @@ def _legacy_run_backtest(
 
                     # Optional volume gate (signal day)
                     vol_mult = params.get("vol_mult")
-                    if vol_mult is not None:
+                    use_global_vol_gate = bool(params.get("use_global_volume_gate", False))
+                    if use_global_vol_gate and vol_mult is not None:
                         vol_today = float(sd.volume[prev_i])
                         vol_avg = float(sd.volma50[prev_i])
                         if vol_today < (vol_avg * float(vol_mult)):
@@ -1101,10 +1782,83 @@ def _legacy_run_backtest(
                             mom_val = 0.0
                         score = (0.7 * rs_val) + (0.3 * mom_val)
                     else:
-                        score = _score_row_dual_core(
-                            sd.rsi14[prev_i], sd.bbwidth[prev_i], sd.natr[prev_i],
-                            sd.close[prev_i], sd.high52w[prev_i], {"rsi_factor": 1.0}
+                        tech_weight = params.get(
+                            "technical_weight",
+                            params.get("technical_score_weight", np.nan),
                         )
+                        fund_weight = params.get(
+                            "fundamental_weight",
+                            params.get("fundamental_score_weight", np.nan),
+                        )
+                        try:
+                            tech_weight = float(tech_weight)
+                        except Exception:
+                            tech_weight = np.nan
+                        try:
+                            fund_weight = float(fund_weight)
+                        except Exception:
+                            fund_weight = np.nan
+
+                        if np.isfinite(fund_weight) and not np.isfinite(tech_weight):
+                            tech_weight = 1.0 - fund_weight
+                        if np.isfinite(tech_weight) and not np.isfinite(fund_weight):
+                            fund_weight = 1.0 - tech_weight
+                        if not np.isfinite(tech_weight):
+                            tech_weight = 0.60
+                        if not np.isfinite(fund_weight):
+                            fund_weight = 0.40
+
+                        score, tech_score, fund_score, has_fund = _score_row_dual_core(
+                            sd.rsi14[prev_i], sd.bbwidth[prev_i], sd.natr[prev_i],
+                            sd.close[prev_i], sd.high52w[prev_i], {"rsi_factor": 1.0},
+                            rs_rating=sd.rsrating[prev_i],
+                            vcp_tightness=float(row.get("vcp_tightness", np.nan)),
+                            eps_growth_qoq=float(row.get("eps_growth_qoq", np.nan)),
+                            eps_growth_yoy=float(row.get("eps_growth_yoy", np.nan)),
+                            sales_growth_yoy=float(row.get("sales_growth_yoy", np.nan)),
+                            institutional_sponsorship=float(row.get("institutional_sponsorship", np.nan)),
+                            gap_pct=float(row.get("gap_pct", np.nan)),
+                            volume=float(row.get("volume", np.nan)),
+                            vol_ma50=float(row.get("vol_ma50", np.nan)),
+                            technical_weight=tech_weight,
+                            fundamental_weight=fund_weight,
+                            return_components=True,
+                        )
+                        if (_DEBUG_FUND_SCORING or bool(params.get("log_scoring", False))) and scoring_log_count < 50:
+                            date_str = str(all_dates[entry_day_idx])[:10] if 0 <= entry_day_idx < len(all_dates) else "N/A"
+                            gap_pct = float(row.get("gap_pct", np.nan))
+                            row_volume = float(row.get("volume", np.nan))
+                            row_vol_ma50 = float(row.get("vol_ma50", np.nan))
+                            proxy_fundamental = (
+                                (not has_fund)
+                                and np.isfinite(gap_pct)
+                                and gap_pct >= 4.0
+                                and np.isfinite(row_volume)
+                                and np.isfinite(row_vol_ma50)
+                                and row_vol_ma50 > 0.0
+                                and row_volume >= (2.5 * row_vol_ma50)
+                            )
+                            if proxy_fundamental:
+                                mode = "PROXY_FUND_100"
+                            elif has_fund and tech_score >= 90.0:
+                                mode = "AGGR_80_20"
+                            elif has_fund:
+                                mode = "DUAL_CORE"
+                            else:
+                                mode = "TECH_ONLY"
+                            print(
+                                f"[{date_str}] {sym} Fundamental Score={fund_score:.1f} | "
+                                f"Technical Score={tech_score:.1f} | Composite={score:.1f} | Mode={mode}"
+                            )
+                            scoring_log_count += 1
+
+                    min_entry_score = params.get("min_entry_score", 0.0)
+                    try:
+                        min_entry_score = float(min_entry_score)
+                    except Exception:
+                        min_entry_score = 0.0
+                    if np.isfinite(min_entry_score) and min_entry_score > 0 and score < min_entry_score:
+                        continue
 
                     if entry_day_idx < 0 or entry_day_idx >= len(all_dates):
                         continue
@@ -1129,9 +1883,6 @@ def _legacy_run_backtest(
     portfolio = {s.name: {"cash": float(start_cash), "positions": {}} for s in strategies}
     final_results = []
 
-    start_ts = pd.Timestamp(start_date) if start_date else None
-    end_ts = pd.Timestamp(end_date) if end_date else None
-
     for strat in strategies:
         port = portfolio[strat.name]
         cash = port["cash"]
@@ -1144,8 +1895,6 @@ def _legacy_run_backtest(
         max_pos = int(params.get("max_positions", 10) or 10)
         risk_per_trade = float(params.get("risk_per_trade", 0.01) or 0.01)
         max_pos_size_pct = float(params.get("max_pos_size_pct", 0.30) or 0.30)
-        partial_profit_day = int(params.get("partial_profit_day", 4) or 4)
-        partial_profit_r = float(params.get("partial_profit_r", 2.0))
 
         for day_idx, candidates in enumerate(candidates_by_day):
             # AUDIT FIX: Respect Start/End dates
@@ -1165,6 +1914,11 @@ def _legacy_run_backtest(
             if exposure_mode in {"hybrid", "scaled", "exposure"} and not market_is_bull:
                 bear_max = int(params.get("bear_max_positions", 2) or 2)
                 max_pos_today = max(1, min(max_pos, bear_max))
+
+            traffic_light_enabled = bool(params.get("use_market_regime_traffic_light", True))
+            regime_state = str(market_regime_by_day[day_idx]).upper() if day_idx < len(market_regime_by_day) else "RED"
+            regime_block_new_entries = traffic_light_enabled and regime_state == "RED"
+            regime_risk_scalar = 0.5 if (traffic_light_enabled and regime_state == "YELLOW") else 1.0
 
             stop_loss_atr_bull = float(params.get("stop_loss_atr_bull", params.get("stop_loss_atr", 3.0)) or 3.0)
             stop_loss_atr_bear = float(params.get("stop_loss_atr_bear", params.get("bear_stop_loss_atr", 0.5)) or 0.5)
@@ -1277,183 +2031,19 @@ def _legacy_run_backtest(
                                 should_exit = True
                                 exit_px = float(sym_data.open[loc]) # Exit at Open
                 if not should_exit:
-                    # TIME STOP: Dynamic patience window
-                    days_held = day_idx - int(pos.get("entry_day_idx", day_idx))
-                    time_stop_days = int(params.get("time_stop_days", params.get("time_stop", 7)) or 7)
-                    if days_held >= time_stop_days:
-                        profit_pct = (current_close - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0.0
-                        if profit_pct < 0.005:
-                            should_exit = True
-                            exit_px = current_close
-                            reason = "TIME_STOP"
-                if not should_exit:
-                    # --- PARTIAL PROFIT LOGIC (PATCHED) ---
-                    # 1. Extract Flags (Default to False for safety)
-                    pp_mode = str(params.get("partial_profit_mode", "")).lower()
-                    enable_pp = bool(params.get("enable_partial_profit", False))
-                    if pp_mode in {"time", "days"}:
-                        enable_pp = True
-                    if pp_mode in {"none", "off"}:
-                        enable_pp = False
-
-                    move_be = bool(params.get("move_stop_to_be", True))
-                    breakeven_at = float(params.get("breakeven_at_pct", 0.0) or 0.0)
-                    pp_day = int(params.get("partial_profit_after_days", params.get("partial_profit_day", 0)) or 0)
-                    pp_r = float(params.get("partial_profit_r", 2.0))
-                    pp_frac = float(params.get("partial_profit_fraction", 0.5))
-                    pp_pct = float(params.get("partial_profit_pct", 0.0) or 0.0)
-                    
-                    # 2. Gate Execution
-                    risk_per_share = float(pos.get("initial_risk", 0.0) or 0.0)
-                    days_held = day_idx - int(pos.get("entry_day_idx", day_idx))
-                    
-                    if enable_pp and risk_per_share > 0 and not pos.get("partial_taken", False):
-                        # Time Gate: Must hold for at least X days
-                        if days_held >= pp_day:
-                            if pp_mode in {"time", "days"}:
-                                if current_close <= pos["entry_price"]:
-                                    pass
-                                else:
-                                    shares_to_sell = max(1, int(pos["shares"] * pp_frac))
-                                    shares_to_sell = min(shares_to_sell, pos["shares"])
-
-                                    proceeds = shares_to_sell * current_close
-                                    cash += proceeds
-                                    pos["shares"] -= shares_to_sell
-
-                                    trades_list.append({
-                                        "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
-                                        "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
-                                        "Return %": (current_close/pos["entry_price"] - 1)*100,
-                                        "Reason": f"PARTIAL_TIME_{pp_day}D"
-                                    })
-
-                                    if move_be:
-                                        profit_pct = (current_close - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0.0
-                                        if breakeven_at <= 0 or profit_pct >= breakeven_at:
-                                            pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
-
-                                    pos["partial_taken"] = True
-                            else:
-                                if pp_pct > 0 and pp_mode in {"pct", "percent", "percentage"}:
-                                    target_px = pos["entry_price"] * (1.0 + pp_pct)
-                                    if current_close >= target_px:
-                                        shares_to_sell = max(1, int(pos["shares"] * pp_frac))
-                                        shares_to_sell = min(shares_to_sell, pos["shares"])
-
-                                        proceeds = shares_to_sell * current_close
-                                        cash += proceeds
-                                        pos["shares"] -= shares_to_sell
-
-                                        trades_list.append({
-                                            "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
-                                            "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
-                                            "Return %": (current_close/pos["entry_price"] - 1)*100,
-                                            "Reason": f"PARTIAL_PCT_{pp_pct:.2f}"
-                                        })
-
-                                        if move_be:
-                                            profit_pct = (current_close - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0.0
-                                            if breakeven_at <= 0 or profit_pct >= breakeven_at:
-                                                pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
-
-                                        pos["partial_taken"] = True
-                                else:
-                                    target_px = pos["entry_price"] + (pp_r * risk_per_share)
-
-                                # Price Trigger
-                                    if current_close >= target_px:
-                                        # Execute Sell
-                                        shares_to_sell = max(1, int(pos["shares"] * pp_frac))
-                                        shares_to_sell = min(shares_to_sell, pos["shares"])
-                                        
-                                        proceeds = shares_to_sell * current_close
-                                        cash += proceeds
-                                        pos["shares"] -= shares_to_sell
-                                    
-                                        # Log
-                                        trades_list.append({
-                                            "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
-                                            "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
-                                            "Return %": (current_close/pos["entry_price"] - 1)*100,
-                                            "Reason": f"PARTIAL_PROFIT_{pp_r}R"
-                                        })
-                                    
-                                        # 3. Optional: Move Stop to Breakeven
-                                        if move_be:
-                                            profit_pct = (current_close - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0.0
-                                            if breakeven_at <= 0 or profit_pct >= breakeven_at:
-                                                pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
-                                            
-                                        pos["partial_taken"] = True
-
-                if not should_exit:
-                    # --- SPLIT EXIT LOGIC (Fast SMA partial, Slow SMA full) ---
-                    split_exit = bool(params.get("split_exit", False) or params.get("exit_sma_fast") or params.get("exit_sma_slow"))
-                    if split_exit and not pos.get("partial_taken", False):
-                        fast_sma = params.get("exit_sma_fast") or params.get("exit_ma") or "sma20"
-                        fast_val = float(sym_data.df.iloc[loc].get(fast_sma, 0.0))
-                        if fast_val > 0 and current_close < fast_val:
-                            frac = float(params.get("partial_profit_fraction", 0.5) or 0.5)
-                            shares_to_sell = max(1, int(pos["shares"] * frac))
-                            shares_to_sell = min(shares_to_sell, pos["shares"])
-                            proceeds = shares_to_sell * current_close
-                            cash += proceeds
-                            pos["shares"] -= shares_to_sell
-                            trades_list.append({
-                                "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_close,
-                                "PnL": proceeds - (shares_to_sell * pos["entry_price"]),
-                                "Return %": (current_close/pos["entry_price"] - 1)*100,
-                                "Reason": f"PARTIAL_{fast_sma.upper()}"
-                            })
-                            # Optional breakeven stop after meaningful profit
-                            move_be = bool(params.get("move_stop_to_be", True))
-                            breakeven_at = float(params.get("breakeven_at_pct", 0.0) or 0.0)
-                            if move_be:
-                                profit_pct = (current_close - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] > 0 else 0.0
-                                if breakeven_at <= 0 or profit_pct >= breakeven_at:
-                                    pos["stop_price"] = max(pos["stop_price"], pos["entry_price"])
-                            pos["partial_taken"] = True
-
-                if not should_exit:
-                    # AUDIT FIX: Use the Strategy's sophisticated exit logic (Trailing Stops, SMA Breaks)
-                    # AUDIT FIX: Translate Global Day Index to Local Data Index to prevent IPO crashes
-                    # pos["entry_day_idx"] is Global (e.g., 2000), but this stock might only have 500 rows.
-                    entry_loc_search = np.searchsorted(sym_data.gidx, [pos["entry_day_idx"]])
-                    entry_loc = int(entry_loc_search[0]) if len(entry_loc_search) > 0 else 0
-
-                    # Safety Clamp: Ensure we don't access out of bounds if data is misaligned
-                    if entry_loc >= len(sym_data.close):
-                        entry_loc = 0
-
-                    exit_params = params
-                    if params.get("exit_sma_slow") and not params.get("exit_ma_after_partial"):
-                        exit_params = dict(params)
-                        exit_params["exit_ma_after_partial"] = params.get("exit_sma_slow")
-
-                    strat_exit, new_stop, target_px = _generic_exit_decision(
-                        exit_params,
-                        sym_data,
-                        loc,
-                        entry_loc,
-                        pos["entry_price"],
-                        pos["stop_price"],
-                        partial_taken=pos.get("partial_taken", False)
+                    should_exit, exit_px, reason, cash = _evaluate_exit_state_machine(
+                        sym=sym,
+                        pos=pos,
+                        params=params,
+                        sym_data=sym_data,
+                        loc=loc,
+                        day_idx=day_idx,
+                        current_open=current_open,
+                        current_low=current_low,
+                        current_close=current_close,
+                        cash=cash,
+                        trades_list=trades_list,
                     )
-
-                    if new_stop is not None and new_stop > pos["stop_price"]:
-                        if params.get("use_trailing_stop", True):
-                            pos["stop_price"] = new_stop
-
-                    if strat_exit:
-                        should_exit = True
-                        if target_px is not None:
-                            exit_px = target_px
-                        elif current_low < pos["stop_price"]:
-                            exit_px = min(float(sym_data.open[loc]), pos["stop_price"])
-                        else:
-                            exit_px = current_close
-                        reason = "STRATEGY_EXIT"
 
                 if not should_exit:
                     # Schedule pyramiding for next session (after-close decision)
@@ -1516,6 +2106,16 @@ def _legacy_run_backtest(
                 day_candidates = [c for c in candidates if c.strategy_name == strat.name]
             # -----------------------------------------------------------
             day_candidates.sort(key=lambda x: x.score, reverse=True)
+            log_regime_skips = bool(params.get("log_regime_skips", True))
+            if log_regime_skips and regime_block_new_entries and regime_skip_log_count < 80:
+                date_str = str(all_dates[day_idx])[:10] if 0 <= day_idx < len(all_dates) else "N/A"
+                print(
+                    f"[{date_str}] Skipped trade due to Market Regime: RED "
+                    f"(candidates={len(day_candidates)})"
+                )
+                regime_skip_log_count += 1
+            if regime_block_new_entries:
+                day_candidates = []
 
             for cand in day_candidates:
                 if len(positions) >= max_pos_today: break
@@ -1539,7 +2139,22 @@ def _legacy_run_backtest(
                 elif signal_mode in {"close", "moc"}:
                     filled, fill_px = True, close_px
                 else:
-                    filled, fill_px = compute_stop_fill(open_px, high_px, cand.entry_px, cand.stop_limit_pct)
+                    limit_px = float(cand.entry_px) * 1.005
+                    try:
+                        sl_pct = float(cand.stop_limit_pct)
+                        if np.isfinite(sl_pct) and sl_pct > 0:
+                            # If a stop-limit percentage is configured, honor it.
+                            # The 0.5% cap is only the default fallback when no stop-limit is set.
+                            limit_px = float(cand.entry_px) * (1.0 + sl_pct)
+                    except Exception:
+                        pass
+                    filled, fill_px = compute_stop_fill(
+                        open_px,
+                        high_px,
+                        cand.entry_px,
+                        cand.stop_limit_pct,
+                        limit_price=limit_px,
+                    )
                 if not filled:
                     continue
 
@@ -1569,7 +2184,7 @@ def _legacy_run_backtest(
                 else:
                     size_scalar = 1.0
 
-                risk_amt = mtm_equity * risk_per_trade * size_scalar
+                risk_amt = mtm_equity * risk_per_trade * size_scalar * regime_risk_scalar
                 dist = max(entry_px - stop_px, entry_px * 0.005)
                 shares = int(risk_amt / dist)
                 

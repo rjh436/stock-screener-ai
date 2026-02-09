@@ -1,11 +1,17 @@
-from typing import Dict, Optional
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 import math
+
+import numpy as np
 import pandas as pd
+from scipy.signal import argrelextrema
 
 from .base import BaseStrategy
 
 
-def _as_float(value, default=0.0) -> float:
+def _as_float(value: Any, default: float = 0.0) -> float:
     try:
         val = float(value)
     except Exception:
@@ -15,178 +21,274 @@ def _as_float(value, default=0.0) -> float:
     return val
 
 
+def _first_finite(values: Sequence[Any], default: float = float("nan")) -> float:
+    for value in values:
+        out = _as_float(value, float("nan"))
+        if math.isfinite(out):
+            return out
+    return default
+
+
+def _as_percent_threshold(value: Any, floor_pct: float) -> float:
+    out = _as_float(value, floor_pct)
+    if out <= 1.0:
+        out *= 100.0
+    return max(float(floor_pct), float(out))
+
+
+@dataclass(frozen=True)
+class VCPDetectionResult:
+    pivot_price: float
+    price_contraction_1: float
+    price_contraction_2: float
+    volume_contraction_1: float
+    volume_contraction_2: float
+    breakout_volume_multiple: float
+
+
+def detect_vcp_breakout(
+    df: pd.DataFrame,
+    i: int,
+    *,
+    lookback: int = 80,
+    extrema_order: int = 3,
+    min_contractions: int = 2,
+    breakout_volume_mult: float = 1.5,
+    breakout_buffer: float = 0.0,
+) -> Optional[VCPDetectionResult]:
+    """
+    Detect a VCP breakout using local extrema from scipy.signal.argrelextrema.
+
+    Rules:
+    - Identify local highs/lows in a rolling window.
+    - Require at least two H->L contraction legs.
+    - Require contraction_1 > contraction_2 (tightening).
+    - Require avg_volume_leg_1 > avg_volume_leg_2 (volume contraction).
+    - Trigger only when close breaks above last pivot high on volume >= 1.5x MA50.
+    """
+    if i <= 0 or lookback < 20:
+        return None
+
+    start = max(0, i - lookback + 1)
+    window = df.iloc[start : i + 1]
+    if len(window) < max(25, (extrema_order * 2) + 8):
+        return None
+
+    highs = pd.to_numeric(window.get("high"), errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    lows = pd.to_numeric(window.get("low"), errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    closes = pd.to_numeric(window.get("close"), errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    volumes = pd.to_numeric(window.get("volume"), errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    vol_ma50 = pd.to_numeric(window.get("vol_ma50"), errors="coerce").to_numpy(dtype=np.float64, copy=False)
+
+    if not (np.isfinite(closes[-1]) and closes[-1] > 0):
+        return None
+
+    high_idx = argrelextrema(highs, np.greater_equal, order=extrema_order)[0]
+    low_idx = argrelextrema(lows, np.less_equal, order=extrema_order)[0]
+    if high_idx.size < min_contractions or low_idx.size < min_contractions:
+        return None
+
+    # Build pivot stream and compress consecutive same-type pivots.
+    pivots: List[Tuple[int, str, float]] = []
+    for idx in high_idx.tolist():
+        if np.isfinite(highs[idx]):
+            pivots.append((idx, "H", float(highs[idx])))
+    for idx in low_idx.tolist():
+        if np.isfinite(lows[idx]):
+            pivots.append((idx, "L", float(lows[idx])))
+
+    pivots.sort(key=lambda x: x[0])
+    if len(pivots) < (min_contractions * 2):
+        return None
+
+    compact: List[Tuple[int, str, float]] = []
+    for pivot in pivots:
+        if not compact:
+            compact.append(pivot)
+            continue
+        last = compact[-1]
+        if pivot[1] != last[1]:
+            compact.append(pivot)
+            continue
+        # Keep stronger extreme for same-type adjacency.
+        if pivot[1] == "H" and pivot[2] >= last[2]:
+            compact[-1] = pivot
+        elif pivot[1] == "L" and pivot[2] <= last[2]:
+            compact[-1] = pivot
+
+    # Extract H->L contraction legs.
+    legs: List[Tuple[float, float]] = []  # (price_contraction_pct, avg_volume)
+    for left, right in zip(compact, compact[1:]):
+        if left[1] != "H" or right[1] != "L":
+            continue
+        hi_idx0, _, hi_px = left
+        lo_idx0, _, lo_px = right
+        if not (hi_px > 0 and lo_px > 0 and lo_px < hi_px):
+            continue
+        contraction = ((hi_px - lo_px) / hi_px) * 100.0
+        if contraction <= 0 or not math.isfinite(contraction):
+            continue
+        seg = volumes[hi_idx0 : lo_idx0 + 1]
+        avg_vol = float(np.nanmean(seg)) if seg.size > 0 else float("nan")
+        legs.append((contraction, avg_vol))
+
+    if len(legs) < min_contractions:
+        return None
+
+    c1, v1 = legs[-2]
+    c2, v2 = legs[-1]
+
+    # Tightening contraction profile (C1 > C2).
+    if not (c1 > c2 > 0):
+        return None
+
+    # Volume contraction profile (V1 > V2).
+    if math.isfinite(v1) and math.isfinite(v2) and not (v1 > v2):
+        return None
+
+    pivot_candidates = [p for p in compact if p[1] == "H" and p[0] < (len(window) - 1)]
+    if not pivot_candidates:
+        return None
+    pivot_price = float(pivot_candidates[-1][2])
+
+    if pivot_price <= 0:
+        return None
+
+    breakout_level = pivot_price * (1.0 + max(0.0, breakout_buffer))
+    if closes[-1] <= breakout_level:
+        return None
+
+    vol_now = float(volumes[-1]) if np.isfinite(volumes[-1]) else 0.0
+    ma50_now = float(vol_ma50[-1]) if np.isfinite(vol_ma50[-1]) else 0.0
+    volume_multiple = (vol_now / ma50_now) if ma50_now > 0 else 0.0
+    if ma50_now > 0 and volume_multiple < breakout_volume_mult:
+        return None
+
+    return VCPDetectionResult(
+        pivot_price=pivot_price,
+        price_contraction_1=float(c1),
+        price_contraction_2=float(c2),
+        volume_contraction_1=float(v1) if math.isfinite(v1) else float("nan"),
+        volume_contraction_2=float(v2) if math.isfinite(v2) else float("nan"),
+        breakout_volume_multiple=volume_multiple,
+    )
+
+
 class SuperperformanceStrategy(BaseStrategy):
     """
-    Superperformance Strategy
-    - Minervini Trend Filter (Stage 2)
-    - Qullamaggie Breakout + Episodic Pivot triggers
-    - Hard stop: Low of breakout day or max -5%
+    Gate + Archetype Superperformance model.
+
+    Gate (must pass):
+    - Trend template: close > sma10 > sma20 > sma50 > sma150 > sma200
+    - RS percentile gate
+    - Fundamental gate with High-Tight-Flag override for missing fundamentals
+
+    Archetypes (union logic):
+    - A: VCP breakout
+    - B: Episodic Pivot (EP)
     """
 
     def __init__(self, params: Dict):
         self.params = params or {}
         self._name = self.params.get("name", "Superperformance")
+        self._last_reject_reason = ""
         super().__init__(self.params)
 
     @property
     def name(self) -> str:
         return self._name
 
-    def entry(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
-        warmup = int(self.params.get("warmup_bars", 200))
-        if i < warmup:
+    @property
+    def last_reject_reason(self) -> str:
+        return self._last_reject_reason
+
+    def _reject(self, reason: str) -> Optional[Dict]:
+        self._last_reject_reason = reason
+        return None
+
+    def _resolve_rs_percentile(self, row: pd.Series) -> float:
+        return _first_finite(
+            [
+                row.get("rs_percentile"),
+                row.get("relative_strength_percentile"),
+                row.get("momentum_rank"),
+                row.get("rs_rating"),
+            ],
+            default=0.0,
+        )
+
+    def _resolve_price_action_percentile(self, row: pd.Series, rs_percentile: float) -> float:
+        # If explicit price-action percentile exists, prefer it.
+        explicit = _first_finite(
+            [
+                row.get("price_action_percentile"),
+                row.get("pa_percentile"),
+                row.get("breakout_percentile"),
+            ],
+            default=float("nan"),
+        )
+        if math.isfinite(explicit):
+            return explicit
+
+        # Fallback to cross-sectional momentum proxies.
+        return max(
+            rs_percentile,
+            _first_finite(
+                [
+                    row.get("momentum_rank"),
+                    row.get("rs_rating"),
+                ],
+                default=0.0,
+            ),
+        )
+
+    def _ep_candidate(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
+        if i < 1:
             return None
 
         row = df.iloc[i]
-        close_px = _as_float(row.get("close"), 0.0)
-        if close_px <= 0:
-            return None
+        prev_row = df.iloc[i - 1]
 
-        # OHLCV
+        prev_close = _as_float(prev_row.get("close"), 0.0)
         open_px = _as_float(row.get("open"), 0.0)
         high_px = _as_float(row.get("high"), 0.0)
         low_px = _as_float(row.get("low"), 0.0)
+        close_px = _as_float(row.get("close"), 0.0)
         vol = _as_float(row.get("volume"), 0.0)
-        vol_ma50 = _as_float(row.get("vol_ma50"), vol)
-        # Market cap filter (if available)
-        market_cap_min = float(self.params.get("market_cap_min", 0.0) or 0.0)
-        if market_cap_min > 0:
-            market_cap = _as_float(
-                row.get("market_cap")
-                or row.get("mkt_cap")
-                or row.get("marketcap")
-                or row.get("mktcap"),
-                0.0,
-            )
-            if market_cap > 0 and market_cap < market_cap_min:
-                return None
+        vol_ma50 = _as_float(row.get("vol_ma50"), 0.0)
 
-        # Shared indicators
-        rs_rating = _as_float(row.get("rs_rating"), 0.0)
-        sma50_val = _as_float(row.get("sma50"), 0.0)
-        sma200_val = _as_float(row.get("sma200"), 0.0)
-        sector_rs = _as_float(row.get("sector_rs"), 50.0)
-
-        vcp_rs_min = float(self.params.get("vcp_rs_min", 80.0))
-        vcp_sector_min = float(self.params.get("vcp_sector_min", 50.0))
-        ep_rs_min = float(self.params.get("ep_rs_min", 60.0))
-
-        entry_mode = str(self.params.get("entry_mode", "") or "").lower()
-        if entry_mode not in {"breakout", "ep", "both"}:
-            entry_mode = "both"
-
-        # --- VCP / Trend Trigger ---
-        prior_high = _as_float(
-            row.get("high_20_prev")
-            or row.get("highest10_1")
-            or row.get("prev_high"),
-            0.0,
-        )
-        is_breakout = False
-        if entry_mode in {"breakout", "both"}:
-            base_ok = True
-            if close_px <= sma200_val:
-                base_ok = False
-            if rs_rating < vcp_rs_min:
-                base_ok = False
-            if vcp_sector_min > 0 and sector_rs < vcp_sector_min:
-                base_ok = False
-
-            # VCP structure
-            base_depth_pct = _as_float(row.get("range_pct_20"), float("nan"))
-            if not math.isfinite(base_depth_pct):
-                if i >= 19:
-                    hi = float(df["high"].iloc[i - 19 : i + 1].max())
-                    lo = float(df["low"].iloc[i - 19 : i + 1].min())
-                    if lo > 0:
-                        base_depth_pct = ((hi - lo) / lo) * 100.0
-            rp5 = _as_float(row.get("range_pct_5"), float("nan"))
-            rp10 = _as_float(row.get("range_pct_10"), float("nan"))
-            rp20 = _as_float(row.get("range_pct_20"), float("nan"))
-            rp40 = _as_float(row.get("range_pct_40"), float("nan"))
-            last_contraction = min(rp5, rp10)
-
-            contractions = 0
-            if math.isfinite(rp10) and rp10 <= 20.0:
-                contractions += 1
-            if math.isfinite(rp20) and rp20 <= 25.0:
-                contractions += 1
-            if math.isfinite(rp40) and rp40 <= 30.0:
-                contractions += 1
-
-            if not math.isfinite(last_contraction) or last_contraction >= 10.0:
-                base_ok = False
-            if contractions < 2:
-                base_ok = False
-
-            # Volume dry-up
-            dry_ok = True
-            if i > 0:
-                prev_row = df.iloc[i - 1]
-                vol_prev = _as_float(prev_row.get("volume"), 0.0)
-                vol_ma50_prev = _as_float(prev_row.get("vol_ma50"), 0.0)
-                if vol_ma50_prev > 0 and vol_prev > (vol_ma50_prev * 0.75):
-                    dry_ok = False
-            if not dry_ok:
-                base_ok = False
-
-            if base_ok and prior_high > 0:
-                is_breakout = True
-
-        # --- Episodic Pivot (High Volume Gap) ---
-        is_ep = False
-        if entry_mode in {"ep", "both"} and i >= 1:
-            prev_close = _as_float(df.iloc[i - 1].get("close"), 0.0)
-            if prev_close > 0 and open_px > 0:
-                gap_pct = (open_px - prev_close) / prev_close
-                ep_gap = max(float(self.params.get("ep_gap_pct", 0.06)), 0.06)
-                ep_vol_mult = max(float(self.params.get("ep_vol_mult", 2.0)), 2.0)
-                if (
-                    gap_pct >= ep_gap
-                    and vol_ma50 > 0
-                    and vol >= (vol_ma50 * ep_vol_mult)
-                    and close_px > open_px
-                    and rs_rating >= ep_rs_min
-                ):
-                    day_range = _as_float(row.get("true_range"), 0.0)
-                    if day_range <= 0:
-                        day_range = max(high_px - low_px, 0.0)
-                    tr_ma50 = _as_float(row.get("tr_ma50"), 0.0)
-                    if tr_ma50 > 0 and day_range > (1.25 * tr_ma50):
-                        is_ep = True
-
-        if not (is_breakout or is_ep):
+        if prev_close <= 0 or open_px <= 0 or high_px <= 0 or low_px <= 0 or close_px <= 0:
             return None
 
-        # --- Entry + Risk ---
-        breakout_buffer = float(self.params.get("breakout_buffer", 0.001))
-        if is_breakout:
-            trigger_px = prior_high * (1.0 + breakout_buffer)
-            entry_type = "vcp"
-        elif is_ep:
-            ep_entry_mode = str(self.params.get("ep_entry_mode", "close")).lower()
-            trigger_px = open_px if ep_entry_mode == "open" else close_px
-            entry_type = "ep"
-        else:
-            trigger_px = _as_float(row.get("high"), 0.0)
-            entry_type = "unknown"
-        low_px = _as_float(row.get("low"), 0.0)
-        if trigger_px <= 0 or low_px <= 0:
+        gap_pct = ((open_px - prev_close) / prev_close) * 100.0
+        ep_gap_min = _as_percent_threshold(self.params.get("ep_gap_pct", 8.0), 8.0)
+        ep_vol_mult = max(3.0, float(self.params.get("ep_vol_mult", 3.0) or 3.0))
+        close_near_high_min = float(self.params.get("ep_close_near_high_min", 0.80) or 0.80)
+
+        day_range = high_px - low_px
+        clv = _as_float(row.get("clv"), float("nan"))
+        if not math.isfinite(clv):
+            clv = ((close_px - low_px) / day_range) if day_range > 0 else 0.0
+
+        vol_multiple = (vol / vol_ma50) if vol_ma50 > 0 else 0.0
+        if (
+            gap_pct < ep_gap_min
+            or vol_ma50 <= 0
+            or vol_multiple < ep_vol_mult
+            or clv < close_near_high_min
+        ):
             return None
 
-        max_stop_pct = float(self.params.get("max_stop_pct", 0.05))
-        if entry_type == "ep":
-            stop_px = low_px  # EP: low-of-day stop
-            ep_max_stop_pct = float(self.params.get("ep_max_stop_pct", 0.12))
-            if trigger_px > 0:
-                stop_width = (trigger_px - stop_px) / trigger_px
-                if stop_width > ep_max_stop_pct:
-                    return None
-        else:
-            hard_stop = trigger_px * (1.0 - max_stop_pct)
-            stop_px = max(low_px, hard_stop)
+        ep_entry_mode = str(self.params.get("ep_entry_mode", "close") or "close").lower()
+        trigger_px = open_px if ep_entry_mode == "open" else close_px
+        stop_px = low_px
 
-        if stop_px >= trigger_px:
+        if trigger_px <= 0 or stop_px <= 0 or stop_px >= trigger_px:
+            return None
+
+        ep_max_stop_pct = float(self.params.get("ep_max_stop_pct", 0.15) or 0.15)
+        stop_width = (trigger_px - stop_px) / trigger_px
+        if stop_width > ep_max_stop_pct:
             return None
 
         return {
@@ -194,12 +296,165 @@ class SuperperformanceStrategy(BaseStrategy):
             "stop_price": stop_px,
             "stop_limit_pct": float(self.params.get("stop_limit_pct", 0.02)),
             "stop_loss_type": "low_or_pct",
-            "entry_type": entry_type,
-            "max_stop_pct": float(self.params.get("ep_max_stop_pct", 0.12)) if entry_type == "ep" else None,
-            # Allow EP to enter on the gap day (same-day open)
-            "entry_timing": "same_day_close" if entry_type == "ep" else "next_day",
-            "signal_mode": "close" if entry_type == "ep" else None,
+            "entry_type": "ep",
+            "max_stop_pct": ep_max_stop_pct,
+            "entry_timing": "same_day_open" if ep_entry_mode == "open" else "same_day_close",
+            "signal_mode": "open" if ep_entry_mode == "open" else "close",
+            "signal_strength": float(vol_multiple + (gap_pct / 10.0)),
         }
+
+    def _vcp_candidate(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
+        row = df.iloc[i]
+
+        lookback = int(self.params.get("vcp_lookback_bars", 80) or 80)
+        extrema_order = int(self.params.get("vcp_extrema_order", 3) or 3)
+        vol_mult = float(self.params.get("vcp_breakout_volume_mult", 1.5) or 1.5)
+        breakout_buffer = float(self.params.get("breakout_buffer", 0.001) or 0.001)
+
+        vcp = detect_vcp_breakout(
+            df,
+            i,
+            lookback=lookback,
+            extrema_order=max(1, extrema_order),
+            min_contractions=2,
+            breakout_volume_mult=max(1.0, vol_mult),
+            breakout_buffer=max(0.0, breakout_buffer),
+        )
+        if vcp is None:
+            return None
+
+        trigger_px = float(vcp.pivot_price * (1.0 + max(0.0, breakout_buffer)))
+        low_px = _as_float(row.get("low"), 0.0)
+        max_stop_pct = float(self.params.get("max_stop_pct", 0.06) or 0.06)
+        stop_px = max(low_px, trigger_px * (1.0 - max_stop_pct))
+
+        if trigger_px <= 0 or stop_px <= 0 or stop_px >= trigger_px:
+            return None
+
+        strength = float(
+            vcp.breakout_volume_multiple
+            + (vcp.price_contraction_1 / 10.0)
+            - (vcp.price_contraction_2 / 10.0)
+        )
+
+        return {
+            "trigger_price": trigger_px,
+            "stop_price": stop_px,
+            "stop_limit_pct": float(self.params.get("stop_limit_pct", 0.02)),
+            "stop_loss_type": "low_or_pct",
+            "entry_type": "vcp",
+            "max_stop_pct": max_stop_pct,
+            "entry_timing": "next_day",
+            "signal_strength": strength,
+        }
+
+    def check_setup(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
+        self._last_reject_reason = ""
+
+        warmup = int(self.params.get("warmup_bars", 200) or 200)
+        if i < warmup:
+            return self._reject("warmup")
+
+        row = df.iloc[i]
+        close_px = _as_float(row.get("close"), 0.0)
+        if close_px <= 0:
+            return self._reject("close_invalid")
+
+        # Gate 1: Strict trend template hierarchy.
+        sma10 = _as_float(row.get("sma10"), 0.0)
+        sma20 = _as_float(row.get("sma20"), 0.0)
+        sma50 = _as_float(row.get("sma50"), 0.0)
+        sma150 = _as_float(row.get("sma150"), 0.0)
+        sma200 = _as_float(row.get("sma200"), 0.0)
+
+        if not (close_px > sma10 > sma20 > sma50 > sma150 > sma200):
+            return self._reject(
+                f"trend_gate close={close_px:.2f} sma10={sma10:.2f} sma20={sma20:.2f} "
+                f"sma50={sma50:.2f} sma150={sma150:.2f} sma200={sma200:.2f}"
+            )
+
+        min_price = float(self.params.get("min_price", 2.0) or 2.0)
+        if close_px < min_price:
+            return self._reject(f"min_price close={close_px:.2f} < {min_price:.2f}")
+
+        min_avg_volume = float(self.params.get("min_avg_volume_30", 0.0) or 0.0)
+        vol_ma30 = _as_float(row.get("vol_ma30"), float("nan"))
+        if min_avg_volume > 0 and math.isfinite(vol_ma30) and vol_ma30 < min_avg_volume:
+            return self._reject(f"liquidity vol_ma30={vol_ma30:.0f} < {min_avg_volume:.0f}")
+
+        # Gate 2: Relative strength percentile gate.
+        rs_percentile = self._resolve_rs_percentile(row)
+        rs_gate_min = _as_percent_threshold(
+            self.params.get(
+                "rs_percentile_min",
+                self.params.get("rs_gate_min", 85.0),
+            ),
+            85.0,
+        )
+        if rs_percentile < rs_gate_min:
+            return self._reject(f"rs_gate rs_percentile={rs_percentile:.2f} < {rs_gate_min:.2f}")
+
+        # Gate 3: Fundamental growth gate with IPO/HTF override.
+        eps_yoy = _first_finite(
+            [
+                row.get("eps_growth_yoy"),
+                row.get("eps_yoy_growth_pct"),
+                row.get("eps_yoy"),
+            ],
+            default=float("nan"),
+        )
+        sales_yoy = _first_finite(
+            [
+                row.get("sales_growth_yoy"),
+                row.get("revenue_yoy_growth_pct"),
+                row.get("sales_yoy"),
+            ],
+            default=float("nan"),
+        )
+
+        growth_min = _as_percent_threshold(self.params.get("fundamental_growth_min_pct", 20.0), 20.0)
+        has_fundamental_data = math.isfinite(eps_yoy) or math.isfinite(sales_yoy)
+
+        if has_fundamental_data:
+            eps_ok = math.isfinite(eps_yoy) and eps_yoy >= growth_min
+            sales_ok = math.isfinite(sales_yoy) and sales_yoy >= growth_min
+            if not (eps_ok and sales_ok):
+                return self._reject(
+                    f"fundamental_gate eps_yoy={eps_yoy:.2f} sales_yoy={sales_yoy:.2f} < {growth_min:.2f}"
+                )
+        else:
+            price_action_pct = self._resolve_price_action_percentile(row, rs_percentile)
+            htf_override = _as_percent_threshold(self.params.get("high_tight_flag_override_pct", 95.0), 95.0)
+            if price_action_pct < htf_override:
+                return self._reject(
+                    f"fundamental_missing_override price_action_pct={price_action_pct:.2f} < {htf_override:.2f}"
+                )
+
+        # Archetype union logic: any trigger can produce an entry.
+        entry_mode = str(self.params.get("entry_mode", "both") or "both").lower()
+        allow_vcp = entry_mode in {"both", "breakout", "vcp"}
+        allow_ep = entry_mode in {"both", "ep", "episodic_pivot"}
+
+        candidates: List[Dict] = []
+        if allow_vcp:
+            vcp_candidate = self._vcp_candidate(df, i)
+            if vcp_candidate is not None:
+                candidates.append(vcp_candidate)
+
+        if allow_ep:
+            ep_candidate = self._ep_candidate(df, i)
+            if ep_candidate is not None:
+                candidates.append(ep_candidate)
+
+        if not candidates:
+            return self._reject("archetype_none")
+
+        selected = max(candidates, key=lambda c: float(c.get("signal_strength", 0.0)))
+        selected.pop("signal_strength", None)
+        return selected
+
+    def entry(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
+        return self.check_setup(df, i)
 
     def exit(
         self,
@@ -209,15 +464,10 @@ class SuperperformanceStrategy(BaseStrategy):
         entry_price: float,
         stop_price: float,
     ) -> bool:
-        # Engine uses centralized exit logic; keep a safe default.
+        # Engine uses centralized exit logic.
         return False
 
     def pyramid(self, df: pd.DataFrame, i: int, position: Dict) -> Optional[Dict]:
-        """
-        Pyramiding signal:
-        - If profit exceeds threshold, add fraction to position.
-        - Engine enforces max positions and sizing constraints.
-        """
         if position is None:
             return None
 
@@ -243,8 +493,15 @@ class SuperperformanceStrategy(BaseStrategy):
         if sma20 > 0 and close_px <= sma20:
             return None
 
-        rs_rating = _as_float(df.iloc[i].get("rs_rating"), 0.0)
-        if rs_rating < 80:
+        rs_percentile = _first_finite(
+            [
+                df.iloc[i].get("rs_percentile"),
+                df.iloc[i].get("momentum_rank"),
+                df.iloc[i].get("rs_rating"),
+            ],
+            default=0.0,
+        )
+        if rs_percentile < 85.0:
             return None
 
         add_fraction = float(self.params.get("pyramid_fraction", 0.5) or 0.5)
