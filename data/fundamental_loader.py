@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -603,9 +604,18 @@ def refresh_fundamentals(
     config: LoaderConfig,
 ) -> Dict[str, Any]:
     if edgar is None or pl is None or pa is None or pq is None:
+        missing: List[str] = []
+        if edgar is None:
+            missing.append("edgartools (import name: edgar)")
+        if pl is None:
+            missing.append("polars")
+        if pa is None or pq is None:
+            missing.append("pyarrow")
+        missing_text = ", ".join(missing) if missing else "unknown"
         raise RuntimeError(
-            "Required packages are missing (edgartools, polars, pyarrow). "
-            "Install dependencies: pip install edgartools polars pyarrow"
+            "Required packages are missing "
+            f"for interpreter '{sys.executable}': {missing_text}. "
+            f"Install dependencies with: '{sys.executable}' -m pip install edgartools polars pyarrow"
         )
 
     if not config.identity.strip():
