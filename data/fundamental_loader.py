@@ -656,6 +656,7 @@ def refresh_fundamentals(
     errors: Dict[str, str] = {}
     written = 0
     processed = 0
+    start_clock = time.monotonic()
 
     with ProcessPoolExecutor(
         max_workers=workers,
@@ -697,10 +698,13 @@ def refresh_fundamentals(
             if count > 0:
                 written += 1
 
-            if config.verbose and processed % 100 == 0:
+            if config.verbose and (processed == 1 or processed % 25 == 0):
+                elapsed = max(1e-9, time.monotonic() - start_clock)
+                rate = processed / elapsed
                 print(
                     "[fundamental_loader] "
-                    f"processed={processed}/{len(normalized)} written={written} errors={len(errors)}"
+                    f"processed={processed}/{len(normalized)} written={written} "
+                    f"errors={len(errors)} rate={rate:.2f}/s elapsed={elapsed:.0f}s"
                 )
 
     summary = {
