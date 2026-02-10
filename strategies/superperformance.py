@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import math
 
 import numpy as np
@@ -57,7 +57,8 @@ def detect_vcp_breakout(
     min_contractions: int = 2,
     breakout_volume_mult: float = 1.5,
     breakout_buffer: float = 0.0,
-) -> Optional[VCPDetectionResult]:
+    return_reason: bool = False,
+) -> Union[Optional[VCPDetectionResult], Tuple[Optional[VCPDetectionResult], str]]:
     """
     Detect a VCP breakout using local extrema from scipy.signal.argrelextrema.
 
@@ -68,13 +69,21 @@ def detect_vcp_breakout(
     - Require avg_volume_leg_1 > avg_volume_leg_2 (volume contraction).
     - Trigger only when close breaks above last pivot high on volume >= 1.5x MA50.
     """
+    def _pack(
+        result: Optional[VCPDetectionResult],
+        reason: str,
+    ) -> Union[Optional[VCPDetectionResult], Tuple[Optional[VCPDetectionResult], str]]:
+        if return_reason:
+            return result, reason
+        return result
+
     if i <= 0 or lookback < 20:
-        return None
+        return _pack(None, "invalid_window")
 
     start = max(0, i - lookback + 1)
     window = df.iloc[start : i + 1]
     if len(window) < max(25, (extrema_order * 2) + 8):
-        return None
+        return _pack(None, "insufficient_bars")
 
     highs = pd.to_numeric(window.get("high"), errors="coerce").to_numpy(dtype=np.float64, copy=False)
     lows = pd.to_numeric(window.get("low"), errors="coerce").to_numpy(dtype=np.float64, copy=False)
@@ -83,12 +92,12 @@ def detect_vcp_breakout(
     vol_ma50 = pd.to_numeric(window.get("vol_ma50"), errors="coerce").to_numpy(dtype=np.float64, copy=False)
 
     if not (np.isfinite(closes[-1]) and closes[-1] > 0):
-        return None
+        return _pack(None, "invalid_close")
 
     high_idx = argrelextrema(highs, np.greater_equal, order=extrema_order)[0]
     low_idx = argrelextrema(lows, np.less_equal, order=extrema_order)[0]
     if high_idx.size < min_contractions or low_idx.size < min_contractions:
-        return None
+        return _pack(None, "extrema_insufficient")
 
     # Build pivot stream and compress consecutive same-type pivots.
     pivots: List[Tuple[int, str, float]] = []
@@ -101,7 +110,7 @@ def detect_vcp_breakout(
 
     pivots.sort(key=lambda x: x[0])
     if len(pivots) < (min_contractions * 2):
-        return None
+        return _pack(None, "pivots_insufficient")
 
     compact: List[Tuple[int, str, float]] = []
     for pivot in pivots:
@@ -137,46 +146,57 @@ def detect_vcp_breakout(
         legs.append((contraction, avg_vol, int(hi_idx0), int(lo_idx0), float(hi_px)))
 
     if len(legs) < min_contractions:
-        return None
+        return _pack(None, "legs_insufficient")
 
-    c1, v1, _, _, _ = legs[-2]
-    c2, v2, hi_idx_last, lo_idx_last, hi_px_last = legs[-1]
+    if len(legs) >= 2:
+        c1, v1, _, _, _ = legs[-2]
+        c2, v2, hi_idx_last, lo_idx_last, hi_px_last = legs[-1]
 
-    # Tightening contraction profile (C1 > C2).
-    if not (c1 > c2 > 0):
-        return None
+        # Tightening contraction profile (C1 > C2).
+        if not (c1 > c2 > 0):
+            return _pack(None, "no_tightening")
 
-    # Volume contraction profile (V1 > V2).
-    if math.isfinite(v1) and math.isfinite(v2) and not (v1 > (v2 * 0.95)):
-        return None
+        # Volume contraction profile (V1 > V2).
+        if math.isfinite(v1) and math.isfinite(v2) and not (v1 > (v2 * 0.95)):
+            return _pack(None, "no_volume_contraction")
+    else:
+        # One-leg fallback for elite-RS overrides.
+        c2, v2, hi_idx_last, lo_idx_last, hi_px_last = legs[-1]
+        if not (c2 > 0):
+            return _pack(None, "invalid_contraction")
+        c1 = c2 * 1.05
+        v1 = float("nan")
 
     # Use the high that started the final contraction as the breakout pivot.
     # This is less brittle than selecting the last generic local high.
     pivot_price = float(hi_px_last)
     if not (math.isfinite(pivot_price) and pivot_price > 0):
-        return None
+        return _pack(None, "invalid_pivot")
 
     # Ensure final contraction has completed and current bar is after the contraction low.
     if (len(window) - 1) <= lo_idx_last:
-        return None
+        return _pack(None, "contraction_incomplete")
 
     breakout_level = pivot_price * (1.0 + max(0.0, breakout_buffer))
     if closes[-1] <= breakout_level:
-        return None
+        return _pack(None, "breakout_not_triggered")
 
     vol_now = float(volumes[-1]) if np.isfinite(volumes[-1]) else 0.0
     ma50_now = float(vol_ma50[-1]) if np.isfinite(vol_ma50[-1]) else 0.0
     volume_multiple = (vol_now / ma50_now) if ma50_now > 0 else 0.0
     if ma50_now > 0 and volume_multiple < breakout_volume_mult:
-        return None
+        return _pack(None, "breakout_volume_insufficient")
 
-    return VCPDetectionResult(
-        pivot_price=pivot_price,
-        price_contraction_1=float(c1),
-        price_contraction_2=float(c2),
-        volume_contraction_1=float(v1) if math.isfinite(v1) else float("nan"),
-        volume_contraction_2=float(v2) if math.isfinite(v2) else float("nan"),
-        breakout_volume_multiple=volume_multiple,
+    return _pack(
+        VCPDetectionResult(
+            pivot_price=pivot_price,
+            price_contraction_1=float(c1),
+            price_contraction_2=float(c2),
+            volume_contraction_1=float(v1) if math.isfinite(v1) else float("nan"),
+            volume_contraction_2=float(v2) if math.isfinite(v2) else float("nan"),
+            breakout_volume_multiple=volume_multiple,
+        ),
+        "ok",
     )
 
 
@@ -198,6 +218,7 @@ class SuperperformanceStrategy(BaseStrategy):
         self.params = params or {}
         self._name = self.params.get("name", "Superperformance")
         self._last_reject_reason = ""
+        self._last_vcp_failure_reason = ""
         super().__init__(self.params)
 
     @property
@@ -361,23 +382,59 @@ class SuperperformanceStrategy(BaseStrategy):
 
     def _vcp_candidate(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
         row = df.iloc[i]
+        self._last_vcp_failure_reason = ""
 
         lookback = int(self.params.get("vcp_lookback_bars", 80) or 80)
         extrema_order = int(self.params.get("vcp_extrema_order", 3) or 3)
         vol_mult = float(self.params.get("vcp_breakout_volume_mult", 1.5) or 1.5)
         breakout_buffer = float(self.params.get("breakout_buffer", 0.001) or 0.001)
+        breakout_vol_req = max(1.5, vol_mult)
 
-        vcp = detect_vcp_breakout(
+        vcp, vcp_reason = detect_vcp_breakout(
             df,
             i,
             lookback=lookback,
             extrema_order=max(1, extrema_order),
             min_contractions=2,
-            breakout_volume_mult=max(1.5, vol_mult),
+            breakout_volume_mult=breakout_vol_req,
             breakout_buffer=max(0.0, breakout_buffer),
+            return_reason=True,
         )
+        used_elite_override = False
         if vcp is None:
-            return None
+            enable_elite_override = bool(self.params.get("vcp_elite_override_enabled", False))
+            if not enable_elite_override:
+                self._last_vcp_failure_reason = str(vcp_reason or "no_breakout")
+                return None
+
+            rs_percentile = self._resolve_rs_percentile(row)
+            elite_rs_min = _as_percent_threshold(self.params.get("vcp_elite_rs_override_min", 97.0), 85.0)
+            close_px = _as_float(row.get("close"), 0.0)
+            high_52w = _first_finite(
+                [
+                    row.get("high_52w"),
+                    row.get("high52w"),
+                ],
+                default=float("nan"),
+            )
+            near_high_52w = bool(math.isfinite(high_52w) and high_52w > 0 and close_px >= (high_52w * 0.90))
+
+            if near_high_52w and rs_percentile >= elite_rs_min:
+                used_elite_override = True
+                vcp, vcp_reason = detect_vcp_breakout(
+                    df,
+                    i,
+                    lookback=lookback,
+                    extrema_order=max(1, extrema_order - 1),
+                    min_contractions=1,
+                    breakout_volume_mult=max(1.25, breakout_vol_req * 0.85),
+                    breakout_buffer=max(0.0, breakout_buffer),
+                    return_reason=True,
+                )
+
+            if vcp is None:
+                self._last_vcp_failure_reason = str(vcp_reason or "no_breakout")
+                return None
 
         trigger_px = float(vcp.pivot_price * (1.0 + max(0.0, breakout_buffer)))
         low_px = _as_float(row.get("low"), 0.0)
@@ -398,6 +455,33 @@ class SuperperformanceStrategy(BaseStrategy):
             + (vcp.price_contraction_1 / 10.0)
             - (vcp.price_contraction_2 / 10.0)
         )
+        if used_elite_override:
+            strength += 0.15
+
+        vcp_entry_mode = str(self.params.get("vcp_entry_mode", "next_day") or "next_day").lower()
+        entry_timing = "next_day"
+        signal_mode = "after_close"
+        close_px = _as_float(row.get("close"), 0.0)
+        natr = _as_float(row.get("natr"), float("nan"))
+        if vcp_entry_mode in {"same_day", "same_day_close", "close"}:
+            entry_timing = "same_day_close"
+            signal_mode = "close"
+        elif vcp_entry_mode in {"same_day_open", "open"}:
+            entry_timing = "same_day_open"
+            signal_mode = "open"
+        elif vcp_entry_mode in {"adaptive", "auto"}:
+            breakout_ext_pct = ((close_px - trigger_px) / trigger_px) * 100.0 if trigger_px > 0 else 0.0
+            same_day_vol_mult = float(self.params.get("vcp_same_day_vol_mult", 2.5) or 2.5)
+            same_day_ext_pct = float(self.params.get("vcp_same_day_extension_pct", 2.0) or 2.0)
+            same_day_natr_max = float(self.params.get("vcp_same_day_natr_max_pct", 7.0) or 7.0)
+            natr_ok = (not math.isfinite(natr)) or (natr <= same_day_natr_max)
+            if (
+                vcp.breakout_volume_multiple >= same_day_vol_mult
+                and breakout_ext_pct >= same_day_ext_pct
+                and natr_ok
+            ):
+                entry_timing = "same_day_close"
+                signal_mode = "close"
 
         return {
             "trigger_price": trigger_px,
@@ -406,12 +490,14 @@ class SuperperformanceStrategy(BaseStrategy):
             "stop_loss_type": "low_or_pct",
             "entry_type": "vcp",
             "max_stop_pct": max_stop_pct,
-            "entry_timing": "next_day",
+            "entry_timing": entry_timing,
+            "signal_mode": signal_mode,
             "signal_strength": strength,
         }
 
     def check_setup(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
         self._last_reject_reason = ""
+        self._last_vcp_failure_reason = ""
 
         warmup = int(self.params.get("warmup_bars", 200) or 200)
         if i < warmup:
@@ -517,7 +603,8 @@ class SuperperformanceStrategy(BaseStrategy):
         if not candidates:
             details: List[str] = []
             if allow_vcp and vcp_candidate is None:
-                details.append("vcp:no_breakout")
+                vcp_failure = str(self._last_vcp_failure_reason or "").strip()
+                details.append(f"vcp:{vcp_failure}" if vcp_failure else "vcp:no_breakout")
             if allow_ep and ep_candidate is None:
                 details.append(ep_failure or "ep:no_signal")
             if details:

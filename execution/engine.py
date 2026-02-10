@@ -2231,6 +2231,21 @@ def _legacy_run_backtest(
                         cand.stop_limit_pct,
                         limit_price=limit_px,
                     )
+                    # Optional leader-chase fallback:
+                    # if a VCP signal gaps above stop-limit, allow a controlled
+                    # open fill only for elite-RS names and only within a hard cap.
+                    if not filled and entry_type == "vcp":
+                        chase_max_pct = float(params.get("vcp_gap_chase_max_pct", 0.0) or 0.0)
+                        if chase_max_pct > 0:
+                            chase_cap = float(cand.entry_px) * (1.0 + chase_max_pct)
+                            rs_idx = max(0, min(entry_loc - 1, len(sym_data.rsrating) - 1))
+                            rs_val = float(sym_data.rsrating[rs_idx]) if len(sym_data.rsrating) else 0.0
+                            if not np.isfinite(rs_val):
+                                rs_val = 0.0
+                            rs_min = float(params.get("vcp_gap_chase_rs_min", 97.0) or 97.0)
+                            score_min = float(params.get("vcp_gap_chase_score_min", 75.0) or 75.0)
+                            if open_px <= chase_cap and rs_val >= rs_min and float(cand.score) >= score_min:
+                                filled, fill_px = True, open_px
                 if not filled:
                     continue
 
