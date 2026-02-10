@@ -15,6 +15,21 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional dependency/runtime guard
+    load_dotenv = None  # type: ignore[assignment]
+
+if callable(load_dotenv):
+    try:
+        _project_env = Path(__file__).resolve().parent.parent / ".env"
+        if _project_env.exists():
+            load_dotenv(_project_env, override=False)
+        else:
+            load_dotenv(override=False)
+    except Exception:
+        pass
+
+try:
     import polars as pl
 except Exception:  # pragma: no cover - dependency/runtime guard
     pl = None  # type: ignore[assignment]
