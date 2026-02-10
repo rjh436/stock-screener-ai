@@ -610,11 +610,27 @@ elif mode == "Backtest":
     
     bt_duration = st.session_state.bt_duration
     days = dur_map.get(bt_duration, 1260)
-    cache_key = f"{bt_universe}|{bt_duration}"
+    year_map = {"1 Year": 1, "5 Years": 5, "10 Years": 10, "20 Years": 20}
+    today = pd.Timestamp.utcnow().tz_localize(None).normalize()
+    bt_years = year_map.get(bt_duration)
+    bt_start_ts = (today - pd.DateOffset(years=bt_years)).normalize() if bt_years else None
+    bt_start_date = bt_start_ts.date().isoformat() if bt_start_ts is not None else None
+
+    # Pull enough calendar history for the requested window + warmup bars.
+    if bt_start_ts is not None:
+        fetch_days = max(int((today - bt_start_ts).days), days) + 320
+    else:
+        fetch_days = days + 320
+
+    # Versioned key avoids reusing old, shallow cached payloads from prior app sessions.
+    cache_key = f"btv2|{bt_universe}|{bt_duration}|{bt_start_date or 'max'}"
     if "backtest_cache" not in st.session_state:
         st.session_state.backtest_cache = {}
 
-    st.info(f"Settings: **{bt_universe}** for **{bt_duration}**")
+    if bt_start_date:
+        st.info(f"Settings: **{bt_universe}** for **{bt_duration}** (from **{bt_start_date}**)")
+    else:
+        st.info(f"Settings: **{bt_universe}** for **{bt_duration}**")
 
     if st.button("🚀 RUN BACKTEST", type="primary"):
         if not selected_strategies:
@@ -641,10 +657,10 @@ elif mode == "Backtest":
                     else:
                         # Standard indices
                         symbols = get_index_symbols(bt_universe)
-                    data = fetch_data_pack(symbols, days=days + 200, backtest_mode=True) or {}
+                    data = fetch_data_pack(symbols, days=fetch_days, backtest_mode=False) or {}
 
                     # Fetch global context once (required for RS + VIX overlays in the engine)
-                    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days + 200, backtest_mode=True) or {}
+                    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=fetch_days, backtest_mode=False) or {}
                     spy_df = g_data.get("SPY")
                     vix_df = g_data.get("$VIX")
                     if vix_df is None:
@@ -655,7 +671,7 @@ elif mode == "Backtest":
                     prepared = prepare_backtest_data(
                         data,
                         symbol_universe=symbols,
-                        start_date=None,
+                        start_date=bt_start_date,
                         global_data=global_data,
                     )
                     cache[cache_key] = {
@@ -663,7 +679,7 @@ elif mode == "Backtest":
                         "global_data": global_data,
                     }
                 elif not global_data:
-                    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days + 200, backtest_mode=True) or {}
+                    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=fetch_days, backtest_mode=False) or {}
                     spy_df = g_data.get("SPY")
                     vix_df = g_data.get("$VIX")
                     if vix_df is None:
@@ -672,6 +688,10 @@ elif mode == "Backtest":
 
                 tested_symbols = len(getattr(prepared, "enriched", {}) or {})
                 st.caption(f"Symbols tested: {tested_symbols}")
+                if getattr(prepared, "all_dates", None) is not None and len(prepared.all_dates) > 0:
+                    loaded_start = pd.Timestamp(prepared.all_dates[0]).date().isoformat()
+                    loaded_end = pd.Timestamp(prepared.all_dates[-1]).date().isoformat()
+                    st.caption(f"Loaded data range: {loaded_start} to {loaded_end}")
 
                 results_map = {}
                 run_strategies = load_strategies(selected_strategies)
@@ -686,7 +706,7 @@ elif mode == "Backtest":
                             strat,
                             prepared,
                             start_cash=100000.0,
-                            start_date=None,
+                            start_date=bt_start_date,
                             global_data=global_data,
                         ): strat.name
                         for strat in run_strategies

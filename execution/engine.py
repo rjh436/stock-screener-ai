@@ -199,6 +199,31 @@ def _prepared_needs_rs_refresh(prepared: "PreparedBacktestData") -> bool:
     return not nonzero_found
 
 
+def _prepared_covers_start_date(
+    prepared: "PreparedBacktestData",
+    start_date: Any,
+    *,
+    tolerance_days: int = 35,
+) -> bool:
+    if not start_date:
+        return True
+    if prepared is None:
+        return False
+    all_dates = getattr(prepared, "all_dates", None)
+    if all_dates is None or len(all_dates) == 0:
+        return False
+    try:
+        requested_start = pd.Timestamp(start_date).tz_localize(None)
+    except Exception:
+        return False
+    try:
+        cached_start = pd.Timestamp(all_dates[0]).tz_localize(None)
+    except Exception:
+        return False
+    buffer_days = max(0, int(tolerance_days))
+    return cached_start <= (requested_start + pd.Timedelta(days=buffer_days))
+
+
 def _partial_sale_shares(total_shares: int, fraction: float) -> int:
     if total_shares <= 1:
         return 0
@@ -1248,6 +1273,8 @@ def prepare_backtest_data(
                     coverage = len(prepared_cached.enriched) / float(len(requested_upper))
                     if coverage < min_cache_coverage:
                         prepared_cached = None
+                if prepared_cached is not None and not _prepared_covers_start_date(prepared_cached, start_date):
+                    prepared_cached = None
                 if prepared_cached is None:
                     raise ValueError("Cached prepared data does not cover requested symbols.")
                 if (len(prepared_cached.enriched) < 50) or _prepared_needs_rs_refresh(prepared_cached):

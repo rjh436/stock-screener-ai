@@ -132,6 +132,32 @@ def inject_live_quote(df: pd.DataFrame, sym: str, prefetched_quote: Optional[Dic
     return df.sort_index()
 
 
+def _required_history_start(days: int, *, buffer_days: int = 100) -> datetime:
+    try:
+        day_count = int(days)
+    except Exception:
+        day_count = 1260
+    day_count = max(1, day_count)
+    return (datetime.now(timezone.utc) - timedelta(days=day_count + max(0, int(buffer_days)))).replace(tzinfo=None)
+
+
+def _has_required_history(
+    df: Optional[pd.DataFrame],
+    required_start: datetime,
+    *,
+    tolerance_days: int = 30,
+) -> bool:
+    if df is None or df.empty:
+        return False
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return False
+    try:
+        first_date = pd.Timestamp(df.index.min()).tz_localize(None)
+    except Exception:
+        return False
+    return first_date <= (required_start + timedelta(days=max(0, int(tolerance_days))))
+
+
 def fetch_single_symbol(
     sym: str,
     days: int = 1260,
@@ -150,6 +176,7 @@ def fetch_single_symbol(
     """
     cache_dir = os.path.join("data", "cache")
     symbol = sym
+    required_start = _required_history_start(days)
     # --- TURBO CACHE FIX: Trust fresh files for IPOs ---
     cache_path = os.path.join(cache_dir, f"{symbol}.csv")
     if not force_fresh and os.path.exists(cache_path):
@@ -157,7 +184,9 @@ def fetch_single_symbol(
             # If file is < 12 hours old, use it regardless of start date
             if (time.time() - os.path.getmtime(cache_path)) < 43200:
                 df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
-                return clean_dataframe(df)
+                df = clean_dataframe(df)
+                if cache_only or _has_required_history(df, required_start):
+                    return df
         except: pass
     # ---------------------------------------------------
     # --- TURBO CACHE: Trust fresh files (12 hours) ---
@@ -169,7 +198,9 @@ def fetch_single_symbol(
             if (time.time() - mtime) < 43200: # 12 hours
                 # If we just downloaded it, use it. Don't check depth.
                 df = pd.read_parquet(cache_path)
-                return clean_dataframe(df)
+                df = clean_dataframe(df)
+                if cache_only or _has_required_history(df, required_start):
+                    return df
     except Exception:
         pass
     # -------------------------------------------------
@@ -180,16 +211,11 @@ def fetch_single_symbol(
             df = DataCache.get_cached_data(sym, allow_stale=True, validate=False)
             df = clean_dataframe(df)
 
-            # 2. Calculate Required Start Date (Trading Days -> Calendar Days)
-            calendar_days = int(days * 1.6)
-            start_cutoff = datetime.now(timezone.utc) - timedelta(days=calendar_days)
-            start_naive = start_cutoff.replace(tzinfo=None)
-
             if df is not None and not df.empty:
                 # 3. DEPTH CHECK: Does cache go back far enough?
                 # We allow a 30-day buffer. If cache starts AFTER the required date, it's a miss.
                 first_date = df.index.min()
-                if first_date > (start_naive + timedelta(days=30)):
+                if first_date > (required_start + timedelta(days=30)):
                     if cache_only:
                         print(f"⚠️ Cache shallow for {sym} (Starts {first_date.date()}). Using available data (Backtest Mode).")
                         if df.index.tz is not None:
@@ -199,7 +225,7 @@ def fetch_single_symbol(
                     
                     print(
                         f"⚠️ Cache shallow for {sym} (Starts {first_date.date()}, "
-                        f"Need {start_naive.date()}). Auto-downloading..."
+                        f"Need {required_start.date()}). Auto-downloading..."
                     )
                     # IMPORTANT: Set df to None so we fall through to the download logic below
                     df = None
@@ -207,7 +233,7 @@ def fetch_single_symbol(
                     # Cache is good! Slice and return.
                     if df.index.tz is not None:
                         df.index = df.index.tz_localize(None)
-                    df = df[df.index >= start_naive]
+                    df = df[df.index >= required_start]
                     return df
 
             # If we get here, df is None (either missing or rejected for depth).
@@ -236,7 +262,7 @@ def fetch_single_symbol(
     df = DataCache.get_cached_data(sym, allow_stale=True)
     df = clean_dataframe(df)
 
-    start_naive = start.replace(tzinfo=None)
+    start_naive = required_start
 
     fetch_start = start
     if df is not None and not df.empty:
