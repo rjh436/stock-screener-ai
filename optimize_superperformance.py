@@ -45,7 +45,7 @@ TARGET_CAGR = float(os.getenv("APEX_TARGET_CAGR", _TARGET_DEFAULT) or _TARGET_DE
 MIN_CAGR_FLOOR = float(os.getenv("APEX_MIN_CAGR_FLOOR", _MIN_CAGR_DEFAULT) or _MIN_CAGR_DEFAULT)
 MIN_PF_FLOOR = float(os.getenv("APEX_MIN_PF_FLOOR", "1.20") or "1.20")
 MIN_WINLOSS_RATIO = float(os.getenv("APEX_MIN_WINLOSS_RATIO", "2.50") or "2.50")
-MIN_TRADES_FLOOR = int(os.getenv("APEX_MIN_TRADES_FLOOR", "120") or "120")
+MIN_TRADES_FLOOR = int(os.getenv("APEX_MIN_TRADES_FLOOR", "50") or "50")
 MAX_TRADES_SOFT = int(os.getenv("APEX_MAX_TRADES_SOFT", "700") or "700")
 IMMIGRANT_FRAC = float(os.getenv("APEX_IMMIGRANT_FRAC", "0.30") or "0.30")
 ELITE_COUNT = int(os.getenv("APEX_ELITE_COUNT", "5") or "5")
@@ -67,41 +67,42 @@ AUTO_LOAD_FUNDAMENTALS = str(os.getenv("APEX_AUTO_LOAD_FUNDAMENTALS", "1") or "1
 # --- GENOME SPACE (Optimization Variables) ---
 GENE_SPACE = {
     "require_trend": [True],
-    "rs_gate_min": [85, 88, 90, 92, 95],
-    "min_price": [5, 8, 10],
-    "min_avg_volume_30": [200000, 500000, 1000000],
-    "fundamental_growth_min_pct": [20, 25, 30],
-    "high_tight_flag_override_pct": [95, 97, 99],
-    "entry_mode": ["both", "vcp", "ep"],
-    "vcp_lookback_bars": [60, 80, 100],
-    "vcp_extrema_order": [2, 3, 4],
-    "vcp_breakout_volume_mult": [1.5, 2.0, 2.5],
-    "breakout_buffer": [0, 0.001, 0.002],
-    "ep_gap_pct": [8, 10, 12],
-    "ep_vol_mult": [3, 4, 5],
-    "ep_close_near_high_min": [0.80, 0.85, 0.90],
+    "rs_gate_min": [85, 88, 90],
+    "min_price": [4, 5, 8],
+    "min_avg_volume_30": [50000, 100000, 200000],
+    "fundamental_growth_min_pct": [10, 15, 20],
+    "high_tight_flag_override_pct": [85, 90, 95],
+    # Keep Gate+Archetype architecture in union mode; avoid optimizer collapsing to EP-only.
+    "entry_mode": ["both"],
+    "vcp_lookback_bars": [40, 60, 80],
+    "vcp_extrema_order": [2, 3],
+    "vcp_breakout_volume_mult": [1.5, 1.75, 2.0],
+    "breakout_buffer": [0, 0.0005, 0.001, 0.002],
+    "ep_gap_pct": [8],
+    "ep_vol_mult": [3, 4],
+    "ep_close_near_high_min": [0.70, 0.75, 0.80, 0.85],
     "ep_entry_mode": ["close", "open"],
-    "ep_max_stop_pct": [0.12, 0.15, 0.18],
+    "ep_max_stop_pct": [0.12, 0.15, 0.20],
     "score_mode": ['dual_core'],
     "technical_weight": [0.55, 0.65, 0.75],
     "fundamental_weight": [0.45, 0.35, 0.25],
-    "min_entry_score": [60, 65, 70, 75],
-    "max_stop_pct": [0.05, 0.06, 0.08],
+    "min_entry_score": [35, 45, 55, 65],
+    "max_stop_pct": [0.06, 0.08, 0.10, 0.12],
     "stop_limit_pct": [0.02, 0.03],
-    "stop_loss_atr_bull": [3, 4, 5],
+    "stop_loss_atr_bull": [3, 4, 5, 6],
     "stop_loss_atr_bear": [0.5, 0.75],
     "breakeven_at_pct": [0.20],
     "exit_sma_fast": ['sma50'],
     "exit_sma_slow": ['sma50'],
     "time_stop_days": [5],
-    "pyramid_threshold": [0.08, 0.10, 0.12],
-    "pyramid_fraction": [0.5],
-    "pyramid_max_adds": [1, 2],
-    "max_positions": [4, 6, 8],
-    "risk_per_trade": [0.01, 0.0125, 0.015],
-    "max_pos_size_pct": [0.10, 0.15, 0.20],
-    "max_total_exposure_pct_bull": [0.8, 1.0],
-    "max_total_exposure_pct_bear": [0, 0.05, 0.1],
+    "pyramid_threshold": [0.04, 0.06, 0.08, 0.10],
+    "pyramid_fraction": [0.5, 0.67],
+    "pyramid_max_adds": [1, 2, 3],
+    "max_positions": [6, 8, 10, 12],
+    "risk_per_trade": [0.015, 0.02, 0.025, 0.03],
+    "max_pos_size_pct": [0.15, 0.20, 0.25, 0.30],
+    "max_total_exposure_pct_bull": [1.0, 1.2, 1.4, 1.6],
+    "max_total_exposure_pct_bear": [0.1, 0.2, 0.3],
 }
 
 
@@ -270,6 +271,9 @@ def evaluate_genome(genome_id_and_genome):
         strategy_config = dict(genome)
         genome_adj = dict(strategy_config)
         strategy_config["name"] = f"Gen_{genome_id}"
+        # Keep the optimizer in Gate+Archetype union mode.
+        strategy_config["entry_mode"] = "both"
+        genome_adj["entry_mode"] = "both"
         # Pairing clamp: enforce cash-only exposure physics
         max_exposure = float(strategy_config.get("max_total_exposure_pct_bull", 1.0) or 1.0)
         max_positions = int(strategy_config.get("max_positions", 1) or 1)
@@ -422,47 +426,67 @@ def evaluate_genome(genome_id_and_genome):
             pf = 3.0 if gross_wins > 0 else 0.0
         avg_win_pct, avg_loss_pct, win_loss_ratio = _trade_asymmetry(trades_list)
 
-        # FITNESS FUNCTION: CAGR-first with quality floors to target superperformance.
+        # FITNESS FUNCTION: CAGR-first with trade-count-adjusted quality.
+        # Prevent high-PF / high-ratio small-sample genomes from dominating.
         dd_floor = max(max_dd, 1.0)
         calmar = cagr_pct / dd_floor if dd_floor > 0 else cagr_pct
         pf_clipped = max(0.0, min(float(pf), 5.0))
         ratio_clipped = max(0.0, min(float(win_loss_ratio), 8.0))
 
         cagr_curve = cagr_pct
-        if cagr_pct > 10.0:
-            cagr_curve += (cagr_pct - 10.0) * 0.75
+        if cagr_pct > 12.0:
+            cagr_curve += (cagr_pct - 12.0) * 0.90
         if cagr_pct > 20.0:
-            cagr_curve += (cagr_pct - 20.0) * 1.25
+            cagr_curve += (cagr_pct - 20.0) * 1.50
         if cagr_pct > 30.0:
-            cagr_curve += (cagr_pct - 30.0) * 2.0
+            cagr_curve += (cagr_pct - 30.0) * 2.25
 
-        score = cagr_curve * 4.0
-        score += calmar * 4.0
-        score += (pf_clipped - 1.0) * 12.0
-        score += (ratio_clipped - 2.0) * 8.0
+        trades_floor = max(float(MIN_TRADES_FLOOR), 1.0)
+        trade_factor = max(0.0, min(float(trades) / trades_floor, 1.0))
+        quality_bonus = ((pf_clipped - 1.0) * 6.0) + ((ratio_clipped - 1.5) * 4.0)
+        quality_bonus = max(-20.0, quality_bonus) * trade_factor
 
-        # Hard-bias away from low-return / poor-quality profiles.
+        score = cagr_curve * 6.0
+        score += calmar * 3.0
+        score += quality_bonus
+
+        # Hard-bias away from low-return / poor-quality / low-sample profiles.
         if cagr_pct < MIN_CAGR_FLOOR:
-            score -= (MIN_CAGR_FLOOR - cagr_pct) * 2.0
+            score -= (MIN_CAGR_FLOOR - cagr_pct) * 3.5
         if pf_clipped < MIN_PF_FLOOR:
-            score -= (MIN_PF_FLOOR - pf_clipped) * 16.0
+            score -= (MIN_PF_FLOOR - pf_clipped) * 10.0
         if ratio_clipped < MIN_WINLOSS_RATIO:
-            score -= (MIN_WINLOSS_RATIO - ratio_clipped) * 7.0
+            score -= (MIN_WINLOSS_RATIO - ratio_clipped) * 5.0
+
         if trades < MIN_TRADES_FLOOR:
-            score -= (MIN_TRADES_FLOOR - trades) / 2.0
-        elif trades <= 350 and cagr_pct > 0:
-            score += 6.0
-        if max_dd > 35.0:
-            score -= (max_dd - 35.0) * 1.0
+            trade_deficit = (MIN_TRADES_FLOOR - float(trades)) / trades_floor
+            score -= trade_deficit * 20.0
+            if trades < int(MIN_TRADES_FLOOR * 0.60):
+                score -= 6.0
+
+        if max_dd > 30.0:
+            score -= (max_dd - 30.0) * 1.5
         if trades > MAX_TRADES_SOFT:
-            score -= (trades - MAX_TRADES_SOFT) / 45.0
+            score -= (trades - MAX_TRADES_SOFT) / 35.0
         if cagr_pct <= 0.0:
-            score -= 20.0
+            score -= 25.0
+
+        # Soft anti-overrestriction bias:
+        # Prevent optimizer from collapsing into a low-frequency "screener" profile.
+        if float(strategy_config.get("rs_gate_min", 85.0) or 85.0) > 90.0:
+            score -= 5.0
+        if float(strategy_config.get("fundamental_growth_min_pct", 20.0) or 20.0) > 20.0:
+            score -= 4.0
+        if float(strategy_config.get("ep_gap_pct", 8.0) or 8.0) > 8.0:
+            score -= 4.0
+        if float(strategy_config.get("min_avg_volume_30", 0.0) or 0.0) >= 500000.0:
+            score -= 3.0
 
         is_super_candidate = (
             cagr_pct >= TARGET_CAGR
             and pf_clipped >= max(1.20, MIN_PF_FLOOR)
             and ratio_clipped >= max(2.5, MIN_WINLOSS_RATIO)
+            and trades >= MIN_TRADES_FLOOR
         )
         if is_super_candidate:
             score += 35.0

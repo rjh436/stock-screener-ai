@@ -117,7 +117,9 @@ def detect_vcp_breakout(
             compact[-1] = pivot
 
     # Extract H->L contraction legs.
-    legs: List[Tuple[float, float]] = []  # (price_contraction_pct, avg_volume)
+    # Each leg stores:
+    # (price_contraction_pct, avg_volume, hi_idx, lo_idx, hi_price)
+    legs: List[Tuple[float, float, int, int, float]] = []
     for left, right in zip(compact, compact[1:]):
         if left[1] != "H" or right[1] != "L":
             continue
@@ -130,28 +132,30 @@ def detect_vcp_breakout(
             continue
         seg = volumes[hi_idx0 : lo_idx0 + 1]
         avg_vol = float(np.nanmean(seg)) if seg.size > 0 else float("nan")
-        legs.append((contraction, avg_vol))
+        legs.append((contraction, avg_vol, int(hi_idx0), int(lo_idx0), float(hi_px)))
 
     if len(legs) < min_contractions:
         return None
 
-    c1, v1 = legs[-2]
-    c2, v2 = legs[-1]
+    c1, v1, _, _, _ = legs[-2]
+    c2, v2, hi_idx_last, lo_idx_last, hi_px_last = legs[-1]
 
     # Tightening contraction profile (C1 > C2).
     if not (c1 > c2 > 0):
         return None
 
     # Volume contraction profile (V1 > V2).
-    if math.isfinite(v1) and math.isfinite(v2) and not (v1 > v2):
+    if math.isfinite(v1) and math.isfinite(v2) and not (v1 > (v2 * 0.95)):
         return None
 
-    pivot_candidates = [p for p in compact if p[1] == "H" and p[0] < (len(window) - 1)]
-    if not pivot_candidates:
+    # Use the high that started the final contraction as the breakout pivot.
+    # This is less brittle than selecting the last generic local high.
+    pivot_price = float(hi_px_last)
+    if not (math.isfinite(pivot_price) and pivot_price > 0):
         return None
-    pivot_price = float(pivot_candidates[-1][2])
 
-    if pivot_price <= 0:
+    # Ensure final contraction has completed and current bar is after the contraction low.
+    if (len(window) - 1) <= lo_idx_last:
         return None
 
     breakout_level = pivot_price * (1.0 + max(0.0, breakout_buffer))
@@ -367,7 +371,7 @@ class SuperperformanceStrategy(BaseStrategy):
             lookback=lookback,
             extrema_order=max(1, extrema_order),
             min_contractions=2,
-            breakout_volume_mult=max(1.0, vol_mult),
+            breakout_volume_mult=max(1.5, vol_mult),
             breakout_buffer=max(0.0, breakout_buffer),
         )
         if vcp is None:
@@ -463,12 +467,13 @@ class SuperperformanceStrategy(BaseStrategy):
         )
 
         growth_min = _as_percent_threshold(self.params.get("fundamental_growth_min_pct", 20.0), 20.0)
-        has_fundamental_data = math.isfinite(eps_yoy) or math.isfinite(sales_yoy)
+        eps_available = math.isfinite(eps_yoy)
+        sales_available = math.isfinite(sales_yoy)
 
-        if has_fundamental_data:
-            eps_ok = math.isfinite(eps_yoy) and eps_yoy >= growth_min
-            sales_ok = math.isfinite(sales_yoy) and sales_yoy >= growth_min
-            if not (eps_ok and sales_ok):
+        if eps_available or sales_available:
+            eps_ok = eps_available and eps_yoy >= growth_min
+            sales_ok = sales_available and sales_yoy >= growth_min
+            if not (eps_ok or sales_ok):
                 return self._reject(
                     f"fundamental_gate eps_yoy={eps_yoy:.2f} sales_yoy={sales_yoy:.2f} < {growth_min:.2f}"
                 )

@@ -18,7 +18,7 @@ if ROOT not in sys.path:
 
 from data.loader import fetch_data_pack
 from data.universe import get_universe_symbols
-from execution.engine import prepare_backtest_data, run_backtest
+from execution.engine import PreparedBacktestData, prepare_backtest_data, run_backtest
 from execution.market_regime import compute_regime_series
 from optimize_weights import build_superperformance_config, run_grid_search
 from strategies.superperformance import SuperperformanceStrategy
@@ -293,44 +293,40 @@ def _ep_gate_reason(df: pd.DataFrame, i: int, params: Dict[str, Any]) -> Tuple[b
     low_px = _safe_float(row.get("low"), 0.0)
     vol = _safe_float(row.get("volume"), 0.0)
     vol_ma50 = _safe_float(row.get("vol_ma50"), 0.0)
-    rs_rating = _safe_float(row.get("rs_rating"), 0.0)
 
-    if prev_close <= 0 or open_px <= 0:
+    if prev_close <= 0 or open_px <= 0 or high_px <= 0 or low_px <= 0 or close_px <= 0:
         return False, "Rejected by EP setup data"
 
-    gap_pct = (open_px - prev_close) / prev_close
-    ep_gap = max(float(params.get("ep_gap_pct", 0.06) or 0.06), 0.06)
+    gap_pct = ((open_px - prev_close) / prev_close) * 100.0
+    ep_gap = float(params.get("ep_gap_pct", 8.0) or 8.0)
+    if ep_gap <= 1.0:
+        ep_gap *= 100.0
+    ep_gap = max(ep_gap, 8.0)
     if gap_pct < ep_gap:
         return False, "Rejected by EP gap threshold"
 
-    ep_vol_mult = max(float(params.get("ep_vol_mult", 2.0) or 2.0), 2.0)
+    ep_vol_mult = max(float(params.get("ep_vol_mult", 3.0) or 3.0), 3.0)
     if vol_ma50 <= 0 or vol < (vol_ma50 * ep_vol_mult):
         return False, "Rejected by EP volume surge"
-
-    if close_px <= open_px:
-        return False, "Rejected by EP close<open"
 
     clv = _safe_float(row.get("clv"), np.nan)
     if not np.isfinite(clv):
         rng = max(high_px - low_px, 0.0)
         clv = ((close_px - low_px) / rng) if rng > 0 else 0.0
-    if clv <= 0.70:
+    close_near_high_min = float(params.get("ep_close_near_high_min", 0.80) or 0.80)
+    if clv < close_near_high_min:
         return False, "Rejected by EP CLV"
 
-    sma50 = _safe_float(row.get("sma50"), 0.0)
-    if sma50 > 0 and close_px <= sma50:
-        return False, "Rejected by EP SMA50"
+    ep_entry_mode = str(params.get("ep_entry_mode", "close") or "close").lower()
+    trigger_px = open_px if ep_entry_mode == "open" else close_px
+    stop_px = low_px
+    if trigger_px <= 0 or stop_px <= 0 or stop_px >= trigger_px:
+        return False, "Rejected by EP invalid stop"
 
-    ep_rs_min = float(params.get("ep_rs_min", 60.0) or 60.0)
-    if rs_rating < ep_rs_min:
-        return False, "Rejected by EP RS floor"
-
-    day_range = _safe_float(row.get("true_range"), 0.0)
-    if day_range <= 0:
-        day_range = max(high_px - low_px, 0.0)
-    tr_ma50 = _safe_float(row.get("tr_ma50"), 0.0)
-    if tr_ma50 > 0 and day_range <= (1.25 * tr_ma50):
-        return False, "Rejected by EP range expansion"
+    ep_max_stop_pct = float(params.get("ep_max_stop_pct", 0.15) or 0.15)
+    stop_width = (trigger_px - stop_px) / trigger_px
+    if stop_width > ep_max_stop_pct:
+        return False, "Rejected by EP stop width"
 
     return True, "EP pass"
 
@@ -363,13 +359,31 @@ def _analyze_miss_report(
         checked += 1
         row = df.iloc[i]
         close_px = _safe_float(row.get("close"), 0.0)
-        rs_rating = _safe_float(row.get("rs_rating"), 0.0)
+        rs_candidates = (
+            row.get("rs_percentile"),
+            row.get("relative_strength_percentile"),
+            row.get("momentum_rank"),
+            row.get("rs_rating"),
+        )
+        rs_rating = np.nan
+        for cand in rs_candidates:
+            v = _safe_float(cand, np.nan)
+            if np.isfinite(v):
+                rs_rating = v
+                break
+        if not np.isfinite(rs_rating):
+            # Keep diagnostics fail-open if RS percentile fields are unavailable.
+            rs_rating = 100.0
         natr = _safe_float(row.get("natr"), 0.0)
 
         if close_px <= 0:
             vcp_rejects["Rejected by invalid close"] = vcp_rejects.get("Rejected by invalid close", 0) + 1
             continue
-        if rs_rating < float(params.get("rs_gate_min", 85.0) or 85.0):
+        rs_gate = float(params.get("rs_percentile_min", params.get("rs_gate_min", 85.0)) or 85.0)
+        if rs_gate <= 1.0:
+            rs_gate *= 100.0
+        rs_gate = max(85.0, rs_gate)
+        if rs_rating < rs_gate:
             vcp_rejects["Rejected by primary RS gate"] = vcp_rejects.get("Rejected by primary RS gate", 0) + 1
             continue
         natr_guard = float(params.get("natr_entry_max_pct", 7.0) or 7.0)
@@ -418,6 +432,35 @@ def _analyze_miss_report(
     }
 
 
+def _resolve_known_winner_context(symbol: str) -> List[str]:
+    mode = str(os.getenv("PHASE3_KNOWN_WINNER_CONTEXT_UNIVERSE", "SP500") or "SP500").strip().upper()
+    limit = int(os.getenv("PHASE3_KNOWN_WINNER_CONTEXT_LIMIT", "300") or "300")
+    symbol_norm = str(symbol or "").strip().upper()
+    if not symbol_norm:
+        return []
+
+    if mode in {"NONE", "SINGLE", "SYMBOL"}:
+        base: List[str] = []
+    elif mode == "RUSSELL3000":
+        base = get_universe_symbols("RUSSELL3000") or []
+    else:
+        # Default context for RS percentile realism in known-winner diagnostics.
+        base = get_universe_symbols("SP500") or []
+
+    if limit > 0:
+        base = base[:limit]
+
+    out: List[str] = [symbol_norm]
+    seen = {symbol_norm}
+    for raw in base:
+        sym = str(raw or "").strip().upper()
+        if not sym or sym in seen:
+            continue
+        out.append(sym)
+        seen.add(sym)
+    return out
+
+
 def _run_single_symbol_diagnostic(
     symbol: str,
     start_date: str,
@@ -429,15 +472,19 @@ def _run_single_symbol_diagnostic(
     cache_only: bool = False,
 ) -> Dict[str, Any]:
     days = _days_for_window(start_date, end_date, warmup_days=420)
+    context_symbols = _resolve_known_winner_context(symbol)
+    if not context_symbols:
+        context_symbols = [str(symbol or "").strip().upper()]
     fetch_backtest_mode = bool(cache_only)
     fetch_force_fresh = not bool(cache_only)
     fetch_attempts = 1 if cache_only else 2
+    min_context_cov = 1.0 if len(context_symbols) <= 1 else 0.45
     price_data = _fetch_data_pack_with_retry(
-        [symbol],
+        context_symbols,
         days=days,
         label=f"{symbol}-diagnostic",
         max_attempts=fetch_attempts,
-        min_coverage=1.0,
+        min_coverage=min_context_cov,
         backtest_mode=fetch_backtest_mode,
         force_fresh=fetch_force_fresh,
     )
@@ -459,7 +506,7 @@ def _run_single_symbol_diagnostic(
     try:
         prepared = prepare_backtest_data(
             price_data,
-            symbol_universe=[symbol],
+            symbol_universe=context_symbols,
             start_date=None,
             global_data=global_data,
         )
@@ -468,7 +515,9 @@ def _run_single_symbol_diagnostic(
             os.environ.pop("APEX_DISABLE_INDICATOR_CACHE", None)
         else:
             os.environ["APEX_DISABLE_INDICATOR_CACHE"] = prev_disable_cache
-    if symbol not in prepared.enriched:
+    symbol_upper = str(symbol or "").strip().upper()
+    symbol_key = next((k for k in prepared.enriched.keys() if str(k).upper() == symbol_upper), None)
+    if symbol_key is None:
         return {
             "symbol": symbol,
             "start_date": start_date,
@@ -487,10 +536,14 @@ def _run_single_symbol_diagnostic(
     )
     cfg["log_scoring"] = True
     strategy = SuperperformanceStrategy(copy.deepcopy(cfg))
+    prepared_single = PreparedBacktestData(
+        enriched={symbol_key: prepared.enriched[symbol_key]},
+        all_dates=prepared.all_dates,
+    )
     result = _safe_result_obj(
         run_backtest(
             [strategy],
-            prepared,
+            prepared_single,
             start_cash=START_CASH,
             start_date=start_date,
             end_date=end_date,
@@ -498,10 +551,15 @@ def _run_single_symbol_diagnostic(
         )
     )
 
-    trades = result.get("trades_list") or []
-    total_trades = int(result.get("total_trades", 0) or 0)
+    all_trades = result.get("trades_list") or []
+    trades = [
+        tr
+        for tr in all_trades
+        if str(tr.get("Symbol", "")).strip().upper() == symbol_upper
+    ]
+    total_trades = len(trades)
     final_value = float(result.get("final_value", START_CASH) or START_CASH)
-    entry_detected = (total_trades > 0) or (abs(final_value - START_CASH) > 1e-6)
+    entry_detected = total_trades > 0
     pf = _profit_factor(trades)
     sharpe = _sharpe_from_equity_curve(result.get("equity_curve") or [])
 
@@ -518,7 +576,7 @@ def _run_single_symbol_diagnostic(
     }
     if not entry_detected:
         out["miss_report"] = _analyze_miss_report(
-            prepared.enriched[symbol].df,
+            prepared.enriched[symbol_key].df,
             cfg,
             start_date,
             end_date,
