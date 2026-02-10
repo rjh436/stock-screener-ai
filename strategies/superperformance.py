@@ -10,6 +10,8 @@ from scipy.signal import argrelextrema
 
 from .base import BaseStrategy
 
+_STOP_WIDTH_TOL = 1e-9
+
 
 def _as_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -295,7 +297,7 @@ class SuperperformanceStrategy(BaseStrategy):
 
         ep_max_stop_pct = float(self.params.get("ep_max_stop_pct", 0.15) or 0.15)
         stop_width = (trigger_px - stop_px) / trigger_px
-        if stop_width > ep_max_stop_pct:
+        if (stop_width - ep_max_stop_pct) > _STOP_WIDTH_TOL:
             return None
 
         return {
@@ -353,7 +355,7 @@ class SuperperformanceStrategy(BaseStrategy):
             return "ep:invalid_stop"
         ep_max_stop_pct = float(self.params.get("ep_max_stop_pct", 0.15) or 0.15)
         stop_width = (trigger_px - stop_px) / trigger_px
-        if stop_width > ep_max_stop_pct:
+        if (stop_width - ep_max_stop_pct) > _STOP_WIDTH_TOL:
             return f"ep:stop_width={stop_width:.3f}>{ep_max_stop_pct:.3f}"
         return "ep:unknown"
 
@@ -380,7 +382,13 @@ class SuperperformanceStrategy(BaseStrategy):
         trigger_px = float(vcp.pivot_price * (1.0 + max(0.0, breakout_buffer)))
         low_px = _as_float(row.get("low"), 0.0)
         max_stop_pct = float(self.params.get("max_stop_pct", 0.06) or 0.06)
-        stop_px = max(low_px, trigger_px * (1.0 - max_stop_pct))
+        stop_floor = trigger_px * (1.0 - max_stop_pct)
+        # Breakout bars can gap and hold above pivot, making day low > trigger.
+        # In that case, use bounded %-risk stop rather than invalid stop>entry.
+        if low_px > 0.0 and low_px < trigger_px:
+            stop_px = max(low_px, stop_floor)
+        else:
+            stop_px = stop_floor
 
         if trigger_px <= 0 or stop_px <= 0 or stop_px >= trigger_px:
             return None

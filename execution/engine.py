@@ -48,6 +48,7 @@ _INDICATOR_CACHE_PATH = os.path.abspath(
 )
 
 _FUND_COLS = tuple(FUNDAMENTAL_METRIC_COLUMNS)
+_STOP_WIDTH_TOL = 1e-9
 
 
 def compute_stop_fill(
@@ -893,6 +894,8 @@ def _empty_result(name: str, start_cash: float, params: Optional[Dict] = None) -
     return {
         "strategy": name,
         "final_value": start_cash,
+        "total_entries": 0,
+        "entries_list": [],
         "total_trades": 0,
         "hit_rate": 0.0,
         "max_drawdown_pct": 0.0,
@@ -1830,8 +1833,15 @@ def _legacy_run_backtest(
                     if isinstance(decision, dict) and decision.get("max_stop_pct") is not None:
                         max_stop_pct = decision.get("max_stop_pct")
                     if max_stop_pct is not None:
+                        try:
+                            max_stop_pct_val = float(max_stop_pct)
+                        except Exception:
+                            max_stop_pct_val = np.nan
+                        if not np.isfinite(max_stop_pct_val):
+                            max_stop_pct_val = np.nan
                         stop_width = (float(trigger) - float(stop_px)) / float(trigger)
-                        if stop_width > float(max_stop_pct):
+                        # Avoid rejecting exact-threshold stops because of floating-point noise.
+                        if np.isfinite(max_stop_pct_val) and (stop_width - max_stop_pct_val) > _STOP_WIDTH_TOL:
                             continue
 
                     if stop_limit_pct is None:
@@ -1952,6 +1962,7 @@ def _legacy_run_backtest(
         port = portfolio[strat.name]
         cash = port["cash"]
         positions = port["positions"]
+        entries_list = []
         trades_list = []
         equity_curve = []
         trade_outcomes = []
@@ -2295,6 +2306,16 @@ def _legacy_run_backtest(
                         "initial_risk": max(entry_px - stop_px, entry_px * 0.001),
                         "pivot": cand.entry_px,
                     }
+                    entries_list.append(
+                        {
+                            "Symbol": cand.sym,
+                            "Entry": entry_px,
+                            "EntryDate": all_dates[day_idx],
+                            "Shares": shares,
+                            "EntryType": entry_type,
+                            "Score": float(cand.score),
+                        }
+                    )
 
             # 3. Record Equity (Lazy Timestamp)
             mtm = cash + sum(p["shares"] * p["last_price"] for p in positions.values())
@@ -2333,7 +2354,8 @@ def _legacy_run_backtest(
         res.update({
             "final_value": final_val,
             "max_drawdown_pct": max_dd,
-            "total_trades": len(trades_list),
+            "total_entries": len(entries_list),
+            "entries_list": entries_list,
             "total_trades": len(trades_list),
             "hit_rate": win_rate,
             "cagr": cagr,

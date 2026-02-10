@@ -557,9 +557,16 @@ def _run_single_symbol_diagnostic(
         for tr in all_trades
         if str(tr.get("Symbol", "")).strip().upper() == symbol_upper
     ]
+    all_entries = result.get("entries_list") or []
+    entries = [
+        en
+        for en in all_entries
+        if str(en.get("Symbol", "")).strip().upper() == symbol_upper
+    ]
+    total_entries = len(entries)
     total_trades = len(trades)
     final_value = float(result.get("final_value", START_CASH) or START_CASH)
-    entry_detected = total_trades > 0
+    entry_detected = (total_entries > 0) or (total_trades > 0)
     pf = _profit_factor(trades)
     sharpe = _sharpe_from_equity_curve(result.get("equity_curve") or [])
 
@@ -568,6 +575,7 @@ def _run_single_symbol_diagnostic(
         "start_date": start_date,
         "end_date": end_date,
         "entry_detected": bool(entry_detected),
+        "total_entries": total_entries,
         "profit_factor": float(pf),
         "total_trades": total_trades,
         "final_value": final_value,
@@ -612,7 +620,7 @@ def _run_known_winner_suite(
         )
         results.append(res)
         print(
-            f"[Task 3.1] {symbol} | Trades={res['total_trades']} "
+            f"[Task 3.1] {symbol} | Entries={res.get('total_entries', 0)} | Trades={res['total_trades']} "
             f"| EntryDetected={res['entry_detected']} | PF={res['profit_factor']:.3f}"
         )
         miss = res.get("miss_report")
