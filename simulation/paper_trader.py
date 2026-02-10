@@ -17,6 +17,7 @@ from execution.engine import (
     MIN_ENTRY_SCORE,
     DEFAULT_SCORING_WEIGHTS,
     calculate_backtest_quality_score,
+    prepare_backtest_data,
     get_sector,
 )
 from execution.parity import resolve_signal_index, get_strategy_weights, apply_strategy_score_multipliers
@@ -74,11 +75,9 @@ class PaperTrader:
         for strat in self.strategies:
             params = getattr(strat, "params", {})
             if not params.get("stop_loss_atr"):
-                print(f"⚠️ WARNING: {strat.name} missing stop_loss_atr, using default 3.0")
-                params["stop_loss_atr"] = 3.0
+                params["stop_loss_atr"] = float(params.get("stop_loss_atr_bull", 3.0) or 3.0)
             if not params.get("time_stop"):
-                print(f"⚠️ WARNING: {strat.name} missing time_stop, using default 60")
-                params["time_stop"] = 60
+                params["time_stop"] = int(params.get("time_stop_days", 60) or 60)
             stop_atr = float(params.get("stop_loss_atr", 3.0))
             if stop_atr < 1.0 or stop_atr > 10.0:
                 print(f"❌ ERROR: {strat.name} stop_loss_atr={stop_atr} out of range [1.0, 10.0]")
@@ -557,7 +556,13 @@ class PaperTrader:
                 atr_idx = -2 if df_ind is not None and len(df_ind) >= 2 else -1
                 current_atr = float(df_ind.iloc[atr_idx].get("atr14", fill_price * 0.02)) if df_ind is not None else fill_price * 0.02
 
-                stop_mult = float(getattr(s_obj, "params", {}).get("stop_loss_atr", 3.0))
+                stop_mult = float(
+                    getattr(s_obj, "params", {}).get(
+                        "stop_loss_atr",
+                        getattr(s_obj, "params", {}).get("stop_loss_atr_bull", 3.0),
+                    )
+                    or 3.0
+                )
                 atr_signal = order.get("atr")
                 try:
                     atr_for_stop = float(atr_signal) if atr_signal is not None else current_atr
@@ -981,6 +986,18 @@ class PaperTrader:
 
         candidates = []
         scan_logs: List[str] = []
+        global_context = {"SPY": spy_df, "VIX": vix_df}
+
+        prepared = prepare_backtest_data(
+            data_dict or {},
+            symbol_universe=tickers,
+            start_date=None,
+            global_data=global_context,
+        )
+        enriched = prepared.enriched or {}
+        if not enriched:
+            scan_logs.append("⚠️ No prepared symbol data after indicator/fundamental preprocessing.")
+            return {"count": 0, "orders": [], "logs": scan_logs}
 
         if spy_df is not None and not spy_df.empty:
             regime_required = False
@@ -1003,7 +1020,7 @@ class PaperTrader:
                     scan_logs.append(msg)
                     return {"count": 0, "orders": [], "logs": scan_logs}
 
-        total_steps = (len(self.strategies) * len(data_dict)) if data_dict else 0
+        total_steps = (len(self.strategies) * len(enriched)) if enriched else 0
         processed = 0
         for strat in self.strategies:
             strat_genome = getattr(strat, "params", None) or getattr(strat, "genome", None)
@@ -1011,23 +1028,16 @@ class PaperTrader:
                 strat_genome = dict(strat_genome)
             else:
                 strat_genome = None
-            for sym, df in data_dict.items():
+            for sym, sym_data in enriched.items():
                 processed += 1
                 if progress_callback:
                     progress_callback(processed, total_steps)
-                if df is None or df.empty: continue
+                df_ind = sym_data.df if sym_data is not None else None
+                if df_ind is None or df_ind.empty:
+                    continue
                 try:
-                    df_ind = _compute_indicators(df.copy(), spy_df=spy_df)
-                    # DIAGNOSTIC TRACE
-                    last_row = df_ind.iloc[-1]
-                    print(
-                        f"DEBUG: {sym} | Close: {last_row['close']:.2f} | "
-                        f"SMA200: {last_row['sma200']:.2f} | RSI2: {last_row['rsi2']:.2f}"
-                    )
-                    if vix_df is not None: df_ind["vix"] = vix_df["close"].reindex(df_ind.index).ffill().fillna(20.0)
-                    else: df_ind["vix"] = 20.0
-                    
-                    if len(df_ind) <= MIN_BARS: continue
+                    if len(df_ind) <= MIN_BARS:
+                        continue
 
                     # USE PARITY INDEXING
                     signal_idx, _current_idx = resolve_signal_index(df_ind)
@@ -1104,7 +1114,13 @@ class PaperTrader:
                     # Stop Loss (Estimation only - Recalculated on fill)
                     atr = float(row_signal.get("atr14", signal_close * 0.02))
                     if stop_price is None:
-                        stop_mult = float(getattr(strat, "params", {}).get("stop_loss_atr", 3.0))
+                        stop_mult = float(
+                            getattr(strat, "params", {}).get(
+                                "stop_loss_atr",
+                                getattr(strat, "params", {}).get("stop_loss_atr_bull", 3.0),
+                            )
+                            or 3.0
+                        )
                         stop_price = signal_close - (atr * stop_mult)
                     partial_profit_day = int(params.get("partial_profit_day", 3) or 3)
 

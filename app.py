@@ -17,8 +17,8 @@ from data.indices import get_index_symbols
 from data.universe import get_universe_symbols
 from execution.engine import (
     MIN_ENTRY_SCORE,
-    _compute_indicators,
     calculate_backtest_quality_score,
+    compute_stop_fill,
     prepare_backtest_data,
     run_backtest,
 )
@@ -115,8 +115,34 @@ with st.sidebar:
 
                 trail_activation_desc = f"+{(trail_activation - 1.0) * 100.0:.0f}% (activation {trail_activation:.2f})"
 
-                st.markdown(
-                    f"""
+                if str(strat_name).strip().lower() == "superperformance":
+                    rs_gate = float(s.get("rs_gate_min", 85) or 85)
+                    growth_gate = float(s.get("fundamental_growth_min_pct", 20) or 20)
+                    min_score = float(s.get("min_entry_score", 0) or 0)
+                    max_stop = float(s.get("max_stop_pct", 0.06) or 0.06) * 100.0
+                    time_stop_days = int(s.get("time_stop_days", 5) or 5)
+                    risk_trade = float(s.get("risk_per_trade", 0.01) or 0.01) * 100.0
+                    entry_mode = str(s.get("entry_mode", "both") or "both").upper()
+                    st.markdown(
+                        f"""
+**🔭 Gate Logic**
+- **Trend Template:** close > SMA10 > SMA20 > SMA50 > SMA150 > SMA200.
+- **RS Gate:** percentile must be **≥ {rs_gate:.0f}**.
+- **Fundamentals:** EPS or Sales YoY growth **≥ {growth_gate:.0f}%** (or HTF override when missing).
+
+**⚔️ Entry Logic**
+- **Archetype Union:** {entry_mode} (VCP breakout and/or Episodic Pivot).
+- **Composite Score Floor:** **≥ {min_score:.1f}**.
+
+**🛡️ Risk & Exit**
+- **Initial Stop Cap:** max **{max_stop:.1f}%** risk width.
+- **Risk Per Trade:** **{risk_trade:.2f}%** of equity.
+- **Time Stop:** exit if dead money after **{time_stop_days}** days.
+"""
+                    )
+                else:
+                    st.markdown(
+                        f"""
 **🔭 Strategy Mandate**
 - **Elite Sniper Gate:** only enter when **Score ≥ {MIN_ENTRY_SCORE:.0f}**.
 - **RSI Pullback Rule:** only enter when **RSI2 < 20**.
@@ -131,7 +157,7 @@ with st.sidebar:
 **⏳ Time Exit**
 - Automatic exit after **{time_stop}** trading days.
 """
-                )
+                    )
     else:
         st.error("⚠️ No strategies found in config file!")
 
@@ -187,6 +213,7 @@ if mode == "Live Screener":
         vix_df = g_data.get("$VIX")
         if vix_df is None:
             vix_df = g_data.get("VIX")
+        global_data = {"SPY": spy_df, "VIX": vix_df}
         results = []
         
         if not selected_strategies:
@@ -196,16 +223,23 @@ if mode == "Live Screener":
             timer_msg.empty()
         else:
             strat_objects = load_strategies(selected_strategies)
-            total_symbols = len(data)
+            prepared_live = prepare_backtest_data(
+                data,
+                symbol_universe=symbols,
+                start_date=None,
+                global_data=global_data,
+            )
+            scan_items = list((prepared_live.enriched or {}).items())
+            total_symbols = len(scan_items)
             status_msg.write(f"🔍 Analyzing symbols... (0/{total_symbols})")
             ema_seconds = None
             ema_alpha = 0.2
             timer_msg.caption("⏱️ Calibrating...")
-            for i, (sym, df) in enumerate(data.items(), start=1):
+            for i, (sym, sym_data) in enumerate(scan_items, start=1):
                 symbol_start = time.time()
-                if df is not None and not df.empty:
+                df_ind = sym_data.df if sym_data is not None else None
+                if df_ind is not None and not df_ind.empty:
                     try:
-                        df_ind = _compute_indicators(df.copy(), spy_df=spy_df, vix_df=vix_df)
                         signal_i, current_i = resolve_signal_index(df_ind)
                         if signal_i < 0:
                             continue
@@ -219,15 +253,34 @@ if mode == "Live Screener":
 
                             prev_close = row_signal.get("close", 0.0) or 0.0
                             open_px = row_current.get("open", row_current.get("close", 0.0)) or 0.0
+                            high_px = row_current.get("high", open_px) or open_px
                             low_px = row_current.get("low", open_px)
 
                             limit_ratio = None
+                            trigger_px = None
+                            stop_limit_pct = s_conf.get("stop_limit_pct", 0.02)
                             if isinstance(entry_signal, dict):
                                 limit_ratio = entry_signal.get("limit_ratio")
+                                trigger_px = entry_signal.get("trigger_price")
+                                stop_limit_pct = entry_signal.get("stop_limit_pct", stop_limit_pct)
                             if limit_ratio is None:
                                 limit_ratio = s_conf.get("limit_ratio")
 
-                            filled, entry_px = compute_limit_fill(prev_close, open_px, low_px, limit_ratio)
+                            filled = False
+                            entry_px = open_px or row_current.get("close", 0.0)
+                            try:
+                                trigger_val = float(trigger_px) if trigger_px is not None else float("nan")
+                            except Exception:
+                                trigger_val = float("nan")
+                            if trigger_val == trigger_val and trigger_val > 0:
+                                filled, entry_px = compute_stop_fill(
+                                    open_px,
+                                    high_px,
+                                    trigger_val,
+                                    stop_limit_pct,
+                                )
+                            else:
+                                filled, entry_px = compute_limit_fill(prev_close, open_px, low_px, limit_ratio)
                             if not (entry_px and entry_px == entry_px):
                                 entry_px = open_px or row_current.get("close", 0.0)
                             entry_ok = entry_ok and filled and entry_px > 0
@@ -244,7 +297,16 @@ if mode == "Live Screener":
                             gap_pct = ((open_px - prev_close) / prev_close) if prev_close > 0 else 0.0
                             atr_pct = (signal_atr / entry_px) * 100.0 if entry_px > 0 else 0.0
                             adj_mult = apply_gap_atr_stop_penalty(stop_mult, gap_pct, atr_pct)
-                            stop_price = entry_px - (signal_atr * adj_mult)
+                            stop_price = None
+                            if isinstance(entry_signal, dict):
+                                try:
+                                    decision_stop = float(entry_signal.get("stop_price"))
+                                except Exception:
+                                    decision_stop = float("nan")
+                                if decision_stop == decision_stop and 0 < decision_stop < entry_px:
+                                    stop_price = decision_stop
+                            if stop_price is None:
+                                stop_price = entry_px - (signal_atr * adj_mult)
 
                             weights = get_strategy_weights(s_conf)
                             raw_score = calculate_backtest_quality_score(
@@ -559,7 +621,14 @@ elif mode == "Backtest":
             st.error("Please select at least one strategy.")
         else:
             cache = st.session_state.backtest_cache
-            prepared = cache.get(cache_key)
+            prepared = None
+            global_data = {}
+            cached_payload = cache.get(cache_key)
+            if isinstance(cached_payload, dict):
+                prepared = cached_payload.get("prepared")
+                global_data = cached_payload.get("global_data") or {}
+            else:
+                prepared = cached_payload
             cache_hit = prepared is not None
             if cache_hit:
                 st.success("⚡ Using Cached Data (Instant Mode Active)")
@@ -589,7 +658,17 @@ elif mode == "Backtest":
                         start_date=None,
                         global_data=global_data,
                     )
-                    cache[cache_key] = prepared
+                    cache[cache_key] = {
+                        "prepared": prepared,
+                        "global_data": global_data,
+                    }
+                elif not global_data:
+                    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=days + 200, backtest_mode=True) or {}
+                    spy_df = g_data.get("SPY")
+                    vix_df = g_data.get("$VIX")
+                    if vix_df is None:
+                        vix_df = g_data.get("VIX")
+                    global_data = {"SPY": spy_df, "VIX": vix_df}
 
                 tested_symbols = len(getattr(prepared, "enriched", {}) or {})
                 st.caption(f"Symbols tested: {tested_symbols}")
