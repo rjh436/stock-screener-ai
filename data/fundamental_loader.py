@@ -672,12 +672,19 @@ def refresh_fundamentals(
     written = 0
     processed = 0
     start_clock = time.monotonic()
+    recycle_limit: Optional[int] = None
+    try:
+        recycle_raw = int(config.max_tasks_per_child)
+    except Exception:
+        recycle_raw = 0
+    if recycle_raw > 0:
+        recycle_limit = recycle_raw
 
     with ProcessPoolExecutor(
         max_workers=workers,
         initializer=_worker_initializer,
         initargs=(config.identity, per_worker_limit),
-        max_tasks_per_child=max(1, int(config.max_tasks_per_child)),
+        max_tasks_per_child=recycle_limit,
     ) as pool:
         futures = {
             pool.submit(
@@ -791,7 +798,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--max-tasks-per-child",
         type=int,
         default=8,
-        help="Recycle worker processes to prevent long-run memory leakage.",
+        help="Recycle worker processes to prevent long-run memory leakage (set 0 to disable).",
     )
     parser.add_argument(
         "--request-pause-ms",
