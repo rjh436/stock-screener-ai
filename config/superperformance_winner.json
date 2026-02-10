@@ -31,7 +31,7 @@
     "pyramid_fraction": 0.5,
     "pyramid_max_adds": 1,
     "max_positions": 6,
-    "risk_per_trade": 0.035,
+    "risk_per_trade": 0.05,
     "max_pos_size_pct": 0.2333333333333333,
     "max_total_exposure_pct_bull": 1.4,
     "max_total_exposure_pct_bear": 0.3,

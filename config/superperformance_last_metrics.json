@@ -1,11 +1,11 @@
 {
-    "avg_win_pct": 19.28689080741074,
+    "avg_win_pct": 19.384955726801078,
     "avg_loss_pct": 4.010035540484242,
-    "win_loss_ratio": 4.809655827908624,
-    "pf": 6.590300651834525,
-    "cagr": 42.11,
+    "win_loss_ratio": 4.834110703283243,
+    "pf": 6.726605676086566,
+    "cagr": 43.13,
     "dd": 9.05,
     "trades": 242,
-    "updated_at": "2026-02-10T18:12:46.710283+00:00",
+    "updated_at": "2026-02-10T18:54:03.623310+00:00",
     "source": "run_phase3_validation --task full --use-tuned-config"
 }
