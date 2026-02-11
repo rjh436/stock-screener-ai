@@ -346,8 +346,14 @@ def _analyze_miss_report(
     warmup = int(params.get("warmup_bars", 200) or 200)
     checked = 0
     signal_ready = 0
+    gate_rejects: Dict[str, int] = {}
     vcp_rejects: Dict[str, int] = {}
     ep_rejects: Dict[str, int] = {}
+    diag_strategy = SuperperformanceStrategy(copy.deepcopy(params))
+
+    def _bump(bucket: Dict[str, int], key: str) -> None:
+        label = str(key or "unknown").strip() or "unknown"
+        bucket[label] = bucket.get(label, 0) + 1
 
     for i, ts in enumerate(df.index):
         ts = pd.Timestamp(ts)
@@ -357,51 +363,30 @@ def _analyze_miss_report(
             continue
 
         checked += 1
-        row = df.iloc[i]
-        close_px = _safe_float(row.get("close"), 0.0)
-        rs_candidates = (
-            row.get("rs_percentile"),
-            row.get("relative_strength_percentile"),
-            row.get("momentum_rank"),
-            row.get("rs_rating"),
-        )
-        rs_rating = np.nan
-        for cand in rs_candidates:
-            v = _safe_float(cand, np.nan)
-            if np.isfinite(v):
-                rs_rating = v
-                break
-        if not np.isfinite(rs_rating):
-            # Keep diagnostics fail-open if RS percentile fields are unavailable.
-            rs_rating = 100.0
-        natr = _safe_float(row.get("natr"), 0.0)
-
-        if close_px <= 0:
-            vcp_rejects["Rejected by invalid close"] = vcp_rejects.get("Rejected by invalid close", 0) + 1
-            continue
-        rs_gate = float(params.get("rs_percentile_min", params.get("rs_gate_min", 85.0)) or 85.0)
-        if rs_gate <= 1.0:
-            rs_gate *= 100.0
-        rs_gate = max(85.0, rs_gate)
-        if rs_rating < rs_gate:
-            vcp_rejects["Rejected by primary RS gate"] = vcp_rejects.get("Rejected by primary RS gate", 0) + 1
-            continue
-        natr_guard = float(params.get("natr_entry_max_pct", 7.0) or 7.0)
-        if natr > natr_guard:
-            vcp_rejects["Rejected by volatility guard (NATR)"] = vcp_rejects.get(
-                "Rejected by volatility guard (NATR)", 0
-            ) + 1
-            continue
-
-        breakout_ok, breakout_reason = _breakout_gate_reason(df, i, params)
-        ep_ok, ep_reason = _ep_gate_reason(df, i, params)
-
-        if breakout_ok or ep_ok:
+        signal = diag_strategy.check_setup(df, i)
+        if signal is not None:
             signal_ready += 1
-        else:
-            vcp_rejects[breakout_reason] = vcp_rejects.get(breakout_reason, 0) + 1
-            ep_rejects[ep_reason] = ep_rejects.get(ep_reason, 0) + 1
+            continue
 
+        reason = str(diag_strategy.last_reject_reason or "unknown").strip() or "unknown"
+        if reason.startswith("archetype_none"):
+            details = reason[len("archetype_none") :].strip()
+            parts = [p.strip() for p in details.split("|") if p.strip()]
+            parsed = False
+            for part in parts:
+                if part.startswith("vcp:"):
+                    _bump(vcp_rejects, part)
+                    parsed = True
+                elif part.startswith("ep:"):
+                    _bump(ep_rejects, part)
+                    parsed = True
+            if not parsed:
+                _bump(gate_rejects, reason)
+            continue
+
+        _bump(gate_rejects, reason)
+
+    top_gate = max(gate_rejects.items(), key=lambda x: x[1])[0] if gate_rejects else "No dominant gate reject"
     top_vcp = max(vcp_rejects.items(), key=lambda x: x[1])[0] if vcp_rejects else "No dominant VCP reject"
     top_ep = max(ep_rejects.items(), key=lambda x: x[1])[0] if ep_rejects else "No dominant EP reject"
 
@@ -420,12 +405,14 @@ def _analyze_miss_report(
     return {
         "checked_bars": checked,
         "signal_ready_bars": signal_ready,
+        "top_gate_reject": top_gate,
         "top_vcp_reject": top_vcp,
         "top_ep_reject": top_ep,
         "regime_red_days": red_days,
         "regime_days": regime_days,
         "summary": (
             f"Checked={checked}, ReadySignals={signal_ready}, "
+            f"TopGate='{top_gate}', "
             f"TopVCP='{top_vcp}', TopEP='{top_ep}', "
             f"RegimeRED={red_days}/{regime_days}"
         ),

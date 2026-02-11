@@ -1707,6 +1707,12 @@ def _legacy_run_backtest(
                         spy_c = global_spy_close[day_idx - 1]
                         spy_200 = global_spy_sma200[day_idx - 1]
                         if spy_c > 0 and spy_200 > 0 and spy_c < spy_200:
+                            if sym.upper() in known_winner_syms:
+                                trace_logger.log_reject(
+                                    date_val=all_dates[day_idx],
+                                    symbol=sym,
+                                    reason=f"regime_filter spy_close={spy_c:.2f} < spy_sma200={spy_200:.2f}",
+                                )
                             continue
 
                     # Optional trend mode gate
@@ -1854,6 +1860,12 @@ def _legacy_run_backtest(
                             stop_px = float(trigger) - (atr * base_stop_mult)
 
                     if not np.isfinite(trigger) or not np.isfinite(stop_px) or stop_px <= 0:
+                        if sym.upper() in known_winner_syms:
+                            trace_logger.log_reject(
+                                date_val=all_dates[day_idx],
+                                symbol=sym,
+                                reason="entry_invalid trigger_or_stop",
+                            )
                         continue
 
                     max_stop_pct = params.get("max_stop_pct")
@@ -1869,6 +1881,12 @@ def _legacy_run_backtest(
                         stop_width = (float(trigger) - float(stop_px)) / float(trigger)
                         # Avoid rejecting exact-threshold stops because of floating-point noise.
                         if np.isfinite(max_stop_pct_val) and (stop_width - max_stop_pct_val) > _STOP_WIDTH_TOL:
+                            if sym.upper() in known_winner_syms:
+                                trace_logger.log_reject(
+                                    date_val=all_dates[day_idx],
+                                    symbol=sym,
+                                    reason=f"stop_width_gate stop_width={stop_width:.3f} > max_stop_pct={max_stop_pct_val:.3f}",
+                                )
                             continue
 
                     if stop_limit_pct is None:
@@ -1960,6 +1978,12 @@ def _legacy_run_backtest(
                     except Exception:
                         min_entry_score = 0.0
                     if np.isfinite(min_entry_score) and min_entry_score > 0 and score < min_entry_score:
+                        if sym.upper() in known_winner_syms:
+                            trace_logger.log_reject(
+                                date_val=all_dates[entry_day_idx],
+                                symbol=sym,
+                                reason=f"score_gate score={score:.2f} < min_entry_score={min_entry_score:.2f}",
+                            )
                         continue
 
                     if entry_day_idx < 0 or entry_day_idx >= len(all_dates):

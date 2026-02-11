@@ -402,13 +402,13 @@ class SuperperformanceStrategy(BaseStrategy):
         )
         used_elite_override = False
         if vcp is None:
-            enable_elite_override = bool(self.params.get("vcp_elite_override_enabled", False))
+            enable_elite_override = bool(self.params.get("vcp_elite_override_enabled", True))
             if not enable_elite_override:
                 self._last_vcp_failure_reason = str(vcp_reason or "no_breakout")
                 return None
 
             rs_percentile = self._resolve_rs_percentile(row)
-            elite_rs_min = _as_percent_threshold(self.params.get("vcp_elite_rs_override_min", 97.0), 85.0)
+            elite_rs_min = _as_percent_threshold(self.params.get("vcp_elite_rs_override_min", 95.0), 85.0)
             close_px = _as_float(row.get("close"), 0.0)
             high_52w = _first_finite(
                 [
@@ -561,20 +561,35 @@ class SuperperformanceStrategy(BaseStrategy):
         )
 
         growth_min = _as_percent_threshold(self.params.get("fundamental_growth_min_pct", 20.0), 20.0)
-        eps_available = math.isfinite(eps_yoy)
-        sales_available = math.isfinite(sales_yoy)
+        # Edgar point-in-time fundamentals can contain denominator artifacts
+        # (e.g., extreme negative YoY values around near-zero prior quarters).
+        # Treat implausible outliers as unavailable and allow price-action override.
+        min_growth_valid = float(self.params.get("fundamental_growth_min_valid_pct", -90.0) or -90.0)
+        max_growth_valid = float(self.params.get("fundamental_growth_max_valid_pct", 5000.0) or 5000.0)
+        eps_available = math.isfinite(eps_yoy) and (min_growth_valid <= eps_yoy <= max_growth_valid)
+        sales_available = math.isfinite(sales_yoy) and (min_growth_valid <= sales_yoy <= max_growth_valid)
+        htf_override = _as_percent_threshold(self.params.get("high_tight_flag_override_pct", 95.0), 95.0)
+        price_action_pct = self._resolve_price_action_percentile(row, rs_percentile)
+        strong_rs_override_min = _as_percent_threshold(self.params.get("fundamental_override_rs_min", 95.0), 85.0)
+        strong_price_override = (
+            price_action_pct >= htf_override and rs_percentile >= strong_rs_override_min
+        )
+        allow_price_override = bool(self.params.get("fundamental_override_enabled", True))
 
         if eps_available or sales_available:
             eps_ok = eps_available and eps_yoy >= growth_min
             sales_ok = sales_available and sales_yoy >= growth_min
             if not (eps_ok or sales_ok):
-                return self._reject(
-                    f"fundamental_gate eps_yoy={eps_yoy:.2f} sales_yoy={sales_yoy:.2f} < {growth_min:.2f}"
-                )
+                if allow_price_override and strong_price_override:
+                    pass
+                else:
+                    return self._reject(
+                        f"fundamental_gate eps_yoy={eps_yoy:.2f} sales_yoy={sales_yoy:.2f} < {growth_min:.2f}"
+                    )
         else:
-            price_action_pct = self._resolve_price_action_percentile(row, rs_percentile)
-            htf_override = _as_percent_threshold(self.params.get("high_tight_flag_override_pct", 95.0), 95.0)
-            if price_action_pct < htf_override:
+            if allow_price_override and strong_price_override:
+                pass
+            else:
                 return self._reject(
                     f"fundamental_missing_override price_action_pct={price_action_pct:.2f} < {htf_override:.2f}"
                 )

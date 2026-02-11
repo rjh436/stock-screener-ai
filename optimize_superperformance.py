@@ -31,8 +31,11 @@ BEST_GENOME_FILE = "config/superperformance_winner.json"
 LAST_METRICS_FILE = "config/superperformance_last_metrics.json"
 POPULATION_SIZE = int(os.getenv("APEX_POPULATION_SIZE", "30") or "30")
 GENERATIONS = int(os.getenv("APEX_GENERATIONS", "6") or "6")
-START_DATE = str(os.getenv("APEX_START_DATE", "2020-01-01") or "2020-01-01")
-END_DATE = str(os.getenv("APEX_END_DATE", "2025-12-31") or "2025-12-31")
+_DEFAULT_END_TS = pd.Timestamp.today().normalize()
+_DEFAULT_END_DATE = _DEFAULT_END_TS.strftime("%Y-%m-%d")
+_DEFAULT_START_DATE = (_DEFAULT_END_TS - pd.DateOffset(years=20)).strftime("%Y-%m-%d")
+START_DATE = str(os.getenv("APEX_START_DATE", _DEFAULT_START_DATE) or _DEFAULT_START_DATE)
+END_DATE = str(os.getenv("APEX_END_DATE", _DEFAULT_END_DATE) or _DEFAULT_END_DATE)
 MAX_WORKERS = int(os.getenv("APEX_MAX_WORKERS", "10") or "10")
 CHECKPOINT_FILE = "optimizer_checkpoint_sp.pkl" 
 MAX_DD_CAP = float(os.getenv("APEX_MAX_DD_CAP", "30.0") or "30.0")
@@ -49,6 +52,10 @@ MIN_TRADES_FLOOR = int(os.getenv("APEX_MIN_TRADES_FLOOR", "50") or "50")
 MAX_TRADES_SOFT = int(os.getenv("APEX_MAX_TRADES_SOFT", "700") or "700")
 IMMIGRANT_FRAC = float(os.getenv("APEX_IMMIGRANT_FRAC", "0.30") or "0.30")
 ELITE_COUNT = int(os.getenv("APEX_ELITE_COUNT", "5") or "5")
+RECENT_5Y_CAGR_FLOOR = float(os.getenv("APEX_RECENT_5Y_CAGR_FLOOR", "12.0") or "12.0")
+RECENT_3Y_CAGR_FLOOR = float(os.getenv("APEX_RECENT_3Y_CAGR_FLOOR", "14.0") or "14.0")
+RECENT_5Y_CAGR_TARGET = float(os.getenv("APEX_RECENT_5Y_CAGR_TARGET", "16.0") or "16.0")
+RECENT_3Y_CAGR_TARGET = float(os.getenv("APEX_RECENT_3Y_CAGR_TARGET", "18.0") or "18.0")
 FUNDAMENTAL_PARQUET_DIR = str(
     os.getenv("APEX_FUNDAMENTAL_PARQUET_DIR", os.path.join("data", "fundamentals", "edgar_income"))
 )
@@ -86,7 +93,7 @@ GENE_SPACE = {
     "score_mode": ['dual_core'],
     "technical_weight": [0.55, 0.65, 0.75],
     "fundamental_weight": [0.45, 0.35, 0.25],
-    "min_entry_score": [35, 45, 55, 65],
+    "min_entry_score": [30, 35, 45, 55],
     "max_stop_pct": [0.06, 0.08, 0.10, 0.12],
     "stop_limit_pct": [0.02, 0.03],
     "stop_loss_atr_bull": [3, 4, 5, 6],
@@ -253,6 +260,42 @@ def _trade_asymmetry(trades_list):
     return avg_win, avg_loss, ratio
 
 
+def _recent_cagr_pct(equity_curve, years):
+    if not equity_curve:
+        return float("nan")
+    try:
+        ec = pd.DataFrame(equity_curve)
+    except Exception:
+        return float("nan")
+    if ec.empty or "Date" not in ec.columns or "Equity" not in ec.columns:
+        return float("nan")
+    try:
+        ec["Date"] = pd.to_datetime(ec["Date"], errors="coerce")
+        ec["Equity"] = pd.to_numeric(ec["Equity"], errors="coerce")
+        ec = ec.dropna(subset=["Date", "Equity"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+    except Exception:
+        return float("nan")
+    if len(ec) < 2:
+        return float("nan")
+
+    end_dt = ec["Date"].iloc[-1]
+    start_cutoff = end_dt - pd.DateOffset(years=int(max(1, years)))
+    leading = ec[ec["Date"] < start_cutoff].tail(1)
+    window = pd.concat([leading, ec[ec["Date"] >= start_cutoff]], ignore_index=True)
+    if len(window) < 2:
+        return float("nan")
+
+    start_eq = float(window["Equity"].iloc[0] or 0.0)
+    end_eq = float(window["Equity"].iloc[-1] or 0.0)
+    if start_eq <= 0 or end_eq <= 0:
+        return float("nan")
+
+    span_years = (window["Date"].iloc[-1] - window["Date"].iloc[0]).days / 365.25
+    if span_years <= 0:
+        return float("nan")
+    return ((end_eq / start_eq) ** (1 / span_years) - 1.0) * 100.0
+
+
 def evaluate_genome(genome_id_and_genome):
     try:
         genome_id, genome, max_dd_cap = genome_id_and_genome
@@ -394,6 +437,8 @@ def evaluate_genome(genome_id_and_genome):
         years = (pd.to_datetime(END_DATE) - pd.to_datetime(START_DATE)).days / 365.25
         years = max(years, 1.0)
         cagr_pct = ((final_val / 100000.0) ** (1/years) - 1) * 100
+        recent_5y_cagr = _recent_cagr_pct(metrics.get("equity_curve", []), 5)
+        recent_3y_cagr = _recent_cagr_pct(metrics.get("equity_curve", []), 3)
 
         # DEATH PENALTY: Disqualify high drawdown genomes
         if max_dd > float(max_dd_cap):
@@ -402,6 +447,8 @@ def evaluate_genome(genome_id_and_genome):
                 "genome": genome,
                 "score": -100.0,
                 "cagr": cagr_pct,
+                "cagr_5y": recent_5y_cagr,
+                "cagr_3y": recent_3y_cagr,
                 "dd": max_dd,
                 "trades": trades,
                 "disqualified": True
@@ -471,6 +518,26 @@ def evaluate_genome(genome_id_and_genome):
         if cagr_pct <= 0.0:
             score -= 25.0
 
+        # Recency retention bias:
+        # keep strong modern-market performance while still optimizing full-cycle CAGR.
+        if np.isfinite(recent_5y_cagr):
+            score += recent_5y_cagr * 0.80
+            if recent_5y_cagr < RECENT_5Y_CAGR_FLOOR:
+                score -= (RECENT_5Y_CAGR_FLOOR - recent_5y_cagr) * 8.0
+            elif recent_5y_cagr >= RECENT_5Y_CAGR_TARGET:
+                score += 10.0
+        else:
+            score -= 3.0
+
+        if np.isfinite(recent_3y_cagr):
+            score += recent_3y_cagr * 0.40
+            if recent_3y_cagr < RECENT_3Y_CAGR_FLOOR:
+                score -= (RECENT_3Y_CAGR_FLOOR - recent_3y_cagr) * 6.0
+            elif recent_3y_cagr >= RECENT_3Y_CAGR_TARGET:
+                score += 6.0
+        else:
+            score -= 2.0
+
         # Soft anti-overrestriction bias:
         # Prevent optimizer from collapsing into a low-frequency "screener" profile.
         if float(strategy_config.get("rs_gate_min", 85.0) or 85.0) > 90.0:
@@ -481,6 +548,9 @@ def evaluate_genome(genome_id_and_genome):
             score -= 4.0
         if float(strategy_config.get("min_avg_volume_30", 0.0) or 0.0) >= 500000.0:
             score -= 3.0
+        min_entry_score_cfg = float(strategy_config.get("min_entry_score", 0.0) or 0.0)
+        if min_entry_score_cfg > 55.0:
+            score -= (min_entry_score_cfg - 55.0) * 1.5
 
         is_super_candidate = (
             cagr_pct >= TARGET_CAGR
@@ -496,6 +566,8 @@ def evaluate_genome(genome_id_and_genome):
             "genome": genome_adj,
             "score": score,
             "cagr": cagr_pct,
+            "cagr_5y": recent_5y_cagr,
+            "cagr_3y": recent_3y_cagr,
             "dd": max_dd,
             "calmar": calmar,
             "pf": pf,
@@ -530,6 +602,12 @@ if __name__ == "__main__":
     print(f"...Universe: {universe_name} ({len(symbols)} symbols)")
     _ensure_fundamental_coverage(symbols)
     total_days = (pd.to_datetime(END_DATE) - pd.to_datetime(START_DATE)).days
+    print(
+        f"...Optimization window: {START_DATE} -> {END_DATE} "
+        f"({max(total_days, 0) / 365.25:.1f} years)"
+    )
+    if total_days < 3650:
+        print("⚠️  Short optimization window detected (<10 years). Set APEX_START_DATE/APEX_END_DATE for full-cycle tuning.")
     trading_days = int((total_days / 365.25) * 252) + 400  # warmup buffer
 
     prepared = None
@@ -631,11 +709,16 @@ if __name__ == "__main__":
                     results.append(res)
                     if "error" not in res:
                         if res.get("disqualified"):
-                            print(f"   > T:{res.get('trades', 0)} | CAGR:{res.get('cagr', 0):.1f}% | DD:{res.get('dd', 0):.1f}% | Fitness:-100 (DD Cap)")
+                            print(
+                                f"   > T:{res.get('trades', 0)} | CAGR:{res.get('cagr', 0):.1f}% "
+                                f"| 5Y:{res.get('cagr_5y', float('nan')):.1f}% | DD:{res.get('dd', 0):.1f}% "
+                                f"| Fitness:-100 (DD Cap)"
+                            )
                         else:
                             print(
                                 f"   > T:{res['trades']} | CAGR:{res['cagr']:.1f}% | DD:{res['dd']:.1f}% "
-                                f"| PF:{res.get('pf', 0.0):.2f} | Calmar:{res.get('calmar', 0):.2f}"
+                                f"| PF:{res.get('pf', 0.0):.2f} | Calmar:{res.get('calmar', 0):.2f} "
+                                f"| 5Y:{res.get('cagr_5y', float('nan')):.1f}% | 3Y:{res.get('cagr_3y', float('nan')):.1f}%"
                             )
                     else:
                         print(f"   ⚠️  GENOME {res['id']} FAILED: {res['error']}")
@@ -659,7 +742,9 @@ if __name__ == "__main__":
 
             print(
                 f"🏆 WINNER: CAGR {winner['cagr']:.2f}% | DD {winner['dd']:.2f}% | "
-                f"PF {winner.get('pf', 0.0):.2f} | Calmar {winner.get('calmar', 0):.2f} | Score: {winner['score']:.2f}"
+                f"PF {winner.get('pf', 0.0):.2f} | Calmar {winner.get('calmar', 0):.2f} "
+                f"| 5Y {winner.get('cagr_5y', float('nan')):.2f}% | 3Y {winner.get('cagr_3y', float('nan')):.2f}% "
+                f"| Score: {winner['score']:.2f}"
             )
             print(f"🧬 DNA: {winner['genome']}")
 
@@ -671,6 +756,8 @@ if __name__ == "__main__":
                 "win_loss_ratio": float(winner.get("win_loss_ratio", 0.0) or 0.0),
                 "pf": float(winner.get("pf", 0.0) or 0.0),
                 "cagr": float(winner.get("cagr", 0.0) or 0.0),
+                "cagr_5y": float(winner.get("cagr_5y", float("nan"))),
+                "cagr_3y": float(winner.get("cagr_3y", float("nan"))),
                 "dd": float(winner.get("dd", 0.0) or 0.0),
                 "trades": int(winner.get("trades", 0) or 0),
                 "updated_at": pd.Timestamp.now().isoformat(),
