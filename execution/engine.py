@@ -1998,6 +1998,19 @@ def _legacy_run_backtest(
         max_pos = int(params.get("max_positions", 10) or 10)
         risk_per_trade = float(params.get("risk_per_trade", 0.01) or 0.01)
         max_pos_size_pct = float(params.get("max_pos_size_pct", 0.30) or 0.30)
+        # Equity curve should be daily by default for accurate charting/CSV exports.
+        # Keep an override for high-throughput optimization runs.
+        try:
+            equity_stride = int(
+                params.get(
+                    "equity_curve_stride_days",
+                    os.getenv("APEX_EQUITY_CURVE_STRIDE_DAYS", "1"),
+                )
+                or 1
+            )
+        except Exception:
+            equity_stride = 1
+        equity_stride = max(1, equity_stride)
 
         for day_idx, candidates in enumerate(candidates_by_day):
             # AUDIT FIX: Respect Start/End dates
@@ -2359,9 +2372,9 @@ def _legacy_run_backtest(
                         }
                     )
 
-            # 3. Record Equity (Lazy Timestamp)
+            # 3. Record Equity
             mtm = cash + sum(p["shares"] * p["last_price"] for p in positions.values())
-            if day_idx % 5 == 0: # Record every 5 days to save memory
+            if (day_idx % equity_stride == 0) or (day_idx == len(all_dates) - 1):
                 equity_curve.append({"Date": all_dates[day_idx], "Equity": mtm})
 
         # Finalize
