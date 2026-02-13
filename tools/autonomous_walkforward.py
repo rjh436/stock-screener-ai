@@ -23,6 +23,7 @@ LAST_METRICS_FILE = ROOT / "config" / "superperformance_last_metrics.json"
 CHAMPION_FILE = ROOT / "config" / "superperformance_walkforward_champion.json"
 LOG_DIR = ROOT / "logs"
 EXPORT_DIR = ROOT / "exports"
+CHECKPOINT_FILE = ROOT / "optimizer_checkpoint_sp.pkl"
 
 
 @dataclass(frozen=True)
@@ -325,7 +326,7 @@ def _optimizer_env(train_start: str, train_end: str) -> Dict[str, str]:
     env.setdefault("APEX_MEMORY_HEADROOM_GB", "6")
     env.setdefault("APEX_POOL_MAX_TASKS_PER_CHILD", "4")
     env.setdefault("APEX_MARKET_EXPOSURE_MODE", "exposure")
-    env.setdefault("APEX_RESUME_CHECKPOINT", "1")
+    env.setdefault("APEX_RESUME_CHECKPOINT", "0")
     env["APEX_START_DATE"] = str(train_start)
     env["APEX_END_DATE"] = str(train_end)
     return env
@@ -438,6 +439,17 @@ def main() -> int:
         print(f"\n===== WALKFORWARD LOOP {loop_idx}/{args.max_loops} | {run_tag} =====")
 
         env = _optimizer_env(train_start, train_end)
+        reset_checkpoint = str(os.getenv("APEX_WF_RESET_CHECKPOINT_EACH_LOOP", "1") or "1").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if reset_checkpoint and CHECKPOINT_FILE.exists():
+            try:
+                CHECKPOINT_FILE.unlink()
+                print(f"[optimize] Removed stale checkpoint: {CHECKPOINT_FILE}")
+            except Exception as exc:
+                print(f"[optimize] Warning: failed to remove checkpoint ({exc})")
         code = _run_stream([_venv_python(), "-u", str(OPTIMIZER)], env=env, label="optimize")
         if code != 0:
             print(f"Optimizer failed with code {code}.")
