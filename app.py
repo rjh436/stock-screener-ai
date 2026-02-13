@@ -63,6 +63,25 @@ def score_to_rating(score):
     elif score >= 50: return "⚠️ Fair"
     return "❌ Weak"
 
+
+def normalize_equity_curve_df(equity_curve) -> pd.DataFrame:
+    """Normalize equity rows to one tz-naive calendar date row for chart/export."""
+    df_ec = pd.DataFrame(equity_curve or [])
+    if df_ec.empty or "Date" not in df_ec.columns or "Equity" not in df_ec.columns:
+        return pd.DataFrame(columns=["Date", "Equity"])
+    df_ec["Date"] = pd.to_datetime(df_ec["Date"], errors="coerce")
+    df_ec["Equity"] = pd.to_numeric(df_ec["Equity"], errors="coerce")
+    df_ec = df_ec.dropna(subset=["Date", "Equity"])
+    if df_ec.empty:
+        return pd.DataFrame(columns=["Date", "Equity"])
+    try:
+        df_ec["Date"] = df_ec["Date"].dt.tz_localize(None)
+    except Exception:
+        pass
+    df_ec["Date"] = df_ec["Date"].dt.normalize()
+    df_ec = df_ec.sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+    return df_ec[["Date", "Equity"]].reset_index(drop=True)
+
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🎯 Apex Sniper")
@@ -750,42 +769,63 @@ elif mode == "Backtest":
         for i, name in enumerate(st.session_state.backtest_results.keys()):
             res = st.session_state.backtest_results[name]
             with tabs[i]:
-                # --- METRICS FIX: Calculate Dynamic Avg Profit ---
-                avg_profit_display = 0.0
+                # --- METRICS FIX: Use closed-trade diagnostics only ---
+                avg_trade_pct_display = 0.0
+                expectancy_dollar_display = 0.0
+                profit_factor_display = None
+                trade_count_display = int(res.get("total_trades", 0) or 0)
+                win_rate_display = float(res.get("hit_rate", 0.0) or 0.0)
                 trades = res.get("trades_list", [])
                 if trades:
                     df_trades = pd.DataFrame(trades)
-                    # Ensure 'Return %' exists and is numeric
+                    if "Reason" in df_trades.columns:
+                        df_trades = df_trades[df_trades["Reason"] != "PYRAMID_ADD"]
+                    # Unweighted trade return %
                     if "Return %" in df_trades.columns:
-                        df_trades["Return %"] = pd.to_numeric(df_trades["Return %"], errors='coerce')
-                        # Calculate mean ignoring NaNs
-                        mean_val = df_trades["Return %"].mean()
-                        if pd.notna(mean_val):
-                            avg_profit_display = mean_val
+                        ret_series = pd.to_numeric(df_trades["Return %"], errors='coerce').dropna()
+                        if not ret_series.empty:
+                            avg_trade_pct_display = float(ret_series.mean())
+                    # PnL-based expectancy + profit factor + win rate
+                    if "PnL" in df_trades.columns:
+                        pnl_series = pd.to_numeric(df_trades["PnL"], errors="coerce").dropna()
+                        if not pnl_series.empty:
+                            trade_count_display = int(len(pnl_series))
+                            win_rate_display = float((pnl_series > 0).mean() * 100.0)
+                            expectancy_dollar_display = float(pnl_series.mean())
+                            gross_profit = float(pnl_series[pnl_series > 0].sum())
+                            gross_loss = float(-pnl_series[pnl_series < 0].sum())
+                            if gross_loss > 0:
+                                profit_factor_display = gross_profit / gross_loss
+                            elif gross_profit > 0:
+                                profit_factor_display = float("inf")
 
-                col1, col2, col3, col4 = st.columns(4)
+                profit_factor_label = "n/a"
+                if profit_factor_display == float("inf"):
+                    profit_factor_label = "∞"
+                elif profit_factor_display is not None and pd.notna(profit_factor_display):
+                    profit_factor_label = f"{profit_factor_display:.2f}"
+
+                col1, col2, col3, col4, col5 = st.columns(5)
                 col1.metric("CAGR", f"{res.get('cagr', 0):.1%}")
-                col2.metric("Win Rate", f"{res.get('hit_rate', 0):.1f}%")
-                col3.metric("Avg Profit", f"{avg_profit_display:.2f}%") # Use safe calculated value
-                col4.metric("Total Trades", res.get("total_trades", 0))
+                col2.metric("Win Rate", f"{win_rate_display:.1f}%")
+                col3.metric("Profit Factor", profit_factor_label)
+                col4.metric("Expectancy ($)", f"${expectancy_dollar_display:,.2f}")
+                col5.metric("Total Trades", trade_count_display)
+                st.caption(f"Avg Trade % (unweighted): {avg_trade_pct_display:.2f}%")
                 # -------------------------------------------------
 
                 # --- CHART CRASH FIX: Normalize Date Types ---
                 ec_data = res.get("equity_curve", [])
-                if ec_data:
-                    df_ec = pd.DataFrame(ec_data)
-                    if "Date" in df_ec.columns and "Equity" in df_ec.columns:
-                        df_ec["Date"] = pd.to_datetime(df_ec["Date"])
-                        df_ec = df_ec.set_index("Date")
-                        st.line_chart(df_ec["Equity"])
-                    else:
-                        st.warning("Equity data malformed.")
+                df_ec = normalize_equity_curve_df(ec_data)
+                if not df_ec.empty:
+                    st.line_chart(df_ec.set_index("Date")["Equity"])
+                elif ec_data:
+                    st.warning("Equity data malformed.")
                 # ---------------------------------------------
                 
                 # --- DOWNLOAD BUTTON RESTORED ---
                 # Safe data extraction
-                equity_curve = res.get("equity_curve", [])
-                equity_df = pd.DataFrame(equity_curve)
+                equity_df = df_ec.copy()
                 # Fallback chain to ensure we never get "Unknown" if the key exists
                 strategy_name = res.get("strategy_name") or res.get("strategy") or name or "Backtest_Result"
                 # Sanitize filename (remove special chars)

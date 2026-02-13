@@ -101,6 +101,92 @@ def compute_stop_fill(
     return False, float("nan")
 
 
+def _normalize_daily_dataframe_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize a DataFrame index to tz-naive calendar days with unique dates."""
+    if df is None or df.empty:
+        return df
+    idx = pd.to_datetime(df.index, errors="coerce")
+    idx = pd.DatetimeIndex(idx)
+    valid_mask = ~idx.isna()
+    if not bool(np.all(valid_mask)):
+        df = df.loc[valid_mask]
+        idx = idx[valid_mask]
+    if idx.empty:
+        return df.iloc[0:0].copy()
+    if idx.tz is not None:
+        idx = idx.tz_localize(None)
+    out = df.copy()
+    out.index = idx.normalize()
+    if out.index.has_duplicates:
+        out = out[~out.index.duplicated(keep="last")]
+    return out.sort_index()
+
+
+def _normalize_prepared_calendar(prepared: "PreparedBacktestData") -> "PreparedBacktestData":
+    """Canonicalize prepared arrays to one daily calendar index."""
+    if prepared is None:
+        return prepared
+    all_dates_raw = pd.to_datetime(getattr(prepared, "all_dates", []), errors="coerce")
+    all_dates_idx = pd.DatetimeIndex(all_dates_raw)
+    all_dates_idx = all_dates_idx[~all_dates_idx.isna()]
+    if all_dates_idx.empty:
+        prepared.all_dates = np.array([], dtype="datetime64[ns]")
+        return prepared
+    has_tz = all_dates_idx.tz is not None
+    if has_tz:
+        all_dates_idx = all_dates_idx.tz_localize(None)
+    normalized = all_dates_idx.normalize()
+    needs_full_normalization = has_tz or (not all_dates_idx.equals(normalized)) or normalized.has_duplicates
+    if not needs_full_normalization:
+        return prepared
+    all_dates_idx = normalized[~normalized.duplicated(keep="last")].sort_values()
+    all_dates = all_dates_idx.values.astype("datetime64[ns]")
+    prepared.all_dates = all_dates
+
+    if all_dates.size == 0:
+        return prepared
+
+    max_idx = len(all_dates) - 1
+    for sym_data in prepared.enriched.values():
+        sym_idx_raw = pd.to_datetime(sym_data.index, errors="coerce")
+        sym_idx = pd.DatetimeIndex(sym_idx_raw)
+        if sym_idx.tz is not None:
+            sym_idx = sym_idx.tz_localize(None)
+        if sym_idx.isna().any():
+            continue
+        sym_idx = sym_idx.normalize()
+        sym_index_arr = sym_idx.values.astype("datetime64[ns]")
+        sym_data.index = sym_index_arr
+        if isinstance(sym_data.df, pd.DataFrame) and len(sym_data.df) == len(sym_index_arr):
+            sym_data.df = sym_data.df.copy()
+            sym_data.df.index = sym_idx
+        gidx = np.searchsorted(all_dates, sym_index_arr, side="left")
+        gidx = np.clip(gidx, 0, max_idx)
+        sym_data.gidx = gidx.astype(np.int32, copy=False)
+    return prepared
+
+
+def _normalize_equity_curve(equity_curve: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize equity curve rows to one record per calendar day."""
+    if not equity_curve:
+        return []
+    df = pd.DataFrame(equity_curve)
+    if "Date" not in df.columns or "Equity" not in df.columns:
+        return equity_curve
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["Equity"] = pd.to_numeric(df["Equity"], errors="coerce")
+    df = df.dropna(subset=["Date", "Equity"])
+    if df.empty:
+        return []
+    try:
+        df["Date"] = df["Date"].dt.tz_localize(None)
+    except Exception:
+        pass
+    df["Date"] = df["Date"].dt.normalize()
+    df = df.sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+    return [{"Date": row.Date, "Equity": float(row.Equity)} for row in df.itertuples(index=False)]
+
+
 def _merge_fundamentals_into_df(df: pd.DataFrame, fundamental_df: Optional[pd.DataFrame]) -> None:
     if df is None or df.empty:
         return
@@ -1277,6 +1363,7 @@ def prepare_backtest_data(
                     prepared_cached = None
                 if prepared_cached is None:
                     raise ValueError("Cached prepared data does not cover requested symbols.")
+                prepared_cached = _normalize_prepared_calendar(prepared_cached)
                 if (len(prepared_cached.enriched) < 50) or _prepared_needs_rs_refresh(prepared_cached):
                     inject_market_rs_rank(prepared_cached.enriched, prepared_cached.all_dates)
                     for sym_data in prepared_cached.enriched.values():
@@ -1314,12 +1401,10 @@ def prepare_backtest_data(
                 if df.index.tz is not None:
                     df.index = df.index.tz_localize(None)
                 df = df[df.index >= start_dt]
+            df = _normalize_daily_dataframe_index(df)
 
             if len(df) <= MIN_BARS:
                 continue
-
-            if df.index.tz is not None:
-                df.index = df.index.tz_localize(None)
 
             n = len(df)
             
@@ -1439,6 +1524,7 @@ def prepare_backtest_data(
     _inject_fundamentals_into_enriched(enriched)
 
     prepared = PreparedBacktestData(enriched=enriched, all_dates=all_dates)
+    prepared = _normalize_prepared_calendar(prepared)
     if not disable_indicator_cache:
         try:
             os.makedirs(os.path.dirname(_INDICATOR_CACHE_PATH), exist_ok=True)
@@ -1587,6 +1673,7 @@ def _legacy_run_backtest(
         prepared = pre_calculated_data
     else:
         prepared = prepare_backtest_data(data or {}, symbol_universe, start_date, global_data)
+    prepared = _normalize_prepared_calendar(prepared)
     enriched = prepared.enriched
     all_dates = prepared.all_dates
 
@@ -2404,9 +2491,13 @@ def _legacy_run_backtest(
         # Finalize
         final_val = mtm
         df_trades = pd.DataFrame(trades_list)
+        if not df_trades.empty and "Reason" in df_trades.columns:
+            counted_trades = df_trades[df_trades["Reason"] != "PYRAMID_ADD"]
+        else:
+            counted_trades = df_trades
         win_rate = 0.0
-        if not df_trades.empty:
-            win_rate = (len(df_trades[df_trades["PnL"] > 0]) / len(df_trades)) * 100
+        if not counted_trades.empty:
+            win_rate = (len(counted_trades[counted_trades["PnL"] > 0]) / len(counted_trades)) * 100
 
         # AUDIT FIX: Use Calendar Days for accurate CAGR, not Trading Days
         if start_date and end_date:
@@ -2416,10 +2507,10 @@ def _legacy_run_backtest(
         else:
             total_days = 0
         years = max(total_days / 365.25, 0.1)  # Avoid div/0
-        years = max(total_days / 365.25, 0.1)  # Avoid div/0
         cagr = ((final_val / start_cash) ** (1 / years)) - 1
         
         # Calculate Max Drawdown from Equity Curve
+        equity_curve = _normalize_equity_curve(equity_curve)
         max_dd = 0.0
         if equity_curve:
             peaks = pd.Series([x["Equity"] for x in equity_curve]).cummax()
@@ -2435,7 +2526,8 @@ def _legacy_run_backtest(
             "max_drawdown_pct": max_dd,
             "total_entries": len(entries_list),
             "entries_list": entries_list,
-            "total_trades": len(trades_list),
+            "total_trades": int(len(counted_trades)),
+            "total_trade_legs": int(len(df_trades)),
             "hit_rate": win_rate,
             "cagr": cagr,
             "equity_curve": equity_curve,

@@ -9,6 +9,7 @@ import concurrent.futures
 import multiprocessing
 import pickle
 import gc
+import subprocess
 from pathlib import Path
 
 # Add project root to path
@@ -39,6 +40,30 @@ END_DATE = str(os.getenv("APEX_END_DATE", _DEFAULT_END_DATE) or _DEFAULT_END_DAT
 MAX_WORKERS = int(os.getenv("APEX_MAX_WORKERS", "10") or "10")
 CHECKPOINT_FILE = "optimizer_checkpoint_sp.pkl" 
 MAX_DD_CAP = float(os.getenv("APEX_MAX_DD_CAP", "30.0") or "30.0")
+_DEFAULT_MP_START = "fork" if sys.platform == "darwin" else "spawn"
+MP_START_METHOD = str(os.getenv("APEX_MP_START_METHOD", _DEFAULT_MP_START) or _DEFAULT_MP_START).strip().lower()
+if MP_START_METHOD not in {"spawn", "fork", "forkserver"}:
+    MP_START_METHOD = _DEFAULT_MP_START
+_DEFAULT_WORKER_HARD_CAP = "6" if sys.platform == "darwin" else "0"
+MAX_WORKERS_HARD_CAP = int(os.getenv("APEX_MAX_WORKERS_HARD_CAP", _DEFAULT_WORKER_HARD_CAP) or _DEFAULT_WORKER_HARD_CAP)
+POOL_MAX_TASKS_PER_CHILD = int(os.getenv("APEX_POOL_MAX_TASKS_PER_CHILD", "4") or "4")
+MEMORY_UTILIZATION = float(os.getenv("APEX_MEMORY_UTILIZATION", "0.72") or "0.72")
+MEMORY_BUDGET_GB = float(os.getenv("APEX_MEMORY_BUDGET_GB", "0") or "0")
+MEMORY_HEADROOM_GB = float(os.getenv("APEX_MEMORY_HEADROOM_GB", "6.0") or "6.0")
+_DEFAULT_COPY_MULTIPLIER = "1.0"
+WORKER_DATA_COPY_MULTIPLIER = float(
+    os.getenv("APEX_WORKER_DATA_COPY_MULTIPLIER", _DEFAULT_COPY_MULTIPLIER) or _DEFAULT_COPY_MULTIPLIER
+)
+PRUNE_PREPARED_DF = str(os.getenv("APEX_PRUNE_PREPARED_DF", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+RESUME_CHECKPOINT = str(os.getenv("APEX_RESUME_CHECKPOINT", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 OBJECTIVE_PROFILE = str(os.getenv("APEX_OBJECTIVE_PROFILE", "superperformance") or "superperformance").strip().lower()
 if OBJECTIVE_PROFILE not in {"superperformance", "balanced", "defensive"}:
     OBJECTIVE_PROFILE = "superperformance"
@@ -175,6 +200,195 @@ def _ensure_fundamental_coverage(symbols):
             "Set SEC_EDGAR_IDENTITY and rerun, or override with APEX_ALLOW_LOW_FUND_COVERAGE=1."
         )
 
+
+def _bytes_to_gb(num_bytes):
+    return float(num_bytes) / float(1024 ** 3)
+
+
+def _system_total_ram_bytes():
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        phys_pages = int(os.sysconf("SC_PHYS_PAGES"))
+        total = page_size * phys_pages
+        if total > 0:
+            return int(total)
+    except Exception:
+        pass
+    try:
+        out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True).strip()
+        total = int(out)
+        if total > 0:
+            return total
+    except Exception:
+        pass
+    return 0
+
+
+def _estimate_data_bytes(obj, seen=None):
+    if obj is None:
+        return 0
+    if seen is None:
+        seen = set()
+    oid = id(obj)
+    if oid in seen:
+        return 0
+    seen.add(oid)
+
+    if isinstance(obj, np.ndarray):
+        return int(obj.nbytes)
+    if isinstance(obj, pd.DataFrame):
+        return int(obj.memory_usage(index=True, deep=True).sum())
+    if isinstance(obj, pd.Series):
+        return int(obj.memory_usage(index=True, deep=True))
+    if isinstance(obj, dict):
+        return int(sum(_estimate_data_bytes(v, seen) for v in obj.values()))
+    if isinstance(obj, (list, tuple, set)):
+        return int(sum(_estimate_data_bytes(v, seen) for v in obj))
+    if hasattr(obj, "__dict__"):
+        return int(sum(_estimate_data_bytes(v, seen) for v in vars(obj).values()))
+    return 0
+
+
+def _estimate_prepared_bytes(prepared_obj):
+    if prepared_obj is None:
+        return 0
+    total = 0
+    seen = set()
+    enriched = getattr(prepared_obj, "enriched", {}) or {}
+    for sym_data in enriched.values():
+        df = getattr(sym_data, "df", None)
+        if isinstance(df, pd.DataFrame):
+            total += _estimate_data_bytes(df, seen)
+        slots = getattr(type(sym_data), "__slots__", ())
+        for attr in slots:
+            if attr == "df":
+                continue
+            try:
+                val = getattr(sym_data, attr)
+            except Exception:
+                continue
+            if isinstance(val, np.ndarray):
+                total += _estimate_data_bytes(val, seen)
+    total += _estimate_data_bytes(getattr(prepared_obj, "all_dates", None), seen)
+    return int(total)
+
+
+def _resolve_effective_workers(requested_workers, prepared_bytes, global_bytes):
+    cpu_cap = max(1, int(os.cpu_count() or 1))
+    requested = max(1, min(int(requested_workers), cpu_cap))
+    if MAX_WORKERS_HARD_CAP > 0:
+        requested = min(requested, int(MAX_WORKERS_HARD_CAP))
+
+    total_ram_bytes = _system_total_ram_bytes()
+    if total_ram_bytes <= 0:
+        return requested, {
+            "cpu_cap": cpu_cap,
+            "requested": requested,
+            "effective": requested,
+            "ram_total_gb": float("nan"),
+            "ram_budget_gb": float("nan"),
+            "dataset_gb": _bytes_to_gb(prepared_bytes + global_bytes),
+            "per_worker_gb": float("nan"),
+            "mem_limited_workers": requested,
+        }
+
+    util = min(max(float(MEMORY_UTILIZATION), 0.40), 0.95)
+    budget_bytes = int(total_ram_bytes * util)
+    if MEMORY_BUDGET_GB > 0:
+        budget_bytes = min(budget_bytes, int(MEMORY_BUDGET_GB * (1024 ** 3)))
+
+    dataset_bytes = max(1, int(prepared_bytes + global_bytes))
+    reserve_bytes = int(max(1.0, float(MEMORY_HEADROOM_GB)) * (1024 ** 3))
+    per_worker_bytes = max(
+        int(dataset_bytes * max(0.15, float(WORKER_DATA_COPY_MULTIPLIER))),
+        256 * 1024 * 1024,
+    )
+    coordinator_bytes = dataset_bytes + reserve_bytes
+    remaining = max(0, budget_bytes - coordinator_bytes)
+    mem_limited_workers = max(1, int(remaining // per_worker_bytes)) if per_worker_bytes > 0 else 1
+
+    effective = max(1, min(requested, mem_limited_workers))
+    return effective, {
+        "cpu_cap": cpu_cap,
+        "requested": requested,
+        "effective": effective,
+        "ram_total_gb": _bytes_to_gb(total_ram_bytes),
+        "ram_budget_gb": _bytes_to_gb(budget_bytes),
+        "dataset_gb": _bytes_to_gb(dataset_bytes),
+        "per_worker_gb": _bytes_to_gb(per_worker_bytes),
+        "mem_limited_workers": mem_limited_workers,
+    }
+
+
+def _prune_prepared_frames(prepared_obj):
+    if prepared_obj is None or not getattr(prepared_obj, "enriched", None):
+        return prepared_obj
+    required_cols = {
+        # Core OHLCV
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        # Trend / volume fields used in strategy gate
+        "sma10",
+        "sma20",
+        "sma50",
+        "sma150",
+        "sma200",
+        "vol_ma30",
+        "vol_ma50",
+        "natr",
+        "atr14",
+        "clv",
+        # RS / momentum proxies
+        "rs_percentile",
+        "relative_strength_percentile",
+        "momentum_rank",
+        "rs_rating",
+        # 52w / price action override proxies
+        "high_52w",
+        "high52w",
+        "price_action_percentile",
+        "pa_percentile",
+        "breakout_percentile",
+        # Fundamental gate / dual-core scoring inputs
+        "eps_growth_qoq",
+        "eps_growth_yoy",
+        "eps_yoy_growth_pct",
+        "eps_yoy",
+        "sales_growth_yoy",
+        "revenue_yoy_growth_pct",
+        "sales_yoy",
+        "institutional_sponsorship",
+        # Entry diagnostics and scoring
+        "gap_pct",
+        "vcp_tightness",
+        # VCP candidate debug counters used in engine
+        "range_pct_5",
+        "range_pct_10",
+        "range_pct_20",
+        "range_pct_40",
+    }
+    dropped_total = 0
+    kept_total = 0
+    for s_data in prepared_obj.enriched.values():
+        df = getattr(s_data, "df", None)
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            continue
+        current_cols = list(df.columns)
+        drop_cols = [c for c in current_cols if c not in required_cols]
+        if drop_cols:
+            df.drop(columns=drop_cols, inplace=True, errors="ignore")
+            dropped_total += len(drop_cols)
+        kept_total += len(df.columns)
+    print(
+        f"🧹 Pruned per-symbol DataFrame columns: dropped={dropped_total}, "
+        f"avg_kept={kept_total / max(len(prepared_obj.enriched), 1):.1f}"
+    )
+    return prepared_obj
+
+
 # --- WORKER STATE (Initializer Pattern) ---
 _worker_data = None
 _worker_global_data = None
@@ -221,16 +435,31 @@ def crossover(parent1, parent2):
 
 def compress_data(prepared_obj):
     print("🗜️  Compressing Data (float32)...")
+    float_cols_cast = 0
+    arrays_cast = 0
+    ints_cast = 0
     for sym, s_data in prepared_obj.enriched.items():
         cols = s_data.df.select_dtypes(include=['float64']).columns
-        s_data.df[cols] = s_data.df[cols].astype('float32')
+        if len(cols) > 0:
+            s_data.df[cols] = s_data.df[cols].astype('float32')
+            float_cols_cast += len(cols)
         try:
-            for attr in ['close', 'high', 'low', 'open', 'volume', 'rs_rating', 'adx', 'sma50', 'sma200']:
-                if hasattr(s_data, attr):
-                    val = getattr(s_data, attr)
-                    if isinstance(val, np.ndarray) and val.dtype == 'float64':
-                        setattr(s_data, attr, val.astype('float32'))
-        except Exception: pass
+            for attr in getattr(type(s_data), "__slots__", ()):
+                if attr == "df":
+                    continue
+                val = getattr(s_data, attr)
+                if isinstance(val, np.ndarray) and val.dtype == np.float64:
+                    setattr(s_data, attr, val.astype(np.float32, copy=False))
+                    arrays_cast += 1
+                elif isinstance(val, np.ndarray) and val.dtype == np.int64 and attr == "gidx":
+                    setattr(s_data, attr, val.astype(np.int32, copy=False))
+                    ints_cast += 1
+        except Exception:
+            pass
+    print(
+        f"🗜️  Downcast summary: float64 columns={float_cols_cast}, "
+        f"float64 arrays={arrays_cast}, int64 arrays={ints_cast}"
+    )
     return prepared_obj
 
 def _init_worker(prepared_data_readonly, global_data_readonly):
@@ -581,12 +810,18 @@ def evaluate_genome(genome_id_and_genome):
     finally:
         gc.collect()
 if __name__ == "__main__":
+    start_method_in_use = MP_START_METHOD
     try:
-        multiprocessing.set_start_method("spawn", force=True)
-    except RuntimeError: pass
+        multiprocessing.set_start_method(MP_START_METHOD, force=True)
+    except Exception as exc:
+        start_method_in_use = multiprocessing.get_start_method(allow_none=True) or MP_START_METHOD
+        print(f"⚠️  Unable to force start method '{MP_START_METHOD}': {exc}. Using '{start_method_in_use}'.")
 
     print(f"🚀 PROJECT APEX: Strategic Nuclear Reset")
-    print(f"HARDWARE: M3 Max | WORKERS: {MAX_WORKERS}")
+    print(
+        f"HARDWARE: M3 Max | REQUESTED_WORKERS: {MAX_WORKERS} | "
+        f"MP_START_METHOD: {start_method_in_use}"
+    )
     print("SCHEDULER: Persistent pool + per-genome dynamic dispatch")
     
     print("...Loading Data...")
@@ -657,6 +892,8 @@ if __name__ == "__main__":
                         f"...Ignoring cached indicators: matched {len(selected_cache_symbols)} symbols "
                         f"(min required {target_min})"
                     )
+            cached = None
+            gc.collect()
         except Exception as e:
             print(f"⚠️  Cache load failed: {e}")
     elif disable_cache:
@@ -680,20 +917,62 @@ if __name__ == "__main__":
     if prepared is None:
         prepared = prepare_backtest_data(data, symbols, start_date=START_DATE, global_data=g_data)
         print(f"📊 DATA POOL: {len(prepared.enriched)} tickers prepared.")
-        prepared = compress_data(prepared)
     else:
         print(f"📊 DATA POOL: {len(prepared.enriched)} tickers prepared (cache).")
+    if PRUNE_PREPARED_DF:
+        prepared = _prune_prepared_frames(prepared)
+    prepared_mem_before = _estimate_prepared_bytes(prepared)
+    prepared = compress_data(prepared)
+    prepared_mem_after = _estimate_prepared_bytes(prepared)
+    print(
+        f"🧠 Prepared memory estimate: {_bytes_to_gb(prepared_mem_before):.2f} GB -> "
+        f"{_bytes_to_gb(prepared_mem_after):.2f} GB"
+    )
+    global_mem = _estimate_data_bytes(g_data)
+    effective_workers, worker_plan = _resolve_effective_workers(MAX_WORKERS, prepared_mem_after, global_mem)
+    print(
+        "🧠 Worker memory plan: "
+        f"dataset={worker_plan['dataset_gb']:.2f} GB | per_worker={worker_plan['per_worker_gb']:.2f} GB | "
+        f"RAM budget={worker_plan['ram_budget_gb']:.2f} GB | requested={worker_plan['requested']} | "
+        f"effective={worker_plan['effective']}"
+    )
+    if effective_workers < MAX_WORKERS:
+        print(
+            f"⚠️  Auto-limiting workers to {effective_workers} for memory safety "
+            f"(requested {MAX_WORKERS})."
+        )
+    if isinstance(data, dict):
+        data.clear()
+    data = None
+    gc.collect()
 
-    checkpoint = None # START FRESH
+    checkpoint = load_checkpoint() if RESUME_CHECKPOINT else None
     start_gen = 0
-    
-    population = [generate_random_genome() for _ in range(POPULATION_SIZE)]
+    if checkpoint:
+        ckpt_gen, ckpt_population, _ = checkpoint
+        if isinstance(ckpt_population, list) and len(ckpt_population) == POPULATION_SIZE:
+            population = ckpt_population
+            start_gen = int(ckpt_gen) + 1
+            print(f"🔁 Resuming from checkpoint at generation {start_gen + 1}/{GENERATIONS}")
+        else:
+            print("⚠️ Checkpoint population mismatch. Starting fresh population.")
+            population = [generate_random_genome() for _ in range(POPULATION_SIZE)]
+    else:
+        population = [generate_random_genome() for _ in range(POPULATION_SIZE)]
     dd_cap = MAX_DD_CAP
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=MAX_WORKERS,
-        initializer=_init_worker,
-        initargs=(prepared, g_data),
-    ) as executor:
+    executor_kwargs = {
+        "max_workers": effective_workers,
+        "initializer": _init_worker,
+        "initargs": (prepared, g_data),
+    }
+    if POOL_MAX_TASKS_PER_CHILD > 0:
+        executor_kwargs["max_tasks_per_child"] = POOL_MAX_TASKS_PER_CHILD
+    try:
+        executor_ctx = concurrent.futures.ProcessPoolExecutor(**executor_kwargs)
+    except TypeError:
+        executor_kwargs.pop("max_tasks_per_child", None)
+        executor_ctx = concurrent.futures.ProcessPoolExecutor(**executor_kwargs)
+    with executor_ctx as executor:
         for gen in range(start_gen, GENERATIONS):
             print(f"\n🧬 GEN {gen+1}/{GENERATIONS} (Superperformance)")
             start_time = time.time()
