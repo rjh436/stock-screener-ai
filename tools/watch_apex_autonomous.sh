@@ -18,7 +18,7 @@ log() {
 }
 
 cleanup_python() {
-  pkill -f "optimize_superperformance.py|tools/autonomous_tuner.py|run_phase3_validation.py|multiprocessing.spawn|multiprocessing.resource_tracker" || true
+  pkill -f "optimize_superperformance.py|tools/autonomous_walkforward.py|tools/autonomous_tuner.py|run_phase3_validation.py|multiprocessing.spawn|multiprocessing.resource_tracker" || true
   sleep 2
   # Kill any remaining project-scoped python workers.
   pids="$(ps ax -o pid,command | awk '/Gemini Learning Stock Screener/ && /python/ {print $1}' | tr '\n' ' ')"

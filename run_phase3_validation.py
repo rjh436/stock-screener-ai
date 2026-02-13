@@ -30,9 +30,15 @@ KNOWN_WINNERS: List[Tuple[str, str, str]] = [
     ("NVDA", "2023-01-01", "2023-12-31"),
     ("SMCI", "2023-01-01", "2023-12-31"),
 ]
-FULL_START_DATE = "2021-01-01"
-FULL_END_DATE = pd.Timestamp.now().date().isoformat()
-FULL_EXPORT_PATH = os.path.join("exports", "phase3_results.csv")
+FULL_START_DATE = str(os.getenv("PHASE3_FULL_START_DATE", "2021-01-01") or "2021-01-01")
+FULL_END_DATE = str(
+    os.getenv("PHASE3_FULL_END_DATE", pd.Timestamp.now().date().isoformat())
+    or pd.Timestamp.now().date().isoformat()
+)
+FULL_EXPORT_PATH = str(
+    os.getenv("PHASE3_FULL_EXPORT_PATH", os.path.join("exports", "phase3_results.csv"))
+    or os.path.join("exports", "phase3_results.csv")
+)
 DEFAULT_TUNED_CONFIG_PATH = os.path.join("config", "superperformance_winner.json")
 
 
@@ -654,6 +660,26 @@ def _parse_args() -> argparse.Namespace:
         default=str(os.getenv("PHASE3_CACHE_ONLY", "0") or "0").strip().lower() in {"1", "true", "yes"},
         help="Use cache-only data loading (no forced API refresh).",
     )
+    parser.add_argument(
+        "--full-start-date",
+        default=str(os.getenv("PHASE3_FULL_START_DATE", FULL_START_DATE) or FULL_START_DATE).strip(),
+        help="Start date for full-universe validation window (YYYY-MM-DD).",
+    )
+    parser.add_argument(
+        "--full-end-date",
+        default=str(os.getenv("PHASE3_FULL_END_DATE", FULL_END_DATE) or FULL_END_DATE).strip(),
+        help="End date for full-universe validation window (YYYY-MM-DD).",
+    )
+    parser.add_argument(
+        "--export-path",
+        default=str(os.getenv("PHASE3_FULL_EXPORT_PATH", FULL_EXPORT_PATH) or FULL_EXPORT_PATH).strip(),
+        help="CSV export path for full-universe trade log.",
+    )
+    parser.add_argument(
+        "--summary-json",
+        default=str(os.getenv("PHASE3_SUMMARY_JSON", "") or "").strip(),
+        help="Optional path to write full-universe summary JSON.",
+    )
     return parser.parse_args()
 
 
@@ -672,14 +698,27 @@ def _run_full_universe_validation(
     *,
     technical_weight: float,
     fundamental_weight: float,
+    full_start_date: str,
+    full_end_date: str,
+    export_path: str,
+    cache_only: bool,
     strategy_override: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     universe_mode, symbols = _resolve_full_universe()
     if not symbols:
         raise RuntimeError("Full-universe validation could not load symbols.")
 
-    print(f"\n[Task 3.3] Full Validation Universe: {universe_mode} ({len(symbols)} symbols)")
-    days = _days_for_window(FULL_START_DATE, FULL_END_DATE, warmup_days=380)
+    start_date = str(full_start_date or FULL_START_DATE).strip()
+    end_date = str(full_end_date or FULL_END_DATE).strip()
+    export_target = str(export_path or FULL_EXPORT_PATH).strip()
+    fetch_backtest_mode = bool(cache_only)
+    fetch_force_fresh = not bool(cache_only)
+
+    print(
+        f"\n[Task 3.3] Full Validation Universe: {universe_mode} ({len(symbols)} symbols) "
+        f"| Window={start_date} -> {end_date} | cache_only={bool(cache_only)}"
+    )
+    days = _days_for_window(start_date, end_date, warmup_days=380)
 
     data = _fetch_data_pack_with_retry(
         symbols,
@@ -687,7 +726,8 @@ def _run_full_universe_validation(
         label="full-universe",
         max_attempts=3,
         min_coverage=0.50,
-        backtest_mode=False,
+        backtest_mode=fetch_backtest_mode,
+        force_fresh=fetch_force_fresh,
     )
     global_raw = _fetch_data_pack_with_retry(
         ["SPY", "$VIX", "VIX"],
@@ -695,7 +735,8 @@ def _run_full_universe_validation(
         label="full-universe-global",
         max_attempts=3,
         min_coverage=0.66,
-        backtest_mode=False,
+        backtest_mode=fetch_backtest_mode,
+        force_fresh=fetch_force_fresh,
     )
     spy_df = global_raw.get("SPY")
     vix_df = global_raw.get("$VIX") if global_raw.get("$VIX") is not None else global_raw.get("VIX")
@@ -722,15 +763,17 @@ def _run_full_universe_validation(
             [strategy],
             prepared,
             start_cash=START_CASH,
-            start_date=FULL_START_DATE,
-            end_date=FULL_END_DATE,
+            start_date=start_date,
+            end_date=end_date,
             global_data=global_data,
         )
     )
 
     trades = result.get("trades_list") or []
-    os.makedirs(os.path.dirname(FULL_EXPORT_PATH), exist_ok=True)
-    pd.DataFrame(trades).to_csv(FULL_EXPORT_PATH, index=False)
+    export_dir = os.path.dirname(export_target)
+    if export_dir:
+        os.makedirs(export_dir, exist_ok=True)
+    pd.DataFrame(trades).to_csv(export_target, index=False)
 
     cagr = float(result.get("cagr", 0.0) or 0.0) * 100.0
     max_dd = float(result.get("max_drawdown_pct", 0.0) or 0.0)
@@ -751,7 +794,9 @@ def _run_full_universe_validation(
         "avg_winner": avg_win,
         "avg_loser": avg_loss,
         "total_trades": int(result.get("total_trades", 0) or 0),
-        "export_path": FULL_EXPORT_PATH,
+        "start_date": start_date,
+        "end_date": end_date,
+        "export_path": export_target,
     }
     print(
         "[Task 3.3] "
@@ -759,7 +804,7 @@ def _run_full_universe_validation(
         f"WinRate={summary['win_rate_pct']:.2f}% | AvgWin=${summary['avg_winner']:.2f} | "
         f"AvgLoss=${summary['avg_loser']:.2f}"
     )
-    print(f"[Task 3.3] Saved transaction log to {FULL_EXPORT_PATH}")
+    print(f"[Task 3.3] Saved transaction log to {export_target}")
     return summary
 
 
@@ -818,8 +863,20 @@ def main() -> None:
         full_summary = _run_full_universe_validation(
             technical_weight=tech_w,
             fundamental_weight=fund_w,
+            full_start_date=str(args.full_start_date),
+            full_end_date=str(args.full_end_date),
+            export_path=str(args.export_path),
+            cache_only=bool(args.cache_only),
             strategy_override=strategy_override or None,
         )
+        if str(args.summary_json or "").strip():
+            summary_path = str(args.summary_json).strip()
+            summary_dir = os.path.dirname(summary_path)
+            if summary_dir:
+                os.makedirs(summary_dir, exist_ok=True)
+            with open(summary_path, "w") as f:
+                json.dump(full_summary, f, indent=2)
+            print(f"[Task 3.3] Wrote summary JSON to {summary_path}")
         print(
             "\n[Task 3.3] Final Performance Summary | "
             f"Universe={full_summary['universe_mode']} | "
