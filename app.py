@@ -3,6 +3,7 @@ import pandas as pd
 import sys
 import os
 import json
+import hashlib
 import time
 from datetime import datetime, timedelta
 from typing import List
@@ -169,6 +170,18 @@ def _drop_backtest_cache(key: str) -> None:
     order = [k for k in order if k != key]
     st.session_state.backtest_cache = cache
     st.session_state.backtest_cache_order = order
+
+
+def _strategy_fingerprint(strategies: List[dict]) -> str:
+    """
+    Stable short hash of selected strategy payloads.
+    Ensures session cache is invalidated when strategy params change.
+    """
+    try:
+        payload = json.dumps(strategies or [], sort_keys=True, separators=(",", ":"))
+    except Exception:
+        payload = str(strategies or [])
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
 
 
 def _accuracy_mode() -> str:
@@ -833,14 +846,17 @@ elif mode == "Backtest":
     else:
         fetch_days = days + 320
 
-    # Versioned key avoids reusing old, shallow cached payloads from prior app sessions.
-    cache_key = f"btv3|{bt_universe}|{bt_duration}|{bt_start_date or 'max'}"
+    strategy_fp = _strategy_fingerprint(selected_strategies)
+    # Versioned key avoids reusing old payloads from prior app sessions.
+    # Include strategy fingerprint so param edits cannot silently reuse stale prepared data.
+    cache_key = f"btv5|{bt_universe}|{bt_duration}|{bt_start_date or 'max'}|{strategy_fp}"
     _init_backtest_cache()
 
     if bt_start_date:
         st.info(f"Settings: **{bt_universe}** for **{bt_duration}** (from **{bt_start_date}**)")
     else:
         st.info(f"Settings: **{bt_universe}** for **{bt_duration}**")
+    st.caption(f"Strategy fingerprint: `{strategy_fp}`")
 
     if st.button("🚀 RUN BACKTEST", type="primary"):
         if not selected_strategies:
@@ -1204,6 +1220,8 @@ elif mode == "Backtest":
                                 st.caption(f"Missing symbols report: `{report_path}`")
                             except Exception:
                                 pass
+                        # Do not persist low-coverage prepared payloads; force rebuild on next run.
+                        _drop_backtest_cache(cache_key)
 
                 results_map = {}
                 if prepared is None or tested_symbols == 0:
