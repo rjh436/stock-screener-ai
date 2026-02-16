@@ -93,3 +93,5 @@ logs/*.pid
 logs/*.logpath
 config/_tmp_*.json
 data/schwab_tokens.json
+config/backtest_baselines.json
+config/backtest_baselines.json.tmp

@@ -4,6 +4,7 @@ import sys
 import os
 import json
 import hashlib
+import math
 import time
 from datetime import datetime, timedelta
 from typing import List
@@ -41,6 +42,7 @@ from simulation.paper_trader import PaperTrader, MAX_POSITIONS
 from strategies.strategy_loader import load_strategies
 
 CONFIG_PATH = "config/generated_strategies.json"
+BASELINE_CONFIG_PATH = os.path.join("config", "backtest_baselines.json")
 st.set_page_config(page_title="Apex Sniper AI", layout="wide", page_icon="🎯")
 
 # --- HELPERS ---
@@ -182,6 +184,103 @@ def _strategy_fingerprint(strategies: List[dict]) -> str:
     except Exception:
         payload = str(strategies or [])
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _load_backtest_baselines() -> dict:
+    if not os.path.exists(BASELINE_CONFIG_PATH):
+        return {}
+    try:
+        with open(BASELINE_CONFIG_PATH, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    return {}
+
+
+def _save_backtest_baselines(payload: dict) -> None:
+    os.makedirs(os.path.dirname(BASELINE_CONFIG_PATH), exist_ok=True)
+    tmp_path = f"{BASELINE_CONFIG_PATH}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+    os.replace(tmp_path, BASELINE_CONFIG_PATH)
+
+
+def _baseline_key(
+    *,
+    universe: str,
+    duration: str,
+    start_date: str,
+    strategy_name: str,
+    strategy_fingerprint: str,
+) -> str:
+    parts = [
+        str(universe or "").upper(),
+        str(duration or ""),
+        str(start_date or "max"),
+        str(strategy_name or ""),
+        str(strategy_fingerprint or ""),
+    ]
+    return "|".join(parts)
+
+
+def _safe_float(val, default: float = 0.0) -> float:
+    try:
+        out = float(val)
+    except Exception:
+        return float(default)
+    if not math.isfinite(out):
+        return float(default)
+    return float(out)
+
+
+def _trade_diagnostics(res: dict) -> dict:
+    avg_trade_pct_display = 0.0
+    expectancy_dollar_display = 0.0
+    profit_factor_display = None
+    trade_count_display = int(res.get("total_trades", 0) or 0)
+    win_rate_display = float(res.get("hit_rate", 0.0) or 0.0)
+
+    trades = res.get("trades_list", [])
+    if not trades:
+        return {
+            "avg_trade_pct": avg_trade_pct_display,
+            "expectancy_dollar": expectancy_dollar_display,
+            "profit_factor": profit_factor_display,
+            "trade_count": trade_count_display,
+            "win_rate_pct": win_rate_display,
+        }
+
+    df_trades = pd.DataFrame(trades)
+    if "Reason" in df_trades.columns:
+        df_trades = df_trades[df_trades["Reason"] != "PYRAMID_ADD"]
+
+    if "Return %" in df_trades.columns:
+        ret_series = pd.to_numeric(df_trades["Return %"], errors='coerce').dropna()
+        if not ret_series.empty:
+            avg_trade_pct_display = float(ret_series.mean())
+
+    if "PnL" in df_trades.columns:
+        pnl_series = pd.to_numeric(df_trades["PnL"], errors="coerce").dropna()
+        if not pnl_series.empty:
+            trade_count_display = int(len(pnl_series))
+            win_rate_display = float((pnl_series > 0).mean() * 100.0)
+            expectancy_dollar_display = float(pnl_series.mean())
+            gross_profit = float(pnl_series[pnl_series > 0].sum())
+            gross_loss = float(-pnl_series[pnl_series < 0].sum())
+            if gross_loss > 0:
+                profit_factor_display = gross_profit / gross_loss
+            elif gross_profit > 0:
+                profit_factor_display = float("inf")
+
+    return {
+        "avg_trade_pct": float(avg_trade_pct_display),
+        "expectancy_dollar": float(expectancy_dollar_display),
+        "profit_factor": profit_factor_display,
+        "trade_count": int(trade_count_display),
+        "win_rate_pct": float(win_rate_display),
+    }
 
 
 def _accuracy_mode() -> str:
@@ -1151,6 +1250,8 @@ elif mode == "Backtest":
                 if universe_source != "unknown":
                     st.caption(f"Universe source: `{universe_source}`")
                 tested_cov = 0.0
+                loaded_start = None
+                loaded_end = None
                 tested_symbol_list = list((getattr(prepared, "enriched", {}) or {}).keys())
                 if expected_symbol_count > 0:
                     tested_cov = tested_symbols / float(max(1, expected_symbol_count))
@@ -1266,41 +1367,41 @@ elif mode == "Backtest":
                             results_map[strategy_name] = res
 
                 st.session_state.backtest_results = results_map
+                st.session_state.backtest_run_context = {
+                    "universe": bt_universe,
+                    "duration": bt_duration,
+                    "start_date": bt_start_date or "max",
+                    "strategy_fingerprint": strategy_fp,
+                    "tested_symbols": int(tested_symbols),
+                    "expected_symbol_count": int(expected_symbol_count),
+                    "coverage": float(tested_cov),
+                    "universe_source": universe_source,
+                    "loaded_start": loaded_start,
+                    "loaded_end": loaded_end,
+                }
 
     if "backtest_results" in st.session_state and st.session_state.backtest_results:
+        run_ctx = st.session_state.get("backtest_run_context", {}) or {}
+        baselines = _load_backtest_baselines()
+        tol_final_rel = max(0.0, _safe_float(os.getenv("APEX_BASELINE_TOL_FINAL_VALUE_REL", "0.02"), 0.02))
+        tol_cagr_rel = max(0.0, _safe_float(os.getenv("APEX_BASELINE_TOL_CAGR_REL", "0.02"), 0.02))
+        tol_trades_rel = max(0.0, _safe_float(os.getenv("APEX_BASELINE_TOL_TRADES_REL", "0.03"), 0.03))
+        tol_win_rate_pts = max(0.0, _safe_float(os.getenv("APEX_BASELINE_TOL_WIN_RATE_PTS", "1.5"), 1.5))
+        tol_cov_rel = max(0.0, _safe_float(os.getenv("APEX_BASELINE_TOL_COVERAGE_REL", "0.03"), 0.03))
+
         tabs = st.tabs(list(st.session_state.backtest_results.keys()))
         for i, name in enumerate(st.session_state.backtest_results.keys()):
             res = st.session_state.backtest_results[name]
             with tabs[i]:
-                # --- METRICS FIX: Use closed-trade diagnostics only ---
-                avg_trade_pct_display = 0.0
-                expectancy_dollar_display = 0.0
-                profit_factor_display = None
-                trade_count_display = int(res.get("total_trades", 0) or 0)
-                win_rate_display = float(res.get("hit_rate", 0.0) or 0.0)
-                trades = res.get("trades_list", [])
-                if trades:
-                    df_trades = pd.DataFrame(trades)
-                    if "Reason" in df_trades.columns:
-                        df_trades = df_trades[df_trades["Reason"] != "PYRAMID_ADD"]
-                    # Unweighted trade return %
-                    if "Return %" in df_trades.columns:
-                        ret_series = pd.to_numeric(df_trades["Return %"], errors='coerce').dropna()
-                        if not ret_series.empty:
-                            avg_trade_pct_display = float(ret_series.mean())
-                    # PnL-based expectancy + profit factor + win rate
-                    if "PnL" in df_trades.columns:
-                        pnl_series = pd.to_numeric(df_trades["PnL"], errors="coerce").dropna()
-                        if not pnl_series.empty:
-                            trade_count_display = int(len(pnl_series))
-                            win_rate_display = float((pnl_series > 0).mean() * 100.0)
-                            expectancy_dollar_display = float(pnl_series.mean())
-                            gross_profit = float(pnl_series[pnl_series > 0].sum())
-                            gross_loss = float(-pnl_series[pnl_series < 0].sum())
-                            if gross_loss > 0:
-                                profit_factor_display = gross_profit / gross_loss
-                            elif gross_profit > 0:
-                                profit_factor_display = float("inf")
+                ec_data = res.get("equity_curve", [])
+                df_ec = normalize_equity_curve_df(ec_data)
+
+                diagnostics = _trade_diagnostics(res)
+                avg_trade_pct_display = diagnostics["avg_trade_pct"]
+                expectancy_dollar_display = diagnostics["expectancy_dollar"]
+                profit_factor_display = diagnostics["profit_factor"]
+                trade_count_display = diagnostics["trade_count"]
+                win_rate_display = diagnostics["win_rate_pct"]
 
                 profit_factor_label = "n/a"
                 if profit_factor_display == float("inf"):
@@ -1315,23 +1416,130 @@ elif mode == "Backtest":
                 col4.metric("Expectancy ($)", f"${expectancy_dollar_display:,.2f}")
                 col5.metric("Total Trades", trade_count_display)
                 st.caption(f"Avg Trade % (unweighted): {avg_trade_pct_display:.2f}%")
-                # -------------------------------------------------
 
-                # --- CHART CRASH FIX: Normalize Date Types ---
-                ec_data = res.get("equity_curve", [])
-                df_ec = normalize_equity_curve_df(ec_data)
+                strategy_name = str(res.get("strategy_name") or res.get("strategy") or name or "Backtest_Result")
+                baseline_key = _baseline_key(
+                    universe=str(run_ctx.get("universe", bt_universe)),
+                    duration=str(run_ctx.get("duration", bt_duration)),
+                    start_date=str(run_ctx.get("start_date", bt_start_date or "max")),
+                    strategy_name=strategy_name,
+                    strategy_fingerprint=str(run_ctx.get("strategy_fingerprint", strategy_fp)),
+                )
+                baseline_record = baselines.get(baseline_key)
+
+                current_final_value = _safe_float(res.get("final_value"), 0.0)
+                if current_final_value <= 0 and not df_ec.empty:
+                    current_final_value = _safe_float(df_ec["Equity"].iloc[-1], 0.0)
+                current_cagr = _safe_float(res.get("cagr"), 0.0)
+                current_total_trades = int(trade_count_display)
+                current_win_rate = _safe_float(win_rate_display, 0.0)
+                current_cov = _safe_float(run_ctx.get("coverage"), 0.0)
+
+                pf_store = None
+                if profit_factor_display == float("inf"):
+                    pf_store = "inf"
+                elif profit_factor_display is not None and pd.notna(profit_factor_display):
+                    pf_store = float(profit_factor_display)
+
+                if st.button("🔒 Lock This Run As Baseline", key=f"lock_baseline_{i}_{strategy_name}"):
+                    payload = _load_backtest_baselines()
+                    payload[baseline_key] = {
+                        "locked_at_utc": datetime.utcnow().isoformat() + "Z",
+                        "context": {
+                            "universe": str(run_ctx.get("universe", bt_universe)),
+                            "duration": str(run_ctx.get("duration", bt_duration)),
+                            "start_date": str(run_ctx.get("start_date", bt_start_date or "max")),
+                            "strategy_name": strategy_name,
+                            "strategy_fingerprint": str(run_ctx.get("strategy_fingerprint", strategy_fp)),
+                            "universe_source": str(run_ctx.get("universe_source", "")),
+                            "loaded_start": run_ctx.get("loaded_start"),
+                            "loaded_end": run_ctx.get("loaded_end"),
+                        },
+                        "coverage": {
+                            "tested_symbols": int(run_ctx.get("tested_symbols", 0) or 0),
+                            "expected_symbol_count": int(run_ctx.get("expected_symbol_count", 0) or 0),
+                            "tested_cov": float(run_ctx.get("coverage", 0.0) or 0.0),
+                        },
+                        "metrics": {
+                            "final_value": float(current_final_value),
+                            "cagr": float(current_cagr),
+                            "max_drawdown_pct": float(_safe_float(res.get("max_drawdown_pct"), 0.0)),
+                            "total_trades": int(current_total_trades),
+                            "win_rate_pct": float(current_win_rate),
+                            "profit_factor": pf_store,
+                        },
+                    }
+                    _save_backtest_baselines(payload)
+                    baselines = payload
+                    baseline_record = payload.get(baseline_key)
+                    st.success("Baseline locked for this strategy fingerprint and backtest window.")
+
+                if baseline_record:
+                    base_metrics = baseline_record.get("metrics", {}) or {}
+                    base_cov = (baseline_record.get("coverage", {}) or {}).get("tested_cov")
+                    base_cov = _safe_float(base_cov, 0.0)
+                    base_final = _safe_float(base_metrics.get("final_value"), 0.0)
+                    base_cagr = _safe_float(base_metrics.get("cagr"), 0.0)
+                    base_trades = int(base_metrics.get("total_trades", 0) or 0)
+                    base_win_rate = _safe_float(base_metrics.get("win_rate_pct"), 0.0)
+
+                    rel = lambda curr, base: abs(curr - base) / max(abs(base), 1e-9)
+                    checks = [
+                        {
+                            "Check": "Final Value",
+                            "Delta": f"{rel(current_final_value, base_final):.2%}",
+                            "Threshold": f"{tol_final_rel:.2%}",
+                            "Status": "PASS" if rel(current_final_value, base_final) <= tol_final_rel else "DRIFT",
+                        },
+                        {
+                            "Check": "CAGR",
+                            "Delta": f"{rel(current_cagr, base_cagr):.2%}",
+                            "Threshold": f"{tol_cagr_rel:.2%}",
+                            "Status": "PASS" if rel(current_cagr, base_cagr) <= tol_cagr_rel else "DRIFT",
+                        },
+                        {
+                            "Check": "Total Trades",
+                            "Delta": f"{rel(float(current_total_trades), float(base_trades)):.2%}",
+                            "Threshold": f"{tol_trades_rel:.2%}",
+                            "Status": "PASS" if rel(float(current_total_trades), float(base_trades)) <= tol_trades_rel else "DRIFT",
+                        },
+                        {
+                            "Check": "Win Rate",
+                            "Delta": f"{abs(current_win_rate - base_win_rate):.2f} pts",
+                            "Threshold": f"{tol_win_rate_pts:.2f} pts",
+                            "Status": "PASS" if abs(current_win_rate - base_win_rate) <= tol_win_rate_pts else "DRIFT",
+                        },
+                        {
+                            "Check": "Coverage",
+                            "Delta": f"{abs(current_cov - base_cov):.2%}",
+                            "Threshold": f"{tol_cov_rel:.2%}",
+                            "Status": "PASS" if abs(current_cov - base_cov) <= tol_cov_rel else "DRIFT",
+                        },
+                    ]
+                    pass_all = all(r["Status"] == "PASS" for r in checks)
+                    if pass_all:
+                        st.success("Repeatability check: PASS (within baseline tolerances).")
+                    else:
+                        st.warning("Repeatability check: DRIFT detected vs locked baseline.")
+                    st.caption(
+                        "Baseline locked at "
+                        f"`{baseline_record.get('locked_at_utc', 'unknown')}` "
+                        f"for fingerprint `{run_ctx.get('strategy_fingerprint', strategy_fp)}`."
+                    )
+                    st.dataframe(pd.DataFrame(checks), use_container_width=True, hide_index=True)
+
+                    if st.button("🗑️ Clear Baseline", key=f"clear_baseline_{i}_{strategy_name}"):
+                        payload = _load_backtest_baselines()
+                        payload.pop(baseline_key, None)
+                        _save_backtest_baselines(payload)
+                        st.success("Baseline cleared.")
+
                 if not df_ec.empty:
                     st.line_chart(df_ec.set_index("Date")["Equity"])
                 elif ec_data:
                     st.warning("Equity data malformed.")
-                # ---------------------------------------------
                 
-                # --- DOWNLOAD BUTTON RESTORED ---
-                # Safe data extraction
                 equity_df = df_ec.copy()
-                # Fallback chain to ensure we never get "Unknown" if the key exists
-                strategy_name = res.get("strategy_name") or res.get("strategy") or name or "Backtest_Result"
-                # Sanitize filename (remove special chars)
                 safe_name = "".join(
                     [c for c in strategy_name if c.isalnum() or c in (" ", "_", "-")]
                 ).strip()
