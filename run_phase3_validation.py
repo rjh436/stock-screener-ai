@@ -91,6 +91,7 @@ def _compose_strategy_config(
     technical_weight: float,
     fundamental_weight: float,
     strategy_override: Dict[str, Any] | None = None,
+    transaction_cost_bps: float = 0.0,
 ) -> Dict[str, Any]:
     cfg = build_superperformance_config(technical_weight, fundamental_weight)
     if isinstance(strategy_override, dict) and strategy_override:
@@ -98,6 +99,7 @@ def _compose_strategy_config(
     # Keep explicit CLI weights authoritative for this validation run.
     cfg["technical_weight"] = float(technical_weight)
     cfg["fundamental_weight"] = float(fundamental_weight)
+    cfg["transaction_cost_bps"] = max(0.0, float(transaction_cost_bps or 0.0))
     return cfg
 
 
@@ -463,6 +465,7 @@ def _run_single_symbol_diagnostic(
     fundamental_weight: float,
     strategy_override: Dict[str, Any] | None = None,
     cache_only: bool = False,
+    transaction_cost_bps: float = 0.0,
 ) -> Dict[str, Any]:
     days = _days_for_window(start_date, end_date, warmup_days=420)
     context_symbols = _resolve_known_winner_context(symbol)
@@ -526,6 +529,7 @@ def _run_single_symbol_diagnostic(
         technical_weight,
         fundamental_weight,
         strategy_override=strategy_override,
+        transaction_cost_bps=transaction_cost_bps,
     )
     cfg["log_scoring"] = True
     strategy = SuperperformanceStrategy(copy.deepcopy(cfg))
@@ -593,10 +597,12 @@ def _run_known_winner_suite(
     symbols_filter: set[str] | None = None,
     strategy_override: Dict[str, Any] | None = None,
     cache_only: bool = False,
+    transaction_cost_bps: float = 0.0,
 ) -> List[Dict[str, Any]]:
     print(
         f"\n[Task 3.1] Known Winner Diagnostic "
-        f"(weights: tech={technical_weight:.2f}, fund={fundamental_weight:.2f}, cache_only={bool(cache_only)})"
+        f"(weights: tech={technical_weight:.2f}, fund={fundamental_weight:.2f}, "
+        f"cost_bps={float(transaction_cost_bps):.1f}, cache_only={bool(cache_only)})"
     )
     results: List[Dict[str, Any]] = []
     for symbol, start_date, end_date in KNOWN_WINNERS:
@@ -610,6 +616,7 @@ def _run_known_winner_suite(
             fundamental_weight=fundamental_weight,
             strategy_override=strategy_override,
             cache_only=cache_only,
+            transaction_cost_bps=transaction_cost_bps,
         )
         results.append(res)
         print(
@@ -680,6 +687,12 @@ def _parse_args() -> argparse.Namespace:
         default=str(os.getenv("PHASE3_SUMMARY_JSON", "") or "").strip(),
         help="Optional path to write full-universe summary JSON.",
     )
+    parser.add_argument(
+        "--transaction-cost-bps",
+        type=float,
+        default=float(os.getenv("PHASE3_TRANSACTION_COST_BPS", "0") or 0.0),
+        help="Round-trip execution cost in basis points applied in engine fills.",
+    )
     return parser.parse_args()
 
 
@@ -703,6 +716,7 @@ def _run_full_universe_validation(
     export_path: str,
     cache_only: bool,
     strategy_override: Dict[str, Any] | None = None,
+    transaction_cost_bps: float = 0.0,
 ) -> Dict[str, Any]:
     universe_mode, symbols = _resolve_full_universe()
     if not symbols:
@@ -716,7 +730,8 @@ def _run_full_universe_validation(
 
     print(
         f"\n[Task 3.3] Full Validation Universe: {universe_mode} ({len(symbols)} symbols) "
-        f"| Window={start_date} -> {end_date} | cache_only={bool(cache_only)}"
+        f"| Window={start_date} -> {end_date} | cost_bps={float(transaction_cost_bps):.1f} | "
+        f"cache_only={bool(cache_only)}"
     )
     days = _days_for_window(start_date, end_date, warmup_days=380)
 
@@ -755,6 +770,7 @@ def _run_full_universe_validation(
         technical_weight,
         fundamental_weight,
         strategy_override=strategy_override,
+        transaction_cost_bps=transaction_cost_bps,
     )
     cfg["log_scoring"] = False
     strategy = SuperperformanceStrategy(copy.deepcopy(cfg))
@@ -797,6 +813,7 @@ def _run_full_universe_validation(
         "start_date": start_date,
         "end_date": end_date,
         "export_path": export_target,
+        "transaction_cost_bps": float(transaction_cost_bps),
     }
     print(
         "[Task 3.3] "
@@ -828,6 +845,7 @@ def main() -> None:
             symbols_filter=symbols_filter or None,
             strategy_override=strategy_override or None,
             cache_only=bool(args.cache_only),
+            transaction_cost_bps=float(args.transaction_cost_bps),
         )
         winner_entries_ok = all(bool(r.get("entry_detected")) for r in winner_results) if winner_results else False
         winner_pf_ok = all(
@@ -868,6 +886,7 @@ def main() -> None:
             export_path=str(args.export_path),
             cache_only=bool(args.cache_only),
             strategy_override=strategy_override or None,
+            transaction_cost_bps=float(args.transaction_cost_bps),
         )
         if str(args.summary_json or "").strip():
             summary_path = str(args.summary_json).strip()

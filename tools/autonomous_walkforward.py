@@ -326,6 +326,22 @@ def _optimizer_env(train_start: str, train_end: str) -> Dict[str, str]:
     env.setdefault("APEX_MEMORY_HEADROOM_GB", "6")
     env.setdefault("APEX_POOL_MAX_TASKS_PER_CHILD", "4")
     env.setdefault("APEX_MARKET_EXPOSURE_MODE", "exposure")
+    env.setdefault(
+        "APEX_OPTIMIZER_COST_BPS",
+        str(os.getenv("APEX_WF_OPTIMIZER_COST_BPS", "25") or "25"),
+    )
+    env.setdefault(
+        "APEX_OPTIMIZER_TRACE_REJECTS",
+        str(os.getenv("APEX_WF_OPTIMIZER_TRACE_REJECTS", "0") or "0"),
+    )
+    env.setdefault(
+        "APEX_OPTIMIZER_TRACE_MAX_LINES",
+        str(os.getenv("APEX_WF_OPTIMIZER_TRACE_MAX_LINES", "3000") or "3000"),
+    )
+    env.setdefault(
+        "APEX_MAX_TRADES_SOFT",
+        str(os.getenv("APEX_WF_MAX_TRADES_SOFT", "650") or "650"),
+    )
     env.setdefault("APEX_RESUME_CHECKPOINT", "0")
     env["APEX_START_DATE"] = str(train_start)
     env["APEX_END_DATE"] = str(train_end)
@@ -348,8 +364,14 @@ def _load_in_sample_metrics() -> Dict[str, Any]:
     }
 
 
-def _promotable(in_sample: Dict[str, Any], oos_results: List[Dict[str, Any]], known_gate: Dict[str, Any]) -> bool:
-    if not bool(known_gate.get("pass", False)):
+def _promotable(
+    in_sample: Dict[str, Any],
+    oos_results: List[Dict[str, Any]],
+    known_gate: Dict[str, Any],
+    known_gate_mode: str,
+) -> bool:
+    mode = str(known_gate_mode or "penalty").strip().lower()
+    if mode in {"hard", "strict", "require", "required"} and not bool(known_gate.get("pass", False)):
         return False
     cagr = float(in_sample.get("cagr", 0.0) or 0.0)
     dd = float(in_sample.get("dd", 999.0) or 999.0)
@@ -406,7 +428,14 @@ def main() -> int:
 
     train_start = str(os.getenv("APEX_WF_TRAIN_START", "2006-02-16") or "2006-02-16")
     train_end = str(os.getenv("APEX_WF_TRAIN_END", "2018-12-31") or "2018-12-31")
-    require_known = str(os.getenv("APEX_WF_REQUIRE_KNOWN_WINNERS", "1") or "1").strip().lower() in {"1", "true", "yes"}
+    known_gate_mode = str(os.getenv("APEX_WF_KNOWN_GATE_MODE", "penalty") or "penalty").strip().lower()
+    if known_gate_mode in {"0", "off", "false", "no", "disabled", "ignore"}:
+        known_gate_mode = "off"
+    elif known_gate_mode in {"1", "hard", "strict", "require", "required", "true", "yes"}:
+        known_gate_mode = "hard"
+    else:
+        known_gate_mode = "penalty"
+    require_known = known_gate_mode in {"penalty", "hard"}
     known_min_pf = float(os.getenv("APEX_WF_KNOWN_MIN_PF", "1.25") or "1.25")
     known_pf_required = int(os.getenv("APEX_WF_KNOWN_PF_REQUIRED", "2") or "2")
     windows = _default_windows()
@@ -414,7 +443,7 @@ def main() -> int:
     print("AUTONOMOUS WALK-FORWARD TUNER")
     print(f"Train window: {train_start} -> {train_end}")
     print(f"OOS windows: {[f'{w.label}:{w.start}->{w.end}' for w in windows]}")
-    print(f"Known-winner gate required: {require_known}")
+    print(f"Known-winner gate mode: {known_gate_mode} (evaluate={require_known})")
     print(f"Loop limits: max_loops={args.max_loops}, no_improve_stop={args.no_improve_stop}")
 
     if args.preflight:
@@ -470,12 +499,23 @@ def main() -> int:
         for window in windows:
             oos_results.append(_oos_eval(genome, window, run_tag))
         score = _candidate_score(in_sample, oos_results, known_gate)
-        promotable = _promotable(in_sample, oos_results, known_gate)
+        promotable = _promotable(
+            in_sample,
+            oos_results,
+            known_gate,
+            known_gate_mode=known_gate_mode,
+        )
 
         print(
             f"Candidate summary | IS CAGR={in_sample.get('cagr', 0.0):.2f}% "
             f"| IS DD={in_sample.get('dd', 999.0):.2f}% | IS PF={in_sample.get('pf', 0.0):.2f} "
             f"| known_gate={bool(known_gate.get('pass', False))} | score={score:.2f}"
+        )
+        print(
+            f"Known-winner detail | mode={known_gate_mode} | pass={bool(known_gate.get('pass', False))} "
+            f"| entries={int(known_gate.get('entries', 0) or 0)} "
+            f"| pf_pass={int(known_gate.get('pf_pass', 0) or 0)}/"
+            f"{int(known_gate.get('required_pf_pass', 0) or 0)}"
         )
         for res in oos_results:
             print(

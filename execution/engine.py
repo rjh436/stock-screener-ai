@@ -328,26 +328,40 @@ def _execute_partial_sale(
     sell_fraction: float,
     reason: str,
     trades_list: List[Dict[str, Any]],
+    transaction_cost_bps: float = 0.0,
 ) -> Tuple[float, float]:
     total_shares_before = int(pos.get("shares", 0) or 0)
     shares_to_sell = _partial_sale_shares(total_shares_before, sell_fraction)
     if shares_to_sell <= 0:
         return cash, 0.0
 
-    proceeds = shares_to_sell * sell_px
+    cost_rate = max(0.0, float(transaction_cost_bps or 0.0)) / 10000.0
+    gross_proceeds = shares_to_sell * sell_px
+    exit_fee = gross_proceeds * cost_rate
+    proceeds = gross_proceeds - exit_fee
     cash += proceeds
     pos["shares"] = total_shares_before - shares_to_sell
 
     entry_px = float(pos.get("entry_price", 0.0) or 0.0)
-    ret_pct = ((sell_px / entry_px) - 1.0) * 100.0 if entry_px > 0 else 0.0
+    entry_fee_remaining = float(pos.get("entry_fee_remaining", 0.0) or 0.0)
+    entry_fee_alloc = 0.0
+    if total_shares_before > 0 and entry_fee_remaining > 0:
+        entry_fee_alloc = entry_fee_remaining * (shares_to_sell / float(total_shares_before))
+        pos["entry_fee_remaining"] = max(0.0, entry_fee_remaining - entry_fee_alloc)
+    base_cost = shares_to_sell * entry_px
+    pnl = proceeds - base_cost - entry_fee_alloc
+    denom = base_cost + entry_fee_alloc
+    ret_pct = (pnl / denom) * 100.0 if denom > 0 else 0.0
     trades_list.append(
         {
             "Symbol": sym,
             "Entry": entry_px,
             "Exit": sell_px,
-            "PnL": proceeds - (shares_to_sell * entry_px),
+            "PnL": pnl,
             "Return %": ret_pct,
             "Reason": reason,
+            "Shares": shares_to_sell,
+            "Fees": entry_fee_alloc + exit_fee,
         }
     )
     sold_fraction = shares_to_sell / float(max(1, total_shares_before))
@@ -366,6 +380,7 @@ def _maybe_take_partial_profit(
     current_close: float,
     cash: float,
     trades_list: List[Dict[str, Any]],
+    transaction_cost_bps: float = 0.0,
 ) -> float:
     if pos.get("partial_taken", False):
         return cash
@@ -413,6 +428,7 @@ def _maybe_take_partial_profit(
             sell_fraction=pp_frac,
             reason=partial_reason,
             trades_list=trades_list,
+            transaction_cost_bps=transaction_cost_bps,
         )
         if sold_fraction > 0:
             # Free-roll enforcement: once 50% is sold at >=3R, remaining stop must be breakeven.
@@ -447,6 +463,7 @@ def _maybe_take_partial_profit(
         sell_fraction=float(params.get("partial_profit_fraction", 0.5) or 0.5),
         reason=f"PARTIAL_{str(fast_sma).upper()}",
         trades_list=trades_list,
+        transaction_cost_bps=transaction_cost_bps,
     )
     if sold_fraction > 0 and move_be:
         profit_pct = ((current_close - entry_px) / entry_px) if entry_px > 0 else 0.0
@@ -468,6 +485,7 @@ def _evaluate_exit_state_machine(
     current_close: float,
     cash: float,
     trades_list: List[Dict[str, Any]],
+    transaction_cost_bps: float = 0.0,
 ) -> Tuple[bool, float, Optional[str], float]:
     # 1) Hard stop
     stop_px = float(pos.get("stop_price", 0.0) or 0.0)
@@ -485,6 +503,7 @@ def _evaluate_exit_state_machine(
         current_close=current_close,
         cash=cash,
         trades_list=trades_list,
+        transaction_cost_bps=transaction_cost_bps,
     )
 
     # 3) Time stop (dead-money rule)
@@ -1620,15 +1639,19 @@ def _legacy_run_backtest(
         return bool(op(val_a, val_b))
 
     class _TraceLogger:
-        def __init__(self, enabled: bool, file_path: str):
+        def __init__(self, enabled: bool, file_path: str, max_lines: int = 0):
             self.enabled = bool(enabled)
             self.file_path = str(file_path or "")
             self._seen: set[tuple[str, str, str]] = set()
+            self.max_lines = max(0, int(max_lines or 0))
+            self._line_count = 0
             if self.enabled and self.file_path:
                 os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
 
         def log_reject(self, *, date_val: Any, symbol: str, reason: str) -> None:
             if not self.enabled or not self.file_path:
+                return
+            if self.max_lines and self._line_count >= self.max_lines:
                 return
             sym = str(symbol or "").upper()
             if not sym:
@@ -1644,6 +1667,7 @@ def _legacy_run_backtest(
             self._seen.add(key)
             with open(self.file_path, "a", encoding="utf-8") as f:
                 f.write(f"Reject: {sym} | Date: {dt} | Reason: {msg}\n")
+            self._line_count += 1
 
     known_winner_syms = {
         s.strip().upper()
@@ -1651,8 +1675,9 @@ def _legacy_run_backtest(
         if s.strip()
     }
     trace_rejects_enabled = str(
-        os.getenv("APEX_TRACE_KNOWN_WINNER_REJECTS", "1") or "1"
+        os.getenv("APEX_TRACE_KNOWN_WINNER_REJECTS", "0") or "0"
     ).strip().lower() in {"1", "true", "yes"}
+    trace_max_lines = int(os.getenv("APEX_TRACE_REJECTS_MAX_LINES", "20000") or "20000")
     trace_path = str(
         os.getenv(
             "APEX_TRACE_REJECTS_PATH",
@@ -1660,7 +1685,11 @@ def _legacy_run_backtest(
         )
         or os.path.join("logs", "known_winner_rejections.log")
     )
-    trace_logger = _TraceLogger(trace_rejects_enabled and bool(known_winner_syms), trace_path)
+    trace_logger = _TraceLogger(
+        trace_rejects_enabled and bool(known_winner_syms),
+        trace_path,
+        max_lines=trace_max_lines,
+    )
 
     strategies = strategy if isinstance(strategy, (list, tuple)) else [strategy]
     strategies = [s for s in strategies if s is not None]
@@ -2109,6 +2138,19 @@ def _legacy_run_backtest(
         max_pos = int(params.get("max_positions", 10) or 10)
         risk_per_trade = float(params.get("risk_per_trade", 0.01) or 0.01)
         max_pos_size_pct = float(params.get("max_pos_size_pct", 0.30) or 0.30)
+        try:
+            transaction_cost_bps = float(
+                params.get(
+                    "transaction_cost_bps",
+                    os.getenv("APEX_TRANSACTION_COST_BPS", "0"),
+                )
+                or 0.0
+            )
+        except Exception:
+            transaction_cost_bps = 0.0
+        if not np.isfinite(transaction_cost_bps) or transaction_cost_bps < 0:
+            transaction_cost_bps = 0.0
+        transaction_cost_rate = transaction_cost_bps / 10000.0
         # Equity curve should be daily by default for accurate charting/CSV exports.
         # Keep an override for high-throughput optimization runs.
         try:
@@ -2199,18 +2241,25 @@ def _legacy_run_backtest(
 
                             if add_shares > 0:
                                 add_cost = add_shares * current_open
-                                if (not allow_margin) and add_cost > cash:
-                                    add_shares = int(cash / current_open)
+                                add_fee = add_cost * transaction_cost_rate
+                                add_total = add_cost + add_fee
+                                if (not allow_margin) and add_total > cash:
+                                    denom = current_open * (1.0 + transaction_cost_rate)
+                                    add_shares = int(cash / denom) if denom > 0 else 0
                                     add_cost = add_shares * current_open
+                                    add_fee = add_cost * transaction_cost_rate
 
                             if add_shares > 0:
-                                cash -= add_cost
+                                cash -= (add_cost + add_fee)
                                 old_shares = pos.get("shares", 0)
                                 old_cost = old_shares * pos.get("entry_price", current_open)
                                 new_total_shares = old_shares + add_shares
                                 if new_total_shares > 0:
                                     pos["entry_price"] = (old_cost + add_cost) / new_total_shares
                                     pos["shares"] = new_total_shares
+                                    pos["entry_fee_remaining"] = float(
+                                        pos.get("entry_fee_remaining", 0.0) or 0.0
+                                    ) + add_fee
                                     if pos.get("pyramid_stop_to_avg_cost", True):
                                         pos["stop_price"] = pos["entry_price"]
                                     pos["pyramids"] = int(pos.get("pyramids", 0) or 0) + 1
@@ -2219,7 +2268,9 @@ def _legacy_run_backtest(
                                         "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_open,
                                         "PnL": 0.0,
                                         "Return %": 0.0,
-                                        "Reason": "PYRAMID_ADD"
+                                        "Reason": "PYRAMID_ADD",
+                                        "Shares": add_shares,
+                                        "Fees": add_fee,
                                     })
                 
                 # Exit Logic
@@ -2270,6 +2321,7 @@ def _legacy_run_backtest(
                         current_close=current_close,
                         cash=cash,
                         trades_list=trades_list,
+                        transaction_cost_bps=transaction_cost_bps,
                     )
 
                 if not should_exit:
@@ -2302,14 +2354,21 @@ def _legacy_run_backtest(
                 
                 if should_exit:
                     shares = pos["shares"]
-                    proceeds = shares * exit_px
+                    gross_proceeds = shares * exit_px
+                    exit_fee = gross_proceeds * transaction_cost_rate
+                    proceeds = gross_proceeds - exit_fee
                     cash += proceeds
-                    trade_outcomes.append(1 if (proceeds - (shares * pos["entry_price"])) > 0 else 0)
+                    entry_fee_remaining = float(pos.get("entry_fee_remaining", 0.0) or 0.0)
+                    pnl = proceeds - (shares * pos["entry_price"]) - entry_fee_remaining
+                    trade_outcomes.append(1 if pnl > 0 else 0)
+                    invested = (shares * pos["entry_price"]) + entry_fee_remaining
                     trades_list.append({
                         "Symbol": sym, "Entry": pos["entry_price"], "Exit": exit_px,
-                        "PnL": proceeds - (shares * pos["entry_price"]),
-                        "Return %": (exit_px/pos["entry_price"] - 1)*100,
-                        "Reason": reason
+                        "PnL": pnl,
+                        "Return %": ((pnl / invested) * 100) if invested > 0 else 0.0,
+                        "Reason": reason,
+                        "Shares": shares,
+                        "Fees": entry_fee_remaining + exit_fee,
                     })
                     to_remove.append(sym)
                     continue
@@ -2450,16 +2509,20 @@ def _legacy_run_backtest(
                     if shares > max_gross_shares:
                         shares = max_gross_shares
 
-                if (not allow_margin) and shares * entry_px > cash:
-                    shares = int(cash / entry_px)
-                
+                entry_cost_total = shares * entry_px * (1.0 + transaction_cost_rate)
+                if (not allow_margin) and entry_cost_total > cash:
+                    denom = entry_px * (1.0 + transaction_cost_rate)
+                    shares = int(cash / denom) if denom > 0 else 0
+
                 if shares == 0:
                     sym = cand.sym
                     DBG(f"{sym}: REJECTED - Zero Shares")
                     continue
 
                 if shares > 0:
-                    cash -= shares * entry_px
+                    entry_gross = shares * entry_px
+                    entry_fee = entry_gross * transaction_cost_rate
+                    cash -= (entry_gross + entry_fee)
                     positions[cand.sym] = {
                         "entry_price": entry_px,
                         "stop_price": stop_px,
@@ -2471,6 +2534,7 @@ def _legacy_run_backtest(
                         "pyramid_pending": False,
                         "initial_risk": max(entry_px - stop_px, entry_px * 0.001),
                         "pivot": cand.entry_px,
+                        "entry_fee_remaining": entry_fee,
                     }
                     entries_list.append(
                         {
@@ -2478,6 +2542,7 @@ def _legacy_run_backtest(
                             "Entry": entry_px,
                             "EntryDate": all_dates[day_idx],
                             "Shares": shares,
+                            "Fees": entry_fee,
                             "EntryType": entry_type,
                             "Score": float(cand.score),
                         }

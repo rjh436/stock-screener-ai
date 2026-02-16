@@ -75,6 +75,18 @@ MIN_PF_FLOOR = float(os.getenv("APEX_MIN_PF_FLOOR", "1.20") or "1.20")
 MIN_WINLOSS_RATIO = float(os.getenv("APEX_MIN_WINLOSS_RATIO", "2.50") or "2.50")
 MIN_TRADES_FLOOR = int(os.getenv("APEX_MIN_TRADES_FLOOR", "50") or "50")
 MAX_TRADES_SOFT = int(os.getenv("APEX_MAX_TRADES_SOFT", "700") or "700")
+OPTIMIZER_COST_BPS = float(os.getenv("APEX_OPTIMIZER_COST_BPS", "0") or "0")
+OPTIMIZER_TRACE_REJECTS = str(
+    os.getenv("APEX_OPTIMIZER_TRACE_REJECTS", "0") or "0"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+OPTIMIZER_TRACE_MAX_LINES = int(os.getenv("APEX_OPTIMIZER_TRACE_MAX_LINES", "5000") or "5000")
+GENOME_TIMEOUT_MIN = float(os.getenv("APEX_GENOME_TIMEOUT_MIN", "30") or "30")
+if GENOME_TIMEOUT_MIN < 0:
+    GENOME_TIMEOUT_MIN = 0.0
 IMMIGRANT_FRAC = float(os.getenv("APEX_IMMIGRANT_FRAC", "0.30") or "0.30")
 ELITE_COUNT = int(os.getenv("APEX_ELITE_COUNT", "5") or "5")
 RECENT_5Y_CAGR_FLOOR = float(os.getenv("APEX_RECENT_5Y_CAGR_FLOOR", "12.0") or "12.0")
@@ -433,6 +445,27 @@ def crossover(parent1, parent2):
         child[key] = parent1[key] if random.random() > 0.5 else parent2[key]
     return child
 
+
+def _genome_signature(genome):
+    try:
+        return json.dumps(genome or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    except Exception:
+        return str(genome)
+
+
+def _build_tasks_from_population(population, dd_cap):
+    tasks = []
+    seen = set()
+    duplicates = 0
+    for idx, genome in enumerate(population or []):
+        sig = _genome_signature(genome)
+        if sig in seen:
+            duplicates += 1
+            continue
+        seen.add(sig)
+        tasks.append((idx, genome, dd_cap))
+    return tasks, duplicates
+
 def compress_data(prepared_obj):
     print("🗜️  Compressing Data (float32)...")
     float_cols_cast = 0
@@ -556,6 +589,8 @@ def evaluate_genome(genome_id_and_genome):
             genome_adj["max_pos_size_pct"] = max_pos_size
         # After-close scan, next-day stop order (EP overrides with same-day close)
         strategy_config["signal_mode"] = "after_close"
+        if np.isfinite(OPTIMIZER_COST_BPS) and OPTIMIZER_COST_BPS > 0:
+            strategy_config["transaction_cost_bps"] = float(max(0.0, OPTIMIZER_COST_BPS))
         # Default to bull-deploy/bear-cash behavior for superperformance tuning.
         exposure_mode = str(
             os.getenv("APEX_MARKET_EXPOSURE_MODE", strategy_config.get("market_exposure_mode", "hybrid"))
@@ -822,6 +857,17 @@ if __name__ == "__main__":
         f"HARDWARE: M3 Max | REQUESTED_WORKERS: {MAX_WORKERS} | "
         f"MP_START_METHOD: {start_method_in_use}"
     )
+    print(f"FRICTION MODEL: optimizer_cost_bps={OPTIMIZER_COST_BPS:.1f}")
+    if "APEX_TRACE_KNOWN_WINNER_REJECTS" not in os.environ:
+        os.environ["APEX_TRACE_KNOWN_WINNER_REJECTS"] = "1" if OPTIMIZER_TRACE_REJECTS else "0"
+    if "APEX_TRACE_REJECTS_MAX_LINES" not in os.environ:
+        os.environ["APEX_TRACE_REJECTS_MAX_LINES"] = str(max(0, int(OPTIMIZER_TRACE_MAX_LINES)))
+    print(
+        "TRACE LOGGER: "
+        f"known_winner_rejects={'on' if os.environ.get('APEX_TRACE_KNOWN_WINNER_REJECTS') in {'1', 'true', 'yes'} else 'off'} "
+        f"(max_lines={os.environ.get('APEX_TRACE_REJECTS_MAX_LINES', '0')})"
+    )
+    print(f"TIMEOUT GUARD: per-generation straggler cutoff={GENOME_TIMEOUT_MIN:.1f}m")
     print("SCHEDULER: Persistent pool + per-genome dynamic dispatch")
     
     print("...Loading Data...")
@@ -977,38 +1023,86 @@ if __name__ == "__main__":
             print(f"\n🧬 GEN {gen+1}/{GENERATIONS} (Superperformance)")
             start_time = time.time()
 
-            tasks = [(i, g, dd_cap) for i, g in enumerate(population)]
+            tasks, dupes = _build_tasks_from_population(population, dd_cap)
+            if dupes > 0:
+                print(f"   ♻️ Deduped {dupes} duplicate genomes before evaluation.")
             results = []
 
             while True:
                 results = []
+                batch_start = time.time()
                 futures = [executor.submit(evaluate_genome, task) for task in tasks]
-                for future in concurrent.futures.as_completed(futures):
-                    res = future.result()
-                    results.append(res)
-                    if "error" not in res:
-                        if res.get("disqualified"):
+                pending = set(futures)
+                next_heartbeat = time.time() + 60.0
+                while pending:
+                    done, pending = concurrent.futures.wait(
+                        pending,
+                        timeout=15.0,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    if not done:
+                        if GENOME_TIMEOUT_MIN > 0:
+                            elapsed_batch_min = (time.time() - batch_start) / 60.0
+                            if elapsed_batch_min >= GENOME_TIMEOUT_MIN:
+                                skipped = len(pending)
+                                for fut in list(pending):
+                                    fut.cancel()
+                                pending = set()
+                                for _ in range(skipped):
+                                    results.append(
+                                        {
+                                            "id": -1,
+                                            "score": -999,
+                                            "error": (
+                                                f"timeout>{GENOME_TIMEOUT_MIN:.1f}m "
+                                                "skipped by timeout guard"
+                                            ),
+                                        }
+                                    )
+                                print(
+                                    f"⚠️  Timeout guard triggered at {elapsed_batch_min:.1f}m; "
+                                    f"skipped {skipped} straggler genomes."
+                                )
+                                break
+                        if time.time() >= next_heartbeat:
                             print(
-                                f"   > T:{res.get('trades', 0)} | CAGR:{res.get('cagr', 0):.1f}% "
-                                f"| 5Y:{res.get('cagr_5y', float('nan')):.1f}% | DD:{res.get('dd', 0):.1f}% "
-                                f"| Fitness:-100 (DD Cap)"
+                                f"   ...running {len(results)}/{len(tasks)} genomes complete "
+                                f"| elapsed={(time.time() - start_time)/60.0:.1f}m"
                             )
+                            next_heartbeat = time.time() + 60.0
+                        continue
+                    for future in done:
+                        res = future.result()
+                        results.append(res)
+                        if "error" not in res:
+                            if res.get("disqualified"):
+                                print(
+                                    f"   > T:{res.get('trades', 0)} | CAGR:{res.get('cagr', 0):.1f}% "
+                                    f"| 5Y:{res.get('cagr_5y', float('nan')):.1f}% | DD:{res.get('dd', 0):.1f}% "
+                                    f"| Fitness:-100 (DD Cap)"
+                                )
+                            else:
+                                print(
+                                    f"   > T:{res['trades']} | CAGR:{res['cagr']:.1f}% | DD:{res['dd']:.1f}% "
+                                    f"| PF:{res.get('pf', 0.0):.2f} | Calmar:{res.get('calmar', 0):.2f} "
+                                    f"| 5Y:{res.get('cagr_5y', float('nan')):.1f}% | 3Y:{res.get('cagr_3y', float('nan')):.1f}%"
+                                )
                         else:
-                            print(
-                                f"   > T:{res['trades']} | CAGR:{res['cagr']:.1f}% | DD:{res['dd']:.1f}% "
-                                f"| PF:{res.get('pf', 0.0):.2f} | Calmar:{res.get('calmar', 0):.2f} "
-                                f"| 5Y:{res.get('cagr_5y', float('nan')):.1f}% | 3Y:{res.get('cagr_3y', float('nan')):.1f}%"
-                            )
-                    else:
-                        print(f"   ⚠️  GENOME {res['id']} FAILED: {res['error']}")
+                            print(f"   ⚠️  GENOME {res['id']} FAILED: {res['error']}")
 
                 valid = [r for r in results if "error" not in r and not r.get("disqualified")]
                 if valid:
                     break
-                if dd_cap < 30.0:
-                    dd_cap = 30.0
-                    tasks = [(i, g, dd_cap) for i, g in enumerate(population)]
-                    print("⚠️  All genomes disqualified at 25% DD. Loosening cap to 30% and retrying this generation.")
+                if dd_cap < 35.0:
+                    prev_cap = float(dd_cap)
+                    dd_cap = 30.0 if dd_cap < 30.0 else 35.0
+                    tasks, dupes = _build_tasks_from_population(population, dd_cap)
+                    if dupes > 0:
+                        print(f"   ♻️ Deduped {dupes} duplicate genomes before retry.")
+                    print(
+                        f"⚠️  All genomes disqualified at {prev_cap:.1f}% DD cap. "
+                        f"Loosening to {dd_cap:.1f}% and retrying this generation."
+                    )
                     continue
                 print("CRITICAL: All failed or disqualified.")
                 break
@@ -1048,7 +1142,22 @@ if __name__ == "__main__":
 
             # Breeding with diversity injection to avoid low-volatility local optima.
             elite_n = max(1, min(int(ELITE_COUNT), len(valid)))
-            next_gen = [r["genome"] for r in valid[:elite_n]]
+            next_gen = []
+            next_seen = set()
+            for r in valid:
+                g = r.get("genome")
+                if not isinstance(g, dict):
+                    continue
+                sig = _genome_signature(g)
+                if sig in next_seen:
+                    continue
+                next_seen.add(sig)
+                next_gen.append(dict(g))
+                if len(next_gen) >= elite_n:
+                    break
+            if not next_gen and isinstance(winner.get("genome"), dict):
+                next_gen.append(dict(winner["genome"]))
+                next_seen.add(_genome_signature(winner["genome"]))
             progress = float(gen + 1) / max(float(GENERATIONS), 1.0)
             mutation_rate = max(0.45, 0.80 - (0.35 * progress))
             if winner.get("cagr", 0.0) < MIN_CAGR_FLOOR:
@@ -1057,13 +1166,28 @@ if __name__ == "__main__":
             immigrant_count = int(max(0, round(POPULATION_SIZE * max(0.0, min(IMMIGRANT_FRAC, 0.6)))))
             child_target = max(0, POPULATION_SIZE - immigrant_count)
             parent_pool = valid[: max(10, min(len(valid), 30))]
-
-            while len(next_gen) < child_target:
+            attempt_limit = max(POPULATION_SIZE * 25, 250)
+            attempts = 0
+            while len(next_gen) < child_target and attempts < attempt_limit:
+                attempts += 1
                 p1 = random.choice(parent_pool)["genome"]
                 p2 = random.choice(parent_pool)["genome"]
                 child = crossover(p1, p2)
                 if random.random() < mutation_rate:
                     child = mutate_genome(child)
+                sig = _genome_signature(child)
+                if sig in next_seen:
+                    continue
+                next_seen.add(sig)
+                next_gen.append(child)
+
+            while len(next_gen) < POPULATION_SIZE and attempts < (attempt_limit * 2):
+                attempts += 1
+                child = generate_random_genome()
+                sig = _genome_signature(child)
+                if sig in next_seen:
+                    continue
+                next_seen.add(sig)
                 next_gen.append(child)
 
             while len(next_gen) < POPULATION_SIZE:
