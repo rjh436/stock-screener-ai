@@ -162,6 +162,57 @@ def _set_backtest_cache(key: str, payload: dict) -> None:
     st.session_state.backtest_cache = cache
     st.session_state.backtest_cache_order = order
 
+
+def _drop_backtest_cache(key: str) -> None:
+    cache, order = _init_backtest_cache()
+    cache.pop(key, None)
+    order = [k for k in order if k != key]
+    st.session_state.backtest_cache = cache
+    st.session_state.backtest_cache_order = order
+
+
+def _accuracy_gate_enabled() -> bool:
+    return _env_flag("APEX_ENFORCE_BACKTEST_ACCURACY", "1")
+
+
+def _min_coverage_threshold(universe_name: str) -> float:
+    u = str(universe_name or "").upper()
+    if u in {"RUSSELL3000", "RUSSELL 3000"}:
+        raw = os.getenv("APEX_BACKTEST_MIN_COVERAGE_RUSSELL", "0.70")
+    else:
+        raw = os.getenv("APEX_BACKTEST_MIN_COVERAGE", "0.65")
+    try:
+        val = float(raw or 0.0)
+    except Exception:
+        val = 0.70 if u in {"RUSSELL3000", "RUSSELL 3000"} else 0.65
+    return max(0.10, min(val, 1.00))
+
+
+def _recent_data_coverage(
+    prepared,
+    *,
+    expected_symbol_count: int,
+    max_lag_days: int,
+) -> tuple[int, int, float]:
+    enriched = getattr(prepared, "enriched", {}) or {}
+    if not enriched:
+        return 0, int(max(0, expected_symbol_count)), 0.0
+    now_et = datetime.now(ZoneInfo("America/New_York")).date()
+    fresh = 0
+    for sym_data in enriched.values():
+        idx = getattr(sym_data, "index", None)
+        if idx is None or len(idx) == 0:
+            continue
+        try:
+            last_dt = pd.Timestamp(idx[-1]).tz_localize(None).date()
+        except Exception:
+            continue
+        if (now_et - last_dt).days <= max_lag_days:
+            fresh += 1
+    total = int(max(0, expected_symbol_count))
+    cov = (fresh / float(max(1, total))) if total > 0 else 0.0
+    return int(fresh), total, float(cov)
+
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🎯 Apex Sniper")
@@ -187,6 +238,8 @@ with st.sidebar:
         st.caption(f"`RUSSELL3000_PIT_MEMBERSHIP_CSV`: {pit_status.get('range_csv', '') or '(not set)'}")
         st.caption("Template: `data/russell3000_membership/template_membership_ranges.csv`")
         st.caption("Strict mode: `APEX_REQUIRE_PIT_UNIVERSE=1`")
+        st.caption("Coverage gate: `APEX_ENFORCE_BACKTEST_ACCURACY=1`")
+        st.caption("Russell min coverage: `APEX_BACKTEST_MIN_COVERAGE_RUSSELL` (default 0.70)")
         st.caption("Run validator: `./.venv/bin/python tools/validate_pit_universe.py --strict`")
     
     st.markdown("### 📘 Active Strategies")
@@ -824,6 +877,8 @@ elif mode == "Backtest":
                     except Exception:
                         min_cache_coverage = 0.80
                     min_cache_coverage = max(0.50, min(min_cache_coverage, 1.00))
+                    strict_accuracy_mode = _accuracy_gate_enabled()
+                    force_refresh_for_accuracy = _env_flag("APEX_BACKTEST_FORCE_REFRESH_FOR_ACCURACY", "1")
 
                     data = {}
                     if symbols:
@@ -847,7 +902,12 @@ elif mode == "Backtest":
                             )
                             allow_incremental_refresh = (
                                 initial_cov < min_cache_coverage
-                                and (market_open or refresh_when_closed or initial_cov <= 0.05)
+                                and (
+                                    market_open
+                                    or refresh_when_closed
+                                    or initial_cov <= 0.05
+                                    or (strict_accuracy_mode and force_refresh_for_accuracy)
+                                )
                             )
                             if allow_incremental_refresh:
                                 missing_symbols = [s for s in symbols if s not in data]
@@ -1021,6 +1081,7 @@ elif mode == "Backtest":
                 st.caption(f"Symbols tested: {tested_symbols}")
                 if universe_source != "unknown":
                     st.caption(f"Universe source: `{universe_source}`")
+                tested_cov = 0.0
                 if expected_symbol_count > 0:
                     tested_cov = tested_symbols / float(max(1, expected_symbol_count))
                     st.caption(
@@ -1036,6 +1097,35 @@ elif mode == "Backtest":
                     loaded_start = pd.Timestamp(prepared.all_dates[0]).date().isoformat()
                     loaded_end = pd.Timestamp(prepared.all_dates[-1]).date().isoformat()
                     st.caption(f"Loaded data range: {loaded_start} to {loaded_end}")
+
+                max_end_lag_days = int(os.getenv("APEX_BACKTEST_MAX_END_LAG_DAYS", "7") or "7")
+                max_end_lag_days = max(0, max_end_lag_days)
+                fresh_symbols, fresh_total, fresh_cov = _recent_data_coverage(
+                    prepared,
+                    expected_symbol_count=expected_symbol_count,
+                    max_lag_days=max_end_lag_days,
+                )
+                if fresh_total > 0:
+                    st.caption(
+                        f"Recent-bar coverage (<= {max_end_lag_days} days lag): "
+                        f"{fresh_symbols}/{fresh_total} ({fresh_cov:.1%})"
+                    )
+
+                strict_accuracy_mode = _accuracy_gate_enabled()
+                min_cov_required = _min_coverage_threshold(bt_universe)
+                if strict_accuracy_mode and expected_symbol_count > 0 and tested_cov < min_cov_required:
+                    st.error(
+                        "Accuracy gate blocked this run. "
+                        f"Coverage {tested_cov:.1%} is below required {min_cov_required:.0%} "
+                        f"for {bt_universe}. Results withheld to avoid biased metrics."
+                    )
+                    st.caption(
+                        "Current gap indicates data-provider coverage limits for this PIT window "
+                        "(commonly delisted/renamed symbols)."
+                    )
+                    _drop_backtest_cache(cache_key)
+                    st.session_state.backtest_results = {}
+                    prepared = None
 
                 results_map = {}
                 if prepared is None or tested_symbols == 0:
