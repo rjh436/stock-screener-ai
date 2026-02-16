@@ -421,7 +421,13 @@ def _normalize_symbols(symbols: Iterable[str]) -> List[str]:
 
 
 def _is_valid_symbol(symbol: str) -> bool:
-    return all(ch.isalnum() or ch in "./-" for ch in symbol)
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return False
+    if not all(ch.isalnum() or ch in "./-" for ch in sym):
+        return False
+    # Exclude placeholders like "-" that can leak from holdings files.
+    return any(ch.isalnum() for ch in sym)
 
 
 def _normalize_name(name: str) -> str:

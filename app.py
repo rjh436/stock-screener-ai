@@ -171,8 +171,20 @@ def _drop_backtest_cache(key: str) -> None:
     st.session_state.backtest_cache_order = order
 
 
-def _accuracy_gate_enabled() -> bool:
-    return _env_flag("APEX_ENFORCE_BACKTEST_ACCURACY", "1")
+def _accuracy_mode() -> str:
+    """
+    Accuracy policy:
+    - block: stop runs that fail coverage threshold
+    - warn: allow run but flag results as lower-confidence
+    - off: no coverage enforcement
+    """
+    raw = str(os.getenv("APEX_BACKTEST_ACCURACY_MODE", "warn") or "warn").strip().lower()
+    if raw in {"block", "strict", "hard", "enforce"}:
+        return "block"
+    if raw in {"off", "none", "disable", "disabled"}:
+        return "off"
+    # Default mode keeps backtesting available while still surfacing accuracy risk.
+    return "warn"
 
 
 def _min_coverage_threshold(universe_name: str) -> float:
@@ -213,6 +225,34 @@ def _recent_data_coverage(
     cov = (fresh / float(max(1, total))) if total > 0 else 0.0
     return int(fresh), total, float(cov)
 
+
+def _write_missing_symbols_report(
+    *,
+    universe_name: str,
+    start_date: str,
+    universe_source: str,
+    expected_symbols: List[str],
+    tested_symbols: List[str],
+) -> str:
+    os.makedirs("exports", exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_uni = "".join(ch for ch in str(universe_name).upper() if ch.isalnum()) or "UNIVERSE"
+    path = os.path.join("exports", f"{ts}_missing_symbols_{safe_uni}.txt")
+    exp = {str(s).upper() for s in (expected_symbols or []) if str(s).strip()}
+    tst = {str(s).upper() for s in (tested_symbols or []) if str(s).strip()}
+    missing = sorted(exp - tst)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"Universe: {universe_name}\n")
+        f.write(f"Universe Source: {universe_source}\n")
+        f.write(f"Start Date: {start_date}\n")
+        f.write(f"Expected Symbols: {len(exp)}\n")
+        f.write(f"Tested Symbols: {len(tst)}\n")
+        f.write(f"Missing Symbols: {len(missing)}\n\n")
+        f.write("# Missing symbols\n")
+        for sym in missing:
+            f.write(f"{sym}\n")
+    return path
+
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🎯 Apex Sniper")
@@ -238,7 +278,7 @@ with st.sidebar:
         st.caption(f"`RUSSELL3000_PIT_MEMBERSHIP_CSV`: {pit_status.get('range_csv', '') or '(not set)'}")
         st.caption("Template: `data/russell3000_membership/template_membership_ranges.csv`")
         st.caption("Strict mode: `APEX_REQUIRE_PIT_UNIVERSE=1`")
-        st.caption("Coverage gate: `APEX_ENFORCE_BACKTEST_ACCURACY=1`")
+        st.caption("Accuracy mode: `APEX_BACKTEST_ACCURACY_MODE=warn|block|off`")
         st.caption("Russell min coverage: `APEX_BACKTEST_MIN_COVERAGE_RUSSELL` (default 0.70)")
         st.caption("Run validator: `./.venv/bin/python tools/validate_pit_universe.py --strict`")
     
@@ -810,6 +850,7 @@ elif mode == "Backtest":
             prepared = None
             global_data = {}
             expected_symbol_count = 0
+            expected_symbols: List[str] = []
             universe_source = "unknown"
             require_pit_universe = _env_flag("APEX_REQUIRE_PIT_UNIVERSE", "1")
             cached_payload = cache.get(cache_key)
@@ -817,7 +858,10 @@ elif mode == "Backtest":
                 prepared = cached_payload.get("prepared")
                 global_data = cached_payload.get("global_data") or {}
                 expected_symbol_count = int(cached_payload.get("symbol_count", 0) or 0)
+                expected_symbols = list(cached_payload.get("symbol_universe") or [])
                 universe_source = str(cached_payload.get("universe_source", "unknown") or "unknown")
+                if expected_symbol_count <= 0 and expected_symbols:
+                    expected_symbol_count = len(expected_symbols)
                 if (
                     bt_universe in ("Russell 3000", "RUSSELL3000")
                     and require_pit_universe
@@ -858,6 +902,8 @@ elif mode == "Backtest":
                     else:
                         symbols = get_index_symbols(bt_universe)
                         universe_source = "current_index"
+                    expected_symbols = list(symbols or [])
+                    expected_symbol_count = len(expected_symbols)
                     if not symbols:
                         st.error(f"No symbols loaded for universe: {bt_universe}")
                         st.session_state.backtest_results = {}
@@ -877,7 +923,8 @@ elif mode == "Backtest":
                     except Exception:
                         min_cache_coverage = 0.80
                     min_cache_coverage = max(0.50, min(min_cache_coverage, 1.00))
-                    strict_accuracy_mode = _accuracy_gate_enabled()
+                    accuracy_mode = _accuracy_mode()
+                    accuracy_active = accuracy_mode in {"warn", "block"}
                     force_refresh_for_accuracy = _env_flag("APEX_BACKTEST_FORCE_REFRESH_FOR_ACCURACY", "1")
 
                     data = {}
@@ -906,7 +953,7 @@ elif mode == "Backtest":
                                     market_open
                                     or refresh_when_closed
                                     or initial_cov <= 0.05
-                                    or (strict_accuracy_mode and force_refresh_for_accuracy)
+                                    or (accuracy_active and force_refresh_for_accuracy)
                                 )
                             )
                             if allow_incremental_refresh:
@@ -980,10 +1027,12 @@ elif mode == "Backtest":
                             "prepared": prepared,
                             "global_data": global_data,
                             "symbol_count": len(symbols),
+                            "symbol_universe": list(symbols),
                             "universe_source": universe_source,
                         },
                     )
                     expected_symbol_count = len(symbols)
+                    expected_symbols = list(symbols)
                     del data
                     del g_data
                     gc.collect()
@@ -1038,6 +1087,8 @@ elif mode == "Backtest":
                     else:
                         symbols = get_index_symbols(bt_universe)
                         universe_source = "current_index"
+                    expected_symbols = list(symbols or [])
+                    expected_symbol_count = len(expected_symbols)
                     if symbols:
                         data = fetch_data_pack(
                             symbols,
@@ -1068,10 +1119,12 @@ elif mode == "Backtest":
                                 "prepared": prepared,
                                 "global_data": global_data,
                                 "symbol_count": len(symbols),
+                                "symbol_universe": list(symbols),
                                 "universe_source": universe_source,
                             },
                         )
                         expected_symbol_count = len(symbols)
+                        expected_symbols = list(symbols)
                         del data
                         del g_data
                         gc.collect()
@@ -1082,6 +1135,7 @@ elif mode == "Backtest":
                 if universe_source != "unknown":
                     st.caption(f"Universe source: `{universe_source}`")
                 tested_cov = 0.0
+                tested_symbol_list = list((getattr(prepared, "enriched", {}) or {}).keys())
                 if expected_symbol_count > 0:
                     tested_cov = tested_symbols / float(max(1, expected_symbol_count))
                     st.caption(
@@ -1111,21 +1165,45 @@ elif mode == "Backtest":
                         f"{fresh_symbols}/{fresh_total} ({fresh_cov:.1%})"
                     )
 
-                strict_accuracy_mode = _accuracy_gate_enabled()
+                accuracy_mode = _accuracy_mode()
                 min_cov_required = _min_coverage_threshold(bt_universe)
-                if strict_accuracy_mode and expected_symbol_count > 0 and tested_cov < min_cov_required:
-                    st.error(
-                        "Accuracy gate blocked this run. "
-                        f"Coverage {tested_cov:.1%} is below required {min_cov_required:.0%} "
-                        f"for {bt_universe}. Results withheld to avoid biased metrics."
-                    )
-                    st.caption(
-                        "Current gap indicates data-provider coverage limits for this PIT window "
-                        "(commonly delisted/renamed symbols)."
-                    )
-                    _drop_backtest_cache(cache_key)
-                    st.session_state.backtest_results = {}
-                    prepared = None
+                low_cov = expected_symbol_count > 0 and tested_cov < min_cov_required
+                if low_cov:
+                    if accuracy_mode == "block":
+                        st.error(
+                            "Accuracy gate blocked this run. "
+                            f"Coverage {tested_cov:.1%} is below required {min_cov_required:.0%} "
+                            f"for {bt_universe}. Results withheld to avoid biased metrics."
+                        )
+                        st.caption(
+                            "Current gap indicates data-provider coverage limits for this PIT window "
+                            "(commonly delisted/renamed symbols)."
+                        )
+                        _drop_backtest_cache(cache_key)
+                        st.session_state.backtest_results = {}
+                        prepared = None
+                    elif accuracy_mode == "warn":
+                        st.warning(
+                            "Accuracy warning: run allowed in best-effort mode. "
+                            f"Coverage {tested_cov:.1%} is below target {min_cov_required:.0%} "
+                            f"for {bt_universe}, so results may be biased."
+                        )
+                        export_missing = _env_flag(
+                            "APEX_EXPORT_MISSING_SYMBOLS_ON_LOW_COVERAGE",
+                            "1",
+                        )
+                        if export_missing and expected_symbols:
+                            try:
+                                report_path = _write_missing_symbols_report(
+                                    universe_name=bt_universe,
+                                    start_date=bt_start_date or "max",
+                                    universe_source=universe_source,
+                                    expected_symbols=expected_symbols,
+                                    tested_symbols=tested_symbol_list,
+                                )
+                                st.caption(f"Missing symbols report: `{report_path}`")
+                            except Exception:
+                                pass
 
                 results_map = {}
                 if prepared is None or tested_symbols == 0:
