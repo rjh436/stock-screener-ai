@@ -52,15 +52,25 @@ _STOP_WIDTH_TOL = 1e-4
 
 
 def _indicator_cache_max_bytes() -> int:
+    default_bytes = 2 * 1024 * 1024 * 1024
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        phys_pages = int(os.sysconf("SC_PHYS_PAGES"))
+        total_ram = page_size * phys_pages
+        if total_ram > 0:
+            # Use up to ~25% of system RAM, with practical bounds for laptops/desktops.
+            default_bytes = int(total_ram * 0.25)
+    except Exception:
+        pass
     try:
         max_bytes = int(
-            os.getenv("APEX_INDICATOR_CACHE_MAX_BYTES", str(2 * 1024 * 1024 * 1024))
-            or str(2 * 1024 * 1024 * 1024)
+            os.getenv("APEX_INDICATOR_CACHE_MAX_BYTES", str(default_bytes))
+            or str(default_bytes)
         )
     except Exception:
-        max_bytes = 2 * 1024 * 1024 * 1024
-    # Lower than 256MB is rarely useful for this dataset; upper bound keeps accidental values sane.
-    return max(256 * 1024 * 1024, min(max_bytes, 8 * 1024 * 1024 * 1024))
+        max_bytes = default_bytes
+    # Lower than 512MB is rarely useful for this dataset; upper bound keeps accidental values sane.
+    return max(512 * 1024 * 1024, min(max_bytes, 12 * 1024 * 1024 * 1024))
 
 
 def _human_gb(num_bytes: int) -> str:

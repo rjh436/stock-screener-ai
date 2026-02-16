@@ -52,6 +52,7 @@ class SchwabData:
         self._tok = "data/schwab_tokens.json"
         self.signature_used = None
         self._rate_lock = threading.Lock()
+        self._ensure_lock = threading.Lock()
         self._rate_sem = threading.BoundedSemaphore(self._get_rate_limit_concurrency())
         self._next_allowed_ts = 0.0
         self._base_min_interval_s = self._get_min_request_interval_s()
@@ -60,24 +61,27 @@ class SchwabData:
     def _ensure(self):
         if self._cli is not None:
             return
+        with self._ensure_lock:
+            if self._cli is not None:
+                return
 
-        # STRICT MODE: Only allow project-level token path
-        # This prevents "Ghost Tokens" from being created in ~/.schwab
-        print(f"🔐 Authenticating with token at: {self._tok}")
-        try:
-            if easy_client is None:
-                raise RuntimeError("schwab.auth.easy_client is unavailable (missing Schwab SDK).")
-            self._cli = easy_client(
-                api_key=self.cid,
-                app_secret=self.ck,
-                callback_url=self.redir,
-                token_path=self._tok
-            )
-            self.signature_used = "strict_kwargs"
-        except Exception as e:
-            print(f"❌ AUTHENTICATION FAILED: {e}")
-            print(f"👉 Please run 'python3 Reset_Auth_Final.py' to fix this.")
-            raise e
+            # STRICT MODE: Only allow project-level token path
+            # This prevents "Ghost Tokens" from being created in ~/.schwab
+            print(f"🔐 Authenticating with token at: {self._tok}")
+            try:
+                if easy_client is None:
+                    raise RuntimeError("schwab.auth.easy_client is unavailable (missing Schwab SDK).")
+                self._cli = easy_client(
+                    api_key=self.cid,
+                    app_secret=self.ck,
+                    callback_url=self.redir,
+                    token_path=self._tok
+                )
+                self.signature_used = "strict_kwargs"
+            except Exception as e:
+                print(f"❌ AUTHENTICATION FAILED: {e}")
+                print(f"👉 Please run 'python3 Reset_Auth_Final.py' to fix this.")
+                raise e
 
     @staticmethod
     def _get_rate_limit_concurrency() -> int:

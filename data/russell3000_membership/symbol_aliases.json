@@ -1,0 +1,12 @@
+{
+  "BRK/B": ["BRK-B"],
+  "BF/B": ["BF-B"],
+  "JW/A": ["JW-A"],
+  "RDS/A": ["RDS-A"],
+  "RDS/B": ["RDS-B"],
+  "HEI/A": ["HEI-A"],
+  "CWEN/A": ["CWEN-A"],
+  "MOG/A": ["MOG-A"],
+  "MOG/B": ["MOG-B"],
+  "BFB": ["BF-B"]
+}

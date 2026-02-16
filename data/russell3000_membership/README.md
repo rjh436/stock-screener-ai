@@ -42,3 +42,15 @@ Accuracy guardrails
 - Streamlit and CLI paths can enforce PIT-only Russell 3000 backtests when:
   `APEX_REQUIRE_PIT_UNIVERSE=1` (recommended default).
 - If PIT data is missing, long-horizon backtests should be considered biased.
+
+Symbol coverage helpers
+-----------------------
+- Optional alias file:
+  - `data/russell3000_membership/symbol_aliases.json`
+  - Use this for ticker formatting variants (for example class-share punctuation).
+- Historical fallback providers (non-blocking):
+  - `DATA_ENABLE_FALLBACK_HISTORY=1` (default on)
+  - `DATA_FALLBACK_PROVIDERS=yahoo,stooq` (default order)
+  - `DATA_FALLBACK_MAX_WORKERS=8`
+  - `DATA_FALLBACK_TIMEOUT_SEC=8`
+  - `DATA_FALLBACK_MIN_BARS=40`
