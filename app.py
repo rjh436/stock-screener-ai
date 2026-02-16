@@ -18,6 +18,7 @@ from data.indices import get_index_symbols
 from data.universe import (
     get_universe_symbols,
     get_universe_symbols_pit_with_meta,
+    get_russell3000_pit_status,
 )
 from execution.engine import (
     MIN_ENTRY_SCORE,
@@ -103,10 +104,29 @@ def _env_flag(name: str, default: str = "0") -> bool:
 
 def _get_cache_cap() -> int:
     try:
-        cap = int(os.getenv("APEX_BACKTEST_CACHE_MAX_ENTRIES", "2") or "2")
+        cap = int(os.getenv("APEX_BACKTEST_CACHE_MAX_ENTRIES", "1") or "1")
     except Exception:
-        cap = 2
+        cap = 1
     return max(1, min(cap, 6))
+
+
+def _recommended_fetch_workers(symbol_count: int, *, cache_only: bool = False) -> int:
+    env_override = str(os.getenv("DATA_FETCH_WORKERS", "") or "").strip()
+    if env_override:
+        try:
+            return max(1, min(int(env_override), 32))
+        except Exception:
+            pass
+    cpu = os.cpu_count() or 8
+    if symbol_count >= 2000:
+        workers = min(24, max(8, cpu * (2 if cache_only else 1)))
+    elif symbol_count >= 800:
+        workers = min(18, max(8, int(cpu * (1.5 if cache_only else 1.0))))
+    elif symbol_count >= 250:
+        workers = min(14, max(6, cpu if cache_only else max(4, cpu // 2)))
+    else:
+        workers = min(10, max(4, cpu // 2))
+    return max(1, min(int(workers), 32))
 
 
 def _init_backtest_cache() -> tuple[dict, list]:
@@ -149,6 +169,25 @@ with st.sidebar:
     st.markdown("---")
     st.success("🏆 APEX V9 MEDALLION: RAW ALPHA ACTIVE")
     mode = st.radio("Select Mode", ["Live Screener", "Backtest", "Simulator"])
+
+    st.markdown("### ✅ Accuracy")
+    pit_as_of = pd.Timestamp.utcnow().tz_localize(None).date().isoformat()
+    pit_status = get_russell3000_pit_status(pit_as_of)
+    require_pit_sidebar = _env_flag("APEX_REQUIRE_PIT_UNIVERSE", "1")
+    pit_source = str(pit_status.get("source", "unavailable") or "unavailable")
+    pit_count = int(pit_status.get("symbol_count", 0) or 0)
+    if pit_source in {"pit_snapshot", "pit_ranges"} and pit_count > 0:
+        st.success(f"PIT universe ready ({pit_source}, {pit_count} symbols).")
+    elif require_pit_sidebar:
+        st.error("PIT universe missing. Russell 3000 backtests will be blocked for accuracy.")
+    else:
+        st.warning("PIT universe missing. Russell 3000 backtests may be survivorship-biased.")
+    with st.expander("PIT Setup"):
+        st.caption(f"`RUSSELL3000_PIT_DIR`: {pit_status.get('pit_dir', '')}")
+        st.caption(f"`RUSSELL3000_PIT_MEMBERSHIP_CSV`: {pit_status.get('range_csv', '') or '(not set)'}")
+        st.caption("Template: `data/russell3000_membership/template_membership_ranges.csv`")
+        st.caption("Strict mode: `APEX_REQUIRE_PIT_UNIVERSE=1`")
+        st.caption("Run validator: `./.venv/bin/python tools/validate_pit_universe.py --strict`")
     
     st.markdown("### 📘 Active Strategies")
     strategies_list = load_strategy_configs()
@@ -275,7 +314,7 @@ if mode == "Live Screener":
         data = fetch_data_pack(
             symbols,
             days=base_days,
-            max_workers=10,
+            max_workers=_recommended_fetch_workers(len(symbols), cache_only=False),
             force_fresh=True,
             inject_live=True,
             max_lag_days=0,
@@ -283,7 +322,7 @@ if mode == "Live Screener":
         g_data = fetch_data_pack(
             ["SPY", "$VIX", "VIX"],
             days=600,
-            max_workers=10,
+            max_workers=_recommended_fetch_workers(3, cache_only=False),
             force_fresh=True,
             inject_live=True,
             max_lag_days=0,
@@ -776,6 +815,7 @@ elif mode == "Backtest":
                     prefer_cache_only_when_closed = str(
                         os.getenv("APEX_BACKTEST_CACHE_ONLY_WHEN_CLOSED", "1") or "1"
                     ).strip().lower() in {"1", "true", "yes", "on"}
+                    refresh_when_closed = _env_flag("APEX_BACKTEST_REFRESH_WHEN_CLOSED", "0")
                     cache_only_first = (not market_open) and prefer_cache_only_when_closed
                     try:
                         min_cache_coverage = float(
@@ -787,31 +827,80 @@ elif mode == "Backtest":
 
                     data = {}
                     if symbols:
+                        workers_cache = _recommended_fetch_workers(len(symbols), cache_only=True)
+                        workers_refresh = _recommended_fetch_workers(len(symbols), cache_only=False)
+                        st.caption(
+                            f"Data loader workers: {workers_cache if cache_only_first else workers_refresh} "
+                            "(threaded, single Python process)"
+                        )
                         if cache_only_first:
-                            data = fetch_data_pack(symbols, days=fetch_days, backtest_mode=True) or {}
+                            data = fetch_data_pack(
+                                symbols,
+                                days=fetch_days,
+                                backtest_mode=True,
+                                max_workers=workers_cache,
+                            ) or {}
                             initial_cov = (len(data) / float(len(symbols))) if symbols else 0.0
                             st.caption(
                                 f"Cache-first load (market closed): {len(data)}/{len(symbols)} "
                                 f"symbols ({initial_cov:.1%} coverage)"
                             )
-                            if initial_cov < min_cache_coverage:
+                            allow_incremental_refresh = (
+                                initial_cov < min_cache_coverage
+                                and (market_open or refresh_when_closed or initial_cov <= 0.05)
+                            )
+                            if allow_incremental_refresh:
+                                missing_symbols = [s for s in symbols if s not in data]
                                 st.warning(
                                     f"Cache coverage {initial_cov:.1%} below threshold "
-                                    f"({min_cache_coverage:.0%}); fetching incremental updates."
+                                    f"({min_cache_coverage:.0%}); fetching {len(missing_symbols)} "
+                                    "missing symbols only."
                                 )
-                                data = fetch_data_pack(symbols, days=fetch_days, backtest_mode=False) or {}
+                                if missing_symbols:
+                                    fresh = fetch_data_pack(
+                                        missing_symbols,
+                                        days=fetch_days,
+                                        backtest_mode=False,
+                                        max_workers=workers_refresh,
+                                    ) or {}
+                                    if fresh:
+                                        data.update(fresh)
+                                merged_cov = (len(data) / float(len(symbols))) if symbols else 0.0
+                                st.caption(
+                                    f"Post-refresh coverage: {len(data)}/{len(symbols)} "
+                                    f"symbols ({merged_cov:.1%})"
+                                )
+                            elif initial_cov < min_cache_coverage:
+                                st.warning(
+                                    f"Cache coverage {initial_cov:.1%} below threshold "
+                                    f"({min_cache_coverage:.0%}), but network refresh is skipped while "
+                                    "market is closed. Set `APEX_BACKTEST_REFRESH_WHEN_CLOSED=1` "
+                                    "to override."
+                                )
                         else:
-                            data = fetch_data_pack(symbols, days=fetch_days, backtest_mode=False) or {}
+                            data = fetch_data_pack(
+                                symbols,
+                                days=fetch_days,
+                                backtest_mode=False,
+                                max_workers=workers_refresh,
+                            ) or {}
 
                     # Fetch global context once (required for RS + VIX overlays in the engine).
+                    global_workers = _recommended_fetch_workers(3, cache_only=cache_only_first)
                     g_data = fetch_data_pack(
                         ["SPY", "$VIX", "VIX"],
                         days=fetch_days,
                         backtest_mode=cache_only_first,
+                        max_workers=global_workers,
                     ) or {}
                     spy_df = g_data.get("SPY")
                     if spy_df is None or spy_df.empty:
-                        g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=fetch_days, backtest_mode=False) or {}
+                        g_data = fetch_data_pack(
+                            ["SPY", "$VIX", "VIX"],
+                            days=fetch_days,
+                            backtest_mode=False,
+                            max_workers=_recommended_fetch_workers(3, cache_only=False),
+                        ) or {}
                     spy_df = g_data.get("SPY")
                     vix_df = g_data.get("$VIX")
                     if vix_df is None:
@@ -840,10 +929,20 @@ elif mode == "Backtest":
                     gc.collect()
                     cache_hit = prepared is not None
                 elif not global_data:
-                    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=fetch_days, backtest_mode=True) or {}
+                    g_data = fetch_data_pack(
+                        ["SPY", "$VIX", "VIX"],
+                        days=fetch_days,
+                        backtest_mode=True,
+                        max_workers=_recommended_fetch_workers(3, cache_only=True),
+                    ) or {}
                     spy_df = g_data.get("SPY")
                     if spy_df is None or spy_df.empty:
-                        g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=fetch_days, backtest_mode=False) or {}
+                        g_data = fetch_data_pack(
+                            ["SPY", "$VIX", "VIX"],
+                            days=fetch_days,
+                            backtest_mode=False,
+                            max_workers=_recommended_fetch_workers(3, cache_only=False),
+                        ) or {}
                     spy_df = g_data.get("SPY")
                     vix_df = g_data.get("$VIX")
                     if vix_df is None:
@@ -880,8 +979,18 @@ elif mode == "Backtest":
                         symbols = get_index_symbols(bt_universe)
                         universe_source = "current_index"
                     if symbols:
-                        data = fetch_data_pack(symbols, days=fetch_days, backtest_mode=False) or {}
-                        g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=fetch_days, backtest_mode=False) or {}
+                        data = fetch_data_pack(
+                            symbols,
+                            days=fetch_days,
+                            backtest_mode=False,
+                            max_workers=_recommended_fetch_workers(len(symbols), cache_only=False),
+                        ) or {}
+                        g_data = fetch_data_pack(
+                            ["SPY", "$VIX", "VIX"],
+                            days=fetch_days,
+                            backtest_mode=False,
+                            max_workers=_recommended_fetch_workers(3, cache_only=False),
+                        ) or {}
                         spy_df = g_data.get("SPY")
                         vix_df = g_data.get("$VIX")
                         if vix_df is None:

@@ -6,7 +6,7 @@ import os
 import re
 from datetime import date, datetime
 from io import StringIO
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import requests
 
@@ -111,6 +111,61 @@ def get_universe_symbols_pit_with_meta(
         "Falling back to current constituents (survivorship bias remains)."
     )
     return get_universe_symbols(name), "fallback_current"
+
+
+def get_russell3000_pit_status(as_of_date: Optional[str] = None) -> Dict[str, object]:
+    """
+    Return PIT availability metadata without falling back to live universe downloads.
+
+    Keys:
+    - as_of_date (str)
+    - source (str): pit_snapshot | pit_ranges | unavailable
+    - symbol_count (int)
+    - pit_dir (str)
+    - pit_dir_exists (bool)
+    - range_csv (str)
+    - range_csv_exists (bool)
+    """
+    as_of = _parse_date_ymd(as_of_date)
+    if as_of is None:
+        as_of = datetime.utcnow().date()
+
+    pit_dir = os.getenv("RUSSELL3000_PIT_DIR", _RUSSELL3000_PIT_DIR)
+    range_csv = os.getenv("RUSSELL3000_PIT_MEMBERSHIP_CSV", "").strip()
+
+    snapshot_symbols = _load_russell_3000_pit_from_snapshots(as_of)
+    if snapshot_symbols:
+        return {
+            "as_of_date": as_of.isoformat(),
+            "source": "pit_snapshot",
+            "symbol_count": int(len(snapshot_symbols)),
+            "pit_dir": pit_dir,
+            "pit_dir_exists": bool(pit_dir and os.path.isdir(pit_dir)),
+            "range_csv": range_csv,
+            "range_csv_exists": bool(range_csv and os.path.exists(range_csv)),
+        }
+
+    range_symbols = _load_russell_3000_pit_from_ranges(as_of)
+    if range_symbols:
+        return {
+            "as_of_date": as_of.isoformat(),
+            "source": "pit_ranges",
+            "symbol_count": int(len(range_symbols)),
+            "pit_dir": pit_dir,
+            "pit_dir_exists": bool(pit_dir and os.path.isdir(pit_dir)),
+            "range_csv": range_csv,
+            "range_csv_exists": bool(range_csv and os.path.exists(range_csv)),
+        }
+
+    return {
+        "as_of_date": as_of.isoformat(),
+        "source": "unavailable",
+        "symbol_count": 0,
+        "pit_dir": pit_dir,
+        "pit_dir_exists": bool(pit_dir and os.path.isdir(pit_dir)),
+        "range_csv": range_csv,
+        "range_csv_exists": bool(range_csv and os.path.exists(range_csv)),
+    }
 
 
 def _fetch_sp100() -> List[str]:

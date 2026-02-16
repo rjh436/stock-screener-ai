@@ -1,0 +1,6 @@
+symbol,start_date,end_date,source
+AAPL,2006-01-01,,example
+MSFT,2006-01-01,,example
+NVDA,2006-01-01,,example
+TSLA,2010-06-29,,example
+ABC,2006-01-01,2012-05-15,example_delisted

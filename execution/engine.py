@@ -51,6 +51,22 @@ _FUND_COLS = tuple(FUNDAMENTAL_METRIC_COLUMNS)
 _STOP_WIDTH_TOL = 1e-4
 
 
+def _indicator_cache_max_bytes() -> int:
+    try:
+        max_bytes = int(
+            os.getenv("APEX_INDICATOR_CACHE_MAX_BYTES", str(2 * 1024 * 1024 * 1024))
+            or str(2 * 1024 * 1024 * 1024)
+        )
+    except Exception:
+        max_bytes = 2 * 1024 * 1024 * 1024
+    # Lower than 256MB is rarely useful for this dataset; upper bound keeps accidental values sane.
+    return max(256 * 1024 * 1024, min(max_bytes, 8 * 1024 * 1024 * 1024))
+
+
+def _human_gb(num_bytes: int) -> str:
+    return f"{(float(num_bytes) / (1024.0 ** 3)):.2f}GB"
+
+
 def compute_stop_fill(
     open_px: float,
     high_px: float,
@@ -1352,50 +1368,61 @@ def prepare_backtest_data(
     # Speed hack: reuse cached indicator computations if present
     disable_indicator_cache = os.environ.get("APEX_DISABLE_INDICATOR_CACHE", "").strip() in ("1", "true", "True", "yes", "YES")
     min_cache_coverage = float(os.environ.get("APEX_MIN_CACHE_COVERAGE", "0.60") or "0.60")
+    max_cache_bytes = _indicator_cache_max_bytes()
     if (not disable_indicator_cache) and os.path.exists(_INDICATOR_CACHE_PATH):
         try:
-            with open(_INDICATOR_CACHE_PATH, "rb") as f:
-                cached = pickle.load(f)
-            prepared_cached: Optional[PreparedBacktestData] = None
-            if isinstance(cached, PreparedBacktestData):
-                prepared_cached = cached
-            elif isinstance(cached, dict) and isinstance(cached.get("prepared"), PreparedBacktestData):
-                prepared_cached = cached["prepared"]
-            if prepared_cached is not None:
-                if requested_upper:
-                    filtered_enriched: Dict[str, _SymbolArrays] = {}
-                    for sym, sym_data in prepared_cached.enriched.items():
-                        if str(sym).upper() in requested_upper:
-                            filtered_enriched[sym] = sym_data
-                    if filtered_enriched:
-                        prepared_cached = PreparedBacktestData(
-                            enriched=filtered_enriched,
-                            all_dates=prepared_cached.all_dates,
-                        )
-                    else:
-                        prepared_cached = None
-                if prepared_cached is not None and requested_upper and len(requested_upper) >= 50:
-                    coverage = len(prepared_cached.enriched) / float(len(requested_upper))
-                    if coverage < min_cache_coverage:
-                        prepared_cached = None
-                if prepared_cached is not None and not _prepared_covers_start_date(prepared_cached, start_date):
-                    prepared_cached = None
-                if prepared_cached is None:
-                    raise ValueError("Cached prepared data does not cover requested symbols.")
-                prepared_cached = _normalize_prepared_calendar(prepared_cached)
-                if (len(prepared_cached.enriched) < 50) or _prepared_needs_rs_refresh(prepared_cached):
-                    inject_market_rs_rank(prepared_cached.enriched, prepared_cached.all_dates)
-                    for sym_data in prepared_cached.enriched.values():
-                        try:
-                            sym_data.df["rs_rating"] = sym_data.rsrating
-                            sym_data.df["momentum_rank"] = sym_data.momrank
-                        except Exception:
-                            continue
-                if not _prepared_has_fundamentals(prepared_cached):
-                    _inject_fundamentals_into_enriched(prepared_cached.enriched, requested_symbols)
-                return prepared_cached
+            cache_size = os.path.getsize(_INDICATOR_CACHE_PATH)
         except Exception:
-            pass
+            cache_size = 0
+        if cache_size > max_cache_bytes:
+            print(
+                "⚠️ Skipping oversized indicator cache "
+                f"({_human_gb(cache_size)} > {_human_gb(max_cache_bytes)})."
+            )
+        else:
+            try:
+                with open(_INDICATOR_CACHE_PATH, "rb") as f:
+                    cached = pickle.load(f)
+                prepared_cached: Optional[PreparedBacktestData] = None
+                if isinstance(cached, PreparedBacktestData):
+                    prepared_cached = cached
+                elif isinstance(cached, dict) and isinstance(cached.get("prepared"), PreparedBacktestData):
+                    prepared_cached = cached["prepared"]
+                if prepared_cached is not None:
+                    if requested_upper:
+                        filtered_enriched: Dict[str, _SymbolArrays] = {}
+                        for sym, sym_data in prepared_cached.enriched.items():
+                            if str(sym).upper() in requested_upper:
+                                filtered_enriched[sym] = sym_data
+                        if filtered_enriched:
+                            prepared_cached = PreparedBacktestData(
+                                enriched=filtered_enriched,
+                                all_dates=prepared_cached.all_dates,
+                            )
+                        else:
+                            prepared_cached = None
+                    if prepared_cached is not None and requested_upper and len(requested_upper) >= 50:
+                        coverage = len(prepared_cached.enriched) / float(len(requested_upper))
+                        if coverage < min_cache_coverage:
+                            prepared_cached = None
+                    if prepared_cached is not None and not _prepared_covers_start_date(prepared_cached, start_date):
+                        prepared_cached = None
+                    if prepared_cached is None:
+                        raise ValueError("Cached prepared data does not cover requested symbols.")
+                    prepared_cached = _normalize_prepared_calendar(prepared_cached)
+                    if (len(prepared_cached.enriched) < 50) or _prepared_needs_rs_refresh(prepared_cached):
+                        inject_market_rs_rank(prepared_cached.enriched, prepared_cached.all_dates)
+                        for sym_data in prepared_cached.enriched.values():
+                            try:
+                                sym_data.df["rs_rating"] = sym_data.rsrating
+                                sym_data.df["momentum_rank"] = sym_data.momrank
+                            except Exception:
+                                continue
+                    if not _prepared_has_fundamentals(prepared_cached):
+                        _inject_fundamentals_into_enriched(prepared_cached.enriched, requested_symbols)
+                    return prepared_cached
+            except Exception:
+                pass
 
     vix_df = global_data.get("VIX") if global_data else None
     spy_df = global_data.get("SPY") if global_data else None
@@ -1440,7 +1467,6 @@ def prepare_backtest_data(
             slope_arr = _get_np_col(df, "sma200_slope", 0.0, length=n)
             high52_arr = _get_np_col(df, "high_52w", np.nan, length=n)
             low52_arr = _get_np_col(df, "low_52w", np.nan, length=n)
-            bb_w_arr = _get_np_col(df, "bb_width", 100.0, length=n)
             bb_w_arr = _get_np_col(df, "bb_width", 100.0, length=n)
             natr_arr = _get_np_col(df, "natr", 100.0, length=n)
             
@@ -1545,12 +1571,29 @@ def prepare_backtest_data(
     prepared = PreparedBacktestData(enriched=enriched, all_dates=all_dates)
     prepared = _normalize_prepared_calendar(prepared)
     if not disable_indicator_cache:
+        tmp_path = f"{_INDICATOR_CACHE_PATH}.tmp"
         try:
             os.makedirs(os.path.dirname(_INDICATOR_CACHE_PATH), exist_ok=True)
-            with open(_INDICATOR_CACHE_PATH, "wb") as f:
+            with open(tmp_path, "wb") as f:
                 pickle.dump(prepared, f, protocol=pickle.HIGHEST_PROTOCOL)
+            tmp_size = os.path.getsize(tmp_path)
+            if tmp_size <= max_cache_bytes:
+                os.replace(tmp_path, _INDICATOR_CACHE_PATH)
+            else:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+                print(
+                    "⚠️ Prepared indicator cache not saved "
+                    f"({_human_gb(tmp_size)} exceeds {_human_gb(max_cache_bytes)})."
+                )
         except Exception:
-            pass
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
 
     return prepared
 

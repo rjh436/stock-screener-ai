@@ -10,6 +10,62 @@ from .schwab_client import sd
 from .cache_manager import DataCache
 from concurrent.futures import ThreadPoolExecutor
 
+_MISS_CACHE_DIR = os.path.join("data", "cache", "_miss")
+
+
+def _missing_symbol_ttl_seconds() -> int:
+    try:
+        ttl_hours = float(os.getenv("DATA_MISSING_RETRY_HOURS", "24") or "24")
+    except Exception:
+        ttl_hours = 24.0
+    ttl_hours = max(1.0, min(ttl_hours, 24.0 * 14.0))
+    return int(ttl_hours * 3600)
+
+
+def _missing_symbol_path(sym: str) -> str:
+    key = "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in str(sym or "").upper())
+    if not key:
+        key = "UNKNOWN"
+    return os.path.join(_MISS_CACHE_DIR, f"{key}.miss")
+
+
+def _is_recent_missing_symbol(sym: str) -> bool:
+    path = _missing_symbol_path(sym)
+    if not os.path.exists(path):
+        return False
+    ttl = _missing_symbol_ttl_seconds()
+    try:
+        age = max(0.0, time.time() - os.path.getmtime(path))
+    except Exception:
+        return False
+    if age <= ttl:
+        return True
+    try:
+        os.remove(path)
+    except Exception:
+        pass
+    return False
+
+
+def _mark_missing_symbol(sym: str) -> None:
+    try:
+        os.makedirs(_MISS_CACHE_DIR, exist_ok=True)
+        path = _missing_symbol_path(sym)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(datetime.now(timezone.utc).isoformat())
+    except Exception:
+        pass
+
+
+def _clear_missing_symbol(sym: str) -> None:
+    path = _missing_symbol_path(sym)
+    if not os.path.exists(path):
+        return
+    try:
+        os.remove(path)
+    except Exception:
+        pass
+
 
 def clean_dataframe(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     try:
@@ -177,6 +233,13 @@ def fetch_single_symbol(
     cache_dir = os.path.join("data", "cache")
     symbol = sym
     required_start = _required_history_start(days)
+    if (
+        not force_fresh
+        and not cache_only
+        and not os.path.exists(os.path.join(cache_dir, f"{symbol}.parquet"))
+        and _is_recent_missing_symbol(symbol)
+    ):
+        return None
     # --- TURBO CACHE FIX: Trust fresh files for IPOs ---
     cache_path = os.path.join(cache_dir, f"{symbol}.csv")
     if not force_fresh and os.path.exists(cache_path):
@@ -303,9 +366,14 @@ def fetch_single_symbol(
 
             if df is not None:
                 DataCache.save_to_cache(sym, df)
+                _clear_missing_symbol(sym)
+        elif not cache_only and (df is None or df.empty):
+            _mark_missing_symbol(sym)
 
     except Exception as e:
         print(f"⚠️ API Fetch failed for {sym}: {e}")
+        if not cache_only and (df is None or df.empty):
+            _mark_missing_symbol(sym)
         if require_fresh:
             return None
         # Preserve cached data (even if slightly stale) instead of dropping the symbol.
@@ -325,6 +393,8 @@ def fetch_single_symbol(
                 return None
         df = df[df.index >= start_naive]
         return inject_live_quote(df, sym, prefetched_quote=prefetched_quote) if inject_live else df
+    if not cache_only:
+        _mark_missing_symbol(sym)
     return None
 
 
@@ -395,10 +465,22 @@ def fetch_data_pack(
         )
 
     if max_workers is None:
-        try:
-            max_workers = int(os.getenv("DATA_FETCH_WORKERS", "10"))
-        except Exception:
-            max_workers = 10
+        raw_workers = str(os.getenv("DATA_FETCH_WORKERS", "") or "").strip()
+        if raw_workers:
+            try:
+                max_workers = int(raw_workers)
+            except Exception:
+                max_workers = 10
+        else:
+            cpu = os.cpu_count() or 8
+            if len(symbols) >= 2000:
+                max_workers = min(24, max(8, cpu * 2))
+            elif len(symbols) >= 800:
+                max_workers = min(18, max(8, int(cpu * 1.5)))
+            elif len(symbols) >= 250:
+                max_workers = min(14, max(6, cpu))
+            else:
+                max_workers = min(10, max(4, cpu // 2))
     max_workers = max(1, min(int(max_workers), 32))
 
     count = 0
