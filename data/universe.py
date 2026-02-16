@@ -6,7 +6,7 @@ import os
 import re
 from datetime import date, datetime
 from io import StringIO
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 import requests
 
@@ -76,26 +76,41 @@ def get_universe_symbols_pit(name: str, as_of_date: Optional[str] = None) -> Lis
     Return point-in-time universe members when local PIT files are available.
     Falls back to get_universe_symbols(name) when PIT data is missing.
     """
+    symbols, _ = get_universe_symbols_pit_with_meta(name, as_of_date)
+    return symbols
+
+
+def get_universe_symbols_pit_with_meta(
+    name: str,
+    as_of_date: Optional[str] = None,
+) -> Tuple[List[str], str]:
+    """
+    Return (symbols, source) where source is one of:
+    - pit_snapshot
+    - pit_ranges
+    - current_index
+    - fallback_current
+    """
     key = _normalize_name(name)
     as_of = _parse_date_ymd(as_of_date)
     if as_of is None or key != "RUSSELL3000":
-        return get_universe_symbols(name)
+        return get_universe_symbols(name), "current_index"
 
     symbols = _load_russell_3000_pit_from_snapshots(as_of)
     if symbols:
         print(f"   └── Loaded PIT Russell 3000 snapshot for {as_of.isoformat()} ({len(symbols)} symbols)")
-        return symbols
+        return symbols, "pit_snapshot"
 
     symbols = _load_russell_3000_pit_from_ranges(as_of)
     if symbols:
         print(f"   └── Loaded PIT Russell 3000 membership ranges for {as_of.isoformat()} ({len(symbols)} symbols)")
-        return symbols
+        return symbols, "pit_ranges"
 
     print(
         "   ⚠️ WARNING: No PIT Russell 3000 dataset found. "
         "Falling back to current constituents (survivorship bias remains)."
     )
-    return get_universe_symbols(name)
+    return get_universe_symbols(name), "fallback_current"
 
 
 def _fetch_sp100() -> List[str]:

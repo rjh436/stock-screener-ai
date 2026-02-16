@@ -2665,7 +2665,10 @@ def _run_cli() -> int:
     import argparse
     from datetime import datetime
     from data.loader import fetch_data_pack
-    from data.universe import get_universe_symbols, get_universe_symbols_pit
+    from data.universe import (
+        get_universe_symbols,
+        get_universe_symbols_pit_with_meta,
+    )
 
     parser = argparse.ArgumentParser(description="Run a headless backtest from engine.py")
     parser.add_argument("--strategy", required=True, help="Strategy name")
@@ -2684,7 +2687,15 @@ def _run_cli() -> int:
 
     strategies = load_strategies(strat_configs)
     if args.start_date:
-        symbols = get_universe_symbols_pit("RUSSELL3000", args.start_date)
+        symbols, universe_source = get_universe_symbols_pit_with_meta("RUSSELL3000", args.start_date)
+        require_pit = str(os.getenv("APEX_REQUIRE_PIT_UNIVERSE", "1") or "1").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        if require_pit and universe_source == "fallback_current":
+            raise ValueError(
+                "PIT universe required for accuracy, but no PIT Russell 3000 dataset was found. "
+                "Configure RUSSELL3000_PIT_DIR or RUSSELL3000_PIT_MEMBERSHIP_CSV."
+            )
     else:
         symbols = get_universe_symbols("RUSSELL3000")
     if len(symbols) < 100:

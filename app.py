@@ -15,7 +15,10 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from data.schwab_client import sd
 from data.loader import fetch_data_pack
 from data.indices import get_index_symbols
-from data.universe import get_universe_symbols, get_universe_symbols_pit
+from data.universe import (
+    get_universe_symbols,
+    get_universe_symbols_pit_with_meta,
+)
 from execution.engine import (
     MIN_ENTRY_SCORE,
     calculate_backtest_quality_score,
@@ -92,6 +95,10 @@ def _is_market_open_et(now: datetime | None = None) -> bool:
     market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
     return market_open <= now <= market_close
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default) or default).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _get_cache_cap() -> int:
@@ -711,11 +718,26 @@ elif mode == "Backtest":
             prepared = None
             global_data = {}
             expected_symbol_count = 0
+            universe_source = "unknown"
+            require_pit_universe = _env_flag("APEX_REQUIRE_PIT_UNIVERSE", "1")
             cached_payload = cache.get(cache_key)
             if isinstance(cached_payload, dict):
                 prepared = cached_payload.get("prepared")
                 global_data = cached_payload.get("global_data") or {}
                 expected_symbol_count = int(cached_payload.get("symbol_count", 0) or 0)
+                universe_source = str(cached_payload.get("universe_source", "unknown") or "unknown")
+                if (
+                    bt_universe in ("Russell 3000", "RUSSELL3000")
+                    and require_pit_universe
+                    and universe_source not in {"pit_snapshot", "pit_ranges"}
+                ):
+                    st.warning(
+                        "Discarding cached Russell 3000 dataset because PIT provenance is missing. "
+                        "Rebuilding with strict accuracy rules."
+                    )
+                    prepared = None
+                    global_data = {}
+                    expected_symbol_count = 0
             else:
                 prepared = cached_payload
             cache_hit = prepared is not None
@@ -726,9 +748,24 @@ elif mode == "Backtest":
             with st.spinner("Simulating..."):
                 if not cache_hit:
                     if bt_universe in ("Russell 3000", "RUSSELL3000"):
-                        symbols = get_universe_symbols_pit("RUSSELL3000", bt_start_date)
+                        symbols, universe_source = get_universe_symbols_pit_with_meta("RUSSELL3000", bt_start_date)
+                        if universe_source == "fallback_current":
+                            msg = (
+                                "Point-in-time Russell 3000 membership data was not found. "
+                                "Using current constituents introduces survivorship bias."
+                            )
+                            if require_pit_universe:
+                                st.error(
+                                    f"{msg} Set `RUSSELL3000_PIT_DIR` or "
+                                    "`RUSSELL3000_PIT_MEMBERSHIP_CSV` to run accurate long-horizon backtests."
+                                )
+                                st.session_state.backtest_results = {}
+                                symbols = []
+                            else:
+                                st.warning(msg)
                     else:
                         symbols = get_index_symbols(bt_universe)
+                        universe_source = "current_index"
                     if not symbols:
                         st.error(f"No symbols loaded for universe: {bt_universe}")
                         st.session_state.backtest_results = {}
@@ -794,12 +831,14 @@ elif mode == "Backtest":
                             "prepared": prepared,
                             "global_data": global_data,
                             "symbol_count": len(symbols),
+                            "universe_source": universe_source,
                         },
                     )
                     expected_symbol_count = len(symbols)
                     del data
                     del g_data
                     gc.collect()
+                    cache_hit = prepared is not None
                 elif not global_data:
                     g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=fetch_days, backtest_mode=True) or {}
                     spy_df = g_data.get("SPY")
@@ -812,8 +851,67 @@ elif mode == "Backtest":
                     global_data = {"SPY": spy_df, "VIX": vix_df}
                     del g_data
 
+                if cache_hit and getattr(prepared, "all_dates", None) is not None and len(prepared.all_dates) > 0:
+                    max_end_lag_days = int(os.getenv("APEX_BACKTEST_MAX_END_LAG_DAYS", "7") or "7")
+                    max_end_lag_days = max(0, max_end_lag_days)
+                    loaded_end_dt = pd.Timestamp(prepared.all_dates[-1]).tz_localize(None)
+                    now_et = datetime.now(ZoneInfo("America/New_York")).date()
+                    end_lag = (now_et - loaded_end_dt.date()).days
+                    if end_lag > max_end_lag_days:
+                        st.warning(
+                            f"Cached prepared data ends on {loaded_end_dt.date().isoformat()} "
+                            f"({end_lag} days stale). Refreshing for accuracy."
+                        )
+                        cache_hit = False
+                        prepared = None
+
+                if not cache_hit:
+                    # Re-enter with fresh data for stale cache case.
+                    if bt_universe in ("Russell 3000", "RUSSELL3000"):
+                        symbols, universe_source = get_universe_symbols_pit_with_meta("RUSSELL3000", bt_start_date)
+                        if universe_source == "fallback_current" and require_pit_universe:
+                            st.error(
+                                "Point-in-time Russell 3000 membership is required for accurate backtests. "
+                                "Configure `RUSSELL3000_PIT_DIR` or `RUSSELL3000_PIT_MEMBERSHIP_CSV`."
+                            )
+                            st.session_state.backtest_results = {}
+                            symbols = []
+                    else:
+                        symbols = get_index_symbols(bt_universe)
+                        universe_source = "current_index"
+                    if symbols:
+                        data = fetch_data_pack(symbols, days=fetch_days, backtest_mode=False) or {}
+                        g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=fetch_days, backtest_mode=False) or {}
+                        spy_df = g_data.get("SPY")
+                        vix_df = g_data.get("$VIX")
+                        if vix_df is None:
+                            vix_df = g_data.get("VIX")
+                        global_data = {"SPY": spy_df, "VIX": vix_df}
+                        prepared = prepare_backtest_data(
+                            data,
+                            symbol_universe=symbols,
+                            start_date=bt_start_date,
+                            global_data=global_data,
+                        )
+                        _set_backtest_cache(
+                            cache_key,
+                            {
+                                "prepared": prepared,
+                                "global_data": global_data,
+                                "symbol_count": len(symbols),
+                                "universe_source": universe_source,
+                            },
+                        )
+                        expected_symbol_count = len(symbols)
+                        del data
+                        del g_data
+                        gc.collect()
+                        cache_hit = prepared is not None
+
                 tested_symbols = len(getattr(prepared, "enriched", {}) or {})
                 st.caption(f"Symbols tested: {tested_symbols}")
+                if universe_source != "unknown":
+                    st.caption(f"Universe source: `{universe_source}`")
                 if expected_symbol_count > 0:
                     tested_cov = tested_symbols / float(max(1, expected_symbol_count))
                     st.caption(
@@ -831,42 +929,46 @@ elif mode == "Backtest":
                     st.caption(f"Loaded data range: {loaded_start} to {loaded_end}")
 
                 results_map = {}
-                run_strategies = load_strategies(selected_strategies)
-                if not run_strategies:
-                    st.error("No runnable strategies were loaded.")
+                if prepared is None or tested_symbols == 0:
+                    st.error("Backtest dataset is unavailable or empty; run aborted for accuracy.")
                     st.session_state.backtest_results = {}
                 else:
-                    status_text = st.empty()
-                    start_time = time.time()
-                    status_text.text(f"Running {len(run_strategies)} strategy simulation(s)...")
-                    try:
-                        raw_results = run_backtest(
-                            run_strategies,
-                            prepared,
-                            start_cash=100000.0,
-                            start_date=bt_start_date,
-                            global_data=global_data,
-                        )
-                    except Exception as e:
-                        st.error(f"Backtest run failed: {e}")
-                        raw_results = []
+                    run_strategies = load_strategies(selected_strategies)
+                    if not run_strategies:
+                        st.error("No runnable strategies were loaded.")
+                        st.session_state.backtest_results = {}
+                    else:
+                        status_text = st.empty()
+                        start_time = time.time()
+                        status_text.text(f"Running {len(run_strategies)} strategy simulation(s)...")
+                        try:
+                            raw_results = run_backtest(
+                                run_strategies,
+                                prepared,
+                                start_cash=100000.0,
+                                start_date=bt_start_date,
+                                global_data=global_data,
+                            )
+                        except Exception as e:
+                            st.error(f"Backtest run failed: {e}")
+                            raw_results = []
 
-                    elapsed = max(0.0, time.time() - start_time)
-                    status_text.text(f"Completed in {elapsed:.1f}s")
-                    time.sleep(0.15)
-                    status_text.empty()
+                        elapsed = max(0.0, time.time() - start_time)
+                        status_text.text(f"Completed in {elapsed:.1f}s")
+                        time.sleep(0.15)
+                        status_text.empty()
 
-                    if isinstance(raw_results, dict):
-                        raw_results = [raw_results]
-                    for res in raw_results or []:
-                        if not isinstance(res, dict):
-                            continue
-                        strategy_name = str(
-                            res.get("strategy")
-                            or res.get("strategy_name")
-                            or f"Strategy_{len(results_map) + 1}"
-                        )
-                        results_map[strategy_name] = res
+                        if isinstance(raw_results, dict):
+                            raw_results = [raw_results]
+                        for res in raw_results or []:
+                            if not isinstance(res, dict):
+                                continue
+                            strategy_name = str(
+                                res.get("strategy")
+                                or res.get("strategy_name")
+                                or f"Strategy_{len(results_map) + 1}"
+                            )
+                            results_map[strategy_name] = res
 
                 st.session_state.backtest_results = results_map
 
@@ -941,7 +1043,7 @@ elif mode == "Backtest":
 
                 if not equity_df.empty:
                     try:
-                        csv_data = equity_df.to_csv().encode('utf-8')
+                        csv_data = equity_df.to_csv(index=False).encode('utf-8')
                         st.download_button(
                             label="📥 Export Result (CSV)",
                             data=csv_data,
