@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
-import concurrent.futures
 import sys
 import os
 import json
 import time
 from datetime import datetime, timedelta
 from typing import List
+from zoneinfo import ZoneInfo
+import gc
 
 # Ensure project root is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -14,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from data.schwab_client import sd
 from data.loader import fetch_data_pack
 from data.indices import get_index_symbols
-from data.universe import get_universe_symbols
+from data.universe import get_universe_symbols, get_universe_symbols_pit
 from execution.engine import (
     MIN_ENTRY_SCORE,
     calculate_backtest_quality_score,
@@ -81,6 +82,58 @@ def normalize_equity_curve_df(equity_curve) -> pd.DataFrame:
     df_ec["Date"] = df_ec["Date"].dt.normalize()
     df_ec = df_ec.sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
     return df_ec[["Date", "Equity"]].reset_index(drop=True)
+
+
+def _is_market_open_et(now: datetime | None = None) -> bool:
+    if now is None:
+        now = datetime.now(ZoneInfo("America/New_York"))
+    if now.weekday() >= 5:
+        return False
+    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    return market_open <= now <= market_close
+
+
+def _get_cache_cap() -> int:
+    try:
+        cap = int(os.getenv("APEX_BACKTEST_CACHE_MAX_ENTRIES", "2") or "2")
+    except Exception:
+        cap = 2
+    return max(1, min(cap, 6))
+
+
+def _init_backtest_cache() -> tuple[dict, list]:
+    if "backtest_cache" not in st.session_state:
+        st.session_state.backtest_cache = {}
+    if "backtest_cache_order" not in st.session_state:
+        st.session_state.backtest_cache_order = []
+    cache = st.session_state.backtest_cache
+    order = [k for k in st.session_state.backtest_cache_order if k in cache]
+    st.session_state.backtest_cache_order = order
+    return cache, order
+
+
+def _touch_cache_key(key: str) -> None:
+    cache, order = _init_backtest_cache()
+    if key in cache:
+        if key in order:
+            order.remove(key)
+        order.append(key)
+    st.session_state.backtest_cache_order = order
+
+
+def _set_backtest_cache(key: str, payload: dict) -> None:
+    cache, order = _init_backtest_cache()
+    cache[key] = payload
+    if key in order:
+        order.remove(key)
+    order.append(key)
+    max_entries = _get_cache_cap()
+    while len(order) > max_entries:
+        evict_key = order.pop(0)
+        cache.pop(evict_key, None)
+    st.session_state.backtest_cache = cache
+    st.session_state.backtest_cache_order = order
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -642,9 +695,8 @@ elif mode == "Backtest":
         fetch_days = days + 320
 
     # Versioned key avoids reusing old, shallow cached payloads from prior app sessions.
-    cache_key = f"btv2|{bt_universe}|{bt_duration}|{bt_start_date or 'max'}"
-    if "backtest_cache" not in st.session_state:
-        st.session_state.backtest_cache = {}
+    cache_key = f"btv3|{bt_universe}|{bt_duration}|{bt_start_date or 'max'}"
+    _init_backtest_cache()
 
     if bt_start_date:
         st.info(f"Settings: **{bt_universe}** for **{bt_duration}** (from **{bt_start_date}**)")
@@ -655,31 +707,74 @@ elif mode == "Backtest":
         if not selected_strategies:
             st.error("Please select at least one strategy.")
         else:
-            cache = st.session_state.backtest_cache
+            cache, _ = _init_backtest_cache()
             prepared = None
             global_data = {}
+            expected_symbol_count = 0
             cached_payload = cache.get(cache_key)
             if isinstance(cached_payload, dict):
                 prepared = cached_payload.get("prepared")
                 global_data = cached_payload.get("global_data") or {}
+                expected_symbol_count = int(cached_payload.get("symbol_count", 0) or 0)
             else:
                 prepared = cached_payload
             cache_hit = prepared is not None
             if cache_hit:
                 st.success("⚡ Using Cached Data (Instant Mode Active)")
+                _touch_cache_key(cache_key)
 
             with st.spinner("Simulating..."):
                 if not cache_hit:
                     if bt_universe in ("Russell 3000", "RUSSELL3000"):
-                        # Explicit call to the Universe module for R3000
-                        symbols = get_universe_symbols("RUSSELL3000")
+                        symbols = get_universe_symbols_pit("RUSSELL3000", bt_start_date)
                     else:
-                        # Standard indices
                         symbols = get_index_symbols(bt_universe)
-                    data = fetch_data_pack(symbols, days=fetch_days, backtest_mode=False) or {}
+                    if not symbols:
+                        st.error(f"No symbols loaded for universe: {bt_universe}")
+                        st.session_state.backtest_results = {}
+                        symbols = []
 
-                    # Fetch global context once (required for RS + VIX overlays in the engine)
-                    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=fetch_days, backtest_mode=False) or {}
+                    ny_now = datetime.now(ZoneInfo("America/New_York"))
+                    market_open = _is_market_open_et(ny_now)
+                    prefer_cache_only_when_closed = str(
+                        os.getenv("APEX_BACKTEST_CACHE_ONLY_WHEN_CLOSED", "1") or "1"
+                    ).strip().lower() in {"1", "true", "yes", "on"}
+                    cache_only_first = (not market_open) and prefer_cache_only_when_closed
+                    try:
+                        min_cache_coverage = float(
+                            os.getenv("APEX_BACKTEST_CACHE_MIN_COVERAGE", "0.80") or "0.80"
+                        )
+                    except Exception:
+                        min_cache_coverage = 0.80
+                    min_cache_coverage = max(0.50, min(min_cache_coverage, 1.00))
+
+                    data = {}
+                    if symbols:
+                        if cache_only_first:
+                            data = fetch_data_pack(symbols, days=fetch_days, backtest_mode=True) or {}
+                            initial_cov = (len(data) / float(len(symbols))) if symbols else 0.0
+                            st.caption(
+                                f"Cache-first load (market closed): {len(data)}/{len(symbols)} "
+                                f"symbols ({initial_cov:.1%} coverage)"
+                            )
+                            if initial_cov < min_cache_coverage:
+                                st.warning(
+                                    f"Cache coverage {initial_cov:.1%} below threshold "
+                                    f"({min_cache_coverage:.0%}); fetching incremental updates."
+                                )
+                                data = fetch_data_pack(symbols, days=fetch_days, backtest_mode=False) or {}
+                        else:
+                            data = fetch_data_pack(symbols, days=fetch_days, backtest_mode=False) or {}
+
+                    # Fetch global context once (required for RS + VIX overlays in the engine).
+                    g_data = fetch_data_pack(
+                        ["SPY", "$VIX", "VIX"],
+                        days=fetch_days,
+                        backtest_mode=cache_only_first,
+                    ) or {}
+                    spy_df = g_data.get("SPY")
+                    if spy_df is None or spy_df.empty:
+                        g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=fetch_days, backtest_mode=False) or {}
                     spy_df = g_data.get("SPY")
                     vix_df = g_data.get("$VIX")
                     if vix_df is None:
@@ -693,20 +788,43 @@ elif mode == "Backtest":
                         start_date=bt_start_date,
                         global_data=global_data,
                     )
-                    cache[cache_key] = {
-                        "prepared": prepared,
-                        "global_data": global_data,
-                    }
+                    _set_backtest_cache(
+                        cache_key,
+                        {
+                            "prepared": prepared,
+                            "global_data": global_data,
+                            "symbol_count": len(symbols),
+                        },
+                    )
+                    expected_symbol_count = len(symbols)
+                    del data
+                    del g_data
+                    gc.collect()
                 elif not global_data:
-                    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=fetch_days, backtest_mode=False) or {}
+                    g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=fetch_days, backtest_mode=True) or {}
+                    spy_df = g_data.get("SPY")
+                    if spy_df is None or spy_df.empty:
+                        g_data = fetch_data_pack(["SPY", "$VIX", "VIX"], days=fetch_days, backtest_mode=False) or {}
                     spy_df = g_data.get("SPY")
                     vix_df = g_data.get("$VIX")
                     if vix_df is None:
                         vix_df = g_data.get("VIX")
                     global_data = {"SPY": spy_df, "VIX": vix_df}
+                    del g_data
 
                 tested_symbols = len(getattr(prepared, "enriched", {}) or {})
                 st.caption(f"Symbols tested: {tested_symbols}")
+                if expected_symbol_count > 0:
+                    tested_cov = tested_symbols / float(max(1, expected_symbol_count))
+                    st.caption(
+                        f"Universe coverage used in run: {tested_symbols}/{expected_symbol_count} "
+                        f"({tested_cov:.1%})"
+                    )
+                    if tested_cov < 0.70:
+                        st.warning(
+                            "Low universe coverage can bias results. Consider running once during market "
+                            "hours to refresh cache depth."
+                        )
                 if getattr(prepared, "all_dates", None) is not None and len(prepared.all_dates) > 0:
                     loaded_start = pd.Timestamp(prepared.all_dates[0]).date().isoformat()
                     loaded_end = pd.Timestamp(prepared.all_dates[-1]).date().isoformat()
@@ -714,53 +832,41 @@ elif mode == "Backtest":
 
                 results_map = {}
                 run_strategies = load_strategies(selected_strategies)
-
-                # Optimized Parallelism: 12 workers for standard runs.
-                max_workers = 12
-
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    future_map = {
-                        executor.submit(
-                            run_backtest,
-                            strat,
+                if not run_strategies:
+                    st.error("No runnable strategies were loaded.")
+                    st.session_state.backtest_results = {}
+                else:
+                    status_text = st.empty()
+                    start_time = time.time()
+                    status_text.text(f"Running {len(run_strategies)} strategy simulation(s)...")
+                    try:
+                        raw_results = run_backtest(
+                            run_strategies,
                             prepared,
                             start_cash=100000.0,
                             start_date=bt_start_date,
                             global_data=global_data,
-                        ): strat.name
-                        for strat in run_strategies
-                    }
-
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    total_futures = len(future_map)
-                    completed = 0
-                    start_time = time.time()
-                    while future_map:
-                        done, _ = concurrent.futures.wait(
-                            future_map.keys(),
-                            timeout=0.5,
-                            return_when=concurrent.futures.FIRST_COMPLETED,
                         )
+                    except Exception as e:
+                        st.error(f"Backtest run failed: {e}")
+                        raw_results = []
 
-                        next_completed = completed + len(done)
-                        if total_futures:
-                            progress_bar.progress(min(next_completed / total_futures, 1.0))
-                        status_text.text(
-                            f"Running Simulations... ({next_completed}/{total_futures} Done) "
-                            f"[Time Elapsed: {int(time.time() - start_time)}s]"
-                        )
-                        time.sleep(0.01)
-
-                        for future in done:
-                            name = future_map.pop(future, "Unknown")
-                            try:
-                                results_map[name] = future.result()
-                            except Exception as e:
-                                st.error(f"Backtest failed for {name}: {e}")
-                            completed += 1
+                    elapsed = max(0.0, time.time() - start_time)
+                    status_text.text(f"Completed in {elapsed:.1f}s")
+                    time.sleep(0.15)
                     status_text.empty()
-                    progress_bar.empty()
+
+                    if isinstance(raw_results, dict):
+                        raw_results = [raw_results]
+                    for res in raw_results or []:
+                        if not isinstance(res, dict):
+                            continue
+                        strategy_name = str(
+                            res.get("strategy")
+                            or res.get("strategy_name")
+                            or f"Strategy_{len(results_map) + 1}"
+                        )
+                        results_map[strategy_name] = res
 
                 st.session_state.backtest_results = results_map
 
