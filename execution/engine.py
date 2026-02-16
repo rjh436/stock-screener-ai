@@ -48,7 +48,7 @@ _INDICATOR_CACHE_PATH = os.path.abspath(
 )
 
 _FUND_COLS = tuple(FUNDAMENTAL_METRIC_COLUMNS)
-_STOP_WIDTH_TOL = 1e-9
+_STOP_WIDTH_TOL = 1e-4
 
 
 def compute_stop_fill(
@@ -487,9 +487,9 @@ def _evaluate_exit_state_machine(
     trades_list: List[Dict[str, Any]],
     transaction_cost_bps: float = 0.0,
 ) -> Tuple[bool, float, Optional[str], float]:
-    # 1) Hard stop
+    # 1) Hard stop first (conservative daily-bar assumption: if low tags stop intraday, exit).
     stop_px = float(pos.get("stop_price", 0.0) or 0.0)
-    if stop_px > 0 and current_low < stop_px:
+    if stop_px > 0 and current_low <= stop_px:
         return True, min(current_open, stop_px), "HARD_STOP", cash
 
     # 2) Partial target(s)
@@ -564,7 +564,7 @@ def _evaluate_exit_state_machine(
     if strat_exit:
         if target_px is not None:
             exit_px = float(target_px)
-        elif current_low < float(pos.get("stop_price", 0.0) or 0.0):
+        elif current_low <= float(pos.get("stop_price", 0.0) or 0.0):
             exit_px = min(current_open, float(pos.get("stop_price", 0.0) or 0.0))
         else:
             exit_px = current_close
@@ -1804,10 +1804,14 @@ def _legacy_run_backtest(
 
                 rs_rating = float(sd.rsrating[prev_i])
                 if not np.isfinite(rs_rating) or rs_rating <= 0:
-                    # Fail-open if RS rating was not computed (diagnostic safety).
-                    rs_rating = 99.0
-                else:
-                    debug_counts["n_rs"][day_idx] += 1
+                    if sym.upper() in known_winner_syms:
+                        trace_logger.log_reject(
+                            date_val=all_dates[day_idx],
+                            symbol=sym,
+                            reason="rs_rating_missing_or_invalid",
+                        )
+                    continue
+                debug_counts["n_rs"][day_idx] += 1
 
                 for strat, w, params, base_stop_mult in compiled_strategies:
                     # Optional market regime filter (per strategy)
@@ -2132,6 +2136,7 @@ def _legacy_run_backtest(
         entries_list = []
         trades_list = []
         equity_curve = []
+        equity_curve_daily = []
         trade_outcomes = []
         
         params = _flatten_params(getattr(strat, "params", getattr(strat, "genome", {})) or {})
@@ -2187,7 +2192,24 @@ def _legacy_run_backtest(
             traffic_light_enabled = bool(params.get("use_market_regime_traffic_light", True))
             regime_state = str(market_regime_by_day[day_idx]).upper() if day_idx < len(market_regime_by_day) else "RED"
             regime_block_new_entries = traffic_light_enabled and regime_state == "RED"
-            regime_risk_scalar = 0.5 if (traffic_light_enabled and regime_state == "YELLOW") else 1.0
+            yellow_risk_scalar = float(params.get("yellow_risk_scalar", 0.5) or 0.5)
+            orange_risk_scalar = float(params.get("orange_risk_scalar", 0.2) or 0.2)
+            regime_risk_scalar = 1.0
+            if traffic_light_enabled:
+                if regime_state == "YELLOW":
+                    regime_risk_scalar = float(np.clip(yellow_risk_scalar, 0.0, 1.0))
+                elif regime_state == "ORANGE":
+                    regime_risk_scalar = float(np.clip(orange_risk_scalar, 0.0, 1.0))
+
+            if traffic_light_enabled:
+                if regime_state == "YELLOW":
+                    yellow_cap_default = max(1, int(round(max_pos * 0.5)))
+                    yellow_cap = int(params.get("yellow_max_positions", yellow_cap_default) or yellow_cap_default)
+                    max_pos_today = max(1, min(max_pos_today, yellow_cap))
+                elif regime_state == "ORANGE":
+                    orange_cap_default = max(1, int(round(max_pos * 0.2)))
+                    orange_cap = int(params.get("orange_max_positions", orange_cap_default) or orange_cap_default)
+                    max_pos_today = max(1, min(max_pos_today, orange_cap))
 
             stop_loss_atr_bull = float(params.get("stop_loss_atr_bull", params.get("stop_loss_atr", 3.0)) or 3.0)
             stop_loss_atr_bear = float(params.get("stop_loss_atr_bear", params.get("bear_stop_loss_atr", 0.5)) or 0.5)
@@ -2221,6 +2243,16 @@ def _legacy_run_backtest(
                         pos["pyramid_pending"] = False
                         add_fraction = float(pos.get("pyramid_fraction", 0.5) or 0.5)
                         add_shares = int(pos.get("shares", 0) * add_fraction)
+                        if bool(params.get("pyramid_volatility_scale", True)):
+                            natr_val = float(sym_data.natr[loc]) if loc < len(sym_data.natr) else float("nan")
+                            if np.isfinite(natr_val) and natr_val > 0:
+                                target_natr_pct = float(params.get("pyramid_natr_target_pct", 4.0) or 4.0)
+                                min_vol_scale = float(params.get("pyramid_min_vol_scale", 0.25) or 0.25)
+                                vol_scale = 1.0
+                                if target_natr_pct > 0:
+                                    vol_scale = min(1.0, target_natr_pct / natr_val)
+                                vol_scale = max(float(np.clip(min_vol_scale, 0.0, 1.0)), vol_scale)
+                                add_shares = int(add_shares * vol_scale)
                         if add_shares > 0 and len(positions) < max_pos_today:
                             mtm_equity = cash + sum(p["shares"] * p.get("last_price", 0.0) for p in positions.values())
                             if mtm_equity <= 0:
@@ -2396,7 +2428,7 @@ def _legacy_run_backtest(
             if log_regime_skips and regime_block_new_entries and regime_skip_log_count < 80:
                 date_str = str(all_dates[day_idx])[:10] if 0 <= day_idx < len(all_dates) else "N/A"
                 print(
-                    f"[{date_str}] Skipped trade due to Market Regime: RED "
+                    f"[{date_str}] Skipped trade due to Market Regime: {regime_state} "
                     f"(candidates={len(day_candidates)})"
                 )
                 regime_skip_log_count += 1
@@ -2446,6 +2478,7 @@ def _legacy_run_backtest(
                     # open fill only for elite-RS names and only within a hard cap.
                     if not filled and entry_type == "vcp":
                         chase_max_pct = float(params.get("vcp_gap_chase_max_pct", 0.0) or 0.0)
+                        chase_max_pct = float(np.clip(chase_max_pct, 0.0, 0.005))
                         if chase_max_pct > 0:
                             chase_cap = float(cand.entry_px) * (1.0 + chase_max_pct)
                             rs_idx = max(0, min(entry_loc - 1, len(sym_data.rsrating) - 1))
@@ -2550,6 +2583,7 @@ def _legacy_run_backtest(
 
             # 3. Record Equity
             mtm = cash + sum(p["shares"] * p["last_price"] for p in positions.values())
+            equity_curve_daily.append({"Date": all_dates[day_idx], "Equity": mtm})
             if (day_idx % equity_stride == 0) or (day_idx == len(all_dates) - 1):
                 equity_curve.append({"Date": all_dates[day_idx], "Equity": mtm})
 
@@ -2576,10 +2610,11 @@ def _legacy_run_backtest(
         
         # Calculate Max Drawdown from Equity Curve
         equity_curve = _normalize_equity_curve(equity_curve)
+        equity_curve_daily = _normalize_equity_curve(equity_curve_daily)
         max_dd = 0.0
-        if equity_curve:
-            peaks = pd.Series([x["Equity"] for x in equity_curve]).cummax()
-            drawdowns = (pd.Series([x["Equity"] for x in equity_curve]) - peaks) / peaks
+        if equity_curve_daily:
+            peaks = pd.Series([x["Equity"] for x in equity_curve_daily]).cummax()
+            drawdowns = (pd.Series([x["Equity"] for x in equity_curve_daily]) - peaks) / peaks
             max_dd = abs(drawdowns.min()) if not drawdowns.empty else 0.0
 
         res = _empty_result(strat.name, start_cash, params)
@@ -2630,7 +2665,7 @@ def _run_cli() -> int:
     import argparse
     from datetime import datetime
     from data.loader import fetch_data_pack
-    from data.universe import get_universe_symbols
+    from data.universe import get_universe_symbols, get_universe_symbols_pit
 
     parser = argparse.ArgumentParser(description="Run a headless backtest from engine.py")
     parser.add_argument("--strategy", required=True, help="Strategy name")
@@ -2648,7 +2683,10 @@ def _run_cli() -> int:
         return 1
 
     strategies = load_strategies(strat_configs)
-    symbols = get_universe_symbols("RUSSELL3000")
+    if args.start_date:
+        symbols = get_universe_symbols_pit("RUSSELL3000", args.start_date)
+    else:
+        symbols = get_universe_symbols("RUSSELL3000")
     if len(symbols) < 100:
         raise ValueError("CRITICAL: Universe failed to load. Aborting backtest.")
     

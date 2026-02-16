@@ -10,7 +10,7 @@ from scipy.signal import argrelextrema
 
 from .base import BaseStrategy
 
-_STOP_WIDTH_TOL = 1e-9
+_STOP_WIDTH_TOL = 1e-4
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -200,6 +200,114 @@ def detect_vcp_breakout(
     )
 
 
+def detect_micro_vcp_breakout(
+    df: pd.DataFrame,
+    i: int,
+    *,
+    lookback: int = 12,
+    micro_window: int = 5,
+    max_contraction_pct: float = 6.0,
+    breakout_volume_mult: float = 1.5,
+    breakout_buffer: float = 0.0,
+    max_bb_width: float = 0.12,
+    return_reason: bool = False,
+) -> Union[Optional[VCPDetectionResult], Tuple[Optional[VCPDetectionResult], str]]:
+    """
+    Detect tight 3-5 day "T-pivot" style breakouts missed by extrema-based VCP.
+    """
+
+    def _pack(
+        result: Optional[VCPDetectionResult],
+        reason: str,
+    ) -> Union[Optional[VCPDetectionResult], Tuple[Optional[VCPDetectionResult], str]]:
+        if return_reason:
+            return result, reason
+        return result
+
+    if i <= 0:
+        return _pack(None, "invalid_index")
+    micro_window = max(3, int(micro_window))
+    lookback = max(micro_window + 2, int(lookback))
+
+    start = max(0, i - lookback + 1)
+    window = df.iloc[start : i + 1]
+    if len(window) < (micro_window + 2):
+        return _pack(None, "insufficient_bars")
+
+    def _col_to_np(name: str) -> np.ndarray:
+        if name in window.columns:
+            col = window[name]
+        else:
+            col = pd.Series(np.nan, index=window.index)
+        return pd.to_numeric(col, errors="coerce").to_numpy(dtype=np.float64, copy=False)
+
+    highs = _col_to_np("high")
+    lows = _col_to_np("low")
+    closes = _col_to_np("close")
+    volumes = _col_to_np("volume")
+    vol_ma50 = _col_to_np("vol_ma50")
+    bb_width = _col_to_np("bb_width")
+
+    if not (np.isfinite(closes[-1]) and closes[-1] > 0):
+        return _pack(None, "invalid_close")
+
+    seg_high = highs[-(micro_window + 1) : -1]
+    seg_low = lows[-(micro_window + 1) : -1]
+    if seg_high.size < micro_window or seg_low.size < micro_window:
+        return _pack(None, "segment_insufficient")
+    if not np.isfinite(seg_high).any() or not np.isfinite(seg_low).any():
+        return _pack(None, "segment_invalid")
+
+    pivot_price = float(np.nanmax(seg_high))
+    trough_price = float(np.nanmin(seg_low))
+    if not (math.isfinite(pivot_price) and math.isfinite(trough_price) and pivot_price > 0 and trough_price > 0):
+        return _pack(None, "invalid_pivot")
+    if trough_price >= pivot_price:
+        return _pack(None, "invalid_contraction")
+
+    contraction_pct = ((pivot_price - trough_price) / pivot_price) * 100.0
+    if not math.isfinite(contraction_pct) or contraction_pct <= 0:
+        return _pack(None, "invalid_contraction")
+    if contraction_pct > max_contraction_pct:
+        return _pack(None, "micro_contraction_too_wide")
+
+    if math.isfinite(max_bb_width) and max_bb_width > 0:
+        bb_seg = bb_width[-(micro_window + 1) : -1]
+        if np.isfinite(bb_seg).any():
+            bb_last = float(np.nanmax(bb_seg))
+            if math.isfinite(bb_last) and bb_last > max_bb_width:
+                return _pack(None, "bb_width_not_tight")
+
+    breakout_level = pivot_price * (1.0 + max(0.0, breakout_buffer))
+    if closes[-1] <= breakout_level:
+        return _pack(None, "breakout_not_triggered")
+
+    vol_now = float(volumes[-1]) if np.isfinite(volumes[-1]) else 0.0
+    ma50_now = float(vol_ma50[-1]) if np.isfinite(vol_ma50[-1]) else 0.0
+    volume_multiple = (vol_now / ma50_now) if ma50_now > 0 else 0.0
+    if ma50_now > 0 and volume_multiple < breakout_volume_mult:
+        return _pack(None, "breakout_volume_insufficient")
+
+    first_half = volumes[-(micro_window + 1) : -(micro_window // 2 + 1)]
+    second_half = volumes[-(micro_window // 2 + 1) : -1]
+    v1 = float(np.nanmean(first_half)) if first_half.size else float("nan")
+    v2 = float(np.nanmean(second_half)) if second_half.size else float("nan")
+    c1 = min(max_contraction_pct * 1.2, contraction_pct * 1.4)
+    c2 = contraction_pct
+
+    return _pack(
+        VCPDetectionResult(
+            pivot_price=pivot_price,
+            price_contraction_1=float(max(c1, c2 * 1.01)),
+            price_contraction_2=float(c2),
+            volume_contraction_1=float(v1) if math.isfinite(v1) else float("nan"),
+            volume_contraction_2=float(v2) if math.isfinite(v2) else float("nan"),
+            breakout_volume_multiple=volume_multiple,
+        ),
+        "ok_micro",
+    )
+
+
 class SuperperformanceStrategy(BaseStrategy):
     """
     Gate + Archetype Superperformance model.
@@ -244,8 +352,10 @@ class SuperperformanceStrategy(BaseStrategy):
             out = _as_float(value, float("nan"))
             if math.isfinite(out):
                 return out
-        # Fail-open when no cross-sectional RS field exists.
-        return 100.0
+        # Fail-closed by default: missing RS should not pass elite gates.
+        if bool(self.params.get("rs_fail_open", False)):
+            return 100.0
+        return 0.0
 
     def _resolve_price_action_percentile(self, row: pd.Series, rs_percentile: float) -> float:
         # If explicit price-action percentile exists, prefer it.
@@ -401,6 +511,26 @@ class SuperperformanceStrategy(BaseStrategy):
             return_reason=True,
         )
         used_elite_override = False
+        if vcp is None:
+            micro_enabled = bool(self.params.get("vcp_micro_enabled", True))
+            if micro_enabled:
+                micro_window = int(self.params.get("vcp_micro_window", 5) or 5)
+                micro_max_contraction = float(self.params.get("vcp_micro_max_contraction_pct", 6.0) or 6.0)
+                micro_bb_width = float(self.params.get("vcp_micro_max_bb_width", 0.12) or 0.12)
+                vcp, micro_reason = detect_micro_vcp_breakout(
+                    df,
+                    i,
+                    lookback=max(lookback // 2, micro_window + 2),
+                    micro_window=max(3, micro_window),
+                    max_contraction_pct=max(1.0, micro_max_contraction),
+                    breakout_volume_mult=max(1.25, breakout_vol_req * 0.85),
+                    breakout_buffer=max(0.0, breakout_buffer),
+                    max_bb_width=max(0.0, micro_bb_width),
+                    return_reason=True,
+                )
+                if vcp is not None:
+                    vcp_reason = str(micro_reason or "ok_micro")
+
         if vcp is None:
             enable_elite_override = bool(self.params.get("vcp_elite_override_enabled", True))
             if not enable_elite_override:
@@ -565,9 +695,14 @@ class SuperperformanceStrategy(BaseStrategy):
         # (e.g., extreme negative YoY values around near-zero prior quarters).
         # Treat implausible outliers as unavailable and allow price-action override.
         min_growth_valid = float(self.params.get("fundamental_growth_min_valid_pct", -90.0) or -90.0)
-        max_growth_valid = float(self.params.get("fundamental_growth_max_valid_pct", 5000.0) or 5000.0)
+        max_growth_valid = float(self.params.get("fundamental_growth_max_valid_pct", 300.0) or 300.0)
         eps_available = math.isfinite(eps_yoy) and (min_growth_valid <= eps_yoy <= max_growth_valid)
         sales_available = math.isfinite(sales_yoy) and (min_growth_valid <= sales_yoy <= max_growth_valid)
+        eps_artifact_guard = float(self.params.get("fundamental_eps_artifact_guard_pct", 300.0) or 300.0)
+        sales_confirm_floor = float(self.params.get("fundamental_eps_artifact_sales_confirm_pct", 10.0) or 10.0)
+        if eps_available and eps_yoy > eps_artifact_guard:
+            if (not sales_available) or (sales_yoy < sales_confirm_floor):
+                eps_available = False
         htf_override = _as_percent_threshold(self.params.get("high_tight_flag_override_pct", 95.0), 95.0)
         price_action_pct = self._resolve_price_action_percentile(row, rs_percentile)
         strong_rs_override_min = _as_percent_threshold(self.params.get("fundamental_override_rs_min", 95.0), 85.0)

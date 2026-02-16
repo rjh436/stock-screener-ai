@@ -381,7 +381,7 @@ def _generic_exit_decision(
     low_px = float(sd.low[loc])
 
     # 1. STOP LOSS CHECK
-    if low_px < current_stop:
+    if low_px <= current_stop:
         return True, current_stop, None
 
     # 2. TRAILING STOP LOGIC (ATR)
@@ -502,7 +502,7 @@ def _generic_exit_decision(
                 params.get("exit_ma_after_partial")
                 or params.get("exit_sma_after_partial")
                 or params.get("exit_sma_slow")
-                or active_exit_sma
+                or "sma50"
             )
         if not partial_taken and params.get("exit_ma_after_profit") and close_px > entry_px:
             active_exit_sma = params.get("exit_ma_after_profit")

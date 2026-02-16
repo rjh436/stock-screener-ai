@@ -3,8 +3,10 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
+from datetime import date, datetime
 from io import StringIO
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import requests
 
@@ -14,6 +16,7 @@ except Exception:
     _get_index_symbols = None
 
 _CACHE_DIR = os.path.join("data", "cache_indices")
+_RUSSELL3000_PIT_DIR = os.path.join("data", "russell3000_membership")
 _RUSSELL3000_URL = (
     "https://www.ishares.com/us/products/239714/ishares-russell-3000-etf/"
     "1467271812596.ajax?fileType=csv&fileName=IWV_holdings&dataType=fund"
@@ -66,6 +69,33 @@ def get_universe_symbols(name: str) -> List[str]:
         symbols = []
 
     return symbols or _safe_default()
+
+
+def get_universe_symbols_pit(name: str, as_of_date: Optional[str] = None) -> List[str]:
+    """
+    Return point-in-time universe members when local PIT files are available.
+    Falls back to get_universe_symbols(name) when PIT data is missing.
+    """
+    key = _normalize_name(name)
+    as_of = _parse_date_ymd(as_of_date)
+    if as_of is None or key != "RUSSELL3000":
+        return get_universe_symbols(name)
+
+    symbols = _load_russell_3000_pit_from_snapshots(as_of)
+    if symbols:
+        print(f"   └── Loaded PIT Russell 3000 snapshot for {as_of.isoformat()} ({len(symbols)} symbols)")
+        return symbols
+
+    symbols = _load_russell_3000_pit_from_ranges(as_of)
+    if symbols:
+        print(f"   └── Loaded PIT Russell 3000 membership ranges for {as_of.isoformat()} ({len(symbols)} symbols)")
+        return symbols
+
+    print(
+        "   ⚠️ WARNING: No PIT Russell 3000 dataset found. "
+        "Falling back to current constituents (survivorship bias remains)."
+    )
+    return get_universe_symbols(name)
 
 
 def _fetch_sp100() -> List[str]:
@@ -153,6 +183,111 @@ def _fetch_russell_3000() -> List[str]:
     nasdaq = _fetch_from_indices("NASDAQ 100")
     combined = list(set(sp1500 + nasdaq))
     return combined
+
+
+def _parse_date_ymd(value: Optional[str]) -> Optional[date]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(raw[:10] if fmt != "%Y%m%d" else raw, fmt).date()
+        except Exception:
+            continue
+    return None
+
+
+def _extract_snapshot_date(path: str) -> Optional[date]:
+    stem = os.path.splitext(os.path.basename(path))[0]
+    matches = re.findall(r"(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)", stem)
+    for y, m, d in matches:
+        try:
+            return date(int(y), int(m), int(d))
+        except Exception:
+            continue
+    for token in [stem] + stem.replace("_", "-").split("-"):
+        dt = _parse_date_ymd(token)
+        if dt is not None:
+            return dt
+    return None
+
+
+def _read_symbol_csv(path: str) -> List[str]:
+    try:
+        with open(path, "r", newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = reader.fieldnames or []
+            field_map = {name.strip().lower(): name for name in fieldnames if name}
+            col = field_map.get("ticker") or field_map.get("symbol")
+            if not col:
+                return []
+            out = []
+            for row in reader:
+                raw = row.get(col) or ""
+                sym = str(raw).strip().upper()
+                if sym:
+                    out.append(sym)
+            return _normalize_symbols(out)
+    except Exception:
+        return []
+
+
+def _load_russell_3000_pit_from_snapshots(as_of: date) -> List[str]:
+    pit_dir = os.getenv("RUSSELL3000_PIT_DIR", _RUSSELL3000_PIT_DIR)
+    if not pit_dir or not os.path.isdir(pit_dir):
+        return []
+
+    best_path = None
+    best_dt = None
+    for name in os.listdir(pit_dir):
+        if not name.lower().endswith(".csv"):
+            continue
+        path = os.path.join(pit_dir, name)
+        snap_dt = _extract_snapshot_date(path)
+        if snap_dt is None or snap_dt > as_of:
+            continue
+        if best_dt is None or snap_dt > best_dt:
+            best_dt = snap_dt
+            best_path = path
+
+    if best_path is None:
+        return []
+    return _read_symbol_csv(best_path)
+
+
+def _load_russell_3000_pit_from_ranges(as_of: date) -> List[str]:
+    path = os.getenv("RUSSELL3000_PIT_MEMBERSHIP_CSV", "").strip()
+    if not path or not os.path.exists(path):
+        return []
+
+    try:
+        with open(path, "r", newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = reader.fieldnames or []
+            field_map = {name.strip().lower(): name for name in fieldnames if name}
+            sym_col = field_map.get("ticker") or field_map.get("symbol")
+            start_col = field_map.get("start_date") or field_map.get("from_date")
+            end_col = field_map.get("end_date") or field_map.get("to_date")
+            if not sym_col or not start_col:
+                return []
+
+            out = []
+            for row in reader:
+                sym = str(row.get(sym_col) or "").strip().upper()
+                if not sym:
+                    continue
+                start_dt = _parse_date_ymd(str(row.get(start_col) or "").strip())
+                if start_dt is None or start_dt > as_of:
+                    continue
+                end_dt = _parse_date_ymd(str(row.get(end_col) or "").strip()) if end_col else None
+                if end_dt is not None and end_dt < as_of:
+                    continue
+                out.append(sym)
+            return _normalize_symbols(out)
+    except Exception:
+        return []
 
 
 def _parse_ishares_csv(text: str) -> List[str]:
