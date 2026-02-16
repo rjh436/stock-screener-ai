@@ -2651,19 +2651,27 @@ def _legacy_run_backtest(
         if not counted_trades.empty:
             win_rate = (len(counted_trades[counted_trades["PnL"] > 0]) / len(counted_trades)) * 100
 
-        # AUDIT FIX: Use Calendar Days for accurate CAGR, not Trading Days
+        # Normalize equity curves first so performance metrics use actual simulated span.
+        equity_curve = _normalize_equity_curve(equity_curve)
+        equity_curve_daily = _normalize_equity_curve(equity_curve_daily)
+
+        # Use calendar time over the realized simulation window (not raw cached calendar),
+        # otherwise cached pre-start dates can understate CAGR.
         if start_date and end_date:
             total_days = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days
+        elif equity_curve_daily and len(equity_curve_daily) > 1:
+            total_days = (
+                pd.Timestamp(equity_curve_daily[-1]["Date"])
+                - pd.Timestamp(equity_curve_daily[0]["Date"])
+            ).days
         elif len(all_dates) > 1:
             total_days = (pd.Timestamp(all_dates[-1]) - pd.Timestamp(all_dates[0])).days
         else:
             total_days = 0
         years = max(total_days / 365.25, 0.1)  # Avoid div/0
-        cagr = ((final_val / start_cash) ** (1 / years)) - 1
-        
+        cagr = ((final_val / start_cash) ** (1 / years)) - 1 if start_cash > 0 else 0.0
+
         # Calculate Max Drawdown from Equity Curve
-        equity_curve = _normalize_equity_curve(equity_curve)
-        equity_curve_daily = _normalize_equity_curve(equity_curve_daily)
         max_dd = 0.0
         if equity_curve_daily:
             peaks = pd.Series([x["Equity"] for x in equity_curve_daily]).cummax()
