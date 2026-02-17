@@ -507,14 +507,25 @@ if mode == "Live Screener":
         timer_msg = st.empty()
         start_time = time.time()
 
-        status_msg.info("📦 Fetching S&P 1500 Foundation...")
+        status_msg.info(f"📦 Resolving {universe} constituents...")
         progress_bar.progress(0.2, text="20% Complete")
         if universe in ("Russell 3000", "RUSSELL3000"):
-            # Explicit call to the Universe module for R3000
-            symbols = get_universe_symbols("RUSSELL3000")
+            live_as_of = datetime.utcnow().date().isoformat()
+            symbols, live_universe_source = get_universe_symbols_pit_with_meta("RUSSELL3000", live_as_of)
         else:
-            # Standard indices
-            symbols = get_index_symbols(universe)
+            symbols = get_universe_symbols(universe)
+            live_universe_source = "current_index"
+        symbols = list(symbols or [])
+        status_msg.info(
+            f"📦 Loaded {len(symbols):,} symbols for {universe} "
+            f"(source: {live_universe_source})."
+        )
+        if not symbols:
+            st.error(f"No symbols loaded for {universe}.")
+            progress_bar.empty()
+            status_msg.empty()
+            timer_msg.empty()
+            st.stop()
         base_days = 400
         data = fetch_data_pack(
             symbols,

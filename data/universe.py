@@ -59,6 +59,8 @@ def get_universe_symbols(name: str) -> List[str]:
         symbols = _fetch_sp500()
     elif key == "SP1500":
         symbols = _fetch_sp1500()
+    elif key == "NASDAQ100":
+        symbols = _fetch_from_indices("NASDAQ 100")
     elif key == "RUSSELL3000":
         print(
             "⚠️ WARNING: Russell 3000 contains Survivorship Bias. "
