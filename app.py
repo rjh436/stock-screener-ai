@@ -1131,6 +1131,10 @@ elif mode == "Backtest":
                     accuracy_mode = run_accuracy_mode
                     accuracy_active = accuracy_mode in {"warn", "block"}
                     force_refresh_for_accuracy = _env_flag("APEX_BACKTEST_FORCE_REFRESH_FOR_ACCURACY", "1")
+                    force_fresh_refresh = (
+                        accuracy_mode == "block"
+                        and _env_flag("APEX_BACKTEST_FORCE_FRESH_REFRESH", "1")
+                    )
                     incremental_refresh_enabled = _env_flag("APEX_BACKTEST_INCREMENTAL_REFRESH", "1")
                     strict_full_lookback = (
                         accuracy_mode == "block"
@@ -1244,6 +1248,7 @@ elif mode == "Backtest":
                                         refresh_symbols,
                                         days=fetch_days,
                                         backtest_mode=False,
+                                        force_fresh=force_fresh_refresh,
                                         max_workers=workers_refresh,
                                         progress_callback=_loader_progress_cb,
                                         require_full_lookback=strict_full_lookback,
