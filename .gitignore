@@ -95,3 +95,16 @@ config/_tmp_*.json
 data/schwab_tokens.json
 config/backtest_baselines.json
 config/backtest_baselines.json.tmp
+
+# Local env and generated runtime artifacts
+.env
+.env.*
+!.env.example
+logs/
+exports/
+snapshots/
+data/cache/
+data/cache_indices/
+optimizer_checkpoint_*.pkl
+config/*.bak
+config/*.pre_gen*.json
