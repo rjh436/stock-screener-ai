@@ -1047,11 +1047,14 @@ elif mode == "Backtest":
 
                     ny_now = datetime.now(ZoneInfo("America/New_York"))
                     market_open = _is_market_open_et(ny_now)
+                    prefer_cache_first = _env_flag("APEX_BACKTEST_CACHE_FIRST", "1")
                     prefer_cache_only_when_closed = str(
                         os.getenv("APEX_BACKTEST_CACHE_ONLY_WHEN_CLOSED", "1") or "1"
                     ).strip().lower() in {"1", "true", "yes", "on"}
                     refresh_when_closed = _env_flag("APEX_BACKTEST_REFRESH_WHEN_CLOSED", "0")
-                    cache_only_first = (not market_open) and prefer_cache_only_when_closed
+                    cache_only_first = bool(
+                        prefer_cache_first or ((not market_open) and prefer_cache_only_when_closed)
+                    )
                     try:
                         min_cache_coverage = float(
                             os.getenv("APEX_BACKTEST_CACHE_MIN_COVERAGE", "0.80") or "0.80"
@@ -1062,12 +1065,44 @@ elif mode == "Backtest":
                     accuracy_mode = _accuracy_mode()
                     accuracy_active = accuracy_mode in {"warn", "block"}
                     force_refresh_for_accuracy = _env_flag("APEX_BACKTEST_FORCE_REFRESH_FOR_ACCURACY", "1")
+                    incremental_refresh_enabled = _env_flag("APEX_BACKTEST_INCREMENTAL_REFRESH", "1")
+                    try:
+                        refresh_cap = int(os.getenv("APEX_BACKTEST_REFRESH_MAX_SYMBOLS", "600") or "600")
+                    except Exception:
+                        refresh_cap = 600
+                    refresh_cap = max(100, min(refresh_cap, 5000))
 
                     data = {}
                     if symbols:
                         stage_msg.caption("Stage: Loading historical price data...")
                         workers_cache = _recommended_fetch_workers(len(symbols), cache_only=True)
                         workers_refresh = _recommended_fetch_workers(len(symbols), cache_only=False)
+                        loader_progress = st.empty()
+                        _loader_ui_last = {"t": 0.0}
+
+                        def _loader_progress_cb(state):
+                            event = str((state or {}).get("event", "") or "")
+                            completed = int((state or {}).get("completed", 0) or 0)
+                            total_syms = int((state or {}).get("total", len(symbols)) or len(symbols))
+                            pending_syms = int(
+                                (state or {}).get("pending", max(0, total_syms - completed))
+                                or max(0, total_syms - completed)
+                            )
+                            elapsed_sec = float((state or {}).get("elapsed_sec", 0.0) or 0.0)
+                            now_mono = time.monotonic()
+                            if event not in {"start", "stall", "done"} and (now_mono - _loader_ui_last["t"]) < 1.0:
+                                return
+                            prefix = "Data loader"
+                            if event == "stall":
+                                prefix = "Data loader stall guard"
+                            elif event == "done":
+                                prefix = "Data loader complete"
+                            loader_progress.caption(
+                                f"{prefix}: {completed}/{total_syms} complete, "
+                                f"{pending_syms} pending, elapsed {elapsed_sec:.0f}s"
+                            )
+                            _loader_ui_last["t"] = now_mono
+
                         st.caption(
                             f"Data loader workers: {workers_cache if cache_only_first else workers_refresh} "
                             "(threaded, single Python process)"
@@ -1078,34 +1113,53 @@ elif mode == "Backtest":
                                 days=fetch_days,
                                 backtest_mode=True,
                                 max_workers=workers_cache,
+                                progress_callback=_loader_progress_cb,
                             ) or {}
                             initial_cov = (len(data) / float(len(symbols))) if symbols else 0.0
                             st.caption(
-                                f"Cache-first load (market closed): {len(data)}/{len(symbols)} "
+                                f"Cache-first load: {len(data)}/{len(symbols)} "
                                 f"symbols ({initial_cov:.1%} coverage)"
+                            )
+                            allow_refresh_when_closed = (
+                                refresh_when_closed or (accuracy_active and force_refresh_for_accuracy)
                             )
                             allow_incremental_refresh = (
                                 initial_cov < min_cache_coverage
+                                and incremental_refresh_enabled
                                 and (
                                     market_open
-                                    or refresh_when_closed
+                                    or allow_refresh_when_closed
                                     or initial_cov <= 0.05
-                                    or (accuracy_active and force_refresh_for_accuracy)
                                 )
                             )
                             if allow_incremental_refresh:
                                 missing_symbols = [s for s in symbols if s not in data]
+                                refresh_symbols = list(missing_symbols)
+                                if (
+                                    refresh_symbols
+                                    and len(refresh_symbols) > refresh_cap
+                                    and not (accuracy_active and force_refresh_for_accuracy)
+                                ):
+                                    skipped = len(refresh_symbols) - refresh_cap
+                                    refresh_symbols = refresh_symbols[:refresh_cap]
+                                    st.warning(
+                                        f"Refresh cap active: fetching first {len(refresh_symbols)} "
+                                        f"of {len(missing_symbols)} missing symbols this run "
+                                        f"({skipped} deferred)."
+                                    )
                                 st.warning(
                                     f"Cache coverage {initial_cov:.1%} below threshold "
-                                    f"({min_cache_coverage:.0%}); fetching {len(missing_symbols)} "
+                                    f"({min_cache_coverage:.0%}); fetching {len(refresh_symbols)} "
                                     "missing symbols only."
                                 )
-                                if missing_symbols:
+                                if refresh_symbols:
+                                    stage_msg.caption("Stage: Refreshing missing symbols incrementally...")
                                     fresh = fetch_data_pack(
-                                        missing_symbols,
+                                        refresh_symbols,
                                         days=fetch_days,
                                         backtest_mode=False,
                                         max_workers=workers_refresh,
+                                        progress_callback=_loader_progress_cb,
                                     ) or {}
                                     if fresh:
                                         data.update(fresh)
@@ -1127,6 +1181,7 @@ elif mode == "Backtest":
                                 days=fetch_days,
                                 backtest_mode=False,
                                 max_workers=workers_refresh,
+                                progress_callback=_loader_progress_cb,
                             ) or {}
 
                     # Fetch global context once (required for RS + VIX overlays in the engine).

@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timedelta, timezone
 import pytz
 from zoneinfo import ZoneInfo
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Callable, Any
 from .schwab_client import sd
 from .cache_manager import DataCache
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -760,6 +760,7 @@ def fetch_data_pack(
     inject_live: bool = False,
     backtest_mode: bool = False,
     max_lag_days: Optional[int] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Bulk fetch for Backtester (Threaded for speed)."""
     data: Dict[str, pd.DataFrame] = {}
@@ -851,9 +852,35 @@ def fetch_data_pack(
     stall_timeout_sec = max(20.0, min(stall_timeout_sec, 900.0))
 
     last_completion = time.monotonic()
+    started_at = time.monotonic()
+    progress_interval_sec = 0.75
+    last_progress_emit = 0.0
+
+    def _emit_progress(event: str, *, pending_count: int, force: bool = False, **extra) -> None:
+        nonlocal last_progress_emit
+        if progress_callback is None:
+            return
+        now = time.monotonic()
+        if not force and (now - last_progress_emit) < progress_interval_sec:
+            return
+        payload: Dict[str, Any] = {
+            "event": event,
+            "completed": int(count),
+            "total": int(total),
+            "pending": int(max(0, pending_count)),
+            "elapsed_sec": float(now - started_at),
+        }
+        payload.update(extra)
+        try:
+            progress_callback(payload)
+        except Exception:
+            return
+        last_progress_emit = now
+
     executor = ThreadPoolExecutor(max_workers=max_workers)
     future_to_sym = {executor.submit(load, sym): sym for sym in symbols}
     pending = set(future_to_sym.keys())
+    _emit_progress("start", pending_count=len(pending), force=True)
 
     try:
         while pending:
@@ -869,10 +896,22 @@ def fetch_data_pack(
                     f"   ⏳ Waiting on workers... {count}/{total} completed, "
                     f"{len(pending)} pending (idle {stalled_for:.0f}s)"
                 )
+                _emit_progress(
+                    "heartbeat",
+                    pending_count=len(pending),
+                    stalled_for_sec=float(stalled_for),
+                )
                 if stalled_for >= stall_timeout_sec:
                     print(
                         "⚠️ Data download stall timeout reached; returning partial coverage "
                         f"after {stall_timeout_sec:.0f}s without completions."
+                    )
+                    _emit_progress(
+                        "stall",
+                        pending_count=len(pending),
+                        stalled_for_sec=float(stalled_for),
+                        stall_timeout_sec=float(stall_timeout_sec),
+                        force=True,
                     )
                     for fut in list(pending):
                         sym = future_to_sym.get(fut)
@@ -898,6 +937,7 @@ def fetch_data_pack(
                 last_completion = time.monotonic()
                 if count % 50 == 0 or count == total:
                     print(f"   ⏳ Downloaded {count}/{total} symbols ({(count/total)*100:.1f}%)")
+                _emit_progress("progress", pending_count=len(pending))
 
                 if df is not None and not df.empty:
                     # Guardrail: don't silently accept "short" cached series when a longer lookback
@@ -928,6 +968,7 @@ def fetch_data_pack(
     finally:
         # Never block forever on hung workers when the app is interactive.
         executor.shutdown(wait=False, cancel_futures=True)
+    _emit_progress("done", pending_count=0, force=True)
 
     source_delta = _source_hits_delta(sources_before, _source_hits_snapshot())
     if source_delta:

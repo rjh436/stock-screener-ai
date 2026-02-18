@@ -3,6 +3,7 @@
 
 set -e
 export PYTHONUTF8=1
+export PYTHONUNBUFFERED=1
 set -o pipefail
 
 # Move to project root (parent of scripts/)
@@ -131,7 +132,7 @@ if python tools/auto_login.py; then
     PID_FILE="logs/streamlit.pid"
     echo "🚀 Launching Streamlit App (detached)..."
     echo "📝 Runtime log: $RUNTIME_LOG"
-    nohup python -m streamlit run app.py --server.fileWatcherType=none >> "$RUNTIME_LOG" 2>&1 &
+    nohup python -u -m streamlit run app.py --server.fileWatcherType=none >> "$RUNTIME_LOG" 2>&1 &
     STREAMLIT_PID=$!
     echo "$STREAMLIT_PID" > "$PID_FILE"
     sleep 2
