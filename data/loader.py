@@ -761,6 +761,7 @@ def fetch_data_pack(
     backtest_mode: bool = False,
     max_lag_days: Optional[int] = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    quality_report: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Bulk fetch for Backtester (Threaded for speed)."""
     data: Dict[str, pd.DataFrame] = {}
@@ -975,30 +976,55 @@ def fetch_data_pack(
         parts = [f"{k}={v}" for k, v in sorted(source_delta.items(), key=lambda kv: kv[0])]
         print(f"🧭 Data sources used: {', '.join(parts)}")
 
-    if missing or incomplete or stale:
+    missing_u = list(dict.fromkeys(missing))
+    incomplete_u = list(dict.fromkeys(incomplete))
+    stale_u = list(dict.fromkeys(stale))
+
+    if missing_u or incomplete_u or stale_u:
         msg = []
-        if missing:
-            msg.append(f"missing={len(missing)}")
-        if incomplete:
-            msg.append(f"incomplete_history={len(incomplete)}")
-        if stale:
-            msg.append(f"stale={len(stale)}")
+        if missing_u:
+            msg.append(f"missing={len(missing_u)}")
+        if incomplete_u:
+            msg.append(f"incomplete_history={len(incomplete_u)}")
+        if stale_u:
+            msg.append(f"stale={len(stale_u)}")
         print(f"⚠️ Data quality issues: {', '.join(msg)} (requested={len(symbols)}, loaded={len(data)}).")
         if os.getenv("DATA_EXPORT_MISSING", "0").strip() in {"1", "true", "TRUE", "yes", "YES"}:
             os.makedirs("exports", exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = os.path.join("exports", f"{ts}_data_quality_issues.txt")
             with open(path, "w") as f:
-                if missing:
+                if missing_u:
                     f.write("# Missing symbols (no usable data)\n")
-                    f.write("\n".join(missing) + "\n\n")
-                if incomplete:
+                    f.write("\n".join(missing_u) + "\n\n")
+                if incomplete_u:
                     f.write("# Incomplete lookback (shorter history than requested)\n")
-                    f.write("\n".join(incomplete) + "\n")
+                    f.write("\n".join(incomplete_u) + "\n")
                     f.write("\n")
-                if stale:
+                if stale_u:
                     f.write(f"# Stale data (last bar older than {max_lag_days} days)\n")
-                    f.write("\n".join(stale) + "\n")
+                    f.write("\n".join(stale_u) + "\n")
             print(f"   📝 Saved details to {path}")
+
+    if quality_report is not None:
+        try:
+            quality_report.clear()
+            quality_report.update(
+                {
+                    "requested": int(len(symbols)),
+                    "loaded": int(len(data)),
+                    "missing": int(len(missing_u)),
+                    "incomplete_history": int(len(incomplete_u)),
+                    "stale": int(len(stale_u)),
+                    "requested_symbols": list(symbols),
+                    "loaded_symbols": list(data.keys()),
+                    "missing_symbols": missing_u,
+                    "incomplete_symbols": incomplete_u,
+                    "stale_symbols": stale_u,
+                    "source_hits": source_delta,
+                }
+            )
+        except Exception:
+            pass
 
     return data

@@ -301,16 +301,23 @@ def _accuracy_mode() -> str:
     return "warn"
 
 
-def _min_coverage_threshold(universe_name: str) -> float:
+def _effective_accuracy_mode(*, verified_run: bool) -> str:
+    return "block" if verified_run else _accuracy_mode()
+
+
+def _min_coverage_threshold(universe_name: str, *, accuracy_mode: str | None = None) -> float:
     u = str(universe_name or "").upper()
+    mode = str(accuracy_mode or _accuracy_mode()).strip().lower()
     if u in {"RUSSELL3000", "RUSSELL 3000"}:
-        raw = os.getenv("APEX_BACKTEST_MIN_COVERAGE_RUSSELL", "0.70")
+        default = "0.85" if mode == "block" else "0.70"
+        raw = os.getenv("APEX_BACKTEST_MIN_COVERAGE_RUSSELL", default)
     else:
-        raw = os.getenv("APEX_BACKTEST_MIN_COVERAGE", "0.65")
+        default = "0.80" if mode == "block" else "0.65"
+        raw = os.getenv("APEX_BACKTEST_MIN_COVERAGE", default)
     try:
         val = float(raw or 0.0)
     except Exception:
-        val = 0.70 if u in {"RUSSELL3000", "RUSSELL 3000"} else 0.65
+        val = float(default)
     return max(0.10, min(val, 1.00))
 
 
@@ -393,7 +400,7 @@ with st.sidebar:
         st.caption("Template: `data/russell3000_membership/template_membership_ranges.csv`")
         st.caption("Strict mode: `APEX_REQUIRE_PIT_UNIVERSE=1`")
         st.caption("Accuracy mode: `APEX_BACKTEST_ACCURACY_MODE=warn|block|off`")
-        st.caption("Russell min coverage: `APEX_BACKTEST_MIN_COVERAGE_RUSSELL` (default 0.70)")
+        st.caption("Russell min coverage: `APEX_BACKTEST_MIN_COVERAGE_RUSSELL` (default 0.85 in block mode, 0.70 otherwise)")
         st.caption("Run validator: `./.venv/bin/python tools/validate_pit_universe.py --strict`")
     
     st.markdown("### 📘 Active Strategies")
@@ -962,7 +969,7 @@ elif mode == "Backtest":
     strategy_fp = _strategy_fingerprint(selected_strategies)
     # Versioned key avoids reusing old payloads from prior app sessions.
     # Include strategy fingerprint so param edits cannot silently reuse stale prepared data.
-    cache_key = f"btv5|{bt_universe}|{bt_duration}|{bt_start_date or 'max'}|{strategy_fp}"
+    cache_key = ""
     _init_backtest_cache()
 
     if bt_start_date:
@@ -970,6 +977,28 @@ elif mode == "Backtest":
     else:
         st.info(f"Settings: **{bt_universe}** for **{bt_duration}**")
     st.caption(f"Strategy fingerprint: `{strategy_fp}`")
+    if "bt_verified_run" not in st.session_state:
+        st.session_state.bt_verified_run = False
+    verified_run = st.toggle(
+        "Verified run (strict accuracy gate)",
+        value=bool(st.session_state.bt_verified_run),
+        help=(
+            "When enabled, this run uses strict accuracy rules (higher minimum coverage, "
+            "full-lookback enforcement, and lock gating)."
+        ),
+    )
+    st.session_state.bt_verified_run = bool(verified_run)
+    run_accuracy_mode = _effective_accuracy_mode(verified_run=bool(verified_run))
+    cache_mode_token = "strict" if run_accuracy_mode == "block" else run_accuracy_mode
+    cache_key = (
+        f"btv6|{bt_universe}|{bt_duration}|{bt_start_date or 'max'}|"
+        f"{strategy_fp}|{cache_mode_token}"
+    )
+    strict_cov_hint = _min_coverage_threshold(bt_universe, accuracy_mode=run_accuracy_mode)
+    st.caption(
+        f"Run accuracy mode: `{run_accuracy_mode}` | "
+        f"Min coverage required for this run: {strict_cov_hint:.0%}"
+    )
 
     if st.button("🚀 RUN BACKTEST", type="primary"):
         if not selected_strategies:
@@ -1013,6 +1042,24 @@ elif mode == "Backtest":
             with st.spinner("Simulating..."):
                 stage_msg = st.empty()
                 stage_msg.caption("Stage: Initializing backtest run...")
+                quality_union = {
+                    "requested": set(),
+                    "loaded": set(),
+                    "missing": set(),
+                    "incomplete": set(),
+                    "stale": set(),
+                }
+
+                def _merge_quality(rep: dict | None) -> None:
+                    if not rep:
+                        return
+                    quality_union["requested"].update(rep.get("requested_symbols") or [])
+                    quality_union["loaded"].update(rep.get("loaded_symbols") or [])
+                    quality_union["missing"].update(rep.get("missing_symbols") or [])
+                    quality_union["incomplete"].update(rep.get("incomplete_symbols") or [])
+                    quality_union["stale"].update(rep.get("stale_symbols") or [])
+
+                strict_full_lookback = False
                 if not cache_hit:
                     stage_msg.caption("Stage: Resolving universe membership...")
                     if bt_universe in ("Russell 3000", "RUSSELL3000"):
@@ -1062,15 +1109,30 @@ elif mode == "Backtest":
                     except Exception:
                         min_cache_coverage = 0.80
                     min_cache_coverage = max(0.50, min(min_cache_coverage, 1.00))
-                    accuracy_mode = _accuracy_mode()
+                    accuracy_mode = run_accuracy_mode
                     accuracy_active = accuracy_mode in {"warn", "block"}
                     force_refresh_for_accuracy = _env_flag("APEX_BACKTEST_FORCE_REFRESH_FOR_ACCURACY", "1")
                     incremental_refresh_enabled = _env_flag("APEX_BACKTEST_INCREMENTAL_REFRESH", "1")
-                    try:
-                        refresh_cap = int(os.getenv("APEX_BACKTEST_REFRESH_MAX_SYMBOLS", "600") or "600")
-                    except Exception:
-                        refresh_cap = 600
-                    refresh_cap = max(100, min(refresh_cap, 5000))
+                    strict_full_lookback = (
+                        accuracy_mode == "block"
+                        and _env_flag("APEX_BACKTEST_ENFORCE_FULL_LOOKBACK", "1")
+                    )
+                    if accuracy_mode == "block" and force_refresh_for_accuracy:
+                        try:
+                            strict_cap = int(
+                                os.getenv("APEX_BACKTEST_REFRESH_MAX_SYMBOLS_STRICT", "0") or "0"
+                            )
+                        except Exception:
+                            strict_cap = 0
+                        refresh_cap = strict_cap if strict_cap > 0 else max(3000, len(symbols))
+                    else:
+                        try:
+                            refresh_cap = int(
+                                os.getenv("APEX_BACKTEST_REFRESH_MAX_SYMBOLS", "2500") or "2500"
+                            )
+                        except Exception:
+                            refresh_cap = 2500
+                    refresh_cap = max(100, min(refresh_cap, 10000))
 
                     data = {}
                     if symbols:
@@ -1108,13 +1170,17 @@ elif mode == "Backtest":
                             "(threaded, single Python process)"
                         )
                         if cache_only_first:
+                            quality_first = {}
                             data = fetch_data_pack(
                                 symbols,
                                 days=fetch_days,
                                 backtest_mode=True,
                                 max_workers=workers_cache,
                                 progress_callback=_loader_progress_cb,
+                                require_full_lookback=strict_full_lookback,
+                                quality_report=quality_first,
                             ) or {}
+                            _merge_quality(quality_first)
                             initial_cov = (len(data) / float(len(symbols))) if symbols else 0.0
                             st.caption(
                                 f"Cache-first load: {len(data)}/{len(symbols)} "
@@ -1154,13 +1220,17 @@ elif mode == "Backtest":
                                 )
                                 if refresh_symbols:
                                     stage_msg.caption("Stage: Refreshing missing symbols incrementally...")
+                                    quality_refresh = {}
                                     fresh = fetch_data_pack(
                                         refresh_symbols,
                                         days=fetch_days,
                                         backtest_mode=False,
                                         max_workers=workers_refresh,
                                         progress_callback=_loader_progress_cb,
+                                        require_full_lookback=strict_full_lookback,
+                                        quality_report=quality_refresh,
                                     ) or {}
+                                    _merge_quality(quality_refresh)
                                     if fresh:
                                         data.update(fresh)
                                 merged_cov = (len(data) / float(len(symbols))) if symbols else 0.0
@@ -1176,13 +1246,17 @@ elif mode == "Backtest":
                                     "to override."
                                 )
                         else:
+                            quality_direct = {}
                             data = fetch_data_pack(
                                 symbols,
                                 days=fetch_days,
                                 backtest_mode=False,
                                 max_workers=workers_refresh,
                                 progress_callback=_loader_progress_cb,
+                                require_full_lookback=strict_full_lookback,
+                                quality_report=quality_direct,
                             ) or {}
+                            _merge_quality(quality_direct)
 
                     # Fetch global context once (required for RS + VIX overlays in the engine).
                     stage_msg.caption("Stage: Loading market context (SPY/VIX)...")
@@ -1290,12 +1364,16 @@ elif mode == "Backtest":
                     expected_symbols = list(symbols or [])
                     expected_symbol_count = len(expected_symbols)
                     if symbols:
+                        quality_rebuild = {}
                         data = fetch_data_pack(
                             symbols,
                             days=fetch_days,
                             backtest_mode=False,
                             max_workers=_recommended_fetch_workers(len(symbols), cache_only=False),
+                            require_full_lookback=strict_full_lookback,
+                            quality_report=quality_rebuild,
                         ) or {}
+                        _merge_quality(quality_rebuild)
                         g_data = fetch_data_pack(
                             ["SPY", "$VIX", "VIX"],
                             days=fetch_days,
@@ -1338,16 +1416,17 @@ elif mode == "Backtest":
                 loaded_start = None
                 loaded_end = None
                 tested_symbol_list = list((getattr(prepared, "enriched", {}) or {}).keys())
+                min_cov_required = _min_coverage_threshold(bt_universe, accuracy_mode=accuracy_mode)
                 if expected_symbol_count > 0:
                     tested_cov = tested_symbols / float(max(1, expected_symbol_count))
                     st.caption(
                         f"Universe coverage used in run: {tested_symbols}/{expected_symbol_count} "
                         f"({tested_cov:.1%})"
                     )
-                    if tested_cov < 0.70:
+                    if tested_cov < min_cov_required:
                         st.warning(
-                            "Low universe coverage can bias results. Consider running once during market "
-                            "hours to refresh cache depth."
+                            "Universe coverage is below this run's target and can bias results. "
+                            "Use strict verified mode for baseline-quality runs."
                         )
                 if getattr(prepared, "all_dates", None) is not None and len(prepared.all_dates) > 0:
                     loaded_start = pd.Timestamp(prepared.all_dates[0]).date().isoformat()
@@ -1367,8 +1446,166 @@ elif mode == "Backtest":
                         f"{fresh_symbols}/{fresh_total} ({fresh_cov:.1%})"
                     )
 
-                accuracy_mode = _accuracy_mode()
-                min_cov_required = _min_coverage_threshold(bt_universe)
+                loaded_set = set(tested_symbol_list)
+                expected_set = set(expected_symbols or [])
+                missing_set = set(quality_union.get("missing", set()))
+                if expected_set:
+                    missing_set.update(expected_set - loaded_set)
+                missing_set -= loaded_set
+                incomplete_set = set(quality_union.get("incomplete", set()))
+                stale_set = set(quality_union.get("stale", set()))
+                incomplete_set -= loaded_set
+                stale_set -= missing_set
+
+                if accuracy_mode == "block":
+                    min_recent_cov_required = max(
+                        0.0,
+                        min(
+                            1.0,
+                            float(
+                                os.getenv(
+                                    "APEX_BACKTEST_MIN_RECENT_COVERAGE_STRICT",
+                                    "0.75",
+                                )
+                                or "0.75"
+                            ),
+                        ),
+                    )
+                    max_incomplete_ratio = max(
+                        0.0,
+                        min(
+                            1.0,
+                            float(
+                                os.getenv(
+                                    "APEX_BACKTEST_MAX_INCOMPLETE_RATIO_STRICT",
+                                    "0.10",
+                                )
+                                or "0.10"
+                            ),
+                        ),
+                    )
+                    max_stale_ratio = max(
+                        0.0,
+                        min(
+                            1.0,
+                            float(
+                                os.getenv(
+                                    "APEX_BACKTEST_MAX_STALE_RATIO_STRICT",
+                                    "0.10",
+                                )
+                                or "0.10"
+                            ),
+                        ),
+                    )
+                elif accuracy_mode == "warn":
+                    min_recent_cov_required = max(
+                        0.0,
+                        min(
+                            1.0,
+                            float(
+                                os.getenv(
+                                    "APEX_BACKTEST_MIN_RECENT_COVERAGE_WARN",
+                                    "0.60",
+                                )
+                                or "0.60"
+                            ),
+                        ),
+                    )
+                    max_incomplete_ratio = max(
+                        0.0,
+                        min(
+                            1.0,
+                            float(
+                                os.getenv(
+                                    "APEX_BACKTEST_MAX_INCOMPLETE_RATIO_WARN",
+                                    "0.20",
+                                )
+                                or "0.20"
+                            ),
+                        ),
+                    )
+                    max_stale_ratio = max(
+                        0.0,
+                        min(
+                            1.0,
+                            float(
+                                os.getenv(
+                                    "APEX_BACKTEST_MAX_STALE_RATIO_WARN",
+                                    "0.20",
+                                )
+                                or "0.20"
+                            ),
+                        ),
+                    )
+                else:
+                    min_recent_cov_required = 0.0
+                    max_incomplete_ratio = 1.0
+                    max_stale_ratio = 1.0
+
+                incomplete_base = max(1, len(loaded_set) + len(incomplete_set))
+                incomplete_ratio = len(incomplete_set) / float(incomplete_base)
+                stale_ratio = len(stale_set) / float(max(1, len(loaded_set)))
+                spy_ok = bool(global_data.get("SPY") is not None and not global_data.get("SPY").empty)
+                vix_ok = bool(global_data.get("VIX") is not None and not global_data.get("VIX").empty)
+                recent_cov_pass = (fresh_total <= 0) or (fresh_cov >= min_recent_cov_required)
+                incomplete_pass = incomplete_ratio <= max_incomplete_ratio
+                stale_pass = stale_ratio <= max_stale_ratio
+                coverage_pass = not (expected_symbol_count > 0 and tested_cov < min_cov_required)
+                lock_blockers = []
+                if not coverage_pass:
+                    lock_blockers.append(
+                        f"coverage {tested_cov:.1%} below required {min_cov_required:.0%}"
+                    )
+                if not recent_cov_pass:
+                    lock_blockers.append(
+                        f"recent-bar coverage {fresh_cov:.1%} below {min_recent_cov_required:.0%}"
+                    )
+                if not incomplete_pass:
+                    lock_blockers.append(
+                        f"incomplete-history ratio {incomplete_ratio:.1%} above {max_incomplete_ratio:.0%}"
+                    )
+                if not stale_pass:
+                    lock_blockers.append(
+                        f"stale-data ratio {stale_ratio:.1%} above {max_stale_ratio:.0%}"
+                    )
+                if not spy_ok:
+                    lock_blockers.append("SPY market context missing")
+
+                scorecard_rows = [
+                    {
+                        "Metric": "Universe coverage",
+                        "Value": f"{tested_symbols}/{expected_symbol_count} ({tested_cov:.1%})",
+                        "Threshold": f">= {min_cov_required:.0%}",
+                        "Status": "PASS" if coverage_pass else "FAIL",
+                    },
+                    {
+                        "Metric": "Recent-bar coverage",
+                        "Value": f"{fresh_symbols}/{fresh_total} ({fresh_cov:.1%})" if fresh_total > 0 else "n/a",
+                        "Threshold": f">= {min_recent_cov_required:.0%}",
+                        "Status": "PASS" if recent_cov_pass else "FAIL",
+                    },
+                    {
+                        "Metric": "Incomplete history ratio",
+                        "Value": f"{len(incomplete_set)} symbol(s) ({incomplete_ratio:.1%})",
+                        "Threshold": f"<= {max_incomplete_ratio:.0%}",
+                        "Status": "PASS" if incomplete_pass else "FAIL",
+                    },
+                    {
+                        "Metric": "Stale data ratio",
+                        "Value": f"{len(stale_set)} symbol(s) ({stale_ratio:.1%})",
+                        "Threshold": f"<= {max_stale_ratio:.0%}",
+                        "Status": "PASS" if stale_pass else "FAIL",
+                    },
+                    {
+                        "Metric": "Market context",
+                        "Value": f"SPY={'OK' if spy_ok else 'MISSING'}, VIX={'OK' if vix_ok else 'MISSING'}",
+                        "Threshold": "SPY required (VIX recommended)",
+                        "Status": "PASS" if spy_ok else "FAIL",
+                    },
+                ]
+                st.markdown("**Accuracy Scorecard**")
+                st.dataframe(pd.DataFrame(scorecard_rows), use_container_width=True, hide_index=True)
+
                 low_cov = expected_symbol_count > 0 and tested_cov < min_cov_required
                 if low_cov:
                     if accuracy_mode == "block":
@@ -1477,6 +1714,7 @@ elif mode == "Backtest":
                             results_map[strategy_name] = res
 
                 st.session_state.backtest_results = results_map
+                lock_eligible = len(lock_blockers) == 0
                 st.session_state.backtest_run_context = {
                     "universe": bt_universe,
                     "duration": bt_duration,
@@ -1488,6 +1726,19 @@ elif mode == "Backtest":
                     "universe_source": universe_source,
                     "loaded_start": loaded_start,
                     "loaded_end": loaded_end,
+                    "accuracy_mode": accuracy_mode,
+                    "verified_run": bool(verified_run),
+                    "quality": {
+                        "requested": int(max(len(expected_set), len(quality_union.get("requested", set())))),
+                        "loaded": int(tested_symbols),
+                        "missing": int(len(missing_set)),
+                        "incomplete_history": int(len(incomplete_set)),
+                        "stale": int(len(stale_set)),
+                        "fresh_cov": float(fresh_cov),
+                        "fresh_total": int(fresh_total),
+                    },
+                    "lock_eligible": bool(lock_eligible),
+                    "lock_blockers": list(lock_blockers),
                 }
 
     if "backtest_results" in st.session_state and st.session_state.backtest_results:
@@ -1544,6 +1795,8 @@ elif mode == "Backtest":
                 current_total_trades = int(trade_count_display)
                 current_win_rate = _safe_float(win_rate_display, 0.0)
                 current_cov = _safe_float(run_ctx.get("coverage"), 0.0)
+                lock_eligible = bool(run_ctx.get("lock_eligible", True))
+                lock_blockers = list(run_ctx.get("lock_blockers") or [])
 
                 pf_store = None
                 if profit_factor_display == float("inf"):
@@ -1551,7 +1804,15 @@ elif mode == "Backtest":
                 elif profit_factor_display is not None and pd.notna(profit_factor_display):
                     pf_store = float(profit_factor_display)
 
-                if st.button("🔒 Lock This Run As Baseline", key=f"lock_baseline_{i}_{strategy_name}"):
+                if not lock_eligible:
+                    blocker_msg = "; ".join(lock_blockers) if lock_blockers else "accuracy thresholds not met"
+                    st.warning(f"Baseline lock disabled for this run: {blocker_msg}.")
+
+                if st.button(
+                    "🔒 Lock This Run As Baseline",
+                    key=f"lock_baseline_{i}_{strategy_name}",
+                    disabled=not lock_eligible,
+                ):
                     payload = _load_backtest_baselines()
                     payload[baseline_key] = {
                         "locked_at_utc": datetime.utcnow().isoformat() + "Z",
