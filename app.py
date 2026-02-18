@@ -1136,6 +1136,16 @@ elif mode == "Backtest":
                         and _env_flag("APEX_BACKTEST_FORCE_FRESH_REFRESH", "1")
                     )
                     incremental_refresh_enabled = _env_flag("APEX_BACKTEST_INCREMENTAL_REFRESH", "1")
+                    max_end_lag_days = int(os.getenv("APEX_BACKTEST_MAX_END_LAG_DAYS", "7") or "7")
+                    max_end_lag_days = max(0, max_end_lag_days)
+                    end_scope_symbols: set[str] = set()
+                    if bt_universe in ("Russell 3000", "RUSSELL3000") and bt_end_date:
+                        try:
+                            end_members, _end_source = get_universe_symbols_pit_with_meta("RUSSELL3000", bt_end_date)
+                        except Exception:
+                            end_members = []
+                        if end_members:
+                            end_scope_symbols = {str(s).upper() for s in end_members if str(s).strip()}
                     strict_full_lookback = (
                         accuracy_mode == "block"
                         and _env_flag("APEX_BACKTEST_ENFORCE_FULL_LOOKBACK", "1")
@@ -1224,6 +1234,30 @@ elif mode == "Backtest":
                             if allow_incremental_refresh:
                                 missing_symbols = [s for s in symbols if s not in data]
                                 refresh_symbols = list(missing_symbols)
+                                stale_symbols = []
+                                if accuracy_mode == "block" and end_scope_symbols:
+                                    now_et = datetime.now(ZoneInfo("America/New_York")).date()
+                                    for sym in end_scope_symbols:
+                                        df_sym = data.get(sym)
+                                        if df_sym is None or df_sym.empty:
+                                            if sym not in refresh_symbols:
+                                                refresh_symbols.append(sym)
+                                            continue
+                                        try:
+                                            last_dt = pd.Timestamp(df_sym.index.max()).tz_localize(None).date()
+                                        except Exception:
+                                            if sym not in refresh_symbols:
+                                                refresh_symbols.append(sym)
+                                            continue
+                                        if (now_et - last_dt).days > max_end_lag_days:
+                                            stale_symbols.append(sym)
+                                            if sym not in refresh_symbols:
+                                                refresh_symbols.append(sym)
+                                    if stale_symbols:
+                                        st.warning(
+                                            f"Strict mode: refreshing {len(stale_symbols)} stale end-of-window "
+                                            f"members (lag > {max_end_lag_days} days)."
+                                        )
                                 if (
                                     refresh_symbols
                                     and len(refresh_symbols) > refresh_cap
