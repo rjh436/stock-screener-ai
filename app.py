@@ -1011,7 +1011,10 @@ elif mode == "Backtest":
                 _touch_cache_key(cache_key)
 
             with st.spinner("Simulating..."):
+                stage_msg = st.empty()
+                stage_msg.caption("Stage: Initializing backtest run...")
                 if not cache_hit:
+                    stage_msg.caption("Stage: Resolving universe membership...")
                     if bt_universe in ("Russell 3000", "RUSSELL3000"):
                         symbols, universe_source = get_universe_symbols_pit_window_with_meta(
                             "RUSSELL3000",
@@ -1062,6 +1065,7 @@ elif mode == "Backtest":
 
                     data = {}
                     if symbols:
+                        stage_msg.caption("Stage: Loading historical price data...")
                         workers_cache = _recommended_fetch_workers(len(symbols), cache_only=True)
                         workers_refresh = _recommended_fetch_workers(len(symbols), cache_only=False)
                         st.caption(
@@ -1126,6 +1130,7 @@ elif mode == "Backtest":
                             ) or {}
 
                     # Fetch global context once (required for RS + VIX overlays in the engine).
+                    stage_msg.caption("Stage: Loading market context (SPY/VIX)...")
                     global_workers = _recommended_fetch_workers(3, cache_only=cache_only_first)
                     g_data = fetch_data_pack(
                         ["SPY", "$VIX", "VIX"],
@@ -1148,6 +1153,7 @@ elif mode == "Backtest":
                     global_data = {"SPY": spy_df, "VIX": vix_df}
 
                     # Turbo: precompute indicators/arrays once, then reuse across all strategies.
+                    stage_msg.caption("Stage: Building indicators and PIT-aligned data...")
                     prepared = prepare_backtest_data(
                         data,
                         symbol_universe=symbols,
@@ -1193,6 +1199,7 @@ elif mode == "Backtest":
                     del g_data
 
                 if cache_hit and getattr(prepared, "all_dates", None) is not None and len(prepared.all_dates) > 0:
+                    stage_msg.caption("Stage: Validating cached dataset freshness...")
                     max_end_lag_days = int(os.getenv("APEX_BACKTEST_MAX_END_LAG_DAYS", "7") or "7")
                     max_end_lag_days = max(0, max_end_lag_days)
                     loaded_end_dt = pd.Timestamp(prepared.all_dates[-1]).tz_localize(None)
@@ -1208,6 +1215,7 @@ elif mode == "Backtest":
 
                 if not cache_hit:
                     # Re-enter with fresh data for stale cache case.
+                    stage_msg.caption("Stage: Refreshing stale prepared dataset...")
                     if bt_universe in ("Russell 3000", "RUSSELL3000"):
                         symbols, universe_source = get_universe_symbols_pit_window_with_meta(
                             "RUSSELL3000",
@@ -1357,6 +1365,7 @@ elif mode == "Backtest":
                         st.session_state.backtest_results = {}
                     else:
                         status_text = st.empty()
+                        stage_msg.caption("Stage: Running strategy simulation...")
                         universe_membership_by_day = None
                         membership_source = "none"
                         if bt_universe in ("Russell 3000", "RUSSELL3000"):
@@ -1398,6 +1407,7 @@ elif mode == "Backtest":
                         status_text.text(f"Completed in {elapsed:.1f}s")
                         time.sleep(0.15)
                         status_text.empty()
+                        stage_msg.empty()
 
                         if isinstance(raw_results, dict):
                             raw_results = [raw_results]

@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional, Tuple
 from .schwab_client import sd
 from .cache_manager import DataCache
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import threading
 
 try:
@@ -838,37 +838,96 @@ def fetch_data_pack(
     count = 0
     total = len(symbols)
     print(f"📉 Starting History Download for {total} symbols...")
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for sym, df in executor.map(load, symbols):
-            count += 1
-            if count % 50 == 0:
-                print(f"   ⏳ Downloaded {count}/{total} symbols ({(count/total)*100:.1f}%)")
-            if df is not None and not df.empty:
-                # Guardrail: don't silently accept "short" cached series when a longer lookback
-                # was requested (common when caches were built with fewer days).
-                try:
-                    if isinstance(df.index, pd.DatetimeIndex) and df.index.min() > min_history_start:
-                        incomplete.append(sym)
-                        if require_full_lookback:
-                            continue
-                except Exception:
-                    pass
+    try:
+        heartbeat_sec = float(os.getenv("DATA_FETCH_HEARTBEAT_SEC", "8.0") or "8.0")
+    except Exception:
+        heartbeat_sec = 8.0
+    heartbeat_sec = max(2.0, min(heartbeat_sec, 60.0))
 
+    try:
+        stall_timeout_sec = float(os.getenv("DATA_FETCH_STALL_TIMEOUT_SEC", "180.0") or "180.0")
+    except Exception:
+        stall_timeout_sec = 180.0
+    stall_timeout_sec = max(20.0, min(stall_timeout_sec, 900.0))
+
+    last_completion = time.monotonic()
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    future_to_sym = {executor.submit(load, sym): sym for sym in symbols}
+    pending = set(future_to_sym.keys())
+
+    try:
+        while pending:
+            done, pending = wait(
+                pending,
+                timeout=heartbeat_sec,
+                return_when=FIRST_COMPLETED,
+            )
+
+            if not done:
+                stalled_for = time.monotonic() - last_completion
+                print(
+                    f"   ⏳ Waiting on workers... {count}/{total} completed, "
+                    f"{len(pending)} pending (idle {stalled_for:.0f}s)"
+                )
+                if stalled_for >= stall_timeout_sec:
+                    print(
+                        "⚠️ Data download stall timeout reached; returning partial coverage "
+                        f"after {stall_timeout_sec:.0f}s without completions."
+                    )
+                    for fut in list(pending):
+                        sym = future_to_sym.get(fut)
+                        if sym:
+                            missing.append(sym)
+                        fut.cancel()
+                    pending.clear()
+                    break
+                continue
+
+            for fut in done:
+                sym = future_to_sym.get(fut, "")
                 try:
-                    if isinstance(df.index, pd.DatetimeIndex):
-                        last_date = df.index.max().date()
-                        if (today - last_date).days > max_lag_days:
-                            stale.append(sym)
-                            if require_fresh:
+                    sym_res, df = fut.result()
+                    if sym_res:
+                        sym = sym_res
+                except Exception:
+                    missing.append(sym)
+                    count += 1
+                    continue
+
+                count += 1
+                last_completion = time.monotonic()
+                if count % 50 == 0 or count == total:
+                    print(f"   ⏳ Downloaded {count}/{total} symbols ({(count/total)*100:.1f}%)")
+
+                if df is not None and not df.empty:
+                    # Guardrail: don't silently accept "short" cached series when a longer lookback
+                    # was requested (common when caches were built with fewer days).
+                    try:
+                        if isinstance(df.index, pd.DatetimeIndex) and df.index.min() > min_history_start:
+                            incomplete.append(sym)
+                            if require_full_lookback:
                                 continue
-                except Exception:
-                    stale.append(sym)
-                    if require_fresh:
-                        continue
+                    except Exception:
+                        pass
 
-                data[sym] = df
-            else:
-                missing.append(sym)
+                    try:
+                        if isinstance(df.index, pd.DatetimeIndex):
+                            last_date = df.index.max().date()
+                            if (today - last_date).days > max_lag_days:
+                                stale.append(sym)
+                                if require_fresh:
+                                    continue
+                    except Exception:
+                        stale.append(sym)
+                        if require_fresh:
+                            continue
+
+                    data[sym] = df
+                else:
+                    missing.append(sym)
+    finally:
+        # Never block forever on hung workers when the app is interactive.
+        executor.shutdown(wait=False, cancel_futures=True)
 
     source_delta = _source_hits_delta(sources_before, _source_hits_snapshot())
     if source_delta:
