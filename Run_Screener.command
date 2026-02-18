@@ -8,11 +8,21 @@ set -o pipefail
 # Move to this script’s folder
 cd "$(dirname "$0")"
 
-# Startup log (helps diagnose external SIGKILL / OOM events).
+# Early pre-log (survives even if process is killed before full logger init).
 mkdir -p logs
+PRELOG="logs/launcher_preflight_$(date +%Y%m%d_%H%M%S).log"
+{
+    echo "=== Apex Launcher Preflight ==="
+    echo "Timestamp: $(date)"
+    echo "User: $(whoami)"
+    echo "PWD: $(pwd)"
+} >> "$PRELOG"
+
+# Startup log (helps diagnose external SIGKILL / OOM events).
 LAUNCH_LOG="logs/streamlit_launch_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LAUNCH_LOG") 2>&1
 echo "📝 Launch log: $LAUNCH_LOG"
+echo "📝 Preflight log: $PRELOG"
 
 # Detect Python (Try 3.12 first, then fallback to system default)
 if command -v python3.12 &> /dev/null; then
@@ -26,6 +36,15 @@ fi
 
 echo "✅ Using Python: $PY_EXEC"
 
+# Verify selected Python can actually execute code.
+if ! "$PY_EXEC" -c "import sys; print(sys.version)" >/dev/null 2>&1; then
+    echo "⚠️ Primary Python failed runtime check: $PY_EXEC"
+    if command -v python3 >/dev/null 2>&1; then
+        PY_EXEC="python3"
+        echo "↪ Falling back to: $PY_EXEC"
+    fi
+fi
+
 # Create venv if missing
 if [ ! -d ".venv" ]; then
     echo "📦 Creating virtual environment..."
@@ -34,6 +53,9 @@ fi
 
 # Activate environment
 source .venv/bin/activate
+
+# Clear quarantine xattrs in venv to avoid macOS library-load policy issues.
+xattr -dr com.apple.quarantine .venv 2>/dev/null || true
 
 # Install requirements if marker missing
 if [ ! -f ".venv/.deps_installed" ]; then
@@ -46,25 +68,55 @@ if [ ! -f ".venv/.deps_installed" ]; then
     touch .venv/.deps_installed
 fi
 
+# Validate core runtime modules. Rebuild venv once if integrity is broken.
+if ! python -c "import streamlit, pandas, numpy" >/dev/null 2>&1; then
+    echo "⚠️ Python environment integrity check failed. Rebuilding .venv..."
+    deactivate 2>/dev/null || true
+    rm -rf .venv
+    $PY_EXEC -m venv .venv
+    source .venv/bin/activate
+    xattr -dr com.apple.quarantine .venv 2>/dev/null || true
+    pip install --upgrade pip
+    pip install -r requirements.txt
+    touch .venv/.deps_installed
+fi
+
 # Conservative runtime defaults to reduce sudden memory pressure spikes.
 # You can override any of these in your shell/.env.
-export DATA_FETCH_WORKERS="${DATA_FETCH_WORKERS:-12}"
-export SCHWAB_API_CONCURRENCY="${SCHWAB_API_CONCURRENCY:-4}"
+export DATA_FETCH_WORKERS="${DATA_FETCH_WORKERS:-8}"
+export SCHWAB_API_CONCURRENCY="${SCHWAB_API_CONCURRENCY:-2}"
 export APEX_BACKTEST_CACHE_MAX_ENTRIES="${APEX_BACKTEST_CACHE_MAX_ENTRIES:-1}"
 export APEX_BACKTEST_FORCE_REFRESH_FOR_ACCURACY="${APEX_BACKTEST_FORCE_REFRESH_FOR_ACCURACY:-1}"
 export APEX_BACKTEST_CACHE_ONLY_WHEN_CLOSED="${APEX_BACKTEST_CACHE_ONLY_WHEN_CLOSED:-1}"
 export APEX_BACKTEST_REFRESH_WHEN_CLOSED="${APEX_BACKTEST_REFRESH_WHEN_CLOSED:-0}"
-export APEX_INDICATOR_CACHE_MAX_BYTES="${APEX_INDICATOR_CACHE_MAX_BYTES:-6442450944}" # 6 GiB
+export APEX_INDICATOR_CACHE_MAX_BYTES="${APEX_INDICATOR_CACHE_MAX_BYTES:-3221225472}" # 3 GiB
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export APEX_SAFE_MODE="${APEX_SAFE_MODE:-1}"
 
-# Clear any processes holding port 8182 to avoid startup conflicts
-PORT_PIDS=$(lsof -ti:8182 2>/dev/null || true)
-if [ -n "$PORT_PIDS" ]; then
-    echo "🧹 Clearing port 8182..."
-    echo "$PORT_PIDS" | xargs kill -9 || true
+if [ "$APEX_SAFE_MODE" = "1" ]; then
+    # In safe mode, avoid loading large pickled indicator cache blobs into RAM.
+    export APEX_DISABLE_INDICATOR_CACHE="${APEX_DISABLE_INDICATOR_CACHE:-1}"
+    echo "🛡️ Safe mode enabled (memory-conservative runtime)."
 fi
+
+echo "Runtime: DATA_FETCH_WORKERS=$DATA_FETCH_WORKERS SCHWAB_API_CONCURRENCY=$SCHWAB_API_CONCURRENCY"
+echo "Runtime: APEX_INDICATOR_CACHE_MAX_BYTES=$APEX_INDICATOR_CACHE_MAX_BYTES APEX_SAFE_MODE=$APEX_SAFE_MODE"
+
+# Clear any stale Streamlit processes holding key ports.
+for PORT in 8501 8182; do
+    PORT_PIDS=$(lsof -ti:"$PORT" 2>/dev/null || true)
+    if [ -n "$PORT_PIDS" ]; then
+        echo "🧹 Clearing port $PORT..."
+        echo "$PORT_PIDS" | xargs kill -15 || true
+        sleep 1
+        PORT_PIDS=$(lsof -ti:"$PORT" 2>/dev/null || true)
+        if [ -n "$PORT_PIDS" ]; then
+            echo "$PORT_PIDS" | xargs kill -9 || true
+        fi
+    fi
+done
 
 echo "🛫 Running pre-flight auth check..."
 if python tools/auto_login.py; then
