@@ -313,6 +313,22 @@ def _required_history_start(days: int, *, buffer_days: int = 100) -> datetime:
     return (datetime.now(timezone.utc) - timedelta(days=day_count + max(0, int(buffer_days)))).replace(tzinfo=None)
 
 
+def _calendar_to_trading_days(days: int) -> int:
+    try:
+        d = int(days)
+    except Exception:
+        d = 252
+    d = max(1, d)
+    return max(1, int(round(d * (252.0 / 365.25))))
+
+
+def _default_incomplete_min_bars(days: int) -> int:
+    # Require enough bars for stable trend/RS features without forcing full-window
+    # history for legitimate IPO-era entrants.
+    trade_days = _calendar_to_trading_days(days)
+    return max(200, min(400, int(round(trade_days * 0.20))))
+
+
 def _has_required_history(
     df: Optional[pd.DataFrame],
     required_start: datetime,
@@ -772,7 +788,22 @@ def fetch_data_pack(
     end = datetime.now(timezone.utc)
     # Must match `fetch_single_symbol` windowing (days + 100 buffer).
     start_naive = (end - timedelta(days=days + 100)).replace(tzinfo=None)
-    min_history_start = start_naive + timedelta(days=10)  # weekend/holiday tolerance
+    try:
+        incomplete_min_bars = int(
+            os.getenv("DATA_INCOMPLETE_MIN_BARS", str(_default_incomplete_min_bars(days)))
+            or str(_default_incomplete_min_bars(days))
+        )
+    except Exception:
+        incomplete_min_bars = _default_incomplete_min_bars(days)
+    incomplete_min_bars = max(120, min(incomplete_min_bars, 1200))
+    try:
+        strict_min_bars = int(
+            os.getenv("DATA_STRICT_MIN_BARS", str(incomplete_min_bars))
+            or str(incomplete_min_bars)
+        )
+    except Exception:
+        strict_min_bars = incomplete_min_bars
+    strict_min_bars = max(120, min(strict_min_bars, 1600))
     today = end.date()
 
     if backtest_mode:
@@ -941,12 +972,13 @@ def fetch_data_pack(
                 _emit_progress("progress", pending_count=len(pending))
 
                 if df is not None and not df.empty:
-                    # Guardrail: don't silently accept "short" cached series when a longer lookback
-                    # was requested (common when caches were built with fewer days).
+                    # Guardrail: classify insufficient history by bar count, not
+                    # absolute start date. This avoids unfairly penalizing IPO-era symbols.
                     try:
-                        if isinstance(df.index, pd.DatetimeIndex) and df.index.min() > min_history_start:
+                        bar_count = int(len(df))
+                        if bar_count < incomplete_min_bars:
                             incomplete.append(sym)
-                            if require_full_lookback:
+                            if require_full_lookback and bar_count < strict_min_bars:
                                 continue
                     except Exception:
                         pass

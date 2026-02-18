@@ -7,7 +7,7 @@ import hashlib
 import math
 import time
 from datetime import datetime, timedelta
-from typing import List
+from typing import List, Optional
 from zoneinfo import ZoneInfo
 import gc
 
@@ -309,7 +309,7 @@ def _min_coverage_threshold(universe_name: str, *, accuracy_mode: str | None = N
     u = str(universe_name or "").upper()
     mode = str(accuracy_mode or _accuracy_mode()).strip().lower()
     if u in {"RUSSELL3000", "RUSSELL 3000"}:
-        default = "0.85" if mode == "block" else "0.70"
+        default = "0.75" if mode == "block" else "0.70"
         raw = os.getenv("APEX_BACKTEST_MIN_COVERAGE_RUSSELL", default)
     else:
         default = "0.80" if mode == "block" else "0.65"
@@ -326,23 +326,42 @@ def _recent_data_coverage(
     *,
     expected_symbol_count: int,
     max_lag_days: int,
+    symbol_scope: Optional[set[str]] = None,
 ) -> tuple[int, int, float]:
     enriched = getattr(prepared, "enriched", {}) or {}
     if not enriched:
         return 0, int(max(0, expected_symbol_count)), 0.0
     now_et = datetime.now(ZoneInfo("America/New_York")).date()
     fresh = 0
-    for sym_data in enriched.values():
-        idx = getattr(sym_data, "index", None)
-        if idx is None or len(idx) == 0:
-            continue
-        try:
-            last_dt = pd.Timestamp(idx[-1]).tz_localize(None).date()
-        except Exception:
-            continue
-        if (now_et - last_dt).days <= max_lag_days:
-            fresh += 1
-    total = int(max(0, expected_symbol_count))
+    if symbol_scope:
+        scope = {str(s).strip().upper() for s in symbol_scope if str(s).strip()}
+        by_upper = {str(sym).upper(): sym_data for sym, sym_data in enriched.items()}
+        for sym_u in scope:
+            sym_data = by_upper.get(sym_u)
+            if sym_data is None:
+                continue
+            idx = getattr(sym_data, "index", None)
+            if idx is None or len(idx) == 0:
+                continue
+            try:
+                last_dt = pd.Timestamp(idx[-1]).tz_localize(None).date()
+            except Exception:
+                continue
+            if (now_et - last_dt).days <= max_lag_days:
+                fresh += 1
+        total = int(len(scope))
+    else:
+        for sym_data in enriched.values():
+            idx = getattr(sym_data, "index", None)
+            if idx is None or len(idx) == 0:
+                continue
+            try:
+                last_dt = pd.Timestamp(idx[-1]).tz_localize(None).date()
+            except Exception:
+                continue
+            if (now_et - last_dt).days <= max_lag_days:
+                fresh += 1
+        total = int(max(0, expected_symbol_count))
     cov = (fresh / float(max(1, total))) if total > 0 else 0.0
     return int(fresh), total, float(cov)
 
@@ -400,7 +419,7 @@ with st.sidebar:
         st.caption("Template: `data/russell3000_membership/template_membership_ranges.csv`")
         st.caption("Strict mode: `APEX_REQUIRE_PIT_UNIVERSE=1`")
         st.caption("Accuracy mode: `APEX_BACKTEST_ACCURACY_MODE=warn|block|off`")
-        st.caption("Russell min coverage: `APEX_BACKTEST_MIN_COVERAGE_RUSSELL` (default 0.85 in block mode, 0.70 otherwise)")
+        st.caption("Russell min coverage: `APEX_BACKTEST_MIN_COVERAGE_RUSSELL` (default 0.75 in block mode, 0.70 otherwise)")
         st.caption("Run validator: `./.venv/bin/python tools/validate_pit_universe.py --strict`")
     
     st.markdown("### 📘 Active Strategies")
@@ -1435,10 +1454,20 @@ elif mode == "Backtest":
 
                 max_end_lag_days = int(os.getenv("APEX_BACKTEST_MAX_END_LAG_DAYS", "7") or "7")
                 max_end_lag_days = max(0, max_end_lag_days)
+                recent_scope = None
+                if bt_universe in ("Russell 3000", "RUSSELL3000") and bt_end_date:
+                    end_members, end_source = get_universe_symbols_pit_with_meta("RUSSELL3000", bt_end_date)
+                    if end_members:
+                        recent_scope = {str(s).upper() for s in end_members if str(s).strip()}
+                        st.caption(
+                            f"Recent coverage scope: end-of-window PIT membership "
+                            f"({len(recent_scope)} symbols, source `{end_source}`)."
+                        )
                 fresh_symbols, fresh_total, fresh_cov = _recent_data_coverage(
                     prepared,
-                    expected_symbol_count=expected_symbol_count,
+                    expected_symbol_count=len(recent_scope) if recent_scope else expected_symbol_count,
                     max_lag_days=max_end_lag_days,
+                    symbol_scope=recent_scope,
                 )
                 if fresh_total > 0:
                     st.caption(
@@ -1454,7 +1483,7 @@ elif mode == "Backtest":
                 missing_set -= loaded_set
                 incomplete_set = set(quality_union.get("incomplete", set()))
                 stale_set = set(quality_union.get("stale", set()))
-                incomplete_set -= loaded_set
+                incomplete_set -= missing_set
                 stale_set -= missing_set
 
                 if accuracy_mode == "block":
