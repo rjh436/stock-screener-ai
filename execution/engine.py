@@ -1767,12 +1767,40 @@ def _legacy_run_backtest(
     start_np = start_ts.to_datetime64() if start_ts is not None else None
     end_np = end_ts.to_datetime64() if end_ts is not None else None
 
+    raw_membership_by_day = kwargs.get("universe_membership_by_day")
+    universe_membership_by_day: Optional[List[Optional[set[str]]]] = None
+    if isinstance(raw_membership_by_day, (list, tuple)) and len(raw_membership_by_day) == len(all_dates):
+        normalized_membership: List[Optional[set[str]]] = []
+        try:
+            for members in raw_membership_by_day:
+                if members is None:
+                    normalized_membership.append(None)
+                    continue
+                if isinstance(members, (set, frozenset)):
+                    normalized_membership.append({str(s).upper() for s in members if str(s).strip()})
+                    continue
+                normalized_membership.append({str(s).upper() for s in members if str(s).strip()})
+            universe_membership_by_day = normalized_membership
+        except Exception:
+            universe_membership_by_day = None
+
     debug_counts = {
         "n_universe": np.full(len(all_dates), len(enriched), dtype=np.int32),
         "n_trend": np.zeros(len(all_dates), dtype=np.int32),
         "n_rs": np.zeros(len(all_dates), dtype=np.int32),
         "n_vcp": np.zeros(len(all_dates), dtype=np.int32),
     }
+    if universe_membership_by_day is not None:
+        try:
+            debug_counts["n_universe"] = np.array(
+                [
+                    len(members) if isinstance(members, (set, frozenset)) else 0
+                    for members in universe_membership_by_day
+                ],
+                dtype=np.int32,
+            )
+        except Exception:
+            pass
     scoring_log_count = 0
     regime_skip_log_count = 0
 
@@ -1827,6 +1855,7 @@ def _legacy_run_backtest(
 
     for batch in batches:
         for sym, sd in batch:
+            sym_upper = str(sym).upper()
             n_bars = len(sd.index)
             if n_bars < 2:
                 continue
@@ -1847,6 +1876,10 @@ def _legacy_run_backtest(
                 day_idx = sd.gidx[curr_i]
                 if day_idx < 1 or day_idx >= len(all_dates):
                     continue
+                if universe_membership_by_day is not None:
+                    day_members = universe_membership_by_day[day_idx]
+                    if day_members is not None and sym_upper not in day_members:
+                        continue
                 day_dt = all_dates[day_idx]
                 if start_np is not None and day_dt < start_np:
                     continue

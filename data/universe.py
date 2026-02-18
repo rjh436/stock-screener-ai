@@ -6,7 +6,7 @@ import os
 import re
 from datetime import date, datetime
 from io import StringIO
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import requests
 
@@ -113,6 +113,93 @@ def get_universe_symbols_pit_with_meta(
         "Falling back to current constituents (survivorship bias remains)."
     )
     return get_universe_symbols(name), "fallback_current"
+
+
+def get_universe_symbols_pit_window_with_meta(
+    name: str,
+    start_date: Optional[str],
+    end_date: Optional[str] = None,
+) -> Tuple[List[str], str]:
+    """
+    Return PIT symbols for the full backtest window [start_date, end_date].
+    For Russell 3000 this unions monthly PIT snapshots over the window so
+    entrants after start_date are not silently excluded.
+    """
+    key = _normalize_name(name)
+    if key != "RUSSELL3000":
+        return get_universe_symbols(name), "current_index"
+
+    start_dt = _parse_date_ymd(start_date)
+    if start_dt is None:
+        return get_universe_symbols_pit_with_meta(name, start_date)
+    end_dt = _parse_date_ymd(end_date) or datetime.utcnow().date()
+    if end_dt < start_dt:
+        end_dt = start_dt
+
+    snapshots = _load_russell_3000_snapshot_series()
+    if snapshots:
+        start_idx = None
+        for i, (snap_dt, _symbols) in enumerate(snapshots):
+            if snap_dt <= start_dt:
+                start_idx = i
+            elif snap_dt > start_dt:
+                break
+        if start_idx is None:
+            start_idx = 0
+
+        window_union = set()
+        used = 0
+        for snap_dt, symbols in snapshots[start_idx:]:
+            if snap_dt > end_dt:
+                break
+            window_union.update(symbols)
+            used += 1
+
+        # Ensure at least one set is available for the window.
+        if not window_union and 0 <= start_idx < len(snapshots):
+            window_union.update(snapshots[start_idx][1])
+            used = 1
+
+        if window_union and used > 0:
+            return _normalize_symbols(window_union), "pit_snapshot_window"
+
+    return get_universe_symbols_pit_with_meta(name, start_date)
+
+
+def build_russell3000_membership_by_day(
+    all_dates: Sequence[Any],
+) -> Tuple[List[Optional[frozenset[str]]], str]:
+    """
+    Build day-level PIT membership references aligned to all_dates.
+    Each day points to the latest snapshot <= that day.
+    """
+    if not all_dates:
+        return [], "unavailable"
+
+    snapshots = _load_russell_3000_snapshot_series()
+    if not snapshots:
+        return [], "unavailable"
+
+    day_values: List[Optional[date]] = [_coerce_date(d) for d in all_dates]
+    if not any(day_values):
+        return [], "unavailable"
+
+    memberships: List[Optional[frozenset[str]]] = []
+    snap_i = 0
+    current: Optional[frozenset[str]] = None
+
+    for day in day_values:
+        if day is None:
+            memberships.append(current)
+            continue
+        while snap_i < len(snapshots) and snapshots[snap_i][0] <= day:
+            current = snapshots[snap_i][1]
+            snap_i += 1
+        memberships.append(current)
+
+    if not any(m is not None for m in memberships):
+        return [], "unavailable"
+    return memberships, "pit_snapshot_timeline"
 
 
 def get_russell3000_pit_status(as_of_date: Optional[str] = None) -> Dict[str, object]:
@@ -329,6 +416,30 @@ def _load_russell_3000_pit_from_snapshots(as_of: date) -> List[str]:
     return _read_symbol_csv(best_path)
 
 
+def _load_russell_3000_snapshot_series() -> List[Tuple[date, frozenset[str]]]:
+    pit_dir = os.getenv("RUSSELL3000_PIT_DIR", _RUSSELL3000_PIT_DIR)
+    if not pit_dir or not os.path.isdir(pit_dir):
+        return []
+
+    series: Dict[date, frozenset[str]] = {}
+    for name in os.listdir(pit_dir):
+        if not name.lower().endswith(".csv"):
+            continue
+        path = os.path.join(pit_dir, name)
+        snap_dt = _extract_snapshot_date(path)
+        if snap_dt is None:
+            continue
+        symbols = _read_symbol_csv(path)
+        if not symbols:
+            continue
+        # If duplicate dates exist, later files overwrite earlier entries.
+        series[snap_dt] = frozenset(_normalize_symbols(symbols))
+
+    if not series:
+        return []
+    return sorted(series.items(), key=lambda x: x[0])
+
+
 def _load_russell_3000_pit_from_ranges(as_of: date) -> List[str]:
     path = os.getenv("RUSSELL3000_PIT_MEMBERSHIP_CSV", "").strip()
     if not path or not os.path.exists(path):
@@ -360,6 +471,24 @@ def _load_russell_3000_pit_from_ranges(as_of: date) -> List[str]:
             return _normalize_symbols(out)
     except Exception:
         return []
+
+
+def _coerce_date(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    raw = str(value).strip()
+    if not raw:
+        return None
+    dt = _parse_date_ymd(raw)
+    if dt is not None:
+        return dt
+    if len(raw) >= 10:
+        return _parse_date_ymd(raw[:10])
+    return None
 
 
 def _parse_ishares_csv(text: str) -> List[str]:

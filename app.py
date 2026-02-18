@@ -20,6 +20,8 @@ from data.indices import get_index_symbols
 from data.universe import (
     get_universe_symbols,
     get_universe_symbols_pit_with_meta,
+    get_universe_symbols_pit_window_with_meta,
+    build_russell3000_membership_by_day,
     get_russell3000_pit_status,
 )
 from execution.engine import (
@@ -949,6 +951,7 @@ elif mode == "Backtest":
     bt_years = year_map.get(bt_duration)
     bt_start_ts = (today - pd.DateOffset(years=bt_years)).normalize() if bt_years else None
     bt_start_date = bt_start_ts.date().isoformat() if bt_start_ts is not None else None
+    bt_end_date = today.date().isoformat()
 
     # Pull enough calendar history for the requested window + warmup bars.
     if bt_start_ts is not None:
@@ -991,7 +994,7 @@ elif mode == "Backtest":
                 if (
                     bt_universe in ("Russell 3000", "RUSSELL3000")
                     and require_pit_universe
-                    and universe_source not in {"pit_snapshot", "pit_ranges"}
+                    and universe_source not in {"pit_snapshot", "pit_ranges", "pit_snapshot_window"}
                 ):
                     st.warning(
                         "Discarding cached Russell 3000 dataset because PIT provenance is missing. "
@@ -1010,7 +1013,11 @@ elif mode == "Backtest":
             with st.spinner("Simulating..."):
                 if not cache_hit:
                     if bt_universe in ("Russell 3000", "RUSSELL3000"):
-                        symbols, universe_source = get_universe_symbols_pit_with_meta("RUSSELL3000", bt_start_date)
+                        symbols, universe_source = get_universe_symbols_pit_window_with_meta(
+                            "RUSSELL3000",
+                            bt_start_date,
+                            bt_end_date,
+                        )
                         if universe_source == "fallback_current":
                             msg = (
                                 "Point-in-time Russell 3000 membership data was not found. "
@@ -1202,7 +1209,11 @@ elif mode == "Backtest":
                 if not cache_hit:
                     # Re-enter with fresh data for stale cache case.
                     if bt_universe in ("Russell 3000", "RUSSELL3000"):
-                        symbols, universe_source = get_universe_symbols_pit_with_meta("RUSSELL3000", bt_start_date)
+                        symbols, universe_source = get_universe_symbols_pit_window_with_meta(
+                            "RUSSELL3000",
+                            bt_start_date,
+                            bt_end_date,
+                        )
                         if universe_source == "fallback_current" and require_pit_universe:
                             st.error(
                                 "Point-in-time Russell 3000 membership is required for accurate backtests. "
@@ -1346,6 +1357,28 @@ elif mode == "Backtest":
                         st.session_state.backtest_results = {}
                     else:
                         status_text = st.empty()
+                        universe_membership_by_day = None
+                        membership_source = "none"
+                        if bt_universe in ("Russell 3000", "RUSSELL3000"):
+                            prepared_dates = getattr(prepared, "all_dates", None)
+                            if prepared_dates is None:
+                                prepared_dates_seq = []
+                            else:
+                                prepared_dates_seq = list(prepared_dates)
+                            membership_series, membership_source = build_russell3000_membership_by_day(
+                                prepared_dates_seq
+                            )
+                            if membership_series and len(membership_series) == len(prepared_dates_seq):
+                                universe_membership_by_day = membership_series
+                                st.caption(
+                                    "PIT timeline applied for entries: "
+                                    f"`{membership_source}`"
+                                )
+                            else:
+                                st.warning(
+                                    "PIT timeline could not be constructed for this run; "
+                                    "falling back to static start-window membership."
+                                )
                         start_time = time.time()
                         status_text.text(f"Running {len(run_strategies)} strategy simulation(s)...")
                         try:
@@ -1355,6 +1388,7 @@ elif mode == "Backtest":
                                 start_cash=100000.0,
                                 start_date=bt_start_date,
                                 global_data=global_data,
+                                universe_membership_by_day=universe_membership_by_day,
                             )
                         except Exception as e:
                             st.error(f"Backtest run failed: {e}")
