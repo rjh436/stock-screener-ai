@@ -120,8 +120,29 @@ done
 
 echo "🛫 Running pre-flight auth check..."
 if python tools/auto_login.py; then
-    echo "🚀 Launching Streamlit App..."
-    python -m streamlit run app.py --server.fileWatcherType=none
+    # If Streamlit is already up, avoid duplicate launch.
+    if lsof -ti:8501 >/dev/null 2>&1; then
+        echo "✅ Streamlit already running on http://localhost:8501"
+        exit 0
+    fi
+
+    RUNTIME_LOG="logs/streamlit_runtime_$(date +%Y%m%d_%H%M%S).log"
+    PID_FILE="logs/streamlit.pid"
+    echo "🚀 Launching Streamlit App (detached)..."
+    echo "📝 Runtime log: $RUNTIME_LOG"
+    nohup python -m streamlit run app.py --server.fileWatcherType=none >> "$RUNTIME_LOG" 2>&1 &
+    STREAMLIT_PID=$!
+    echo "$STREAMLIT_PID" > "$PID_FILE"
+    sleep 2
+    if kill -0 "$STREAMLIT_PID" 2>/dev/null; then
+        echo "✅ Streamlit started (PID: $STREAMLIT_PID)"
+        echo "🌐 Open: http://localhost:8501"
+        exit 0
+    fi
+
+    echo "❌ Streamlit failed to stay running. Last log lines:"
+    tail -n 80 "$RUNTIME_LOG" || true
+    exit 1
 else
     echo "⚠️ Launch Aborted."
     read -n 1 -p "Press any key to close..."
