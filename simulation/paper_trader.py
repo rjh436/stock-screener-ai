@@ -164,7 +164,7 @@ class PaperTrader:
             try:
                 with open(DEFAULT_CONFIG_PATH, "r") as f:
                     return json.load(f)
-            except: 
+            except Exception:
                 return []
         return []
 
@@ -217,7 +217,7 @@ class PaperTrader:
             try:
                 with open(path, "r") as f:
                     return json.load(f)
-            except:
+            except Exception:
                 return {}
         return {}
     
@@ -261,7 +261,16 @@ class PaperTrader:
                         state["equity_curve"] = [{"date": str(datetime.now().date()), "equity": self.start_cash}]
                     self._migrate_position_genomes(state)
                     return state
-            except: pass
+            except Exception:
+                # Fall back to default empty state when portfolio file is malformed.
+                return {
+                    "cash": self.start_cash,
+                    "equity": self.start_cash,
+                    "positions": {},
+                    "pending_orders": [],
+                    "history": [],
+                    "equity_curve": [{"date": str(datetime.now().date()), "equity": self.start_cash}],
+                }
             
         return {
             "cash": self.start_cash,
@@ -300,12 +309,14 @@ class PaperTrader:
 
     # --- CORE TRADING LOGIC ---
     def get_realtime_price(self, sym):
+        q = None
         try:
             q = sd.get_quote(sym)
             if q and sym in q and "quote" in q[sym]:
                 q_d = q[sym]["quote"]
                 return float(q_d.get("lastPrice") or q_d.get("mark") or q_d.get("closePrice") or 0.0)
-        except: pass
+        except Exception:
+            q = None
 
         df = fetch_single_symbol(sym, days=5, force_fresh=False)
         if df is not None and not df.empty:
@@ -964,25 +975,33 @@ class PaperTrader:
                 logs.append(f"⏳ QUEUED {cand['symbol']} x{shares} @ ${cand['price']:.2f} (Stop: ${cand['stop']:.2f})")
         return {"count": len(orders), "orders": orders, "logs": logs}
 
-    def run_daily_scan(self, data_dict: Optional[Dict[str, pd.DataFrame]] = None, global_data: Optional[Dict[str, pd.DataFrame]] = None, scoring_weights: Optional[Dict] = None, progress_callback: Optional[Callable[[int, int], None]] = None) -> Dict[str, Any]:
+    def run_daily_scan(
+        self,
+        data_dict: Optional[Dict[str, pd.DataFrame]] = None,
+        global_data: Optional[Dict[str, pd.DataFrame]] = None,
+        scoring_weights: Optional[Dict] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        universe_label: Optional[str] = None,
+    ) -> Dict[str, Any]:
         # PHASE 3 FIX: REAL-TIME SCANNING (Scan Today, Trade Tomorrow)
         assert MIN_ENTRY_SCORE == 120.0
         vix_df = global_data.get("VIX") if global_data else None
         spy_df = global_data.get("SPY") if global_data else None
         
+        scan_universe_label = str(universe_label or "S&P 1500")
         if data_dict is None:
-            tickers = get_index_symbols("S&P 1500")
-            universe_label = "S&P 1500"
+            tickers = get_index_symbols(scan_universe_label)
+            effective_label = scan_universe_label
             if not tickers:
                 sp500 = get_index_symbols("S&P 500") or []
                 nasdaq100 = get_index_symbols("Nasdaq 100") or []
                 tickers = sorted(set(sp500 + nasdaq100))
-                universe_label = "S&P 500 + Nasdaq 100"
-            print(f"Loaded {len(tickers)} tickers from {universe_label}")
+                effective_label = "S&P 500 + Nasdaq 100"
+            print(f"Loaded {len(tickers)} tickers from {effective_label}")
             data_dict = fetch_data_pack(tickers, days=400)
         else:
             tickers = list(data_dict.keys())
-            print(f"Loaded {len(tickers)} tickers from S&P 1500")
+            print(f"Loaded {len(tickers)} tickers from {scan_universe_label}")
 
         candidates = []
         scan_logs: List[str] = []
@@ -1143,7 +1162,10 @@ class PaperTrader:
                         "partial_profit_day": partial_profit_day,
                         "entry_i": signal_idx + 1
                     })
-                except: continue
+                except Exception as e:
+                    if len(scan_logs) < 20:
+                        scan_logs.append(f"⚠️ {sym}: candidate evaluation error ({e})")
+                    continue
 
         result = self._execute_governor(candidates)
         logs = scan_logs + (result.get("logs") or [])

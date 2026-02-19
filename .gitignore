@@ -106,5 +106,14 @@ snapshots/
 data/cache/
 data/cache_indices/
 optimizer_checkpoint_*.pkl
+optimizer_checkpoint.pkl
+apex_v3.db
 config/*.bak
 config/*.pre_gen*.json
+output/
+tmp/
+.pytest_cache/
+.coverage
+*.sqlite3
+*.db-journal
+data/schwab_tokens*.json

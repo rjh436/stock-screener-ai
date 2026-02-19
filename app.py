@@ -45,7 +45,157 @@ from strategies.strategy_loader import load_strategies
 
 CONFIG_PATH = "config/generated_strategies.json"
 BASELINE_CONFIG_PATH = os.path.join("config", "backtest_baselines.json")
+UNIVERSE_OPTIONS = ["SP500", "SP100", "SP1500", "NASDAQ100", "RUSSELL3000"]
+DEFAULT_UNIVERSE = "RUSSELL3000"
 st.set_page_config(page_title="Apex Sniper AI", layout="wide", page_icon="🎯")
+
+
+def _inject_global_styles() -> None:
+    """Apply a consistent, professional visual system across Streamlit surfaces."""
+    st.markdown(
+        """
+<style>
+:root {
+  --apx-bg-0: #f4f7fb;
+  --apx-bg-1: #eef3f9;
+  --apx-card: #ffffff;
+  --apx-border: #d8e0eb;
+  --apx-text: #202739;
+  --apx-muted: #617086;
+  --apx-accent-1: #ff5d5d;
+  --apx-accent-2: #e93b3b;
+}
+
+html, body, [class*="css"] {
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+}
+
+[data-testid="stAppViewContainer"] {
+  background:
+    radial-gradient(1200px 600px at 100% -5%, #e2ebf8 0%, transparent 45%),
+    linear-gradient(180deg, var(--apx-bg-0) 0%, var(--apx-bg-1) 100%);
+  color: var(--apx-text);
+}
+
+[data-testid="stHeader"] {
+  display: none !important;
+}
+
+[data-testid="stDecoration"] {
+  display: none !important;
+}
+
+[data-testid="stToolbar"] {
+  display: none !important;
+}
+
+[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #f5f8fc 0%, #edf2f8 100%);
+  border-right: 1px solid var(--apx-border);
+}
+
+[data-testid="stMainBlockContainer"] {
+  max-width: 1400px;
+  padding-top: 0.7rem;
+  padding-bottom: 2.8rem;
+}
+
+.apx-mode-header {
+  background: linear-gradient(120deg, #ffffff 0%, #f7fbff 100%);
+  border: 1px solid var(--apx-border);
+  border-radius: 14px;
+  padding: 0.9rem 1rem 0.85rem 1rem;
+  margin-bottom: 0.8rem;
+  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.04);
+}
+
+.apx-mode-title {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--apx-text);
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+}
+
+.apx-mode-subtitle {
+  margin-top: 0.25rem;
+  color: var(--apx-muted);
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+h1, h2, h3 {
+  color: var(--apx-text);
+  letter-spacing: -0.01em;
+}
+
+p, label, .stCaption, .stMarkdown, .stText {
+  color: var(--apx-text);
+}
+
+[data-testid="stMetric"] {
+  background: var(--apx-card);
+  border: 1px solid var(--apx-border);
+  border-radius: 14px;
+  padding: 0.5rem 0.75rem;
+  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.04);
+}
+
+div.stButton > button {
+  border-radius: 10px;
+  border: 1px solid var(--apx-border);
+  min-height: 2.35rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  box-shadow: 0 1px 4px rgba(16, 24, 40, 0.05);
+}
+
+[data-testid="baseButton-primary"] {
+  background: linear-gradient(180deg, var(--apx-accent-1) 0%, var(--apx-accent-2) 100%);
+  border: none !important;
+  color: #ffffff !important;
+  box-shadow: 0 6px 16px rgba(233, 59, 59, 0.24);
+}
+
+[data-testid="baseButton-primary"]:hover {
+  filter: brightness(0.98);
+}
+
+[data-baseweb="select"] > div {
+  border-radius: 10px;
+  border: 1px solid var(--apx-border);
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(16, 24, 40, 0.04);
+}
+
+[data-testid="stAlert"] {
+  border-radius: 12px;
+  border: 1px solid var(--apx-border);
+}
+
+[data-testid="stExpander"] {
+  background: var(--apx-card);
+  border: 1px solid var(--apx-border);
+  border-radius: 12px;
+}
+
+[data-testid="stDataFrame"] {
+  border: 1px solid var(--apx-border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+[data-testid="stProgress"] > div > div {
+  height: 0.58rem;
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+_inject_global_styles()
 
 # --- HELPERS ---
 def _is_wealth_strategy(config: dict) -> bool:
@@ -72,6 +222,18 @@ def score_to_rating(score):
     elif score >= 60: return "✅ Good"
     elif score >= 50: return "⚠️ Fair"
     return "❌ Weak"
+
+
+def render_mode_header(title: str, subtitle: str) -> None:
+    st.markdown(
+        f"""
+<div class="apx-mode-header">
+  <div class="apx-mode-title">{title}</div>
+  <div class="apx-mode-subtitle">{subtitle}</div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def normalize_equity_curve_df(equity_curve) -> pd.DataFrame:
@@ -509,12 +671,16 @@ with st.sidebar:
 - Automatic exit after **{time_stop}** trading days.
 """
                     )
+        st.caption(f"Selected strategies: {len(selected_strategies)}")
     else:
         st.error("⚠️ No strategies found in config file!")
 
 # --- 1. LIVE SCREENER ---
 if mode == "Live Screener":
-    st.header("🚀 Daily Opportunity Scanner")
+    render_mode_header(
+        "🚀 Daily Opportunity Scanner",
+        "Scan the Russell 3000 workflow with point-in-time universe alignment and real-time progress visibility.",
+    )
     if "scan_results" not in st.session_state:
         st.session_state.scan_results = None
 
@@ -522,10 +688,15 @@ if mode == "Live Screener":
     with col1:
         universe = st.selectbox(
             "Universe",
-            ["SP500", "SP100", "SP1500", "NASDAQ100", "RUSSELL3000"],
-            index=2,
+            UNIVERSE_OPTIONS,
+            index=UNIVERSE_OPTIONS.index(DEFAULT_UNIVERSE),
         )
-        run_btn = st.button("RUN SCAN", type="primary")
+        run_btn = st.button(
+            "RUN SCAN",
+            type="primary",
+            disabled=not bool(selected_strategies),
+            help=None if selected_strategies else "Select at least one strategy in the sidebar.",
+        )
     with col2:
         show_all_setups = st.checkbox("🔍 Show All Setups", value=True)
     
@@ -538,7 +709,7 @@ if mode == "Live Screener":
         status_msg.info(f"📦 Resolving {universe} constituents...")
         progress_bar.progress(0.2, text="20% Complete")
         if universe in ("Russell 3000", "RUSSELL3000"):
-            live_as_of = datetime.utcnow().date().isoformat()
+            live_as_of = datetime.now(ZoneInfo("UTC")).date().isoformat()
             symbols, live_universe_source = get_universe_symbols_pit_with_meta("RUSSELL3000", live_as_of)
         else:
             symbols = get_universe_symbols(universe)
@@ -596,6 +767,8 @@ if mode == "Live Screener":
             status_msg.write(f"🔍 Analyzing symbols... (0/{total_symbols})")
             ema_seconds = None
             ema_alpha = 0.2
+            scan_error_count = 0
+            scan_error_examples: list[str] = []
             timer_msg.caption("⏱️ Calibrating...")
             for i, (sym, sym_data) in enumerate(scan_items, start=1):
                 symbol_start = time.time()
@@ -698,8 +871,10 @@ if mode == "Live Screener":
                                     "Entry_OK": entry_ok,
                                 }
                             )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        scan_error_count += 1
+                        if len(scan_error_examples) < 8:
+                            scan_error_examples.append(f"{sym}: {str(e)}")
 
                 step_time = time.time() - symbol_start
                 if ema_seconds is None:
@@ -778,6 +953,12 @@ if mode == "Live Screener":
             progress_bar.empty()
             status_msg.empty()
             timer_msg.empty()
+            if scan_error_count > 0:
+                st.warning(
+                    f"{scan_error_count} symbol evaluations raised exceptions and were skipped."
+                )
+                with st.expander("🔎 Scan Diagnostics (sample errors)"):
+                    st.text("\n".join(scan_error_examples))
 
     if st.session_state.scan_results is not None:
         # --- DATA PREP ---
@@ -786,6 +967,19 @@ if mode == "Live Screener":
         if df.empty:
             st.info("No signals found today.")
         else:
+            status_col = df.get("Status")
+            status_text = status_col.astype(str) if status_col is not None else pd.Series([], dtype="string")
+            tradable_n = int(status_text.str.contains("TRADABLE", na=False).sum())
+            pending_n = int(status_text.str.contains("PENDING", na=False).sum())
+            wait_n = int(status_text.str.contains("WAIT", na=False).sum())
+            rejected_n = int(status_text.str.contains("REJECTED|SKIP", na=False).sum())
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("Scanned", f"{len(df):,}")
+            k2.metric("Tradable", f"{tradable_n:,}")
+            k3.metric("Pending/Held", f"{pending_n:,}")
+            k4.metric("Watchlist", f"{wait_n:,}")
+            k5.metric("Rejected", f"{rejected_n:,}")
+
             # Bucket 1: Alpha Targets (Strictly Tradable)
             # Used for the Left Panel ("Buy Now")
             targets = df[
@@ -950,14 +1144,17 @@ if mode == "Live Screener":
 
 # --- 2. BACKTEST ---
 elif mode == "Backtest":
-    st.header("📈 Historical Performance Lab")
+    render_mode_header(
+        "📈 Historical Performance Lab",
+        "Run institutional-grade historical simulations with accuracy gating, PIT coverage checks, and exportable diagnostics.",
+    )
     
     col_uni, col_dur = st.columns([1, 3])
     with col_uni:
         bt_universe = st.selectbox(
             "Universe",
-            ["SP500", "SP100", "SP1500", "NASDAQ100", "RUSSELL3000"],
-            index=2,
+            UNIVERSE_OPTIONS,
+            index=UNIVERSE_OPTIONS.index(DEFAULT_UNIVERSE),
         )
     
     with col_dur:
@@ -1019,7 +1216,13 @@ elif mode == "Backtest":
         f"Min coverage required for this run: {strict_cov_hint:.0%}"
     )
 
-    if st.button("🚀 RUN BACKTEST", type="primary"):
+    run_backtest_btn = st.button(
+        "🚀 RUN BACKTEST",
+        type="primary",
+        disabled=not bool(selected_strategies),
+        help=None if selected_strategies else "Select at least one strategy in the sidebar.",
+    )
+    if run_backtest_btn:
         if not selected_strategies:
             st.error("Please select at least one strategy.")
         else:
@@ -1883,7 +2086,7 @@ elif mode == "Backtest":
                 ):
                     payload = _load_backtest_baselines()
                     payload[baseline_key] = {
-                        "locked_at_utc": datetime.utcnow().isoformat() + "Z",
+                        "locked_at_utc": datetime.now(ZoneInfo("UTC")).isoformat(),
                         "context": {
                             "universe": str(run_ctx.get("universe", bt_universe)),
                             "duration": str(run_ctx.get("duration", bt_duration)),
@@ -2000,7 +2203,16 @@ elif mode == "Backtest":
 
 # --- 3. SIMULATOR (PRO MODE) ---
 elif mode == "Simulator":
-    st.header("🎮 Paper Trader (Pro)")
+    render_mode_header(
+        "🎮 Paper Trader (Pro)",
+        "Execute a realistic paper-trading cycle with nightly scans, morning fills/exits, and live portfolio monitoring.",
+    )
+    sim_universe = st.selectbox(
+        "Universe",
+        UNIVERSE_OPTIONS,
+        index=UNIVERSE_OPTIONS.index(DEFAULT_UNIVERSE),
+        key="sim_universe",
+    )
     pt = PaperTrader(configs=selected_strategies if selected_strategies else None)
     state = pt.state
     
@@ -2011,7 +2223,15 @@ elif mode == "Simulator":
     m3.metric("Total PnL", f"${pnl_val:,.2f}", delta=f"{pnl_val/100000*100:.2f}%")
     m4.metric("Positions", len(state['positions']))
     
-    if st.button("🔭 PHASE 1: Scan for New Entries (Evening/Market Close)", type="primary"):
+    if "sim_reset_confirm_armed" not in st.session_state:
+        st.session_state.sim_reset_confirm_armed = False
+
+    if st.button(
+        "🔭 PHASE 1: Scan for New Entries (Evening/Market Close)",
+        type="primary",
+        disabled=not bool(selected_strategies),
+        help=None if selected_strategies else "Select at least one strategy in the sidebar.",
+    ):
         status = st.status("🚀 Initializing Simulation...", expanded=True)
         try:
             status.write("1️⃣ Verifying Strategies...")
@@ -2020,18 +2240,34 @@ elif mode == "Simulator":
                 st.error("PaperTrader has 0 loaded strategies. Check config.")
                 st.stop()
             
-            status.write("2️⃣ Executing Scan & Governor...")
-            symbols = get_index_symbols("S&P 1500")
+            status.write(f"2️⃣ Resolving {sim_universe} constituents...")
+            if sim_universe in ("Russell 3000", "RUSSELL3000"):
+                sim_as_of = datetime.now(ZoneInfo("UTC")).date().isoformat()
+                symbols, sim_universe_source = get_universe_symbols_pit_with_meta(
+                    "RUSSELL3000",
+                    sim_as_of,
+                )
+            else:
+                symbols = get_universe_symbols(sim_universe)
+                sim_universe_source = "current_index"
+            symbols = list(symbols or [])
+            if not symbols:
+                raise RuntimeError(f"No symbols loaded for {sim_universe}.")
+            status.write(
+                f"3️⃣ Executing Scan & Governor ({sim_universe}, {len(symbols):,} symbols, source: {sim_universe_source})..."
+            )
             base_days = 400
             data_pack = fetch_data_pack(
                 symbols,
                 days=base_days,
+                max_workers=_recommended_fetch_workers(len(symbols), cache_only=False),
                 inject_live=True,
                 max_lag_days=0,
             )
             g_data = fetch_data_pack(
                 ["SPY", "$VIX", "VIX"],
                 days=600,
+                max_workers=_recommended_fetch_workers(3, cache_only=False),
                 inject_live=True,
                 max_lag_days=0,
             ) or {}
@@ -2054,6 +2290,7 @@ elif mode == "Simulator":
                 data_pack,
                 global_data=global_data,
                 progress_callback=_progress,
+                universe_label=f"{sim_universe} ({sim_universe_source})",
             )
             orders = scan_result.get("orders", []) if scan_result else []
             logs = scan_result.get("logs", []) if scan_result else []
@@ -2061,7 +2298,7 @@ elif mode == "Simulator":
             status_text.empty()
             progress_bar.empty()
             
-            status.write(f"3️⃣ Scan Complete. Orders Queued: {queued_count}")
+            status.write(f"4️⃣ Scan Complete. Orders Queued: {queued_count}")
             status.update(label="✅ Simulation Complete", state="complete", expanded=False)
             
             if orders:
@@ -2110,9 +2347,23 @@ elif mode == "Simulator":
             st.success("Prices Updated.")
             st.rerun()
     with c3:
-        if st.button("⚠️ Emergency System Reset (Wipe All State)"):
-            pt.reset_account()
-            st.rerun()
+        if not st.session_state.sim_reset_confirm_armed:
+            if st.button("⚠️ Emergency System Reset (Wipe All State)", key="sim_reset_arm_btn"):
+                st.session_state.sim_reset_confirm_armed = True
+                st.rerun()
+        else:
+            st.error("Confirm full simulator reset. This will wipe positions, pending orders, and trade history.")
+            x1, x2 = st.columns(2)
+            with x1:
+                if st.button("✅ Confirm Wipe", key="sim_reset_confirm_btn", type="primary"):
+                    pt.reset_account()
+                    st.session_state.sim_reset_confirm_armed = False
+                    st.success("Simulator state reset.")
+                    st.rerun()
+            with x2:
+                if st.button("Cancel", key="sim_reset_cancel_btn"):
+                    st.session_state.sim_reset_confirm_armed = False
+                    st.rerun()
 
     st.subheader("📂 Active Holdings")
     
