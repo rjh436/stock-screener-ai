@@ -55,6 +55,11 @@ def _check_docs(findings: list[Finding]) -> None:
 
 
 def _check_tracked_risk_files(findings: list[Finding], tracked: list[str]) -> None:
+    safe_secret_like_files = {
+        ".env.example",
+        "env.example",
+    }
+
     secret_patterns = [
         re.compile(r"(^|/)\.env($|[.])"),
         re.compile(r"schwab_tokens", re.I),
@@ -75,8 +80,20 @@ def _check_tracked_risk_files(findings: list[Finding], tracked: list[str]) -> No
         re.compile(r"(^|/)_archive/"),
     ]
 
-    secret_hits = [p for p in tracked if _match_any(p, secret_patterns)]
-    artifact_hits = [p for p in tracked if _match_any(p, artifact_patterns)]
+    secret_hits = [
+        p
+        for p in tracked
+        if _match_any(p, secret_patterns) and p.lower() not in safe_secret_like_files
+    ]
+
+    artifact_hits = []
+    for p in tracked:
+        if not _match_any(p, artifact_patterns):
+            continue
+        # Trained model artifacts under models/ are intentionally versioned.
+        if p.startswith("models/") and p.endswith(".pkl"):
+            continue
+        artifact_hits.append(p)
 
     if secret_hits:
         findings.append(

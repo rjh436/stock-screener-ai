@@ -103,6 +103,9 @@ config/backtest_baselines.json.tmp
 logs/
 exports/
 snapshots/
+backups/
+_archive/
+tools/_archive/
 data/cache/
 data/cache_indices/
 optimizer_checkpoint_*.pkl

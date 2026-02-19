@@ -1,9 +1,0 @@
-APEX DUO LIVE - PRODUCTION RELEASE
-==================================================
-Date: 20251203_143334
-
-STATUS: FULLY OPERATIONAL
-- Portfolio: Apex Duo (Gen 12 Classic + Gen 9 Evolved)
-- Engine: Unified Velocity Ranking (Unclamped)
-- Dashboard: Pro Mode (Interactive Holdings + Sell Buttons)
-- Simulator: Real-Time Quotes + Next Open Execution + Super Signals

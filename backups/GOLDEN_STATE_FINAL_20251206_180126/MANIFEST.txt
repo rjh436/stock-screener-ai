@@ -1,9 +1,0 @@
-GOLDEN STATE CONFIGURATION
-Date: $(date +%Y-%m-%d)
-Performance:
-- Apex Income (Gen 9): 3.56% Avg Profit / 78% Win Rate
-- Apex Wealth (Gen 12): 11.4% Avg Profit / 66% Win Rate
-Key Logic:
-- Engine: Post-Clamp Scoring (Base Clamped to 100, then Bonus added).
-- Income: Trend Bonus (+20) and Downtrend Penalty (-15) active.
-- Wealth: Sniper Bonus (+50) active.
