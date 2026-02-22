@@ -7,7 +7,7 @@ import hashlib
 import math
 import time
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 import gc
 
@@ -59,21 +59,46 @@ def _inject_global_styles() -> None:
   --apx-bg-0: #f4f7fb;
   --apx-bg-1: #eef3f9;
   --apx-card: #ffffff;
+  --apx-surface: #ffffff;
   --apx-border: #d8e0eb;
   --apx-text: #202739;
   --apx-muted: #617086;
+  --apx-sidebar-0: #f5f8fc;
+  --apx-sidebar-1: #edf2f8;
   --apx-accent-1: #ff5d5d;
   --apx-accent-2: #e93b3b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --apx-bg-0: #0f1722;
+    --apx-bg-1: #132031;
+    --apx-card: #1a2736;
+    --apx-surface: #172334;
+    --apx-border: #2f425a;
+    --apx-text: #e8eff8;
+    --apx-muted: #9eb2ca;
+    --apx-sidebar-0: #101a27;
+    --apx-sidebar-1: #142134;
+    --apx-accent-1: #ff6b6b;
+    --apx-accent-2: #f04f4f;
+  }
 }
 
 html, body, [class*="css"] {
   font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
 }
 
+body {
+  background: var(--apx-bg-0) !important;
+  color: var(--apx-text) !important;
+}
+
 [data-testid="stAppViewContainer"] {
   background:
-    radial-gradient(1200px 600px at 100% -5%, #e2ebf8 0%, transparent 45%),
+    radial-gradient(1200px 600px at 100% -5%, rgba(137, 171, 214, 0.28) 0%, transparent 45%),
     linear-gradient(180deg, var(--apx-bg-0) 0%, var(--apx-bg-1) 100%);
+  min-height: 100vh;
   color: var(--apx-text);
 }
 
@@ -90,8 +115,11 @@ html, body, [class*="css"] {
 }
 
 [data-testid="stSidebar"] {
-  background: linear-gradient(180deg, #f5f8fc 0%, #edf2f8 100%);
+  background: linear-gradient(180deg, var(--apx-sidebar-0) 0%, var(--apx-sidebar-1) 100%);
   border-right: 1px solid var(--apx-border);
+}
+[data-testid="stSidebar"] * {
+  color: var(--apx-text) !important;
 }
 
 [data-testid="stMainBlockContainer"] {
@@ -101,7 +129,7 @@ html, body, [class*="css"] {
 }
 
 .apx-mode-header {
-  background: linear-gradient(120deg, #ffffff 0%, #f7fbff 100%);
+  background: linear-gradient(120deg, var(--apx-surface) 0%, var(--apx-card) 100%);
   border: 1px solid var(--apx-border);
   border-radius: 14px;
   padding: 0.9rem 1rem 0.85rem 1rem;
@@ -130,7 +158,7 @@ h1, h2, h3 {
 }
 
 p, label, .stCaption, .stMarkdown, .stText {
-  color: var(--apx-text);
+  color: var(--apx-text) !important;
 }
 
 [data-testid="stMetric"] {
@@ -164,7 +192,8 @@ div.stButton > button {
 [data-baseweb="select"] > div {
   border-radius: 10px;
   border: 1px solid var(--apx-border);
-  background: #ffffff;
+  background: var(--apx-card);
+  color: var(--apx-text);
   box-shadow: 0 1px 4px rgba(16, 24, 40, 0.04);
 }
 
@@ -183,7 +212,25 @@ div.stButton > button {
   border: 1px solid var(--apx-border);
   border-radius: 12px;
   overflow: hidden;
-  background: #ffffff;
+  background: var(--apx-card);
+}
+
+[data-testid="stMetricLabel"], [data-testid="stMetricValue"] {
+  color: var(--apx-text) !important;
+}
+
+[data-baseweb="menu"], [role="listbox"] {
+  background: var(--apx-card) !important;
+  color: var(--apx-text) !important;
+}
+
+[data-baseweb="input"] > div, [data-baseweb="textarea"] > div {
+  background: var(--apx-card) !important;
+  border-color: var(--apx-border) !important;
+}
+
+input, textarea {
+  color: var(--apx-text) !important;
 }
 
 [data-testid="stProgress"] > div > div {
@@ -213,7 +260,7 @@ def format_rule(r):
     return f"{r.get('col')} {r.get('op')} {r.get('val', r.get('ref'))}"
 
 def color_pnl(val):
-    color = 'green' if val > 0 else 'red' if val < 0 else 'white'
+    color = 'green' if val > 0 else 'red' if val < 0 else '#6b7280'
     return f'color: {color}'
 
 def score_to_rating(score):
@@ -467,11 +514,51 @@ def _effective_accuracy_mode(*, verified_run: bool) -> str:
     return "block" if verified_run else _accuracy_mode()
 
 
-def _min_coverage_threshold(universe_name: str, *, accuracy_mode: str | None = None) -> float:
+def _duration_years(duration_label: str | None) -> int | None:
+    if duration_label is None:
+        return None
+    key = str(duration_label or "").strip().lower()
+    mapping = {
+        "1 year": 1,
+        "5 years": 5,
+        "10 years": 10,
+        "20 years": 20,
+    }
+    return mapping.get(key)
+
+
+def _min_coverage_threshold(
+    universe_name: str,
+    *,
+    accuracy_mode: str | None = None,
+    duration_label: str | None = None,
+) -> float:
     u = str(universe_name or "").upper()
     mode = str(accuracy_mode or _accuracy_mode()).strip().lower()
+    years = _duration_years(duration_label)
     if u in {"RUSSELL3000", "RUSSELL 3000"}:
-        default = "0.75" if mode == "block" else "0.70"
+        if mode == "block":
+            # Balanced strict defaults: require high quality without making long-horizon
+            # PIT backtests impossible due delist/rename data constraints.
+            if years is not None and years <= 1:
+                default = "0.75"
+            elif years is not None and years <= 5:
+                default = "0.55"
+            elif years is not None and years <= 10:
+                default = "0.50"
+            else:
+                default = "0.45"
+        elif mode == "warn":
+            if years is not None and years <= 1:
+                default = "0.70"
+            elif years is not None and years <= 5:
+                default = "0.50"
+            elif years is not None and years <= 10:
+                default = "0.45"
+            else:
+                default = "0.40"
+        else:
+            default = "0.10"
         raw = os.getenv("APEX_BACKTEST_MIN_COVERAGE_RUSSELL", default)
     else:
         default = "0.80" if mode == "block" else "0.65"
@@ -481,6 +568,118 @@ def _min_coverage_threshold(universe_name: str, *, accuracy_mode: str | None = N
     except Exception:
         val = float(default)
     return max(0.10, min(val, 1.00))
+
+
+def _accuracy_thresholds(
+    universe_name: str,
+    *,
+    accuracy_mode: str | None = None,
+    duration_label: str | None = None,
+) -> Dict[str, float]:
+    mode = str(accuracy_mode or _accuracy_mode()).strip().lower()
+    years = _duration_years(duration_label)
+    is_russell = str(universe_name or "").upper() in {"RUSSELL3000", "RUSSELL 3000"}
+
+    min_cov_required = _min_coverage_threshold(
+        universe_name,
+        accuracy_mode=mode,
+        duration_label=duration_label,
+    )
+
+    if mode == "off":
+        return {
+            "min_coverage": min_cov_required,
+            "min_recent_coverage": 0.0,
+            "max_incomplete_ratio": 1.0,
+            "max_stale_ratio": 1.0,
+        }
+
+    if mode == "block":
+        if is_russell:
+            if years is not None and years <= 1:
+                recent_default = "0.75"
+                stale_default = "0.25"
+            elif years is not None and years <= 5:
+                recent_default = "0.55"
+                stale_default = "0.40"
+            elif years is not None and years <= 10:
+                recent_default = "0.50"
+                stale_default = "0.45"
+            else:
+                recent_default = "0.45"
+                stale_default = "0.50"
+        else:
+            recent_default = "0.75"
+            stale_default = "0.25"
+        incomplete_default = "0.10"
+        min_recent_cov_required = max(
+            0.0,
+            min(
+                1.0,
+                float(os.getenv("APEX_BACKTEST_MIN_RECENT_COVERAGE_STRICT", recent_default) or recent_default),
+            ),
+        )
+        max_incomplete_ratio = max(
+            0.0,
+            min(
+                1.0,
+                float(os.getenv("APEX_BACKTEST_MAX_INCOMPLETE_RATIO_STRICT", incomplete_default) or incomplete_default),
+            ),
+        )
+        max_stale_ratio = max(
+            0.0,
+            min(
+                1.0,
+                float(os.getenv("APEX_BACKTEST_MAX_STALE_RATIO_STRICT", stale_default) or stale_default),
+            ),
+        )
+    else:
+        # warn mode
+        if is_russell:
+            if years is not None and years <= 1:
+                recent_default = "0.65"
+                stale_default = "0.35"
+            elif years is not None and years <= 5:
+                recent_default = "0.50"
+                stale_default = "0.55"
+            elif years is not None and years <= 10:
+                recent_default = "0.45"
+                stale_default = "0.60"
+            else:
+                recent_default = "0.40"
+                stale_default = "0.65"
+        else:
+            recent_default = "0.60"
+            stale_default = "0.40"
+        incomplete_default = "0.20"
+        min_recent_cov_required = max(
+            0.0,
+            min(
+                1.0,
+                float(os.getenv("APEX_BACKTEST_MIN_RECENT_COVERAGE_WARN", recent_default) or recent_default),
+            ),
+        )
+        max_incomplete_ratio = max(
+            0.0,
+            min(
+                1.0,
+                float(os.getenv("APEX_BACKTEST_MAX_INCOMPLETE_RATIO_WARN", incomplete_default) or incomplete_default),
+            ),
+        )
+        max_stale_ratio = max(
+            0.0,
+            min(
+                1.0,
+                float(os.getenv("APEX_BACKTEST_MAX_STALE_RATIO_WARN", stale_default) or stale_default),
+            ),
+        )
+
+    return {
+        "min_coverage": float(min_cov_required),
+        "min_recent_coverage": float(min_recent_cov_required),
+        "max_incomplete_ratio": float(max_incomplete_ratio),
+        "max_stale_ratio": float(max_stale_ratio),
+    }
 
 
 def _recent_data_coverage(
@@ -581,7 +780,7 @@ with st.sidebar:
         st.caption("Template: `data/russell3000_membership/template_membership_ranges.csv`")
         st.caption("Strict mode: `APEX_REQUIRE_PIT_UNIVERSE=1`")
         st.caption("Accuracy mode: `APEX_BACKTEST_ACCURACY_MODE=warn|block|off`")
-        st.caption("Russell min coverage: `APEX_BACKTEST_MIN_COVERAGE_RUSSELL` (default 0.75 in block mode, 0.70 otherwise)")
+        st.caption("Russell min coverage: `APEX_BACKTEST_MIN_COVERAGE_RUSSELL` (defaults are duration-aware in block/warn mode)")
         st.caption("Run validator: `./.venv/bin/python tools/validate_pit_universe.py --strict`")
     
     st.markdown("### 📘 Active Strategies")
@@ -1210,10 +1409,16 @@ elif mode == "Backtest":
         f"btv6|{bt_universe}|{bt_duration}|{bt_start_date or 'max'}|"
         f"{strategy_fp}|{cache_mode_token}"
     )
-    strict_cov_hint = _min_coverage_threshold(bt_universe, accuracy_mode=run_accuracy_mode)
+    thresholds_hint = _accuracy_thresholds(
+        bt_universe,
+        accuracy_mode=run_accuracy_mode,
+        duration_label=bt_duration,
+    )
     st.caption(
         f"Run accuracy mode: `{run_accuracy_mode}` | "
-        f"Min coverage required for this run: {strict_cov_hint:.0%}"
+        f"Coverage >= {thresholds_hint['min_coverage']:.0%}, "
+        f"Recent >= {thresholds_hint['min_recent_coverage']:.0%}, "
+        f"Stale <= {thresholds_hint['max_stale_ratio']:.0%}"
     )
 
     run_backtest_btn = st.button(
@@ -1270,6 +1475,7 @@ elif mode == "Backtest":
                     "missing": set(),
                     "incomplete": set(),
                     "stale": set(),
+                    "source_hits": {},
                 }
 
                 def _merge_quality(rep: dict | None) -> None:
@@ -1280,6 +1486,20 @@ elif mode == "Backtest":
                     quality_union["missing"].update(rep.get("missing_symbols") or [])
                     quality_union["incomplete"].update(rep.get("incomplete_symbols") or [])
                     quality_union["stale"].update(rep.get("stale_symbols") or [])
+                    src = rep.get("source_hits") or {}
+                    if isinstance(src, dict):
+                        dst = quality_union["source_hits"]
+                        for k, v in src.items():
+                            key = str(k or "").strip()
+                            if not key:
+                                continue
+                            try:
+                                inc = int(v or 0)
+                            except Exception:
+                                inc = 0
+                            if inc <= 0:
+                                continue
+                            dst[key] = int(dst.get(key, 0) or 0) + inc
 
                 strict_full_lookback = False
                 if not cache_hit:
@@ -1314,6 +1534,8 @@ elif mode == "Backtest":
                         st.session_state.backtest_results = {}
                         symbols = []
 
+                    accuracy_mode = run_accuracy_mode
+                    accuracy_active = accuracy_mode in {"warn", "block"}
                     ny_now = datetime.now(ZoneInfo("America/New_York"))
                     market_open = _is_market_open_et(ny_now)
                     prefer_cache_first = _env_flag("APEX_BACKTEST_CACHE_FIRST", "1")
@@ -1324,6 +1546,9 @@ elif mode == "Backtest":
                     cache_only_first = bool(
                         prefer_cache_first or ((not market_open) and prefer_cache_only_when_closed)
                     )
+                    # Verified/strict runs prioritize freshness over cache-only speed by default.
+                    if accuracy_mode == "block" and not _env_flag("APEX_BACKTEST_STRICT_CACHE_FIRST", "0"):
+                        cache_only_first = False
                     try:
                         min_cache_coverage = float(
                             os.getenv("APEX_BACKTEST_CACHE_MIN_COVERAGE", "0.80") or "0.80"
@@ -1331,8 +1556,6 @@ elif mode == "Backtest":
                     except Exception:
                         min_cache_coverage = 0.80
                     min_cache_coverage = max(0.50, min(min_cache_coverage, 1.00))
-                    accuracy_mode = run_accuracy_mode
-                    accuracy_active = accuracy_mode in {"warn", "block"}
                     force_refresh_for_accuracy = _env_flag("APEX_BACKTEST_FORCE_REFRESH_FOR_ACCURACY", "1")
                     force_fresh_refresh = (
                         accuracy_mode == "block"
@@ -1351,7 +1574,7 @@ elif mode == "Backtest":
                             end_scope_symbols = {str(s).upper() for s in end_members if str(s).strip()}
                     strict_full_lookback = (
                         accuracy_mode == "block"
-                        and _env_flag("APEX_BACKTEST_ENFORCE_FULL_LOOKBACK", "1")
+                        and _env_flag("APEX_BACKTEST_ENFORCE_FULL_LOOKBACK", "0")
                     )
                     if accuracy_mode == "block" and force_refresh_for_accuracy:
                         try:
@@ -1425,61 +1648,94 @@ elif mode == "Backtest":
                             allow_refresh_when_closed = (
                                 refresh_when_closed or (accuracy_active and force_refresh_for_accuracy)
                             )
+                            missing_symbols = [s for s in symbols if s not in data]
+                            refresh_symbols: list[str] = []
+                            if initial_cov < min_cache_coverage:
+                                refresh_symbols.extend(missing_symbols)
+
+                            strict_recent_refresh_needed = False
+                            strict_recent_cov = None
+                            strict_recent_missing: list[str] = []
+                            strict_recent_stale: list[str] = []
+                            if accuracy_mode == "block" and end_scope_symbols:
+                                thresholds_for_refresh = _accuracy_thresholds(
+                                    bt_universe,
+                                    accuracy_mode=accuracy_mode,
+                                    duration_label=bt_duration,
+                                )
+                                min_recent_cov_for_refresh = float(
+                                    thresholds_for_refresh.get("min_recent_coverage", 0.0)
+                                )
+                                now_et = datetime.now(ZoneInfo("America/New_York")).date()
+                                fresh_end = 0
+                                for sym in end_scope_symbols:
+                                    df_sym = data.get(sym)
+                                    if df_sym is None or df_sym.empty:
+                                        strict_recent_missing.append(sym)
+                                        continue
+                                    try:
+                                        last_dt = pd.Timestamp(df_sym.index.max()).tz_localize(None).date()
+                                    except Exception:
+                                        strict_recent_missing.append(sym)
+                                        continue
+                                    if (now_et - last_dt).days <= max_end_lag_days:
+                                        fresh_end += 1
+                                    else:
+                                        strict_recent_stale.append(sym)
+
+                                strict_recent_cov = (
+                                    fresh_end / float(len(end_scope_symbols))
+                                    if end_scope_symbols
+                                    else 0.0
+                                )
+                                strict_recent_refresh_needed = (
+                                    strict_recent_cov < min_recent_cov_for_refresh
+                                )
+                                if strict_recent_refresh_needed:
+                                    refresh_symbols.extend(strict_recent_missing)
+                                    refresh_symbols.extend(strict_recent_stale)
+                                    st.warning(
+                                        "Strict mode freshness check: recent end-of-window coverage "
+                                        f"{strict_recent_cov:.2%} is below {min_recent_cov_for_refresh:.0%}. "
+                                        f"Refreshing {len(strict_recent_missing) + len(strict_recent_stale)} "
+                                        "end-scope symbols (missing/stale)."
+                                    )
+
+                            # Deduplicate while preserving order.
+                            refresh_symbols = list(dict.fromkeys(refresh_symbols))
                             allow_incremental_refresh = (
-                                initial_cov < min_cache_coverage
+                                bool(refresh_symbols)
                                 and incremental_refresh_enabled
                                 and (
                                     market_open
                                     or allow_refresh_when_closed
                                     or initial_cov <= 0.05
+                                    or strict_recent_refresh_needed
                                 )
                             )
+
                             if allow_incremental_refresh:
-                                missing_symbols = [s for s in symbols if s not in data]
-                                refresh_symbols = list(missing_symbols)
-                                stale_symbols = []
-                                if accuracy_mode == "block" and end_scope_symbols:
-                                    now_et = datetime.now(ZoneInfo("America/New_York")).date()
-                                    for sym in end_scope_symbols:
-                                        df_sym = data.get(sym)
-                                        if df_sym is None or df_sym.empty:
-                                            if sym not in refresh_symbols:
-                                                refresh_symbols.append(sym)
-                                            continue
-                                        try:
-                                            last_dt = pd.Timestamp(df_sym.index.max()).tz_localize(None).date()
-                                        except Exception:
-                                            if sym not in refresh_symbols:
-                                                refresh_symbols.append(sym)
-                                            continue
-                                        if (now_et - last_dt).days > max_end_lag_days:
-                                            stale_symbols.append(sym)
-                                            if sym not in refresh_symbols:
-                                                refresh_symbols.append(sym)
-                                    if stale_symbols:
-                                        st.warning(
-                                            f"Strict mode: refreshing {len(stale_symbols)} stale end-of-window "
-                                            f"members (lag > {max_end_lag_days} days)."
-                                        )
-                                if (
-                                    refresh_symbols
-                                    and len(refresh_symbols) > refresh_cap
-                                    and not (accuracy_active and force_refresh_for_accuracy)
-                                ):
+                                if refresh_symbols and len(refresh_symbols) > refresh_cap:
                                     skipped = len(refresh_symbols) - refresh_cap
                                     refresh_symbols = refresh_symbols[:refresh_cap]
                                     st.warning(
                                         f"Refresh cap active: fetching first {len(refresh_symbols)} "
-                                        f"of {len(missing_symbols)} missing symbols this run "
-                                        f"({skipped} deferred)."
+                                        f"symbols this run ({skipped} deferred)."
                                     )
-                                st.warning(
-                                    f"Cache coverage {initial_cov:.1%} below threshold "
-                                    f"({min_cache_coverage:.0%}); fetching {len(refresh_symbols)} "
-                                    "missing symbols only."
-                                )
+
+                                if initial_cov < min_cache_coverage:
+                                    st.warning(
+                                        f"Cache coverage {initial_cov:.1%} below threshold "
+                                        f"({min_cache_coverage:.0%}); refreshing {len(refresh_symbols)} symbols."
+                                    )
+                                elif strict_recent_refresh_needed:
+                                    st.warning(
+                                        "Cache coverage passed, but strict recent-coverage freshness failed; "
+                                        f"refreshing {len(refresh_symbols)} symbols."
+                                    )
+
                                 if refresh_symbols:
-                                    stage_msg.caption("Stage: Refreshing missing symbols incrementally...")
+                                    stage_msg.caption("Stage: Refreshing symbols incrementally...")
                                     quality_refresh = {}
                                     fresh = fetch_data_pack(
                                         refresh_symbols,
@@ -1499,12 +1755,10 @@ elif mode == "Backtest":
                                     f"Post-refresh coverage: {len(data)}/{len(symbols)} "
                                     f"symbols ({merged_cov:.1%})"
                                 )
-                            elif initial_cov < min_cache_coverage:
+                            elif refresh_symbols:
                                 st.warning(
-                                    f"Cache coverage {initial_cov:.1%} below threshold "
-                                    f"({min_cache_coverage:.0%}), but network refresh is skipped while "
-                                    "market is closed. Set `APEX_BACKTEST_REFRESH_WHEN_CLOSED=1` "
-                                    "to override."
+                                    f"Refresh needed for {len(refresh_symbols)} symbols, but network refresh is skipped "
+                                    "while market is closed. Set `APEX_BACKTEST_REFRESH_WHEN_CLOSED=1` to override."
                                 )
                         else:
                             quality_direct = {}
@@ -1677,12 +1931,17 @@ elif mode == "Backtest":
                 loaded_start = None
                 loaded_end = None
                 tested_symbol_list = list((getattr(prepared, "enriched", {}) or {}).keys())
-                min_cov_required = _min_coverage_threshold(bt_universe, accuracy_mode=accuracy_mode)
+                thresholds = _accuracy_thresholds(
+                    bt_universe,
+                    accuracy_mode=accuracy_mode,
+                    duration_label=bt_duration,
+                )
+                min_cov_required = float(thresholds.get("min_coverage", 0.0))
                 if expected_symbol_count > 0:
                     tested_cov = tested_symbols / float(max(1, expected_symbol_count))
                     st.caption(
                         f"Universe coverage used in run: {tested_symbols}/{expected_symbol_count} "
-                        f"({tested_cov:.1%})"
+                        f"({tested_cov:.2%})"
                     )
                     if tested_cov < min_cov_required:
                         st.warning(
@@ -1717,6 +1976,11 @@ elif mode == "Backtest":
                         f"{fresh_symbols}/{fresh_total} ({fresh_cov:.1%})"
                     )
 
+                source_hits = quality_union.get("source_hits") or {}
+                if source_hits:
+                    parts = [f"{k}={v}" for k, v in sorted(source_hits.items())]
+                    st.caption(f"Data source mix this run: {', '.join(parts)}")
+
                 loaded_set = set(tested_symbol_list)
                 expected_set = set(expected_symbols or [])
                 missing_set = set(quality_union.get("missing", set()))
@@ -1728,94 +1992,44 @@ elif mode == "Backtest":
                 incomplete_set -= missing_set
                 stale_set -= missing_set
 
-                if accuracy_mode == "block":
-                    min_recent_cov_required = max(
-                        0.0,
-                        min(
-                            1.0,
-                            float(
-                                os.getenv(
-                                    "APEX_BACKTEST_MIN_RECENT_COVERAGE_STRICT",
-                                    "0.75",
-                                )
-                                or "0.75"
-                            ),
-                        ),
-                    )
-                    max_incomplete_ratio = max(
-                        0.0,
-                        min(
-                            1.0,
-                            float(
-                                os.getenv(
-                                    "APEX_BACKTEST_MAX_INCOMPLETE_RATIO_STRICT",
-                                    "0.10",
-                                )
-                                or "0.10"
-                            ),
-                        ),
-                    )
-                    max_stale_ratio = max(
-                        0.0,
-                        min(
-                            1.0,
-                            float(
-                                os.getenv(
-                                    "APEX_BACKTEST_MAX_STALE_RATIO_STRICT",
-                                    "0.10",
-                                )
-                                or "0.10"
-                            ),
-                        ),
-                    )
-                elif accuracy_mode == "warn":
-                    min_recent_cov_required = max(
-                        0.0,
-                        min(
-                            1.0,
-                            float(
-                                os.getenv(
-                                    "APEX_BACKTEST_MIN_RECENT_COVERAGE_WARN",
-                                    "0.60",
-                                )
-                                or "0.60"
-                            ),
-                        ),
-                    )
-                    max_incomplete_ratio = max(
-                        0.0,
-                        min(
-                            1.0,
-                            float(
-                                os.getenv(
-                                    "APEX_BACKTEST_MAX_INCOMPLETE_RATIO_WARN",
-                                    "0.20",
-                                )
-                                or "0.20"
-                            ),
-                        ),
-                    )
-                    max_stale_ratio = max(
-                        0.0,
-                        min(
-                            1.0,
-                            float(
-                                os.getenv(
-                                    "APEX_BACKTEST_MAX_STALE_RATIO_WARN",
-                                    "0.20",
-                                )
-                                or "0.20"
-                            ),
-                        ),
-                    )
-                else:
-                    min_recent_cov_required = 0.0
-                    max_incomplete_ratio = 1.0
-                    max_stale_ratio = 1.0
+                min_recent_cov_required = float(thresholds.get("min_recent_coverage", 0.0))
+                max_incomplete_ratio = float(thresholds.get("max_incomplete_ratio", 1.0))
+                max_stale_ratio = float(thresholds.get("max_stale_ratio", 1.0))
 
                 incomplete_base = max(1, len(loaded_set) + len(incomplete_set))
                 incomplete_ratio = len(incomplete_set) / float(incomplete_base)
-                stale_ratio = len(stale_set) / float(max(1, len(loaded_set)))
+                loaded_upper = {str(s).upper() for s in loaded_set if str(s).strip()}
+                stale_upper = {str(s).upper() for s in stale_set if str(s).strip()}
+                if recent_scope:
+                    recent_scope_upper = {str(s).upper() for s in recent_scope if str(s).strip()}
+                else:
+                    recent_scope_upper = set()
+                if recent_scope_upper:
+                    loaded_scope_upper = loaded_upper & recent_scope_upper
+                    stale_scope_upper = stale_upper & loaded_scope_upper
+                    stale_ratio_base = len(loaded_scope_upper)
+                    stale_ratio_count = len(stale_scope_upper)
+                    stale_ratio = (
+                        stale_ratio_count / float(stale_ratio_base)
+                        if stale_ratio_base > 0
+                        else 0.0
+                    )
+                    stale_ratio_label = (
+                        f"{stale_ratio_count}/{stale_ratio_base} "
+                        f"end-scope loaded symbols ({stale_ratio:.1%})"
+                    )
+                    stale_basis = "end-scope loaded symbols"
+                else:
+                    stale_ratio_base = len(loaded_upper)
+                    stale_ratio_count = len(stale_upper)
+                    stale_ratio = (
+                        stale_ratio_count / float(max(1, stale_ratio_base))
+                    )
+                    stale_ratio_label = (
+                        f"{stale_ratio_count}/{stale_ratio_base} "
+                        f"loaded symbols ({stale_ratio:.1%})"
+                    )
+                    stale_basis = "loaded symbols"
                 spy_ok = bool(global_data.get("SPY") is not None and not global_data.get("SPY").empty)
                 vix_ok = bool(global_data.get("VIX") is not None and not global_data.get("VIX").empty)
                 recent_cov_pass = (fresh_total <= 0) or (fresh_cov >= min_recent_cov_required)
@@ -1825,7 +2039,7 @@ elif mode == "Backtest":
                 lock_blockers = []
                 if not coverage_pass:
                     lock_blockers.append(
-                        f"coverage {tested_cov:.1%} below required {min_cov_required:.0%}"
+                        f"coverage {tested_cov:.2%} below required {min_cov_required:.0%}"
                     )
                 if not recent_cov_pass:
                     lock_blockers.append(
@@ -1837,7 +2051,7 @@ elif mode == "Backtest":
                     )
                 if not stale_pass:
                     lock_blockers.append(
-                        f"stale-data ratio {stale_ratio:.1%} above {max_stale_ratio:.0%}"
+                        f"stale-data ratio {stale_ratio:.1%} above {max_stale_ratio:.0%} ({stale_basis})"
                     )
                 if not spy_ok:
                     lock_blockers.append("SPY market context missing")
@@ -1845,7 +2059,7 @@ elif mode == "Backtest":
                 scorecard_rows = [
                     {
                         "Metric": "Universe coverage",
-                        "Value": f"{tested_symbols}/{expected_symbol_count} ({tested_cov:.1%})",
+                        "Value": f"{tested_symbols}/{expected_symbol_count} ({tested_cov:.2%})",
                         "Threshold": f">= {min_cov_required:.0%}",
                         "Status": "PASS" if coverage_pass else "FAIL",
                     },
@@ -1863,7 +2077,7 @@ elif mode == "Backtest":
                     },
                     {
                         "Metric": "Stale data ratio",
-                        "Value": f"{len(stale_set)} symbol(s) ({stale_ratio:.1%})",
+                        "Value": stale_ratio_label,
                         "Threshold": f"<= {max_stale_ratio:.0%}",
                         "Status": "PASS" if stale_pass else "FAIL",
                     },
@@ -1877,32 +2091,41 @@ elif mode == "Backtest":
                 st.markdown("**Accuracy Scorecard**")
                 st.dataframe(pd.DataFrame(scorecard_rows), use_container_width=True, hide_index=True)
 
-                low_cov = expected_symbol_count > 0 and tested_cov < min_cov_required
-                if low_cov:
+                quality_gate_failed = len(lock_blockers) > 0
+                if quality_gate_failed:
+                    blocker_msg = "; ".join(lock_blockers)
                     if accuracy_mode == "block":
-                        st.error(
-                            "Accuracy gate blocked this run. "
-                            f"Coverage {tested_cov:.1%} is below required {min_cov_required:.0%} "
-                            f"for {bt_universe}. Results withheld to avoid biased metrics."
-                        )
-                        st.caption(
-                            "Current gap indicates data-provider coverage limits for this PIT window "
-                            "(commonly delisted/renamed symbols)."
-                        )
-                        _drop_backtest_cache(cache_key)
-                        st.session_state.backtest_results = {}
-                        prepared = None
+                        show_blocked_results = _env_flag("APEX_BACKTEST_SHOW_BLOCKED_RESULTS", "1")
+                        if show_blocked_results:
+                            st.warning(
+                                "Accuracy gate failed for strict mode: "
+                                f"{blocker_msg}. Showing provisional performance only "
+                                "(not baseline-eligible)."
+                            )
+                            _drop_backtest_cache(cache_key)
+                        else:
+                            st.error(
+                                "Accuracy gate blocked this run: "
+                                f"{blocker_msg}. Results withheld to avoid biased metrics."
+                            )
+                            if not coverage_pass:
+                                st.caption(
+                                    "Coverage gaps usually indicate data-provider constraints in PIT windows "
+                                    "(commonly delisted/renamed symbols)."
+                                )
+                            _drop_backtest_cache(cache_key)
+                            st.session_state.backtest_results = {}
+                            prepared = None
                     elif accuracy_mode == "warn":
                         st.warning(
                             "Accuracy warning: run allowed in best-effort mode. "
-                            f"Coverage {tested_cov:.1%} is below target {min_cov_required:.0%} "
-                            f"for {bt_universe}, so results may be biased."
+                            f"Quality blockers: {blocker_msg}."
                         )
                         export_missing = _env_flag(
                             "APEX_EXPORT_MISSING_SYMBOLS_ON_LOW_COVERAGE",
                             "1",
                         )
-                        if export_missing and expected_symbols:
+                        if export_missing and expected_symbols and not coverage_pass:
                             try:
                                 report_path = _write_missing_symbols_report(
                                     universe_name=bt_universe,
@@ -1914,8 +2137,9 @@ elif mode == "Backtest":
                                 st.caption(f"Missing symbols report: `{report_path}`")
                             except Exception:
                                 pass
-                        # Do not persist low-coverage prepared payloads; force rebuild on next run.
-                        _drop_backtest_cache(cache_key)
+                        # Force a rebuild on next run when critical freshness/coverage checks fail.
+                        if (not coverage_pass) or (not recent_cov_pass) or (not stale_pass):
+                            _drop_backtest_cache(cache_key)
 
                 results_map = {}
                 if prepared is None or tested_symbols == 0:
@@ -2004,7 +2228,10 @@ elif mode == "Backtest":
                         "loaded": int(tested_symbols),
                         "missing": int(len(missing_set)),
                         "incomplete_history": int(len(incomplete_set)),
-                        "stale": int(len(stale_set)),
+                        "stale": int(stale_ratio_count),
+                        "stale_basis": stale_basis,
+                        "stale_ratio": float(stale_ratio),
+                        "source_hits": dict(source_hits),
                         "fresh_cov": float(fresh_cov),
                         "fresh_total": int(fresh_total),
                     },

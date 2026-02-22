@@ -112,7 +112,7 @@ def _contraction_ok(df: pd.DataFrame, i: int, params: Dict) -> bool:
     required = int(params.get("vcp_required_contractions", 2) or 2)
     max_base_depth = float(params.get("vcp_max_base_depth_pct", 35.0) or 35.0)
     max_last = float(params.get("vcp_last_contraction_max_pct", 10.0) or 10.0)
-    damping_ratio = float(params.get("vcp_damping_ratio", 0.85) or 0.85)
+    damping_ratio = float(params.get("vcp_damping_ratio", 0.75) or 0.75)
     require_pivot_vol_dryup = bool(params.get("vcp_require_pivot_volume_dryup", True))
 
     start = max(0, i - lookback + 1)
@@ -232,7 +232,7 @@ class MinerviniSEPAStrategy(BaseStrategy):
         # Require breakout day confirmation (close > pivot) + volume expansion
         vol = _as_float(row.get("volume"), 0.0)
         vol_ma50 = _as_float(row.get("vol_ma50"), vol)
-        vol_mult = float(self.params.get("vol_mult", 1.5))
+        vol_mult = float(self.params.get("vol_mult", 2.0))
         if close_px <= pivot:
             return None
         if vol_ma50 > 0 and vol < (vol_ma50 * vol_mult):

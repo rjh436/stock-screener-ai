@@ -4,6 +4,7 @@ import os
 import time
 import io
 import json
+from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
 import pytz
 from zoneinfo import ZoneInfo
@@ -538,6 +539,68 @@ def _download_stooq_history(alias: str) -> Optional[pd.DataFrame]:
         return None
 
 
+def _download_polygon_history(alias: str, start: datetime, end: datetime) -> Optional[pd.DataFrame]:
+    if _FALLBACK_HTTP is None:
+        return None
+
+    api_key = str(os.getenv("DATA_POLYGON_API_KEY", "") or "").strip()
+    if not api_key:
+        return None
+
+    symbol = str(alias or "").strip().upper().replace("/", ".")
+    if not symbol:
+        return None
+
+    try:
+        start_date = pd.Timestamp(start).date().isoformat()
+        end_date = pd.Timestamp(end).date().isoformat()
+    except Exception:
+        return None
+
+    encoded_symbol = quote(symbol, safe="._-")
+    url = (
+        f"https://api.polygon.io/v2/aggs/ticker/{encoded_symbol}"
+        f"/range/1/day/{start_date}/{end_date}"
+    )
+    params = {
+        "adjusted": "true",
+        "sort": "asc",
+        "limit": "50000",
+        "apiKey": api_key,
+    }
+
+    try:
+        with _FALLBACK_SEM:
+            resp = _FALLBACK_HTTP.get(
+                url,
+                params=params,
+                headers={"User-Agent": _fallback_user_agent()},
+                timeout=_fallback_timeout_seconds(),
+            )
+        if resp.status_code != 200:
+            return None
+        payload = resp.json() or {}
+        results = payload.get("results") or []
+        if not results:
+            return None
+        df = pd.DataFrame(results)
+        if df.empty or "t" not in df.columns:
+            return None
+        out = pd.DataFrame(
+            {
+                "open": df.get("o"),
+                "high": df.get("h"),
+                "low": df.get("l"),
+                "close": df.get("c"),
+                "volume": df.get("v"),
+            },
+            index=pd.to_datetime(df["t"], unit="ms", utc=True),
+        )
+        return _normalize_ohlcv_frame(out)
+    except Exception:
+        return None
+
+
 def _fallback_providers() -> List[str]:
     raw = str(os.getenv("DATA_FALLBACK_PROVIDERS", "yahoo,stooq") or "yahoo,stooq")
     out: List[str] = []
@@ -561,6 +624,8 @@ def _fetch_fallback_history(sym: str, *, start: datetime, end: datetime) -> Tupl
         for alias in aliases:
             if provider == "yahoo":
                 df = _download_yahoo_history(alias, start, end)
+            elif provider == "polygon":
+                df = _download_polygon_history(alias, start, end)
             elif provider == "stooq":
                 df = _download_stooq_history(alias)
             else:
@@ -723,8 +788,17 @@ def fetch_single_symbol(
         if schwab_error is not None:
             print(f"⚠️ API Fetch failed for {symbol}: {schwab_error}")
 
-    # Backfill with fallback sources when Schwab is unavailable or insufficient.
-    needs_backfill = (df is None or df.empty or not _has_required_history(df, start_naive))
+    # Backfill with fallback sources when Schwab is unavailable, insufficient,
+    # or returns stale bars compared with the freshness target.
+    is_stale = False
+    if df is not None and not df.empty:
+        try:
+            last_date = df.index.max().date()
+            today = end.date()
+            is_stale = (today - last_date).days > max_lag_days
+        except Exception:
+            is_stale = True
+    needs_backfill = (df is None or df.empty or not _has_required_history(df, start_naive) or is_stale)
     can_try_fallback = (
         not cache_only
         and _fallback_enabled()

@@ -22,7 +22,7 @@ from data.fundamentals import (
     FUNDAMENTAL_METRIC_COLUMNS,
     fetch_fundamental_data,
 )
-from execution.market_regime import analyze_market_health, compute_regime_series
+from execution.market_regime import compute_regime_series
 from execution.parity import (
     apply_strategy_score_multipliers,
     DEFAULT_SCORING_WEIGHTS,
@@ -430,7 +430,6 @@ def _maybe_take_partial_profit(
 
     hit_partial = False
     partial_reason = ""
-    r_mode = False
 
     if enable_pp and risk_per_share > 0 and days_held >= pp_day:
         if pp_mode in {"time", "days"}:
@@ -443,7 +442,6 @@ def _maybe_take_partial_profit(
             target_px = entry_px + (pp_r * risk_per_share)
             hit_partial = current_close >= target_px
             partial_reason = f"PARTIAL_PROFIT_{pp_r:g}R"
-            r_mode = True
 
     if hit_partial:
         cash, sold_fraction = _execute_partial_sale(
@@ -457,8 +455,10 @@ def _maybe_take_partial_profit(
             transaction_cost_bps=transaction_cost_bps,
         )
         if sold_fraction > 0:
-            # Free-roll enforcement: once 50% is sold at >=3R, remaining stop must be breakeven.
-            force_breakeven = r_mode and pp_r >= 3.0 and sold_fraction >= 0.5
+            # Free-roll enforcement: once any partial is sold at >=3R, remaining stop must be breakeven,
+            # regardless of whether the partial was triggered by R-mode or %/time mode.
+            r_multiple = ((current_close - entry_px) / risk_per_share) if risk_per_share > 0 else 0.0
+            force_breakeven = r_multiple >= 3.0
             if force_breakeven:
                 pos["stop_price"] = max(float(pos.get("stop_price", 0.0) or 0.0), entry_px)
             elif move_be:
@@ -761,37 +761,34 @@ def _calculate_rs_metrics(
         return rs_rating, momentum_rank
 
     # Normal mode: cross-sectional percentile RS.
+    def _rank_block(block: np.ndarray, min_required: int) -> np.ndarray:
+        if block.size == 0:
+            return np.zeros(block.shape, dtype=np.float32)
+        valid = np.isfinite(block)
+        counts = valid.sum(axis=1).astype(np.int32)
+
+        # Vectorized row-wise ranking in C-backed pandas internals.
+        rank = pd.DataFrame(block).rank(axis=1, method="first", na_option="keep").to_numpy(dtype=np.float32)
+        denom = np.maximum(counts - 1, 1).astype(np.float32)[:, None]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pct = (rank - 1.0) / denom
+        rating = (1.0 + (98.0 * pct)).astype(np.float32)
+        out = np.where(valid, rating, 0.0).astype(np.float32, copy=False)
+
+        if min_required > 1:
+            ineligible = counts < int(min_required)
+            if np.any(ineligible):
+                out[ineligible, :] = 0.0
+        return out
+
     chunk = 250
     for start in range(0, n_days, chunk):
         end = min(n_days, start + chunk)
         block = score[start:end, :]
         mom_block = mom_score[start:end, :]
 
-        for i in range(block.shape[0]):
-            row = block[i]
-            m = np.isfinite(row)
-            k = int(m.sum())
-            if k < min_names:
-                continue
-
-            vals = row[m]
-            order = np.argsort(vals, kind="quicksort")
-            ranks = np.empty_like(order, dtype=np.int32)
-            ranks[order] = np.arange(k, dtype=np.int32)
-            pct = (ranks / (k - 1)) if k > 1 else np.zeros(k, dtype=np.float32)
-            rs_rating[start + i, m] = 1.0 + 98.0 * pct
-
-            mom_row = mom_block[i]
-            mm = np.isfinite(mom_row)
-            km = int(mm.sum())
-            if km < min_names:
-                continue
-            vals_m = mom_row[mm]
-            order_m = np.argsort(vals_m, kind="quicksort")
-            ranks_m = np.empty_like(order_m, dtype=np.int32)
-            ranks_m[order_m] = np.arange(km, dtype=np.int32)
-            pct_m = (ranks_m / (km - 1)) if km > 1 else np.zeros(km, dtype=np.float32)
-            momentum_rank[start + i, mm] = 1.0 + 98.0 * pct_m
+        rs_rating[start:end, :] = _rank_block(block, int(min_names))
+        momentum_rank[start:end, :] = _rank_block(mom_block, int(min_names))
 
     return rs_rating, momentum_rank
 
@@ -1372,7 +1369,10 @@ def prepare_backtest_data(
         universe_set = set(symbol_universe)
         symbols = [s for s in symbols if s in universe_set]
 
-    requested_symbols = symbols if symbols else list(symbol_universe or [])
+    # Cache coverage must be evaluated against the intended universe, not only the
+    # currently loaded subset, otherwise low-coverage prepared caches can be reused
+    # indefinitely and hide missing symbols.
+    requested_symbols = list(symbol_universe or []) if symbol_universe else symbols
     requested_upper = {str(s).upper() for s in requested_symbols if str(s).strip()}
 
     # Speed hack: reuse cached indicator computations if present
@@ -1450,7 +1450,7 @@ def prepare_backtest_data(
             continue
 
         try:
-            df = _compute_indicators(df_raw.copy(), spy_df=spy_df, vix_df=vix_df)
+            df = _compute_indicators(df_raw, spy_df=spy_df, vix_df=vix_df)
 
             if start_date:
                 start_dt = pd.to_datetime(start_date).replace(tzinfo=None)
@@ -1833,7 +1833,6 @@ def _legacy_run_backtest(
             global_spy_sma200 = spy_aligned["sma200"].fillna(0).to_numpy(dtype=np.float64)
             global_spy_sma150 = spy_aligned["sma150"].fillna(0).to_numpy(dtype=np.float64)
             regime_series = compute_regime_series(spy_df_raw)
-            _ = analyze_market_health(spy_df_raw)
             if not regime_series.empty:
                 all_dates_idx = pd.to_datetime(all_dates)
                 regime_aligned = regime_series.reindex(all_dates_idx, method="ffill").fillna("RED")
@@ -1900,8 +1899,16 @@ def _legacy_run_backtest(
                 debug_counts["n_rs"][day_idx] += 1
 
                 for strat, w, params, base_stop_mult in compiled_strategies:
-                    # Optional market regime filter (per strategy)
                     exposure_mode = str(params.get("market_exposure_mode", "")).lower()
+                    traffic_light_enabled = bool(params.get("use_market_regime_traffic_light", True))
+                    strict_tl_in_exposure = bool(params.get("traffic_light_block_exposure_mode", False))
+                    can_block_entries = strict_tl_in_exposure or exposure_mode not in {"hybrid", "scaled", "exposure"}
+                    if traffic_light_enabled and can_block_entries:
+                        regime_state = str(market_regime_by_day[day_idx]).upper() if day_idx < len(market_regime_by_day) else "RED"
+                        if regime_state == "RED":
+                            continue
+
+                    # Optional market regime filter (per strategy)
                     regime_filter = bool(params.get("regime_filter", False))
                     market_mode = str(params.get("market_filter_mode", "")).lower()
                     if market_mode in {"traffic_light", "spy_sma200", "sma200"}:
@@ -2277,7 +2284,13 @@ def _legacy_run_backtest(
 
             traffic_light_enabled = bool(params.get("use_market_regime_traffic_light", True))
             regime_state = str(market_regime_by_day[day_idx]).upper() if day_idx < len(market_regime_by_day) else "RED"
-            regime_block_new_entries = traffic_light_enabled and regime_state == "RED"
+            strict_tl_in_exposure = bool(params.get("traffic_light_block_exposure_mode", False))
+            can_block_entries = strict_tl_in_exposure or exposure_mode not in {"hybrid", "scaled", "exposure"}
+            regime_block_new_entries = (
+                traffic_light_enabled
+                and regime_state == "RED"
+                and can_block_entries
+            )
             yellow_risk_scalar = float(params.get("yellow_risk_scalar", 0.5) or 0.5)
             orange_risk_scalar = float(params.get("orange_risk_scalar", 0.2) or 0.2)
             regime_risk_scalar = 1.0

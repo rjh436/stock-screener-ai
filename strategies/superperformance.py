@@ -11,6 +11,11 @@ from scipy.signal import argrelextrema
 from .base import BaseStrategy
 
 _STOP_WIDTH_TOL = 1e-4
+_DEFAULT_VCP_DAMPING_RATIO = 0.75
+_DEFAULT_VCP_VOLUME_DRYUP_MULT = 1.20
+_DEFAULT_VCP_BREAKOUT_VOL_FLOOR = 2.0
+_DEFAULT_ADR_MIN_PCT = 3.5
+_DEFAULT_PRIOR_RUNUP_MIN_PCT = 30.0
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -56,6 +61,8 @@ def detect_vcp_breakout(
     extrema_order: int = 3,
     min_contractions: int = 2,
     breakout_volume_mult: float = 1.5,
+    damping_ratio: float = _DEFAULT_VCP_DAMPING_RATIO,
+    volume_dryup_mult: float = _DEFAULT_VCP_VOLUME_DRYUP_MULT,
     breakout_buffer: float = 0.0,
     return_reason: bool = False,
 ) -> Union[Optional[VCPDetectionResult], Tuple[Optional[VCPDetectionResult], str]]:
@@ -152,12 +159,17 @@ def detect_vcp_breakout(
         c1, v1, _, _, _ = legs[-2]
         c2, v2, hi_idx_last, lo_idx_last, hi_px_last = legs[-1]
 
-        # Tightening contraction profile (C1 > C2).
+        # Tightening contraction profile (C1 > C2) with damping ratio.
         if not (c1 > c2 > 0):
             return _pack(None, "no_tightening")
+        damping_ratio = float(np.clip(_as_float(damping_ratio, _DEFAULT_VCP_DAMPING_RATIO), 0.0, 1.0))
+        tight_ratio = (c2 / c1) if c1 > 0 else float("inf")
+        if damping_ratio > 0 and tight_ratio > damping_ratio:
+            return _pack(None, "no_tightening")
 
-        # Volume contraction profile (V1 > V2).
-        if math.isfinite(v1) and math.isfinite(v2) and not (v1 > (v2 * 0.95)):
+        # Volume contraction profile: prior leg volume must exceed current leg volume.
+        volume_dryup_mult = max(1.0, _as_float(volume_dryup_mult, _DEFAULT_VCP_VOLUME_DRYUP_MULT))
+        if math.isfinite(v1) and math.isfinite(v2) and not (v1 >= (v2 * volume_dryup_mult)):
             return _pack(None, "no_volume_contraction")
     else:
         # One-leg fallback for elite-RS overrides.
@@ -496,9 +508,14 @@ class SuperperformanceStrategy(BaseStrategy):
 
         lookback = int(self.params.get("vcp_lookback_bars", 80) or 80)
         extrema_order = int(self.params.get("vcp_extrema_order", 3) or 3)
-        vol_mult = float(self.params.get("vcp_breakout_volume_mult", 1.5) or 1.5)
+        vol_mult = float(self.params.get("vcp_breakout_volume_mult", _DEFAULT_VCP_BREAKOUT_VOL_FLOOR) or _DEFAULT_VCP_BREAKOUT_VOL_FLOOR)
+        vcp_damping_ratio = float(self.params.get("vcp_damping_ratio", _DEFAULT_VCP_DAMPING_RATIO) or _DEFAULT_VCP_DAMPING_RATIO)
+        vcp_volume_dryup_mult = float(
+            self.params.get("vcp_volume_dryup_mult", _DEFAULT_VCP_VOLUME_DRYUP_MULT)
+            or _DEFAULT_VCP_VOLUME_DRYUP_MULT
+        )
         breakout_buffer = float(self.params.get("breakout_buffer", 0.001) or 0.001)
-        breakout_vol_req = max(1.5, vol_mult)
+        breakout_vol_req = max(_DEFAULT_VCP_BREAKOUT_VOL_FLOOR, vol_mult)
 
         vcp, vcp_reason = detect_vcp_breakout(
             df,
@@ -507,6 +524,8 @@ class SuperperformanceStrategy(BaseStrategy):
             extrema_order=max(1, extrema_order),
             min_contractions=2,
             breakout_volume_mult=breakout_vol_req,
+            damping_ratio=vcp_damping_ratio,
+            volume_dryup_mult=vcp_volume_dryup_mult,
             breakout_buffer=max(0.0, breakout_buffer),
             return_reason=True,
         )
@@ -558,6 +577,8 @@ class SuperperformanceStrategy(BaseStrategy):
                     extrema_order=max(1, extrema_order - 1),
                     min_contractions=1,
                     breakout_volume_mult=max(1.25, breakout_vol_req * 0.85),
+                    damping_ratio=vcp_damping_ratio,
+                    volume_dryup_mult=vcp_volume_dryup_mult,
                     breakout_buffer=max(0.0, breakout_buffer),
                     return_reason=True,
                 )
@@ -660,7 +681,39 @@ class SuperperformanceStrategy(BaseStrategy):
         if min_avg_volume > 0 and math.isfinite(vol_ma30) and vol_ma30 < min_avg_volume:
             return self._reject(f"liquidity vol_ma30={vol_ma30:.0f} < {min_avg_volume:.0f}")
 
-        # Gate 2: Relative strength percentile gate.
+        # Gate 2: Volatility floor (avoid sluggish, low-ADR names).
+        adr_min = _as_percent_threshold(
+            self.params.get(
+                "adr_min_pct",
+                self.params.get("adr_min", _DEFAULT_ADR_MIN_PCT),
+            ),
+            0.0,
+        )
+        if adr_min > 0:
+            adr_pct = _as_float(row.get("adr_pct"), float("nan"))
+            adr_pct_q = _as_float(row.get("adr_pct_q"), float("nan"))
+            adr_values = [v for v in (adr_pct, adr_pct_q) if math.isfinite(v)]
+            effective_adr = max(adr_values) if adr_values else 0.0
+            if effective_adr < adr_min:
+                return self._reject(f"adr_gate adr={effective_adr:.2f} < {adr_min:.2f}")
+
+        # Gate 3: Require a meaningful prior thrust before base breakout.
+        runup_min = _as_percent_threshold(
+            self.params.get(
+                "prior_runup_min_pct",
+                self.params.get("runup_min_pct", _DEFAULT_PRIOR_RUNUP_MIN_PCT),
+            ),
+            0.0,
+        )
+        if runup_min > 0:
+            ret_1m = _as_float(row.get("ret_1m"), float("nan"))
+            ret_3m = _as_float(row.get("ret_3m"), float("nan"))
+            runup_candidates = [v for v in (ret_1m, ret_3m) if math.isfinite(v)]
+            prior_runup = max(runup_candidates) if runup_candidates else 0.0
+            if prior_runup < runup_min:
+                return self._reject(f"runup_gate runup={prior_runup:.2f} < {runup_min:.2f}")
+
+        # Gate 4: Relative strength percentile gate.
         rs_percentile = self._resolve_rs_percentile(row)
         rs_gate_min = _as_percent_threshold(
             self.params.get(
@@ -672,7 +725,7 @@ class SuperperformanceStrategy(BaseStrategy):
         if rs_percentile < rs_gate_min:
             return self._reject(f"rs_gate rs_percentile={rs_percentile:.2f} < {rs_gate_min:.2f}")
 
-        # Gate 3: Fundamental growth gate with IPO/HTF override.
+        # Gate 5: Fundamental growth gate with IPO/HTF override.
         eps_yoy = _first_finite(
             [
                 row.get("eps_growth_yoy"),
