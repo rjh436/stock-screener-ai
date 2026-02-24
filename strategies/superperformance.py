@@ -64,6 +64,8 @@ def detect_vcp_breakout(
     damping_ratio: float = _DEFAULT_VCP_DAMPING_RATIO,
     volume_dryup_mult: float = _DEFAULT_VCP_VOLUME_DRYUP_MULT,
     breakout_buffer: float = 0.0,
+    require_breakout_close: bool = True,
+    require_breakout_volume: bool = True,
     return_reason: bool = False,
 ) -> Union[Optional[VCPDetectionResult], Tuple[Optional[VCPDetectionResult], str]]:
     """
@@ -190,13 +192,13 @@ def detect_vcp_breakout(
         return _pack(None, "contraction_incomplete")
 
     breakout_level = pivot_price * (1.0 + max(0.0, breakout_buffer))
-    if closes[-1] <= breakout_level:
+    if require_breakout_close and closes[-1] <= breakout_level:
         return _pack(None, "breakout_not_triggered")
 
     vol_now = float(volumes[-1]) if np.isfinite(volumes[-1]) else 0.0
     ma50_now = float(vol_ma50[-1]) if np.isfinite(vol_ma50[-1]) else 0.0
     volume_multiple = (vol_now / ma50_now) if ma50_now > 0 else 0.0
-    if ma50_now > 0 and volume_multiple < breakout_volume_mult:
+    if require_breakout_volume and ma50_now > 0 and volume_multiple < breakout_volume_mult:
         return _pack(None, "breakout_volume_insufficient")
 
     return _pack(
@@ -222,6 +224,8 @@ def detect_micro_vcp_breakout(
     breakout_volume_mult: float = 1.5,
     breakout_buffer: float = 0.0,
     max_bb_width: float = 0.12,
+    require_breakout_close: bool = True,
+    require_breakout_volume: bool = True,
     return_reason: bool = False,
 ) -> Union[Optional[VCPDetectionResult], Tuple[Optional[VCPDetectionResult], str]]:
     """
@@ -291,13 +295,13 @@ def detect_micro_vcp_breakout(
                 return _pack(None, "bb_width_not_tight")
 
     breakout_level = pivot_price * (1.0 + max(0.0, breakout_buffer))
-    if closes[-1] <= breakout_level:
+    if require_breakout_close and closes[-1] <= breakout_level:
         return _pack(None, "breakout_not_triggered")
 
     vol_now = float(volumes[-1]) if np.isfinite(volumes[-1]) else 0.0
     ma50_now = float(vol_ma50[-1]) if np.isfinite(vol_ma50[-1]) else 0.0
     volume_multiple = (vol_now / ma50_now) if ma50_now > 0 else 0.0
-    if ma50_now > 0 and volume_multiple < breakout_volume_mult:
+    if require_breakout_volume and ma50_now > 0 and volume_multiple < breakout_volume_mult:
         return _pack(None, "breakout_volume_insufficient")
 
     first_half = volumes[-(micro_window + 1) : -(micro_window // 2 + 1)]
@@ -416,29 +420,35 @@ class SuperperformanceStrategy(BaseStrategy):
         ep_gap_min = _as_percent_threshold(self.params.get("ep_gap_pct", 8.0), 8.0)
         ep_vol_mult = max(3.0, float(self.params.get("ep_vol_mult", 3.0) or 3.0))
         close_near_high_min = float(self.params.get("ep_close_near_high_min", 0.80) or 0.80)
-
-        day_range = high_px - low_px
-        clv = _as_float(row.get("clv"), float("nan"))
-        if not math.isfinite(clv):
-            clv = ((close_px - low_px) / day_range) if day_range > 0 else 0.0
-
-        vol_multiple = (vol / vol_ma50) if vol_ma50 > 0 else 0.0
-        if (
-            gap_pct < ep_gap_min
-            or vol_ma50 <= 0
-            or vol_multiple < ep_vol_mult
-            or clv < close_near_high_min
-        ):
-            return None
-
         ep_entry_mode = str(self.params.get("ep_entry_mode", "close") or "close").lower()
-        trigger_px = open_px if ep_entry_mode == "open" else close_px
-        stop_px = low_px
+        ep_max_stop_pct = float(self.params.get("ep_max_stop_pct", 0.15) or 0.15)
+
+        vol_multiple = 0.0
+        if ep_entry_mode == "open":
+            # Open-mode EP must use only information available before/at the open.
+            if gap_pct < ep_gap_min:
+                return None
+            trigger_px = open_px
+            stop_px = trigger_px * (1.0 - ep_max_stop_pct)
+        else:
+            day_range = high_px - low_px
+            clv = _as_float(row.get("clv"), float("nan"))
+            if not math.isfinite(clv):
+                clv = ((close_px - low_px) / day_range) if day_range > 0 else 0.0
+            vol_multiple = (vol / vol_ma50) if vol_ma50 > 0 else 0.0
+            if (
+                gap_pct < ep_gap_min
+                or vol_ma50 <= 0
+                or vol_multiple < ep_vol_mult
+                or clv < close_near_high_min
+            ):
+                return None
+            trigger_px = close_px
+            stop_px = low_px
 
         if trigger_px <= 0 or stop_px <= 0 or stop_px >= trigger_px:
             return None
 
-        ep_max_stop_pct = float(self.params.get("ep_max_stop_pct", 0.15) or 0.15)
         stop_width = (trigger_px - stop_px) / trigger_px
         if (stop_width - ep_max_stop_pct) > _STOP_WIDTH_TOL:
             return None
@@ -452,7 +462,7 @@ class SuperperformanceStrategy(BaseStrategy):
             "max_stop_pct": ep_max_stop_pct,
             "entry_timing": "same_day_open" if ep_entry_mode == "open" else "same_day_close",
             "signal_mode": "open" if ep_entry_mode == "open" else "close",
-            "signal_strength": float(vol_multiple + (gap_pct / 10.0)),
+            "signal_strength": float((gap_pct / 10.0) if ep_entry_mode == "open" else (vol_multiple + (gap_pct / 10.0))),
         }
 
     def _ep_failure_reason(self, df: pd.DataFrame, i: int) -> str:
@@ -475,28 +485,33 @@ class SuperperformanceStrategy(BaseStrategy):
         ep_gap_min = _as_percent_threshold(self.params.get("ep_gap_pct", 8.0), 8.0)
         ep_vol_mult = max(3.0, float(self.params.get("ep_vol_mult", 3.0) or 3.0))
         close_near_high_min = float(self.params.get("ep_close_near_high_min", 0.80) or 0.80)
-
-        day_range = high_px - low_px
-        clv = _as_float(row.get("clv"), float("nan"))
-        if not math.isfinite(clv):
-            clv = ((close_px - low_px) / day_range) if day_range > 0 else 0.0
-        vol_multiple = (vol / vol_ma50) if vol_ma50 > 0 else 0.0
+        ep_entry_mode = str(self.params.get("ep_entry_mode", "close") or "close").lower()
+        ep_max_stop_pct = float(self.params.get("ep_max_stop_pct", 0.15) or 0.15)
 
         if gap_pct < ep_gap_min:
             return f"ep:gap_pct={gap_pct:.2f}<{ep_gap_min:.2f}"
-        if vol_ma50 <= 0:
-            return "ep:vol_ma50<=0"
-        if vol_multiple < ep_vol_mult:
-            return f"ep:vol_mult={vol_multiple:.2f}<{ep_vol_mult:.2f}"
-        if clv < close_near_high_min:
-            return f"ep:close_near_high={clv:.2f}<{close_near_high_min:.2f}"
 
-        ep_entry_mode = str(self.params.get("ep_entry_mode", "close") or "close").lower()
-        trigger_px = open_px if ep_entry_mode == "open" else close_px
-        stop_px = low_px
+        if ep_entry_mode == "open":
+            trigger_px = open_px
+            stop_px = trigger_px * (1.0 - ep_max_stop_pct)
+        else:
+            day_range = high_px - low_px
+            clv = _as_float(row.get("clv"), float("nan"))
+            if not math.isfinite(clv):
+                clv = ((close_px - low_px) / day_range) if day_range > 0 else 0.0
+            vol_multiple = (vol / vol_ma50) if vol_ma50 > 0 else 0.0
+
+            if vol_ma50 <= 0:
+                return "ep:vol_ma50<=0"
+            if vol_multiple < ep_vol_mult:
+                return f"ep:vol_mult={vol_multiple:.2f}<{ep_vol_mult:.2f}"
+            if clv < close_near_high_min:
+                return f"ep:close_near_high={clv:.2f}<{close_near_high_min:.2f}"
+            trigger_px = close_px
+            stop_px = low_px
+
         if trigger_px <= 0 or stop_px <= 0 or stop_px >= trigger_px:
             return "ep:invalid_stop"
-        ep_max_stop_pct = float(self.params.get("ep_max_stop_pct", 0.15) or 0.15)
         stop_width = (trigger_px - stop_px) / trigger_px
         if (stop_width - ep_max_stop_pct) > _STOP_WIDTH_TOL:
             return f"ep:stop_width={stop_width:.3f}>{ep_max_stop_pct:.3f}"
@@ -516,6 +531,13 @@ class SuperperformanceStrategy(BaseStrategy):
         )
         breakout_buffer = float(self.params.get("breakout_buffer", 0.001) or 0.001)
         breakout_vol_req = max(_DEFAULT_VCP_BREAKOUT_VOL_FLOOR, vol_mult)
+        vcp_entry_mode = str(self.params.get("vcp_entry_mode", "next_day") or "next_day").lower()
+        vcp_trigger_mode = str(self.params.get("vcp_trigger_mode", "close_confirmed") or "close_confirmed").lower()
+        use_setup_trigger = vcp_trigger_mode in {"setup", "prebreakout", "next_day_setup"}
+        # Default remains close-confirmed breakout for selectivity. Setup-trigger mode
+        # is available explicitly and applies stricter pre-breakout proximity checks.
+        require_breakout_close = not use_setup_trigger
+        require_breakout_volume = not use_setup_trigger
 
         vcp, vcp_reason = detect_vcp_breakout(
             df,
@@ -527,6 +549,8 @@ class SuperperformanceStrategy(BaseStrategy):
             damping_ratio=vcp_damping_ratio,
             volume_dryup_mult=vcp_volume_dryup_mult,
             breakout_buffer=max(0.0, breakout_buffer),
+            require_breakout_close=require_breakout_close,
+            require_breakout_volume=require_breakout_volume,
             return_reason=True,
         )
         used_elite_override = False
@@ -545,6 +569,8 @@ class SuperperformanceStrategy(BaseStrategy):
                     breakout_volume_mult=max(1.25, breakout_vol_req * 0.85),
                     breakout_buffer=max(0.0, breakout_buffer),
                     max_bb_width=max(0.0, micro_bb_width),
+                    require_breakout_close=require_breakout_close,
+                    require_breakout_volume=require_breakout_volume,
                     return_reason=True,
                 )
                 if vcp is not None:
@@ -580,6 +606,8 @@ class SuperperformanceStrategy(BaseStrategy):
                     damping_ratio=vcp_damping_ratio,
                     volume_dryup_mult=vcp_volume_dryup_mult,
                     breakout_buffer=max(0.0, breakout_buffer),
+                    require_breakout_close=require_breakout_close,
+                    require_breakout_volume=require_breakout_volume,
                     return_reason=True,
                 )
 
@@ -588,6 +616,28 @@ class SuperperformanceStrategy(BaseStrategy):
                 return None
 
         trigger_px = float(vcp.pivot_price * (1.0 + max(0.0, breakout_buffer)))
+        if use_setup_trigger:
+            close_px_now = _as_float(row.get("close"), 0.0)
+            high_px_now = _as_float(row.get("high"), 0.0)
+            vol_now = _as_float(row.get("volume"), 0.0)
+            vol_ma50_now = _as_float(row.get("vol_ma50"), float("nan"))
+            setup_proximity_pct = max(0.0, float(self.params.get("vcp_setup_proximity_pct", 0.02) or 0.02))
+            setup_high_prox_pct = max(0.0, float(self.params.get("vcp_setup_high_proximity_pct", 0.01) or 0.01))
+            setup_vol_max_mult = max(0.1, float(self.params.get("vcp_setup_volume_max_mult", 1.30) or 1.30))
+
+            if close_px_now > (trigger_px * (1.0 + _STOP_WIDTH_TOL)):
+                self._last_vcp_failure_reason = "setup_already_broken"
+                return None
+            if close_px_now < (trigger_px * (1.0 - setup_proximity_pct)):
+                self._last_vcp_failure_reason = "setup_too_far_below_pivot"
+                return None
+            if high_px_now < (trigger_px * (1.0 - setup_high_prox_pct)):
+                self._last_vcp_failure_reason = "setup_high_not_near_pivot"
+                return None
+            if math.isfinite(vol_ma50_now) and vol_ma50_now > 0 and vol_now > (vol_ma50_now * setup_vol_max_mult):
+                self._last_vcp_failure_reason = "setup_volume_not_dry"
+                return None
+
         low_px = _as_float(row.get("low"), 0.0)
         max_stop_pct = float(self.params.get("max_stop_pct", 0.06) or 0.06)
         stop_floor = trigger_px * (1.0 - max_stop_pct)
@@ -609,7 +659,6 @@ class SuperperformanceStrategy(BaseStrategy):
         if used_elite_override:
             strength += 0.15
 
-        vcp_entry_mode = str(self.params.get("vcp_entry_mode", "next_day") or "next_day").lower()
         entry_timing = "next_day"
         signal_mode = "after_close"
         close_px = _as_float(row.get("close"), 0.0)
@@ -618,8 +667,9 @@ class SuperperformanceStrategy(BaseStrategy):
             entry_timing = "same_day_close"
             signal_mode = "close"
         elif vcp_entry_mode in {"same_day_open", "open"}:
-            entry_timing = "same_day_open"
-            signal_mode = "open"
+            # Same-day open entries are not causally valid for close-confirmed VCP logic.
+            entry_timing = "next_day"
+            signal_mode = "after_close"
         elif vcp_entry_mode in {"adaptive", "auto"}:
             breakout_ext_pct = ((close_px - trigger_px) / trigger_px) * 100.0 if trigger_px > 0 else 0.0
             same_day_vol_mult = float(self.params.get("vcp_same_day_vol_mult", 2.5) or 2.5)

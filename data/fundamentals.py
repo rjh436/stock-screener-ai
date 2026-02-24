@@ -34,6 +34,14 @@ _DEFAULT_TTL_HOURS = 24
 _API_CHUNK_SIZE = 200
 
 
+def _fundamental_release_lag_days() -> int:
+    try:
+        lag_days = int(os.getenv("FUNDAMENTAL_RELEASE_LAG_DAYS", "45") or "45")
+    except Exception:
+        lag_days = 45
+    return max(1, lag_days)
+
+
 def _safe_float(value, default: float = np.nan) -> float:
     try:
         out = float(value)
@@ -78,6 +86,7 @@ def _empty_cache_df() -> pd.DataFrame:
         columns=[
             "symbol",
             "report_date",
+            "available_date",
             "fetched_at",
             *FUNDAMENTAL_METRIC_COLUMNS,
         ]
@@ -97,8 +106,16 @@ def _load_cache() -> pd.DataFrame:
 
     if "report_date" in df.columns:
         df["report_date"] = pd.to_datetime(df["report_date"], errors="coerce")
+    if "available_date" in df.columns:
+        df["available_date"] = pd.to_datetime(df["available_date"], errors="coerce")
+    else:
+        df["available_date"] = pd.NaT
     if "fetched_at" in df.columns:
         df["fetched_at"] = pd.to_datetime(df["fetched_at"], errors="coerce")
+    lag_days = _fundamental_release_lag_days()
+    if "report_date" in df.columns:
+        fallback_avail = df["report_date"] + pd.Timedelta(days=lag_days)
+        df["available_date"] = df["available_date"].where(df["available_date"].notna(), fallback_avail)
 
     for col in FUNDAMENTAL_METRIC_COLUMNS:
         if col not in df.columns:
@@ -115,7 +132,7 @@ def _save_cache(df: pd.DataFrame) -> None:
     try:
         os.makedirs(os.path.dirname(_FUND_CACHE_PATH), exist_ok=True)
         out = df.copy()
-        out = out.sort_values(["symbol", "report_date", "fetched_at"])
+        out = out.sort_values(["symbol", "available_date", "report_date", "fetched_at"])
         out.to_csv(_FUND_CACHE_PATH, index=False)
     except Exception:
         pass
@@ -164,9 +181,15 @@ def _load_edgar_symbol_frame(symbol: str) -> pd.DataFrame:
     if quarter_col not in pdf.columns:
         return _empty_symbol_frame()
 
+    report_date = pd.to_datetime(pdf[quarter_col], errors="coerce").dt.normalize()
+    filing_date = pd.to_datetime(pdf.get("filing_date"), errors="coerce").dt.normalize()
+    lag_days = _fundamental_release_lag_days()
+    available_date = filing_date.where(filing_date.notna(), report_date + pd.Timedelta(days=lag_days))
+
     frame = pd.DataFrame(
         {
-            "report_date": pd.to_datetime(pdf[quarter_col], errors="coerce"),
+            "report_date": report_date,
+            "available_date": available_date,
             "eps_growth_qoq": pd.to_numeric(pdf.get("eps_qoq_growth_pct"), errors="coerce"),
             "eps_growth_yoy": pd.to_numeric(pdf.get("eps_yoy_growth_pct"), errors="coerce"),
             "sales_growth_qoq": pd.to_numeric(pdf.get("revenue_qoq_growth_pct"), errors="coerce"),
@@ -174,11 +197,11 @@ def _load_edgar_symbol_frame(symbol: str) -> pd.DataFrame:
             "institutional_sponsorship": np.nan,
         }
     )
-    frame = frame.dropna(subset=["report_date"]).sort_values("report_date")
+    frame = frame.dropna(subset=["available_date"]).sort_values("available_date")
     if frame.empty:
         return _empty_symbol_frame()
-    frame = frame.drop_duplicates(subset=["report_date"], keep="last")
-    frame = frame.set_index("report_date")[FUNDAMENTAL_METRIC_COLUMNS].sort_index()
+    frame = frame.drop_duplicates(subset=["available_date"], keep="last")
+    frame = frame.set_index("available_date")[FUNDAMENTAL_METRIC_COLUMNS].sort_index()
     return frame
 
 
@@ -311,6 +334,9 @@ def _fetch_snapshots(symbols: Sequence[str]) -> pd.DataFrame:
         report_date = _quarter_end(earnings_dt)
         if report_date is None:
             report_date = _quarter_end(fetched_at)
+        available_date = earnings_dt
+        if available_date is None:
+            available_date = report_date + pd.Timedelta(days=_fundamental_release_lag_days())
 
         eps_qoq = _safe_float(fund.get("epsChange"), np.nan)
         eps_yoy = _safe_float(fund.get("epsChangeYear"), np.nan)
@@ -326,6 +352,7 @@ def _fetch_snapshots(symbols: Sequence[str]) -> pd.DataFrame:
             {
                 "symbol": sym,
                 "report_date": report_date,
+                "available_date": available_date,
                 "fetched_at": fetched_at,
                 "eps_growth_qoq": eps_qoq,
                 "eps_growth_yoy": eps_yoy,
@@ -345,7 +372,7 @@ def fetch_fundamental_data(symbols: Sequence[str]) -> Dict[str, pd.DataFrame]:
     Fetch Schwab fundamental snapshots and return quarterly-indexed metric frames.
 
     Returns a dict keyed by symbol where each value is:
-        index: report_date (quarter end)
+        index: availability_date (first date fundamentals are tradable)
         cols:  eps_growth_qoq, eps_growth_yoy, sales_growth_qoq, sales_growth_yoy,
                institutional_sponsorship
     """
@@ -420,7 +447,24 @@ def fetch_fundamental_data(symbols: Sequence[str]) -> Dict[str, pd.DataFrame]:
             out[sym] = _empty_symbol_frame()
             continue
 
-        frame = grp.set_index("report_date")[FUNDAMENTAL_METRIC_COLUMNS].sort_index()
+        frame = grp.copy()
+        if "available_date" in frame.columns:
+            frame["available_date"] = pd.to_datetime(frame["available_date"], errors="coerce")
+        else:
+            frame["available_date"] = pd.NaT
+        if "report_date" in frame.columns:
+            frame["report_date"] = pd.to_datetime(frame["report_date"], errors="coerce")
+        else:
+            frame["report_date"] = pd.NaT
+        lag_days = _fundamental_release_lag_days()
+        fallback_avail = frame["report_date"] + pd.Timedelta(days=lag_days)
+        frame["available_date"] = frame["available_date"].where(frame["available_date"].notna(), fallback_avail)
+        frame = frame.dropna(subset=["available_date"]).sort_values(["available_date", "report_date", "fetched_at"])
+        if frame.empty:
+            out[sym] = _empty_symbol_frame()
+            continue
+        frame = frame.drop_duplicates(subset=["available_date"], keep="last")
+        frame = frame.set_index("available_date")[FUNDAMENTAL_METRIC_COLUMNS].sort_index()
         for col in FUNDAMENTAL_METRIC_COLUMNS:
             frame[col] = pd.to_numeric(frame[col], errors="coerce")
         out[sym] = frame

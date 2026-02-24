@@ -213,6 +213,13 @@ def _normalize_equity_curve(equity_curve: List[Dict[str, Any]]) -> List[Dict[str
     return [{"Date": row.Date, "Equity": float(row.Equity)} for row in df.itertuples(index=False)]
 
 
+def _to_naive_timestamp(value: Any) -> pd.Timestamp:
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        ts = ts.tz_localize(None)
+    return ts
+
+
 def _merge_fundamentals_into_df(df: pd.DataFrame, fundamental_df: Optional[pd.DataFrame]) -> None:
     if df is None or df.empty:
         return
@@ -355,6 +362,7 @@ def _execute_partial_sale(
     reason: str,
     trades_list: List[Dict[str, Any]],
     transaction_cost_bps: float = 0.0,
+    exit_slippage_bps: float = 0.0,
 ) -> Tuple[float, float]:
     total_shares_before = int(pos.get("shares", 0) or 0)
     shares_to_sell = _partial_sale_shares(total_shares_before, sell_fraction)
@@ -362,7 +370,11 @@ def _execute_partial_sale(
         return cash, 0.0
 
     cost_rate = max(0.0, float(transaction_cost_bps or 0.0)) / 10000.0
-    gross_proceeds = shares_to_sell * sell_px
+    slip_rate = max(0.0, float(exit_slippage_bps or 0.0)) / 10000.0
+    effective_sell_px = float(sell_px) * (1.0 - slip_rate)
+    if not np.isfinite(effective_sell_px) or effective_sell_px <= 0:
+        return cash, 0.0
+    gross_proceeds = shares_to_sell * effective_sell_px
     exit_fee = gross_proceeds * cost_rate
     proceeds = gross_proceeds - exit_fee
     cash += proceeds
@@ -382,7 +394,7 @@ def _execute_partial_sale(
         {
             "Symbol": sym,
             "Entry": entry_px,
-            "Exit": sell_px,
+            "Exit": effective_sell_px,
             "PnL": pnl,
             "Return %": ret_pct,
             "Reason": reason,
@@ -407,6 +419,7 @@ def _maybe_take_partial_profit(
     cash: float,
     trades_list: List[Dict[str, Any]],
     transaction_cost_bps: float = 0.0,
+    exit_slippage_bps: float = 0.0,
 ) -> float:
     if pos.get("partial_taken", False):
         return cash
@@ -453,6 +466,7 @@ def _maybe_take_partial_profit(
             reason=partial_reason,
             trades_list=trades_list,
             transaction_cost_bps=transaction_cost_bps,
+            exit_slippage_bps=exit_slippage_bps,
         )
         if sold_fraction > 0:
             # Free-roll enforcement: once any partial is sold at >=3R, remaining stop must be breakeven,
@@ -490,6 +504,7 @@ def _maybe_take_partial_profit(
         reason=f"PARTIAL_{str(fast_sma).upper()}",
         trades_list=trades_list,
         transaction_cost_bps=transaction_cost_bps,
+        exit_slippage_bps=exit_slippage_bps,
     )
     if sold_fraction > 0 and move_be:
         profit_pct = ((current_close - entry_px) / entry_px) if entry_px > 0 else 0.0
@@ -512,6 +527,7 @@ def _evaluate_exit_state_machine(
     cash: float,
     trades_list: List[Dict[str, Any]],
     transaction_cost_bps: float = 0.0,
+    exit_slippage_bps: float = 0.0,
 ) -> Tuple[bool, float, Optional[str], float]:
     # 1) Hard stop first (conservative daily-bar assumption: if low tags stop intraday, exit).
     stop_px = float(pos.get("stop_price", 0.0) or 0.0)
@@ -530,6 +546,7 @@ def _evaluate_exit_state_machine(
         cash=cash,
         trades_list=trades_list,
         transaction_cost_bps=transaction_cost_bps,
+        exit_slippage_bps=exit_slippage_bps,
     )
 
     # 3) Time stop (dead-money rule)
@@ -707,7 +724,7 @@ def _build_spy_proxy_from_enriched(
             continue
         spy_proxy[sd.gidx[valid]] = sd.spyclose[valid]
     if np.isfinite(spy_proxy).any():
-        spy_proxy = pd.Series(spy_proxy).ffill().bfill().to_numpy(dtype=np.float64)
+        spy_proxy = pd.Series(spy_proxy).ffill(limit=5).to_numpy(dtype=np.float64)
     return spy_proxy
 
 
@@ -968,14 +985,14 @@ def _compute_indicators(
         df["highest10_1"] = df["highest10"].shift(1) 
 
         if spy_df is not None and not spy_df.empty:
-            spy_aligned = spy_df["close"].reindex(df.index).ffill().bfill()
+            spy_aligned = spy_df["close"].reindex(df.index).ffill(limit=5)
             df["rs_ratio"] = df["close"] / spy_aligned
             df["spy_close"] = spy_aligned
             df["spy_sma20"] = spy_aligned.rolling(20).mean()
             df["spy_sma50"] = spy_aligned.rolling(50).mean()
             df["rs_ratio_sma50"] = df["rs_ratio"].rolling(50).mean()
             if "sma200" in spy_df.columns:
-                df["spy_sma200"] = spy_df["sma200"].reindex(df.index).ffill().bfill()
+                df["spy_sma200"] = spy_df["sma200"].reindex(df.index).ffill(limit=5)
             else:
                 df["spy_sma200"] = spy_aligned.rolling(200).mean()
         else:
@@ -987,10 +1004,10 @@ def _compute_indicators(
             df["rs_ratio_sma50"] = np.nan
 
         if vix_df is not None and not vix_df.empty and "close" in vix_df.columns:
-            vix_aligned = vix_df["close"].reindex(df.index).ffill().bfill()
+            vix_aligned = vix_df["close"].reindex(df.index).ffill(limit=5)
             df["vix"] = vix_aligned
         elif "vix" in df.columns:
-            df["vix"] = df["vix"].ffill().bfill()
+            df["vix"] = df["vix"].ffill(limit=5)
         else:
             df["vix"] = 20.0
         df["vix"] = df["vix"].fillna(20.0)
@@ -1478,7 +1495,7 @@ def prepare_backtest_data(
             high52_arr = _get_np_col(df, "high_52w", np.nan, length=n)
             low52_arr = _get_np_col(df, "low_52w", np.nan, length=n)
             bb_w_arr = _get_np_col(df, "bb_width", 100.0, length=n)
-            natr_arr = _get_np_col(df, "natr", 100.0, length=n)
+            natr_arr = _get_np_col(df, "natr", np.nan, length=n)
             
             # Phase 4 Upgrades
             adx_arr = _get_np_col(df, "adx", 0.0, length=n)
@@ -1505,7 +1522,7 @@ def prepare_backtest_data(
                 rsi14=_get_np_col(df, "rsi14", 50.0, length=n),
                 atr14=_get_np_col(df, "atr14", 0.0, length=n),
                 natr=natr_arr,
-                volma50=_get_np_col(df, "vol_ma50", 1.0, length=n),
+                volma50=_get_np_col(df, "vol_ma50", np.nan, length=n),
                 sma10=_get_np_col(df, "sma10", np.nan, length=n),
                 sma20=sma20_arr,
                 sma50=sma50_arr,
@@ -1521,7 +1538,7 @@ def prepare_backtest_data(
                 spysma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
                 rsrating=np.zeros(n, dtype=np.float64),
                 momrank=np.zeros(n, dtype=np.float64),
-                adr_pct=_get_np_col(df, "adr_pct", 0.0, length=n),
+                adr_pct=_get_np_col(df, "adr_pct", np.nan, length=n),
                 prev_high=_get_np_col(df, "prev_high", 0.0, length=n),
                 highest10_1=_get_np_col(df, "highest10_1", 0.0, length=n),
                 gap_pct=gap_pct_arr,
@@ -1828,7 +1845,7 @@ def _legacy_run_backtest(
                  spy_df_raw["sma200"] = spy_df_raw["close"].rolling(200).mean()
             if "sma150" not in spy_df_raw.columns:
                  spy_df_raw["sma150"] = spy_df_raw["close"].rolling(150).mean()
-            spy_aligned = spy_df_raw.reindex(all_dates).ffill().bfill()
+            spy_aligned = spy_df_raw.reindex(all_dates).ffill(limit=5)
             global_spy_close = spy_aligned["close"].fillna(0).to_numpy(dtype=np.float64)
             global_spy_sma200 = spy_aligned["sma200"].fillna(0).to_numpy(dtype=np.float64)
             global_spy_sma150 = spy_aligned["sma150"].fillna(0).to_numpy(dtype=np.float64)
@@ -1903,8 +1920,17 @@ def _legacy_run_backtest(
                     traffic_light_enabled = bool(params.get("use_market_regime_traffic_light", True))
                     strict_tl_in_exposure = bool(params.get("traffic_light_block_exposure_mode", False))
                     can_block_entries = strict_tl_in_exposure or exposure_mode not in {"hybrid", "scaled", "exposure"}
+                    regime_idx = day_idx - 1
+                    regime_state = (
+                        str(market_regime_by_day[regime_idx]).upper()
+                        if 0 <= regime_idx < len(market_regime_by_day)
+                        else "RED"
+                    )
+                    bear_cash_mode = str(params.get("bear_cash_mode", "off") or "off").lower()
+                    hard_red_cash = bear_cash_mode in {"hard", "cash", "all_cash"} and regime_state == "RED"
+                    if hard_red_cash:
+                        continue
                     if traffic_light_enabled and can_block_entries:
-                        regime_state = str(market_regime_by_day[day_idx]).upper() if day_idx < len(market_regime_by_day) else "RED"
                         if regime_state == "RED":
                             continue
 
@@ -2249,6 +2275,32 @@ def _legacy_run_backtest(
         if not np.isfinite(transaction_cost_bps) or transaction_cost_bps < 0:
             transaction_cost_bps = 0.0
         transaction_cost_rate = transaction_cost_bps / 10000.0
+        try:
+            slippage_bps = float(
+                params.get(
+                    "slippage_bps",
+                    os.getenv("APEX_SLIPPAGE_BPS", "0"),
+                )
+                or 0.0
+            )
+        except Exception:
+            slippage_bps = 0.0
+        if not np.isfinite(slippage_bps) or slippage_bps < 0:
+            slippage_bps = 0.0
+        try:
+            entry_slippage_bps = float(params.get("entry_slippage_bps", slippage_bps))
+        except Exception:
+            entry_slippage_bps = slippage_bps
+        try:
+            exit_slippage_bps = float(params.get("exit_slippage_bps", slippage_bps))
+        except Exception:
+            exit_slippage_bps = slippage_bps
+        if not np.isfinite(entry_slippage_bps) or entry_slippage_bps < 0:
+            entry_slippage_bps = slippage_bps
+        if not np.isfinite(exit_slippage_bps) or exit_slippage_bps < 0:
+            exit_slippage_bps = slippage_bps
+        entry_slippage_rate = entry_slippage_bps / 10000.0
+        exit_slippage_rate = exit_slippage_bps / 10000.0
         # Equity curve should be daily by default for accurate charting/CSV exports.
         # Keep an override for high-throughput optimization runs.
         try:
@@ -2271,8 +2323,9 @@ def _legacy_run_backtest(
 
             # Market exposure regime (hybrid scaling)
             exposure_mode = str(params.get("market_exposure_mode", "")).lower()
-            spy_c = global_spy_close[day_idx]
-            spy_200 = global_spy_sma200[day_idx]
+            lag_day_idx = day_idx - 1
+            spy_c = global_spy_close[lag_day_idx] if lag_day_idx >= 0 else 0.0
+            spy_200 = global_spy_sma200[lag_day_idx] if lag_day_idx >= 0 else 0.0
             market_is_bull = True
             if spy_c > 0 and spy_200 > 0:
                 market_is_bull = spy_c >= spy_200
@@ -2283,7 +2336,13 @@ def _legacy_run_backtest(
                 max_pos_today = max(1, min(max_pos, bear_max))
 
             traffic_light_enabled = bool(params.get("use_market_regime_traffic_light", True))
-            regime_state = str(market_regime_by_day[day_idx]).upper() if day_idx < len(market_regime_by_day) else "RED"
+            regime_state = (
+                str(market_regime_by_day[lag_day_idx]).upper()
+                if 0 <= lag_day_idx < len(market_regime_by_day)
+                else "RED"
+            )
+            bear_cash_mode = str(params.get("bear_cash_mode", "off") or "off").lower()
+            hard_red_cash = bear_cash_mode in {"hard", "cash", "all_cash"} and regime_state == "RED"
             strict_tl_in_exposure = bool(params.get("traffic_light_block_exposure_mode", False))
             can_block_entries = strict_tl_in_exposure or exposure_mode not in {"hybrid", "scaled", "exposure"}
             regime_block_new_entries = (
@@ -2291,10 +2350,15 @@ def _legacy_run_backtest(
                 and regime_state == "RED"
                 and can_block_entries
             )
+            if hard_red_cash:
+                regime_block_new_entries = True
+                max_pos_today = 0
             yellow_risk_scalar = float(params.get("yellow_risk_scalar", 0.5) or 0.5)
             orange_risk_scalar = float(params.get("orange_risk_scalar", 0.2) or 0.2)
             regime_risk_scalar = 1.0
-            if traffic_light_enabled:
+            if hard_red_cash:
+                regime_risk_scalar = 0.0
+            elif traffic_light_enabled:
                 if regime_state == "YELLOW":
                     regime_risk_scalar = float(np.clip(yellow_risk_scalar, 0.0, 1.0))
                 elif regime_state == "ORANGE":
@@ -2408,9 +2472,13 @@ def _legacy_run_backtest(
                 should_exit = False
                 exit_px = current_close
                 reason = None
+                if hard_red_cash:
+                    should_exit = True
+                    exit_px = current_open
+                    reason = "HARD_RED_CASH_EXIT"
                 
                 # Hybrid regime: tighten stops in bear markets instead of forcing liquidation
-                if exposure_mode in {"hybrid", "scaled", "exposure"} and not market_is_bull:
+                if (not should_exit) and exposure_mode in {"hybrid", "scaled", "exposure"} and not market_is_bull:
                     atr_val = float(sym_data.atr14[loc] or 0.0)
                     if atr_val > 0:
                         tight_stop = current_close - (atr_val * stop_loss_atr_bear)
@@ -2423,22 +2491,32 @@ def _legacy_run_backtest(
                     enforce_regime_exit = True
                 if enforce_regime_exit:
                     regime_ma_type = params.get("regime_ma", "sma200")
-                    regime_threshold = global_spy_sma150[day_idx] if regime_ma_type == "sma150" else global_spy_sma200[day_idx]
-                    if global_spy_close[day_idx] < regime_threshold:
+                    regime_threshold = (
+                        global_spy_sma150[lag_day_idx]
+                        if regime_ma_type == "sma150"
+                        else global_spy_sma200[lag_day_idx]
+                    ) if lag_day_idx >= 0 else 0.0
+                    spy_for_exit = global_spy_close[lag_day_idx] if lag_day_idx >= 0 else 0.0
+                    if spy_for_exit < regime_threshold:
                         should_exit = True
                         exit_px = current_close
                         reason = "MARKET_REGIME_EXIT"
 
                 if not should_exit:
-                    # SQUAT EXIT: If Day 1 Close < Pivot, Exit Immediately at Open
-                    # We are on Day 2 (day_idx). Entry was Day 1 (entry_day_idx).
+                    # SQUAT EXIT: if Day 1 close < pivot, exit at Day 2 open.
+                    # Use exact global-day lookup to avoid off-by-one on symbols with missing bars.
                     if (day_idx - pos["entry_day_idx"]) == 1:
-                        if loc > 0:
-                            entry_day_close = float(sym_data.close[loc - 1])
-                            pivot_val = pos.get("pivot", -1.0)
-                            if pivot_val > 0 and entry_day_close < pivot_val:
-                                should_exit = True
-                                exit_px = float(sym_data.open[loc]) # Exit at Open
+                        entry_day_idx_exact = int(pos.get("entry_day_idx", -1) or -1)
+                        if entry_day_idx_exact >= 0:
+                            entry_loc_arr = np.searchsorted(sym_data.gidx, [entry_day_idx_exact])
+                            if entry_loc_arr[0] < len(sym_data.gidx):
+                                entry_loc_exact = int(entry_loc_arr[0])
+                                if sym_data.gidx[entry_loc_exact] == entry_day_idx_exact:
+                                    entry_day_close = float(sym_data.close[entry_loc_exact])
+                                    pivot_val = float(pos.get("pivot", -1.0) or -1.0)
+                                    if pivot_val > 0 and entry_day_close < pivot_val:
+                                        should_exit = True
+                                        exit_px = float(sym_data.open[loc])  # Exit at Open
                 if not should_exit:
                     should_exit, exit_px, reason, cash = _evaluate_exit_state_machine(
                         sym=sym,
@@ -2453,6 +2531,7 @@ def _legacy_run_backtest(
                         cash=cash,
                         trades_list=trades_list,
                         transaction_cost_bps=transaction_cost_bps,
+                        exit_slippage_bps=exit_slippage_bps,
                     )
 
                 if not should_exit:
@@ -2484,6 +2563,9 @@ def _legacy_run_backtest(
                             pos["pyramid_stop_to_avg_cost"] = bool(pyramid_cfg.get("stop_to_avg_cost", True))
                 
                 if should_exit:
+                    exit_px = float(exit_px) * (1.0 - exit_slippage_rate)
+                    if not np.isfinite(exit_px) or exit_px <= 0:
+                        continue
                     shares = pos["shares"]
                     gross_proceeds = shares * exit_px
                     exit_fee = gross_proceeds * transaction_cost_rate
@@ -2591,7 +2673,7 @@ def _legacy_run_backtest(
                 if not filled:
                     continue
 
-                entry_px = float(fill_px)
+                entry_px = float(fill_px) * (1.0 + entry_slippage_rate)
                 stop_px = float(cand.stop_px)
                 if not np.isfinite(entry_px) or not np.isfinite(stop_px):
                     continue
@@ -2717,6 +2799,42 @@ def _legacy_run_backtest(
         years = max(total_days / 365.25, 0.1)  # Avoid div/0
         cagr = ((final_val / start_cash) ** (1 / years)) - 1 if start_cash > 0 else 0.0
 
+        first_trade_date = None
+        active_period_days = 0
+        active_period_years = 0.0
+        active_period_cagr = None
+        if entries_list and equity_curve_daily:
+            first_trade_candidates = []
+            for entry in entries_list:
+                entry_dt = entry.get("EntryDate")
+                if entry_dt is None:
+                    continue
+                try:
+                    first_trade_candidates.append(_to_naive_timestamp(entry_dt))
+                except Exception:
+                    continue
+            if first_trade_candidates:
+                first_trade_ts = min(first_trade_candidates)
+                first_trade_date = first_trade_ts
+                try:
+                    sim_end_ts = _to_naive_timestamp(equity_curve_daily[-1]["Date"])
+                except Exception:
+                    sim_end_ts = first_trade_ts
+                if sim_end_ts > first_trade_ts:
+                    active_period_days = int((sim_end_ts - first_trade_ts).days)
+                    active_period_years = max(active_period_days / 365.25, 0.1)
+                    active_start_equity = float(start_cash)
+                    for row in equity_curve_daily:
+                        try:
+                            row_ts = _to_naive_timestamp(row["Date"])
+                        except Exception:
+                            continue
+                        if row_ts >= first_trade_ts:
+                            active_start_equity = float(row.get("Equity", start_cash) or start_cash)
+                            break
+                    if active_start_equity > 0:
+                        active_period_cagr = ((final_val / active_start_equity) ** (1 / active_period_years)) - 1.0
+
         # Calculate Max Drawdown from Equity Curve
         max_dd = 0.0
         if equity_curve_daily:
@@ -2737,6 +2855,10 @@ def _legacy_run_backtest(
             "total_trade_legs": int(len(df_trades)),
             "hit_rate": win_rate,
             "cagr": cagr,
+            "first_trade_date": first_trade_date.isoformat() if first_trade_date is not None else None,
+            "active_period_days": int(active_period_days),
+            "active_period_years": float(active_period_years),
+            "active_period_cagr": active_period_cagr,
             "equity_curve": equity_curve,
             "trades_list": trades_list
         })

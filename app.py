@@ -2275,6 +2275,16 @@ elif mode == "Backtest":
                 col4.metric("Expectancy ($)", f"${expectancy_dollar_display:,.2f}")
                 col5.metric("Total Trades", trade_count_display)
                 st.caption(f"Avg Trade % (unweighted): {avg_trade_pct_display:.2f}%")
+                first_trade_date = res.get("first_trade_date")
+                active_cagr = res.get("active_period_cagr")
+                active_days = int(res.get("active_period_days") or 0)
+                if active_cagr is not None and pd.notna(active_cagr):
+                    st.caption(
+                        f"Active-Period CAGR: {float(active_cagr):.1%} "
+                        f"(first trade: {first_trade_date or 'n/a'}, days: {active_days})"
+                    )
+                elif first_trade_date:
+                    st.caption(f"First trade date: {first_trade_date}")
 
                 strategy_name = str(res.get("strategy_name") or res.get("strategy") or name or "Backtest_Result")
                 baseline_key = _baseline_key(
