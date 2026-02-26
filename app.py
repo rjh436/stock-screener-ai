@@ -791,7 +791,8 @@ with st.sidebar:
     if strategies_list:
         for i, s in enumerate(strategies_list):
             strat_name = s.get("name", "")
-            use = st.checkbox(strat_name, value=True, key=f"chk_{strat_name}_{i}")
+            default_enabled = bool(s.get("enabled_by_default", True))
+            use = st.checkbox(strat_name, value=default_enabled, key=f"chk_{strat_name}_{i}")
             if use: selected_strategies.append(s)
             
             with st.expander(f"📘 Strategy Guide: {s.get('name', 'Strategy')}"):
@@ -827,7 +828,9 @@ with st.sidebar:
 
                 trail_activation_desc = f"+{(trail_activation - 1.0) * 100.0:.0f}% (activation {trail_activation:.2f})"
 
-                if str(strat_name).strip().lower() == "superperformance":
+                strat_name_lc = str(strat_name).strip().lower()
+                strat_type_lc = str(s.get("type", "") or "").strip().lower()
+                if strat_type_lc == "superperformance" or "superperformance" in strat_name_lc:
                     rs_gate = float(s.get("rs_gate_min", 85) or 85)
                     growth_gate = float(s.get("fundamental_growth_min_pct", 20) or 20)
                     min_score = float(s.get("min_entry_score", 0) or 0)
@@ -2285,6 +2288,26 @@ elif mode == "Backtest":
                     )
                 elif first_trade_date:
                     st.caption(f"First trade date: {first_trade_date}")
+
+                audit = res.get("audit_report") or {}
+                if isinstance(audit, dict) and audit:
+                    with st.expander("Execution Audit (Instrumentation-Only)", expanded=False):
+                        a1, a2, a3 = st.columns(3)
+                        a1.metric("Same-Day Open Entries", int(audit.get("same_day_open_entries", 0) or 0))
+                        a2.metric("Stale Position-Days", int(audit.get("stale_position_days", 0) or 0))
+                        a3.metric(
+                            "Max Gross Exposure",
+                            f"{float(audit.get('max_gross_exposure_pct', 0.0) or 0.0):.1%}",
+                        )
+                        st.caption(
+                            f"Max gross date: {audit.get('max_gross_exposure_date', 'N/A')} | "
+                            f"Same-day symbols: {int(audit.get('same_day_open_symbol_count', 0) or 0)} | "
+                            f"Stale symbols: {int(audit.get('stale_position_symbol_count', 0) or 0)}"
+                        )
+                        daily_rows = audit.get("gross_exposure_daily") or []
+                        if isinstance(daily_rows, list) and daily_rows:
+                            tail = daily_rows[-10:]
+                            st.dataframe(pd.DataFrame(tail), use_container_width=True, hide_index=True)
 
                 strategy_name = str(res.get("strategy_name") or res.get("strategy") or name or "Backtest_Result")
                 baseline_key = _baseline_key(

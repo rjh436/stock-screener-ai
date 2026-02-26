@@ -220,6 +220,133 @@ def _to_naive_timestamp(value: Any) -> pd.Timestamp:
     return ts
 
 
+def _entry_timing_label(
+    *,
+    entry_i: int,
+    prev_i: int,
+    curr_i: int,
+    signal_mode: str,
+) -> str:
+    mode = str(signal_mode or "after_close").lower()
+    if entry_i == prev_i:
+        if mode in {"market", "open", "moo"}:
+            return "same_day_open"
+        if mode in {"close", "moc"}:
+            return "same_day_close"
+        return "same_day"
+    if entry_i == curr_i:
+        if mode in {"market", "open", "moo"}:
+            return "next_day_open"
+        if mode in {"close", "moc"}:
+            return "next_day_close"
+        return "next_day"
+    return "custom"
+
+
+def _init_backtest_audit_report() -> Dict[str, Any]:
+    return {
+        "same_day_open_entries": 0,
+        "same_day_open_symbols": set(),
+        "same_day_open_dates": set(),
+        "stale_position_days": 0,
+        "stale_position_symbols": set(),
+        "stale_position_dates": set(),
+        "gross_exposure_daily": [],
+        "max_gross_exposure_notional": 0.0,
+        "max_gross_exposure_pct": 0.0,
+        "max_gross_exposure_date": None,
+    }
+
+
+def _audit_track_same_day_open_entry(
+    audit_report: Dict[str, Any],
+    *,
+    symbol: str,
+    day_idx: int,
+    all_dates: np.ndarray,
+) -> None:
+    audit_report["same_day_open_entries"] = int(audit_report.get("same_day_open_entries", 0) or 0) + 1
+    syms = audit_report.setdefault("same_day_open_symbols", set())
+    if isinstance(syms, set):
+        syms.add(str(symbol).upper())
+    dates = audit_report.setdefault("same_day_open_dates", set())
+    if isinstance(dates, set) and 0 <= day_idx < len(all_dates):
+        dates.add(str(_to_naive_timestamp(all_dates[day_idx]).date()))
+
+
+def _audit_track_stale_position_event(
+    audit_report: Dict[str, Any],
+    *,
+    symbol: str,
+    day_idx: int,
+    all_dates: np.ndarray,
+) -> None:
+    audit_report["stale_position_days"] = int(audit_report.get("stale_position_days", 0) or 0) + 1
+    syms = audit_report.setdefault("stale_position_symbols", set())
+    if isinstance(syms, set):
+        syms.add(str(symbol).upper())
+    dates = audit_report.setdefault("stale_position_dates", set())
+    if isinstance(dates, set) and 0 <= day_idx < len(all_dates):
+        dates.add(str(_to_naive_timestamp(all_dates[day_idx]).date()))
+
+
+def _audit_track_gross_exposure(
+    audit_report: Dict[str, Any],
+    *,
+    day_idx: int,
+    all_dates: np.ndarray,
+    gross_exposure: float,
+    mtm_equity: float,
+) -> None:
+    gross = float(gross_exposure) if np.isfinite(gross_exposure) else 0.0
+    if gross < 0.0:
+        gross = 0.0
+    equity = float(mtm_equity) if np.isfinite(mtm_equity) else 0.0
+    gross_pct = (gross / equity) if equity > 0 else 0.0
+    date_str = (
+        str(_to_naive_timestamp(all_dates[day_idx]).date())
+        if 0 <= day_idx < len(all_dates)
+        else "N/A"
+    )
+    daily = audit_report.setdefault("gross_exposure_daily", [])
+    if isinstance(daily, list):
+        daily.append(
+            {
+                "date": date_str,
+                "gross_exposure_notional": gross,
+                "gross_exposure_pct": gross_pct,
+            }
+        )
+    if gross > float(audit_report.get("max_gross_exposure_notional", 0.0) or 0.0):
+        audit_report["max_gross_exposure_notional"] = gross
+        audit_report["max_gross_exposure_date"] = date_str
+    if gross_pct > float(audit_report.get("max_gross_exposure_pct", 0.0) or 0.0):
+        audit_report["max_gross_exposure_pct"] = gross_pct
+        # Keep date aligned with highest pct exposure.
+        audit_report["max_gross_exposure_date"] = date_str
+
+
+def _finalize_backtest_audit_report(audit_report: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(audit_report or {})
+    same_day_syms = out.get("same_day_open_symbols", set())
+    stale_syms = out.get("stale_position_symbols", set())
+    same_day_dates = out.get("same_day_open_dates", set())
+    stale_dates = out.get("stale_position_dates", set())
+    out["same_day_open_symbols"] = sorted(str(s) for s in same_day_syms) if isinstance(same_day_syms, set) else []
+    out["stale_position_symbols"] = sorted(str(s) for s in stale_syms) if isinstance(stale_syms, set) else []
+    out["same_day_open_dates"] = sorted(str(d) for d in same_day_dates) if isinstance(same_day_dates, set) else []
+    out["stale_position_dates"] = sorted(str(d) for d in stale_dates) if isinstance(stale_dates, set) else []
+    out["same_day_open_symbol_count"] = int(len(out.get("same_day_open_symbols", [])))
+    out["stale_position_symbol_count"] = int(len(out.get("stale_position_symbols", [])))
+    out["same_day_open_day_count"] = int(len(out.get("same_day_open_dates", [])))
+    out["stale_position_day_count"] = int(len(out.get("stale_position_dates", [])))
+    if out.get("max_gross_exposure_date") is None:
+        out["max_gross_exposure_date"] = "N/A"
+    out["max_gross_exposure_notional"] = float(out.get("max_gross_exposure_notional", 0.0) or 0.0)
+    out["max_gross_exposure_pct"] = float(out.get("max_gross_exposure_pct", 0.0) or 0.0)
+    return out
+
+
 def _merge_fundamentals_into_df(df: pd.DataFrame, fundamental_df: Optional[pd.DataFrame]) -> None:
     if df is None or df.empty:
         return
@@ -1360,6 +1487,7 @@ class _Candidate:
     size_scalar: float = 1.0
     signal_mode: str = ""
     entry_type: str = ""
+    entry_timing: str = "next_day"
 
 
 @dataclass(slots=True)
@@ -2060,6 +2188,7 @@ def _legacy_run_backtest(
                     entry_day_idx = day_idx
                     entry_i = curr_i
                     cand_signal_mode = str(params.get("signal_mode", "after_close"))
+                    cand_entry_timing = "next_day"
                     entry_type = ""
 
                     if isinstance(decision, dict):
@@ -2068,9 +2197,9 @@ def _legacy_run_backtest(
                         if stop_limit_pct is None:
                             stop_limit_pct = decision.get("stop_limit_pct")
                         entry_type = str(decision.get("entry_type", "") or "")
-                        entry_timing = decision.get("entry_timing") or decision.get("signal_mode")
-                        if isinstance(entry_timing, str):
-                            timing = entry_timing.lower()
+                        raw_entry_timing = decision.get("entry_timing") or decision.get("signal_mode")
+                        if isinstance(raw_entry_timing, str):
+                            timing = raw_entry_timing.lower()
                             if timing in {"same_day", "same_day_open", "same_day_close"}:
                                 entry_i = prev_i
                                 entry_day_idx = sd.gidx[prev_i]
@@ -2080,6 +2209,12 @@ def _legacy_run_backtest(
                                     cand_signal_mode = "open"
                             elif timing in {"open", "close"}:
                                 cand_signal_mode = timing
+                    cand_entry_timing = _entry_timing_label(
+                        entry_i=entry_i,
+                        prev_i=prev_i,
+                        curr_i=curr_i,
+                        signal_mode=cand_signal_mode,
+                    )
 
                     if trigger is None:
                         stop_buy_ref = params.get("stop_buy_ref")
@@ -2239,6 +2374,7 @@ def _legacy_run_backtest(
                             1.0,
                             str(cand_signal_mode),
                             entry_type,
+                            str(cand_entry_timing),
                         )
                     )
                     curr_date_str = str(all_dates[entry_day_idx])[:10]
@@ -2257,6 +2393,7 @@ def _legacy_run_backtest(
         equity_curve = []
         equity_curve_daily = []
         trade_outcomes = []
+        audit_report = _init_backtest_audit_report()
         
         params = _flatten_params(getattr(strat, "params", getattr(strat, "genome", {})) or {})
         max_pos = int(params.get("max_positions", 10) or 10)
@@ -2389,11 +2526,25 @@ def _legacy_run_backtest(
                 sym_data = enriched[sym]
                 # Check for exit (simplified for speed)
                 curr_loc_arr = np.searchsorted(sym_data.gidx, [day_idx])
-                if curr_loc_arr[0] >= len(sym_data.close): continue
+                if curr_loc_arr[0] >= len(sym_data.close):
+                    _audit_track_stale_position_event(
+                        audit_report,
+                        symbol=sym,
+                        day_idx=day_idx,
+                        all_dates=all_dates,
+                    )
+                    continue
                 loc = curr_loc_arr[0]
                 
                 # Check actual date match
-                if sym_data.gidx[loc] != day_idx: continue
+                if sym_data.gidx[loc] != day_idx:
+                    _audit_track_stale_position_event(
+                        audit_report,
+                        symbol=sym,
+                        day_idx=day_idx,
+                        all_dates=all_dates,
+                    )
+                    continue
 
                 current_close = float(sym_data.close[loc])
                 current_low = float(sym_data.low[loc])
@@ -2734,6 +2885,13 @@ def _legacy_run_backtest(
                     continue
 
                 if shares > 0:
+                    if str(getattr(cand, "entry_timing", "") or "").lower() == "same_day_open":
+                        _audit_track_same_day_open_entry(
+                            audit_report,
+                            symbol=cand.sym,
+                            day_idx=day_idx,
+                            all_dates=all_dates,
+                        )
                     entry_gross = shares * entry_px
                     entry_fee = entry_gross * transaction_cost_rate
                     cash -= (entry_gross + entry_fee)
@@ -2763,7 +2921,15 @@ def _legacy_run_backtest(
                     )
 
             # 3. Record Equity
-            mtm = cash + sum(p["shares"] * p["last_price"] for p in positions.values())
+            gross_exposure_day = sum(p["shares"] * p["last_price"] for p in positions.values())
+            mtm = cash + gross_exposure_day
+            _audit_track_gross_exposure(
+                audit_report,
+                day_idx=day_idx,
+                all_dates=all_dates,
+                gross_exposure=gross_exposure_day,
+                mtm_equity=mtm,
+            )
             equity_curve_daily.append({"Date": all_dates[day_idx], "Equity": mtm})
             if (day_idx % equity_stride == 0) or (day_idx == len(all_dates) - 1):
                 equity_curve.append({"Date": all_dates[day_idx], "Equity": mtm})
@@ -2842,6 +3008,7 @@ def _legacy_run_backtest(
             drawdowns = (pd.Series([x["Equity"] for x in equity_curve_daily]) - peaks) / peaks
             max_dd = abs(drawdowns.min()) if not drawdowns.empty else 0.0
 
+        audit_report_final = _finalize_backtest_audit_report(audit_report)
         res = _empty_result(strat.name, start_cash, params)
         gate_audit = getattr(strat, "_gate_counts", None)
         if isinstance(gate_audit, dict):
@@ -2860,7 +3027,8 @@ def _legacy_run_backtest(
             "active_period_years": float(active_period_years),
             "active_period_cagr": active_period_cagr,
             "equity_curve": equity_curve,
-            "trades_list": trades_list
+            "trades_list": trades_list,
+            "audit_report": audit_report_final,
         })
         final_results.append(res)
 
@@ -2873,6 +3041,14 @@ def _legacy_run_backtest(
         print(f"Avg Trend Candidates: {avg_trend:.1f}")
         print(f"Avg RS Candidates: {avg_rs:.1f}")
         print(f"Avg VCP Candidates: {avg_vcp:.2f}")
+        audit = final_results[0].get("audit_report") if isinstance(final_results[0], dict) else None
+        if isinstance(audit, dict):
+            print(
+                "Audit: "
+                f"same_day_open_entries={int(audit.get('same_day_open_entries', 0) or 0)}, "
+                f"stale_position_days={int(audit.get('stale_position_days', 0) or 0)}, "
+                f"max_gross_pct={float(audit.get('max_gross_exposure_pct', 0.0) or 0.0):.2%}"
+            )
         return final_results[0]
     avg_universe = float(np.mean(debug_counts["n_universe"])) if len(all_dates) else 0.0
     avg_trend = float(np.mean(debug_counts["n_trend"])) if len(all_dates) else 0.0

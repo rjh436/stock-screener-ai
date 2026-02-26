@@ -453,6 +453,15 @@ class SuperperformanceStrategy(BaseStrategy):
         if (stop_width - ep_max_stop_pct) > _STOP_WIDTH_TOL:
             return None
 
+        force_next_day = bool(self.params.get("ep_force_next_day", False))
+        entry_timing = "same_day_open" if ep_entry_mode == "open" else "same_day_close"
+        signal_mode = "open" if ep_entry_mode == "open" else "close"
+        if force_next_day:
+            # Audit/validation mode: enforce next-session execution while preserving
+            # the EP signal construction exactly as-is.
+            entry_timing = "next_day"
+            signal_mode = "after_close"
+
         return {
             "trigger_price": trigger_px,
             "stop_price": stop_px,
@@ -460,8 +469,8 @@ class SuperperformanceStrategy(BaseStrategy):
             "stop_loss_type": "low_or_pct",
             "entry_type": "ep",
             "max_stop_pct": ep_max_stop_pct,
-            "entry_timing": "same_day_open" if ep_entry_mode == "open" else "same_day_close",
-            "signal_mode": "open" if ep_entry_mode == "open" else "close",
+            "entry_timing": entry_timing,
+            "signal_mode": signal_mode,
             "signal_strength": float((gap_pct / 10.0) if ep_entry_mode == "open" else (vol_multiple + (gap_pct / 10.0))),
         }
 
