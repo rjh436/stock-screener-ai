@@ -8,7 +8,7 @@ import os
 import re
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,6 +76,8 @@ class LoaderConfig:
     max_filings_per_ticker: int = 16
     max_tasks_per_child: int = 8
     request_pause_sec: float = 0.12
+    task_timeout_sec: float = 300.0
+    heartbeat_sec: float = 15.0
     overwrite: bool = False
     verbose: bool = True
 
@@ -680,47 +682,94 @@ def refresh_fundamentals(
     if recycle_raw > 0:
         recycle_limit = recycle_raw
 
+    task_timeout_sec = float(config.task_timeout_sec or 0.0)
+    if task_timeout_sec < 0:
+        task_timeout_sec = 0.0
+    heartbeat_sec = float(config.heartbeat_sec or 15.0)
+    if heartbeat_sec <= 0:
+        heartbeat_sec = 15.0
+
     with ProcessPoolExecutor(
         max_workers=workers,
         initializer=_worker_initializer,
         initargs=(config.identity, per_worker_limit),
         max_tasks_per_child=recycle_limit,
     ) as pool:
-        futures = {
-            pool.submit(
+        futures = {}
+        started_at: Dict[Any, Optional[float]] = {}
+        timeout_log_count = 0
+        timeout_suppressed = 0
+        timeout_log_cap = 40
+        for ticker in normalized:
+            future = pool.submit(
                 _process_ticker,
                 ticker,
                 int(config.max_filings_per_ticker),
                 float(config.request_pause_sec),
-            ): ticker
-            for ticker in normalized
-        }
-
-        for future in as_completed(futures):
-            ticker = futures[future]
-            processed += 1
-            try:
-                payload = future.result()
-            except Exception as exc:
-                errors[ticker] = str(exc)
-                continue
-
-            err = str(payload.get("error") or "")
-            rows = payload.get("rows") or []
-            if err and not rows:
-                errors[ticker] = err
-                continue
-
-            count = _write_ticker_partition(
-                root=config.output_dir,
-                ticker=ticker,
-                rows=rows,
-                overwrite=config.overwrite,
             )
-            if count > 0:
-                written += 1
+            futures[future] = ticker
+            started_at[future] = None
 
-            if config.verbose and (processed == 1 or processed % 25 == 0):
+        pending = set(futures.keys())
+        while pending:
+            done, pending = wait(
+                pending,
+                timeout=heartbeat_sec,
+                return_when=FIRST_COMPLETED,
+            )
+            now = time.monotonic()
+
+            if task_timeout_sec > 0:
+                stale: List[Any] = []
+                for fut in pending:
+                    if not fut.running():
+                        continue
+                    if started_at.get(fut) is None:
+                        started_at[fut] = now
+                    age = now - float(started_at.get(fut) or now)
+                    if age >= task_timeout_sec:
+                        stale.append(fut)
+                for fut in stale:
+                    ticker = futures[fut]
+                    fut.cancel()
+                    pending.discard(fut)
+                    processed += 1
+                    errors[ticker] = f"timeout>{task_timeout_sec:.0f}s"
+                    if config.verbose:
+                        if timeout_log_count < timeout_log_cap:
+                            print(
+                                "[fundamental_loader] "
+                                f"timeout ticker={ticker} age={task_timeout_sec:.0f}s"
+                            )
+                            timeout_log_count += 1
+                        else:
+                            timeout_suppressed += 1
+
+            for future in done:
+                ticker = futures[future]
+                processed += 1
+                try:
+                    payload = future.result()
+                except Exception as exc:
+                    errors[ticker] = str(exc)
+                    continue
+
+                err = str(payload.get("error") or "")
+                rows = payload.get("rows") or []
+                if err and not rows:
+                    errors[ticker] = err
+                    continue
+
+                count = _write_ticker_partition(
+                    root=config.output_dir,
+                    ticker=ticker,
+                    rows=rows,
+                    overwrite=config.overwrite,
+                )
+                if count > 0:
+                    written += 1
+
+            if config.verbose and (processed == 1 or processed % 25 == 0 or not done):
                 elapsed = max(1e-9, time.monotonic() - start_clock)
                 rate = processed / elapsed
                 print(
@@ -728,6 +777,12 @@ def refresh_fundamentals(
                     f"processed={processed}/{len(normalized)} written={written} "
                     f"errors={len(errors)} rate={rate:.2f}/s elapsed={elapsed:.0f}s"
                 )
+                if timeout_suppressed > 0:
+                    print(
+                        "[fundamental_loader] "
+                        f"timeouts_suppressed={timeout_suppressed}"
+                    )
+                    timeout_suppressed = 0
 
     summary = {
         "requested": len(normalized),
@@ -805,6 +860,18 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         type=int,
         default=120,
         help="Small per-filing delay (ms) to smooth request bursts.",
+    )
+    parser.add_argument(
+        "--task-timeout-sec",
+        type=int,
+        default=_env_int("SEC_EDGAR_TASK_TIMEOUT_SEC", 300),
+        help="Per-ticker timeout in seconds (0 disables timeout).",
+    )
+    parser.add_argument(
+        "--heartbeat-sec",
+        type=int,
+        default=15,
+        help="Progress heartbeat cadence in seconds.",
     )
     parser.add_argument(
         "--overwrite",
@@ -885,6 +952,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         max_filings_per_ticker=int(args.max_filings_per_ticker),
         max_tasks_per_child=int(args.max_tasks_per_child),
         request_pause_sec=max(0.0, float(args.request_pause_ms) / 1000.0),
+        task_timeout_sec=max(0.0, float(args.task_timeout_sec)),
+        heartbeat_sec=max(1.0, float(args.heartbeat_sec)),
         overwrite=bool(args.overwrite),
         verbose=not bool(args.quiet),
     )

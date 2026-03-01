@@ -1,5 +1,5 @@
 {
-  "name": "Superperformance Alpha B4",
+  "name": "Superperformance Alpha B13",
   "type": "superperformance",
   "enabled_by_default": false,
   "require_trend": true,
@@ -25,13 +25,13 @@
   "fundamental_weight": 0.25,
   "min_entry_score": 25,
   "max_stop_pct": 0.06,
-  "stop_limit_pct": 0.03,
+  "stop_limit_pct": 0.05,
   "stop_loss_atr_bull": 3.5,
   "stop_loss_atr_bear": 0.75,
   "breakeven_at_pct": 0.2,
   "exit_sma_fast": "sma50",
   "exit_sma_slow": "sma50",
-  "time_stop_days": 7,
+  "time_stop_days": 10,
   "pyramid_threshold": 0.08,
   "pyramid_fraction": 0.5,
   "pyramid_max_adds": 2,
@@ -55,7 +55,9 @@
   "entry_day_stop_mode": "close_confirmed",
   "enforce_next_day_exit_execution": true,
   "trend_template_mode": "classic",
-  "vcp_gap_chase_score_min": 70,
-  "vcp_gap_chase_max_pct": 0.0,
-  "vcp_trigger_mode": "close_confirmed"
+  "vcp_gap_chase_score_min": 55,
+  "vcp_gap_chase_max_pct": 0.02,
+  "vcp_trigger_mode": "close_confirmed",
+  "vcp_gap_chase_rs_min": 90,
+  "time_stop_profit_pct": 0.002
 }

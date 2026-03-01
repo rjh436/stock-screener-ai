@@ -718,18 +718,31 @@ class SuperperformanceStrategy(BaseStrategy):
         if close_px <= 0:
             return self._reject("close_invalid")
 
-        # Gate 1: Strict trend template hierarchy.
+        # Gate 1: Trend template hierarchy.
         sma10 = _as_float(row.get("sma10"), 0.0)
         sma20 = _as_float(row.get("sma20"), 0.0)
         sma50 = _as_float(row.get("sma50"), 0.0)
         sma150 = _as_float(row.get("sma150"), 0.0)
         sma200 = _as_float(row.get("sma200"), 0.0)
-
-        if not (close_px > sma10 > sma20 > sma50 > sma150 > sma200):
-            return self._reject(
-                f"trend_gate close={close_px:.2f} sma10={sma10:.2f} sma20={sma20:.2f} "
-                f"sma50={sma50:.2f} sma150={sma150:.2f} sma200={sma200:.2f}"
-            )
+        trend_template_mode = str(self.params.get("trend_template_mode", "strict") or "strict").lower()
+        if trend_template_mode in {"classic", "minervini", "sepa"}:
+            sma200_lookback = int(self.params.get("sma200_rising_lookback_bars", 20) or 20)
+            sma200_prev = float("nan")
+            if (i - sma200_lookback) >= 0:
+                sma200_prev = _as_float(df.iloc[i - sma200_lookback].get("sma200"), float("nan"))
+            sma200_rising = math.isfinite(sma200_prev) and sma200 > sma200_prev
+            if not (close_px > sma50 > sma150 > sma200 and sma200_rising):
+                return self._reject(
+                    f"trend_gate classic close={close_px:.2f} sma50={sma50:.2f} "
+                    f"sma150={sma150:.2f} sma200={sma200:.2f} "
+                    f"sma200_prev={sma200_prev:.2f}"
+                )
+        else:
+            if not (close_px > sma10 > sma20 > sma50 > sma150 > sma200):
+                return self._reject(
+                    f"trend_gate strict close={close_px:.2f} sma10={sma10:.2f} sma20={sma20:.2f} "
+                    f"sma50={sma50:.2f} sma150={sma150:.2f} sma200={sma200:.2f}"
+                )
 
         min_price = float(self.params.get("min_price", 2.0) or 2.0)
         if close_px < min_price:
@@ -934,5 +947,5 @@ class SuperperformanceStrategy(BaseStrategy):
 
         return {
             "add_fraction": add_fraction,
-            "stop_to_avg_cost": bool(self.params.get("pyramid_stop_to_avg_cost", True)),
+            "stop_to_avg_cost": bool(self.params.get("pyramid_stop_to_avg_cost", False)),
         }

@@ -2,6 +2,7 @@ from typing import List, Dict, Optional
 
 from .minervini_sepa import MinerviniSEPAStrategy
 from .superperformance import SuperperformanceStrategy
+from .apex_fusion import ApexFusionStrategy
 
 STRATEGY_CLASSES = {
     "Superperformance": SuperperformanceStrategy,
@@ -9,6 +10,8 @@ STRATEGY_CLASSES = {
     "Superperformance (Practical EOD No Leverage)": SuperperformanceStrategy,
     "Minervini SEPA": MinerviniSEPAStrategy,
     "Minervini SEPA (Daily)": MinerviniSEPAStrategy,
+    "Apex Fusion": ApexFusionStrategy,
+    "Apex Fusion (Practical)": ApexFusionStrategy,
 }
 
 def _resolve_strategy_class(config: Dict) -> Optional[type]:
@@ -18,6 +21,8 @@ def _resolve_strategy_class(config: Dict) -> Optional[type]:
         return SuperperformanceStrategy
     if strategy_type in {"minervini_sepa", "minervini"}:
         return MinerviniSEPAStrategy
+    if strategy_type in {"apex_fusion", "apexfusion", "apex"}:
+        return ApexFusionStrategy
     return STRATEGY_CLASSES.get(name)
 
 def load_strategies(configs: List[Dict]) -> List[object]:

@@ -20,7 +20,11 @@ sys.path.append(ROOT)
 try:
     from execution.engine import prepare_backtest_data, run_backtest
     from data.loader import fetch_data_pack
-    from data.universe import get_universe_symbols
+    from data.universe import (
+        get_universe_symbols,
+        get_universe_symbols_pit_window_with_meta,
+        build_russell3000_membership_by_day,
+    )
     from strategies.superperformance import SuperperformanceStrategy
 except ImportError as e:
     print(f"CRITICAL IMPORT ERROR: {e}")
@@ -54,7 +58,9 @@ _DEFAULT_COPY_MULTIPLIER = "1.0"
 WORKER_DATA_COPY_MULTIPLIER = float(
     os.getenv("APEX_WORKER_DATA_COPY_MULTIPLIER", _DEFAULT_COPY_MULTIPLIER) or _DEFAULT_COPY_MULTIPLIER
 )
-PRUNE_PREPARED_DF = str(os.getenv("APEX_PRUNE_PREPARED_DF", "1") or "1").strip().lower() in {
+# Pruning can remove strategy-critical columns and silently produce zero-entry runs.
+# Keep it opt-in via env override.
+PRUNE_PREPARED_DF = str(os.getenv("APEX_PRUNE_PREPARED_DF", "0") or "0").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -65,10 +71,17 @@ RESUME_CHECKPOINT = str(os.getenv("APEX_RESUME_CHECKPOINT", "1") or "1").strip()
     "yes",
 }
 OBJECTIVE_PROFILE = str(os.getenv("APEX_OBJECTIVE_PROFILE", "superperformance") or "superperformance").strip().lower()
-if OBJECTIVE_PROFILE not in {"superperformance", "balanced", "defensive"}:
+if OBJECTIVE_PROFILE not in {"superperformance", "balanced", "defensive", "no_leverage"}:
     OBJECTIVE_PROFILE = "superperformance"
-_TARGET_DEFAULT = "35.0" if OBJECTIVE_PROFILE == "superperformance" else "25.0"
-_MIN_CAGR_DEFAULT = "20.0" if OBJECTIVE_PROFILE == "superperformance" else "10.0"
+if OBJECTIVE_PROFILE == "superperformance":
+    _TARGET_DEFAULT = "35.0"
+    _MIN_CAGR_DEFAULT = "20.0"
+elif OBJECTIVE_PROFILE == "no_leverage":
+    _TARGET_DEFAULT = "20.0"
+    _MIN_CAGR_DEFAULT = "12.0"
+else:
+    _TARGET_DEFAULT = "25.0"
+    _MIN_CAGR_DEFAULT = "10.0"
 TARGET_CAGR = float(os.getenv("APEX_TARGET_CAGR", _TARGET_DEFAULT) or _TARGET_DEFAULT)
 MIN_CAGR_FLOOR = float(os.getenv("APEX_MIN_CAGR_FLOOR", _MIN_CAGR_DEFAULT) or _MIN_CAGR_DEFAULT)
 MIN_PF_FLOOR = float(os.getenv("APEX_MIN_PF_FLOOR", "1.20") or "1.20")
@@ -138,7 +151,7 @@ GENE_SPACE = {
     "breakeven_at_pct": [0.20],
     "exit_sma_fast": ['sma50'],
     "exit_sma_slow": ['sma50'],
-    "time_stop_days": [5],
+    "time_stop_days": [10, 12, 15, 20],
     "pyramid_threshold": [0.04, 0.06, 0.08, 0.10],
     "pyramid_fraction": [0.5, 0.67],
     "pyramid_max_adds": [1, 2, 3],
@@ -146,8 +159,36 @@ GENE_SPACE = {
     "risk_per_trade": [0.015, 0.02, 0.025, 0.03],
     "max_pos_size_pct": [0.15, 0.20, 0.25, 0.30],
     "max_total_exposure_pct_bull": [1.0, 1.2, 1.4, 1.6],
-    "max_total_exposure_pct_bear": [0.1, 0.2, 0.3],
+    "max_total_exposure_pct_bear": [0.0, 0.1, 0.2, 0.3],
+    "vcp_trigger_mode": ["close_confirmed", "setup"],
 }
+
+if OBJECTIVE_PROFILE == "no_leverage":
+    GENE_SPACE.update(
+        {
+            "min_price": [6, 8, 10, 12],
+            "min_avg_volume_30": [100000, 150000, 200000, 300000],
+            "max_total_exposure_pct_bull": [0.8, 0.9, 1.0],
+            "max_total_exposure_pct_bear": [0.0, 0.05, 0.10],
+            "max_positions": [4, 5, 6],
+            "risk_per_trade": [0.008, 0.01, 0.012, 0.015],
+            "max_pos_size_pct": [0.15, 0.20, 0.25],
+            "rs_gate_min": [85, 88, 90, 92],
+            "fundamental_growth_min_pct": [10, 15, 20, 25],
+            "min_entry_score": [35, 45, 55],
+            "vcp_lookback_bars": [40, 60, 80],
+            "ep_gap_pct": [6, 8],
+            "ep_close_near_high_min": [0.70, 0.75, 0.80, 0.85],
+            "ep_entry_mode": ["close"],
+            "stop_limit_pct": [0.03, 0.05],
+            "time_stop_days": [10, 12, 15, 20, 25],
+            "trend_template_mode": ["classic"],
+            "vcp_trigger_mode": ["setup", "close_confirmed"],
+            "vcp_gap_chase_max_pct": [0.0, 0.01, 0.02, 0.03],
+            "vcp_gap_chase_rs_min": [92, 95],
+            "vcp_gap_chase_score_min": [60, 70],
+        }
+    )
 
 
 def _edgar_partition_exists(symbol: str) -> bool:
@@ -404,6 +445,7 @@ def _prune_prepared_frames(prepared_obj):
 # --- WORKER STATE (Initializer Pattern) ---
 _worker_data = None
 _worker_global_data = None
+_worker_universe_membership_by_day = None
 
 def save_checkpoint(generation, population, best_genome_so_far):
     try:
@@ -432,6 +474,61 @@ def load_checkpoint():
 
 def generate_random_genome():
     return {k: random.choice(v) for k, v in GENE_SPACE.items()}
+
+
+def _coerce_gene_value(gene_key, raw_value):
+    options = list(GENE_SPACE.get(gene_key, []))
+    if not options:
+        return raw_value
+    if raw_value in options:
+        return raw_value
+    try:
+        opt_num = [float(o) for o in options]
+        raw_num = float(raw_value)
+        nearest_idx = int(np.argmin([abs(o - raw_num) for o in opt_num]))
+        return options[nearest_idx]
+    except Exception:
+        pass
+    raw_text = str(raw_value).strip().lower()
+    for opt in options:
+        if str(opt).strip().lower() == raw_text:
+            return opt
+    return random.choice(options)
+
+
+def _seed_population(population_size: int) -> list:
+    seed_paths = [
+        os.path.join("config", "superperformance_practical_no_leverage_optimized.json"),
+        os.path.join("config", "superperformance_practical_eod_cash_v2.json"),
+        os.path.join("config", "superperformance_practical_no_leverage_best_20260225_052809.json"),
+        os.path.join("config", "superperformance_selective_candidate.json"),
+    ]
+    seeded = []
+    seen = set()
+    for path in seed_paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r") as f:
+                payload = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        genome = {}
+        for key in GENE_SPACE.keys():
+            if key in payload:
+                genome[key] = _coerce_gene_value(key, payload.get(key))
+            else:
+                genome[key] = random.choice(GENE_SPACE[key])
+        sig = _genome_signature(genome)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        seeded.append(genome)
+        if len(seeded) >= population_size:
+            break
+    return seeded
 
 def mutate_genome(genome):
     new_genome = genome.copy()
@@ -495,10 +592,11 @@ def compress_data(prepared_obj):
     )
     return prepared_obj
 
-def _init_worker(prepared_data_readonly, global_data_readonly):
-    global _worker_data, _worker_global_data
+def _init_worker(prepared_data_readonly, global_data_readonly, universe_membership_by_day=None):
+    global _worker_data, _worker_global_data, _worker_universe_membership_by_day
     _worker_data = prepared_data_readonly
     _worker_global_data = global_data_readonly
+    _worker_universe_membership_by_day = universe_membership_by_day
 
 
 def _trade_asymmetry(trades_list):
@@ -564,9 +662,10 @@ def evaluate_genome(genome_id_and_genome):
     except Exception:
         genome_id, genome = genome_id_and_genome
         max_dd_cap = MAX_DD_CAP
-    global _worker_data, _worker_global_data
+    global _worker_data, _worker_global_data, _worker_universe_membership_by_day
     data = _worker_data
     global_data = _worker_global_data
+    universe_membership_by_day = _worker_universe_membership_by_day
     
     if data is None:
         return {"id": genome_id, "score": -999, "error": "Init failed"}
@@ -581,20 +680,42 @@ def evaluate_genome(genome_id_and_genome):
         genome_adj["entry_mode"] = "both"
         # Pairing clamp: enforce cash-only exposure physics
         max_exposure = float(strategy_config.get("max_total_exposure_pct_bull", 1.0) or 1.0)
+        if OBJECTIVE_PROFILE == "no_leverage":
+            max_exposure = min(max_exposure, 1.0)
+            strategy_config["max_total_exposure_pct_bull"] = max_exposure
+            genome_adj["max_total_exposure_pct_bull"] = max_exposure
+            bear_exposure = float(strategy_config.get("max_total_exposure_pct_bear", 0.0) or 0.0)
+            bear_exposure = min(max(bear_exposure, 0.0), 1.0)
+            strategy_config["max_total_exposure_pct_bear"] = bear_exposure
+            genome_adj["max_total_exposure_pct_bear"] = bear_exposure
         max_positions = int(strategy_config.get("max_positions", 1) or 1)
         max_pos_size = float(strategy_config.get("max_pos_size_pct", 1.0) or 1.0)
+        if OBJECTIVE_PROFILE == "no_leverage":
+            max_pos_size = min(max_pos_size, 1.0)
         if max_positions > 0 and (max_positions * max_pos_size) > max_exposure:
             max_pos_size = max_exposure / max_positions
             strategy_config["max_pos_size_pct"] = max_pos_size
             genome_adj["max_pos_size_pct"] = max_pos_size
         # After-close scan, next-day stop order (EP overrides with same-day close)
         strategy_config["signal_mode"] = "after_close"
+        entry_day_stop_mode = str(
+            os.getenv(
+                "APEX_ENTRY_DAY_STOP_MODE",
+                strategy_config.get("entry_day_stop_mode", "close_confirmed"),
+            )
+            or "close_confirmed"
+        ).strip().lower()
+        if entry_day_stop_mode not in {"off", "none", "disabled", "gap_only", "gap", "close_confirmed", "close", "intraday_low", "conservative"}:
+            entry_day_stop_mode = "close_confirmed"
+        strategy_config["entry_day_stop_mode"] = entry_day_stop_mode
+        genome_adj["entry_day_stop_mode"] = entry_day_stop_mode
         if np.isfinite(OPTIMIZER_COST_BPS) and OPTIMIZER_COST_BPS > 0:
             strategy_config["transaction_cost_bps"] = float(max(0.0, OPTIMIZER_COST_BPS))
         # Default to bull-deploy/bear-cash behavior for superperformance tuning.
+        default_exposure_mode = "filter" if OBJECTIVE_PROFILE == "no_leverage" else "hybrid"
         exposure_mode = str(
-            os.getenv("APEX_MARKET_EXPOSURE_MODE", strategy_config.get("market_exposure_mode", "hybrid"))
-            or "hybrid"
+            os.getenv("APEX_MARKET_EXPOSURE_MODE", strategy_config.get("market_exposure_mode", default_exposure_mode))
+            or default_exposure_mode
         ).strip().lower()
         if exposure_mode not in {"filter", "hard", "hybrid", "scaled", "exposure"}:
             exposure_mode = "hybrid"
@@ -605,13 +726,27 @@ def evaluate_genome(genome_id_and_genome):
         strategy_config["regime_exit"] = exposure_mode in {"filter", "hard"}
         strategy_config["market_filter_mode"] = "sma200"
         strategy_config["regime_ma"] = "sma200"
-        use_traffic_light = str(os.getenv("APEX_USE_TRAFFIC_LIGHT", "0") or "0").strip().lower() in {
+        default_tl = "1" if OBJECTIVE_PROFILE == "no_leverage" else "0"
+        use_traffic_light = str(os.getenv("APEX_USE_TRAFFIC_LIGHT", default_tl) or default_tl).strip().lower() in {
             "1",
             "true",
             "yes",
         }
         strategy_config["use_market_regime_traffic_light"] = use_traffic_light
         genome_adj["use_market_regime_traffic_light"] = use_traffic_light
+        if OBJECTIVE_PROFILE == "no_leverage":
+            bear_cash_mode = str(os.getenv("APEX_BEAR_CASH_MODE", "hard") or "hard").strip().lower()
+            tl_block_exposure = str(os.getenv("APEX_TL_BLOCK_EXPOSURE", "1") or "1").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            strategy_config["bear_cash_mode"] = bear_cash_mode
+            strategy_config["traffic_light_block_exposure_mode"] = tl_block_exposure
+            strategy_config["enforce_next_day_exit_execution"] = True
+            genome_adj["bear_cash_mode"] = bear_cash_mode
+            genome_adj["traffic_light_block_exposure_mode"] = tl_block_exposure
+            genome_adj["enforce_next_day_exit_execution"] = True
         if "stop_loss_atr_bull" in strategy_config:
             strategy_config["stop_loss_atr"] = strategy_config.get("stop_loss_atr_bull")
         strategy_config["split_exit"] = False
@@ -631,11 +766,14 @@ def evaluate_genome(genome_id_and_genome):
         strategy_config["exit_sma_fast"] = "sma50"
         strategy_config["exit_sma_slow"] = "sma50"
         strategy_config["move_stop_to_be"] = True
-        strategy_config["pyramid_stop_to_avg_cost"] = True
-        strategy_config["allow_margin"] = (
-            float(strategy_config.get("max_total_exposure_pct_bull", 1.0) or 1.0) > 1.0
-            or float(strategy_config.get("max_pos_size_pct", 1.0) or 1.0) > 1.0
-        )
+        strategy_config["pyramid_stop_to_avg_cost"] = False
+        if OBJECTIVE_PROFILE == "no_leverage":
+            strategy_config["allow_margin"] = False
+        else:
+            strategy_config["allow_margin"] = (
+                float(strategy_config.get("max_total_exposure_pct_bull", 1.0) or 1.0) > 1.0
+                or float(strategy_config.get("max_pos_size_pct", 1.0) or 1.0) > 1.0
+            )
         score_mode = str(strategy_config.get("score_mode", "dual_core") or "dual_core").strip().lower()
         if score_mode not in {"dual_core", "momentum"}:
             score_mode = "dual_core"
@@ -686,7 +824,8 @@ def evaluate_genome(genome_id_and_genome):
             start_cash=100000.0, 
             start_date=START_DATE, 
             end_date=END_DATE,
-            global_data=global_data
+            global_data=global_data,
+            universe_membership_by_day=universe_membership_by_day,
         )
         
         if not result: return {"id": genome_id, "score": 0, "error": "No result"}
@@ -719,6 +858,15 @@ def evaluate_genome(genome_id_and_genome):
             }
         
         trades_list = metrics.get("trades_list", []) or []
+        audit_report = metrics.get("audit_report", {}) or {}
+        try:
+            same_day_open_entries = int(audit_report.get("same_day_open_entries", 0) or 0)
+        except Exception:
+            same_day_open_entries = 0
+        try:
+            max_gross_exposure_pct = float(audit_report.get("max_gross_exposure_pct", 0.0) or 0.0)
+        except Exception:
+            max_gross_exposure_pct = 0.0
         # Trade quality (PF) for fitness shaping.
         gross_wins = 0.0
         gross_losses = 0.0
@@ -782,6 +930,13 @@ def evaluate_genome(genome_id_and_genome):
         if cagr_pct <= 0.0:
             score -= 25.0
 
+        if OBJECTIVE_PROFILE == "no_leverage":
+            # Keep optimization aligned with practical execution constraints.
+            if same_day_open_entries > 0:
+                score -= min(120.0, 20.0 + (same_day_open_entries * 0.25))
+            if max_gross_exposure_pct > 1.0:
+                score -= (max_gross_exposure_pct - 1.0) * 400.0
+
         # Recency retention bias:
         # keep strong modern-market performance while still optimizing full-cycle CAGR.
         if np.isfinite(recent_5y_cagr):
@@ -803,18 +958,20 @@ def evaluate_genome(genome_id_and_genome):
             score -= 2.0
 
         # Soft anti-overrestriction bias:
-        # Prevent optimizer from collapsing into a low-frequency "screener" profile.
-        if float(strategy_config.get("rs_gate_min", 85.0) or 85.0) > 90.0:
-            score -= 5.0
-        if float(strategy_config.get("fundamental_growth_min_pct", 20.0) or 20.0) > 20.0:
-            score -= 4.0
-        if float(strategy_config.get("ep_gap_pct", 8.0) or 8.0) > 8.0:
-            score -= 4.0
-        if float(strategy_config.get("min_avg_volume_30", 0.0) or 0.0) >= 500000.0:
-            score -= 3.0
-        min_entry_score_cfg = float(strategy_config.get("min_entry_score", 0.0) or 0.0)
-        if min_entry_score_cfg > 55.0:
-            score -= (min_entry_score_cfg - 55.0) * 1.5
+        # Keep broad-profile runs from collapsing into ultra-sparse screeners.
+        # Skip this in no-leverage mode because strict quality filters are intentional.
+        if OBJECTIVE_PROFILE != "no_leverage":
+            if float(strategy_config.get("rs_gate_min", 85.0) or 85.0) > 90.0:
+                score -= 5.0
+            if float(strategy_config.get("fundamental_growth_min_pct", 20.0) or 20.0) > 20.0:
+                score -= 4.0
+            if float(strategy_config.get("ep_gap_pct", 8.0) or 8.0) > 8.0:
+                score -= 4.0
+            if float(strategy_config.get("min_avg_volume_30", 0.0) or 0.0) >= 500000.0:
+                score -= 3.0
+            min_entry_score_cfg = float(strategy_config.get("min_entry_score", 0.0) or 0.0)
+            if min_entry_score_cfg > 55.0:
+                score -= (min_entry_score_cfg - 55.0) * 1.5
 
         is_super_candidate = (
             cagr_pct >= TARGET_CAGR
@@ -839,6 +996,8 @@ def evaluate_genome(genome_id_and_genome):
             "avg_win_pct": avg_win_pct,
             "avg_loss_pct": avg_loss_pct,
             "win_loss_ratio": win_loss_ratio,
+            "same_day_open_entries": same_day_open_entries,
+            "max_gross_exposure_pct": max_gross_exposure_pct,
         }
     except Exception as e:
         return {"id": genome_id, "score": -999, "error": str(e)}
@@ -872,11 +1031,24 @@ if __name__ == "__main__":
     
     print("...Loading Data...")
     universe_name = str(os.getenv("APEX_UNIVERSE", "RUSSELL3000") or "RUSSELL3000").strip().upper()
-    symbols = get_universe_symbols(universe_name) or []
+    if universe_name == "RUSSELL3000":
+        symbols, universe_source = get_universe_symbols_pit_window_with_meta(
+            universe_name,
+            START_DATE,
+            END_DATE,
+        )
+        print(f"...Universe source: {universe_source}")
+    else:
+        symbols = get_universe_symbols(universe_name) or []
     if not symbols and universe_name != "RUSSELL3000":
         print(f"⚠️ Universe '{universe_name}' returned no symbols. Falling back to RUSSELL3000.")
         universe_name = "RUSSELL3000"
-        symbols = get_universe_symbols(universe_name) or []
+        symbols, universe_source = get_universe_symbols_pit_window_with_meta(
+            universe_name,
+            START_DATE,
+            END_DATE,
+        )
+        print(f"...Universe source: {universe_source}")
     universe_limit = int(os.getenv("APEX_UNIVERSE_LIMIT", "0") or "0")
     if universe_limit > 0:
         symbols = symbols[:universe_limit]
@@ -963,6 +1135,18 @@ if __name__ == "__main__":
     if prepared is None:
         prepared = prepare_backtest_data(data, symbols, start_date=START_DATE, global_data=g_data)
         print(f"📊 DATA POOL: {len(prepared.enriched)} tickers prepared.")
+        write_cache = str(os.getenv("APEX_WRITE_INDICATOR_CACHE", "1") or "1").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if write_cache:
+            try:
+                with open(cache_path, "wb") as f:
+                    pickle.dump(prepared, f, protocol=pickle.HIGHEST_PROTOCOL)
+                print(f"💾 Saved indicator cache: {cache_path}")
+            except Exception as exc:
+                print(f"⚠️ Failed to save indicator cache: {exc}")
     else:
         print(f"📊 DATA POOL: {len(prepared.enriched)} tickers prepared (cache).")
     if PRUNE_PREPARED_DF:
@@ -974,6 +1158,19 @@ if __name__ == "__main__":
         f"🧠 Prepared memory estimate: {_bytes_to_gb(prepared_mem_before):.2f} GB -> "
         f"{_bytes_to_gb(prepared_mem_after):.2f} GB"
     )
+    universe_membership_by_day = None
+    if universe_name == "RUSSELL3000":
+        try:
+            all_dates_raw = getattr(prepared, "all_dates", None)
+            all_dates_seq = list(all_dates_raw) if all_dates_raw is not None else []
+            membership, membership_source = build_russell3000_membership_by_day(all_dates_seq)
+            if membership and len(membership) == len(all_dates_seq):
+                universe_membership_by_day = membership
+                print(f"📌 PIT day-membership loaded for optimizer: source={membership_source}")
+            else:
+                print("⚠️ PIT day-membership unavailable or misaligned; optimizer will run without per-day membership filter.")
+        except Exception as exc:
+            print(f"⚠️ Failed to build PIT day-membership: {exc}")
     global_mem = _estimate_data_bytes(g_data)
     effective_workers, worker_plan = _resolve_effective_workers(MAX_WORKERS, prepared_mem_after, global_mem)
     print(
@@ -1002,14 +1199,22 @@ if __name__ == "__main__":
             print(f"🔁 Resuming from checkpoint at generation {start_gen + 1}/{GENERATIONS}")
         else:
             print("⚠️ Checkpoint population mismatch. Starting fresh population.")
-            population = [generate_random_genome() for _ in range(POPULATION_SIZE)]
+            seeds = _seed_population(POPULATION_SIZE)
+            population = list(seeds)
+            while len(population) < POPULATION_SIZE:
+                population.append(generate_random_genome())
     else:
-        population = [generate_random_genome() for _ in range(POPULATION_SIZE)]
+        seeds = _seed_population(POPULATION_SIZE)
+        if seeds:
+            print(f"🌱 Seeded initial population with {len(seeds)} known practical genomes.")
+        population = list(seeds)
+        while len(population) < POPULATION_SIZE:
+            population.append(generate_random_genome())
     dd_cap = MAX_DD_CAP
     executor_kwargs = {
         "max_workers": effective_workers,
         "initializer": _init_worker,
-        "initargs": (prepared, g_data),
+        "initargs": (prepared, g_data, universe_membership_by_day),
     }
     if POOL_MAX_TASKS_PER_CHILD > 0:
         executor_kwargs["max_tasks_per_child"] = POOL_MAX_TASKS_PER_CHILD
@@ -1085,7 +1290,9 @@ if __name__ == "__main__":
                                 print(
                                     f"   > T:{res['trades']} | CAGR:{res['cagr']:.1f}% | DD:{res['dd']:.1f}% "
                                     f"| PF:{res.get('pf', 0.0):.2f} | Calmar:{res.get('calmar', 0):.2f} "
-                                    f"| 5Y:{res.get('cagr_5y', float('nan')):.1f}% | 3Y:{res.get('cagr_3y', float('nan')):.1f}%"
+                                    f"| 5Y:{res.get('cagr_5y', float('nan')):.1f}% | 3Y:{res.get('cagr_3y', float('nan')):.1f}% "
+                                    f"| SDO:{int(res.get('same_day_open_entries', 0) or 0)} "
+                                    f"| Gross:{float(res.get('max_gross_exposure_pct', 0.0) or 0.0) * 100.0:.1f}%"
                                 )
                         else:
                             print(f"   ⚠️  GENOME {res['id']} FAILED: {res['error']}")

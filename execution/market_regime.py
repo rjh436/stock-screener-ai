@@ -48,7 +48,8 @@ def compute_regime_series(spy_df: Optional[pd.DataFrame]) -> pd.Series:
 
     prev_close = close.shift(1)
     prev_volume = volume.shift(1)
-    distribution_day = (close < prev_close) & (volume > prev_volume)
+    price_decline_pct = (prev_close - close) / prev_close.replace(0, np.nan)
+    distribution_day = (price_decline_pct >= 0.002) & (volume > prev_volume)
     distribution_count = distribution_day.astype(np.int8).rolling(25, min_periods=1).sum()
 
     try:

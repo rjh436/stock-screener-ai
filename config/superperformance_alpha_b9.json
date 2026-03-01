@@ -1,5 +1,5 @@
 {
-  "name": "Superperformance Alpha B4",
+  "name": "Superperformance Alpha B9",
   "type": "superperformance",
   "enabled_by_default": false,
   "require_trend": true,
@@ -56,6 +56,7 @@
   "enforce_next_day_exit_execution": true,
   "trend_template_mode": "classic",
   "vcp_gap_chase_score_min": 70,
-  "vcp_gap_chase_max_pct": 0.0,
-  "vcp_trigger_mode": "close_confirmed"
+  "vcp_gap_chase_max_pct": 0.01,
+  "vcp_trigger_mode": "close_confirmed",
+  "vcp_gap_chase_rs_min": 95
 }
