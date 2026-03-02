@@ -37,7 +37,7 @@
     "max_positions": 12,
     "risk_per_trade": 0.1,
     "max_pos_size_pct": 0.65,
-    "max_total_exposure_pct_bull": 5.0,
+    "max_total_exposure_pct_bull": 1.0,
     "max_total_exposure_pct_bear": 0.3,
     "market_exposure_mode": "exposure",
     "use_market_regime_traffic_light": false,

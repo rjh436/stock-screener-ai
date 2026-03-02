@@ -459,8 +459,8 @@ class SuperperformanceStrategy(BaseStrategy):
             entry_timing = "next_day"
             signal_mode = "after_close"
         elif ep_entry_mode == "open":
-            entry_timing = "same_day_open"
-            signal_mode = "open"
+            entry_timing = "next_day"
+            signal_mode = "after_close"
         else:
             entry_timing = "same_day_close"
             signal_mode = "close"
