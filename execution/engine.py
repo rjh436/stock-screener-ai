@@ -265,13 +265,8 @@ def _audit_track_same_day_open_entry(
     day_idx: int,
     all_dates: np.ndarray,
 ) -> None:
-    audit_report["same_day_open_entries"] = int(audit_report.get("same_day_open_entries", 0) or 0) + 1
-    syms = audit_report.setdefault("same_day_open_symbols", set())
-    if isinstance(syms, set):
-        syms.add(str(symbol).upper())
-    dates = audit_report.setdefault("same_day_open_dates", set())
-    if isinstance(dates, set) and 0 <= day_idx < len(all_dates):
-        dates.add(str(_to_naive_timestamp(all_dates[day_idx]).date()))
+    dt_str = str(_to_naive_timestamp(all_dates[day_idx]).date()) if 0 <= day_idx < len(all_dates) else "N/A"
+    raise ValueError(f"CRITICAL: Same-day entry contamination for {symbol} on {dt_str}. Execution integrity compromised.")
 
 
 def _audit_track_stale_position_event(
@@ -1912,6 +1907,7 @@ def _legacy_run_backtest(
     start_np = start_ts.to_datetime64() if start_ts is not None else None
     end_np = end_ts.to_datetime64() if end_ts is not None else None
 
+    require_pit_membership = bool(kwargs.get("require_pit_membership", False))
     raw_membership_by_day = kwargs.get("universe_membership_by_day")
     universe_membership_by_day: Optional[List[Optional[set[str]]]] = None
     if isinstance(raw_membership_by_day, (list, tuple)) and len(raw_membership_by_day) == len(all_dates):
@@ -1928,6 +1924,22 @@ def _legacy_run_backtest(
             universe_membership_by_day = normalized_membership
         except Exception:
             universe_membership_by_day = None
+    if require_pit_membership:
+        if universe_membership_by_day is None:
+            raise ValueError(
+                "PIT day-membership is required for this run, but universe_membership_by_day was missing or misaligned."
+            )
+        missing_days = [
+            i
+            for i, members in enumerate(universe_membership_by_day)
+            if not isinstance(members, set) or len(members) == 0
+        ]
+        if missing_days:
+            first_missing = missing_days[0]
+            raise ValueError(
+                "PIT day-membership is required for this run, but missing/incomplete data was found at "
+                f"day index {first_missing}."
+            )
 
     debug_counts = {
         "n_universe": np.full(len(all_dates), len(enriched), dtype=np.int32),
@@ -2518,7 +2530,13 @@ def _legacy_run_backtest(
             max_total_bull = float(params.get("max_total_exposure_pct_bull", base_max_total) or base_max_total)
             max_total_bear = float(params.get("max_total_exposure_pct_bear", base_max_total) or base_max_total)
             max_total_exposure_pct = max_total_bull if market_is_bull else max_total_bear
-            allow_margin = bool(params.get("allow_margin", False) or max_total_exposure_pct > 1.0 or max_pos_size_pct > 1.0)
+            allow_margin = bool(params.get("allow_margin", False))
+            if allow_margin:
+                raise ValueError("CRITICAL: allow_margin=True is forbidden by hard constraints.")
+            if max_total_exposure_pct > 1.0:
+                raise ValueError(f"CRITICAL: max_total_exposure_pct={max_total_exposure_pct} exceeds 1.0 limit.")
+            if max_pos_size_pct > 1.0:
+                raise ValueError(f"CRITICAL: max_pos_size_pct={max_pos_size_pct} exceeds 1.0 limit.")
 
             # 1. Manage Positions
             to_remove = []
@@ -3180,11 +3198,13 @@ def _run_cli() -> int:
         require_pit = str(os.getenv("APEX_REQUIRE_PIT_UNIVERSE", "1") or "1").strip().lower() in {
             "1", "true", "yes", "on"
         }
-        if require_pit and universe_source == "fallback_current":
+        if require_pit and universe_source not in {"pit_snapshot", "pit_ranges", "pit_snapshot_window"}:
             raise ValueError(
-                "PIT universe required for accuracy, but no PIT Russell 3000 dataset was found. "
+                "PIT universe required for accuracy, but no PIT Russell 3000 dataset was found for this run. "
                 "Configure RUSSELL3000_PIT_DIR or RUSSELL3000_PIT_MEMBERSHIP_CSV."
             )
+        if require_pit and not symbols:
+            raise ValueError("PIT universe required for accuracy, but zero symbols were returned.")
     else:
         symbols = get_universe_symbols("RUSSELL3000")
     if len(symbols) < 100:

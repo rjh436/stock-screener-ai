@@ -159,6 +159,7 @@ def _evaluate(
         end_date=end_date,
         global_data=global_data,
         universe_membership_by_day=membership,
+        require_pit_membership=True,
     )
     out = result[0] if isinstance(result, list) else result
     cagr = float(out.get("cagr", 0.0) or 0.0) * 100.0
@@ -316,6 +317,11 @@ def main() -> None:
 
     all_dates = list(getattr(prepared, "all_dates"))
     membership, membership_source = build_russell3000_membership_by_day(all_dates)
+    if not membership or len(membership) != len(all_dates):
+        raise RuntimeError(
+            "PIT day-membership is unavailable or incomplete for frontier search. "
+            "Failing closed to prevent survivorship bias."
+        )
     global_data = fetch_data_pack(["SPY", "VIX"], days=TRADING_DAYS, backtest_mode=True) or {}
     print(
         f"frontier_search run_tag={RUN_TAG} iterations={ITERATIONS} "

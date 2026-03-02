@@ -120,6 +120,16 @@ AUTO_LOAD_FUNDAMENTALS = str(os.getenv("APEX_AUTO_LOAD_FUNDAMENTALS", "1") or "1
     "true",
     "yes",
 }
+REQUIRE_PIT_UNIVERSE = str(os.getenv("APEX_REQUIRE_PIT_UNIVERSE", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+REQUIRE_PIT_DAY_MEMBERSHIP = str(os.getenv("APEX_REQUIRE_PIT_DAY_MEMBERSHIP", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 # --- GENOME SPACE (Optimization Variables) ---
 GENE_SPACE = {
@@ -826,6 +836,7 @@ def evaluate_genome(genome_id_and_genome):
             end_date=END_DATE,
             global_data=global_data,
             universe_membership_by_day=universe_membership_by_day,
+            require_pit_membership=REQUIRE_PIT_DAY_MEMBERSHIP,
         )
         
         if not result: return {"id": genome_id, "score": 0, "error": "No result"}
@@ -1038,6 +1049,16 @@ if __name__ == "__main__":
             END_DATE,
         )
         print(f"...Universe source: {universe_source}")
+        if REQUIRE_PIT_UNIVERSE:
+            if universe_source not in {"pit_snapshot", "pit_ranges", "pit_snapshot_window"}:
+                raise RuntimeError(
+                    "PIT Russell 3000 universe is required, but PIT data is unavailable for the requested window. "
+                    "Populate data/russell3000_membership or RUSSELL3000_PIT_MEMBERSHIP_CSV."
+                )
+            if not symbols:
+                raise RuntimeError(
+                    "PIT Russell 3000 universe is required, but zero symbols were returned for the requested window."
+                )
     else:
         symbols = get_universe_symbols(universe_name) or []
     if not symbols and universe_name != "RUSSELL3000":
@@ -1049,6 +1070,16 @@ if __name__ == "__main__":
             END_DATE,
         )
         print(f"...Universe source: {universe_source}")
+        if REQUIRE_PIT_UNIVERSE:
+            if universe_source not in {"pit_snapshot", "pit_ranges", "pit_snapshot_window"}:
+                raise RuntimeError(
+                    "PIT Russell 3000 universe is required, but PIT data is unavailable for the requested window. "
+                    "Populate data/russell3000_membership or RUSSELL3000_PIT_MEMBERSHIP_CSV."
+                )
+            if not symbols:
+                raise RuntimeError(
+                    "PIT Russell 3000 universe is required, but zero symbols were returned for the requested window."
+                )
     universe_limit = int(os.getenv("APEX_UNIVERSE_LIMIT", "0") or "0")
     if universe_limit > 0:
         symbols = symbols[:universe_limit]
@@ -1163,13 +1194,24 @@ if __name__ == "__main__":
         try:
             all_dates_raw = getattr(prepared, "all_dates", None)
             all_dates_seq = list(all_dates_raw) if all_dates_raw is not None else []
-            membership, membership_source = build_russell3000_membership_by_day(all_dates_seq)
+            membership, membership_source = build_russell3000_membership_by_day(
+                all_dates_seq,
+                allow_missing_days=not REQUIRE_PIT_DAY_MEMBERSHIP,
+            )
             if membership and len(membership) == len(all_dates_seq):
                 universe_membership_by_day = membership
                 print(f"📌 PIT day-membership loaded for optimizer: source={membership_source}")
             else:
-                print("⚠️ PIT day-membership unavailable or misaligned; optimizer will run without per-day membership filter.")
+                msg = (
+                    "PIT day-membership is unavailable, incomplete, or misaligned with the prepared calendar. "
+                    "Failing closed."
+                )
+                if REQUIRE_PIT_DAY_MEMBERSHIP:
+                    raise RuntimeError(msg)
+                print(f"⚠️ {msg} Optimizer will run without per-day membership filter.")
         except Exception as exc:
+            if REQUIRE_PIT_DAY_MEMBERSHIP:
+                raise
             print(f"⚠️ Failed to build PIT day-membership: {exc}")
     global_mem = _estimate_data_bytes(g_data)
     effective_workers, worker_plan = _resolve_effective_workers(MAX_WORKERS, prepared_mem_after, global_mem)

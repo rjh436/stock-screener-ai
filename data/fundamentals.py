@@ -34,6 +34,22 @@ _DEFAULT_TTL_HOURS = 24
 _API_CHUNK_SIZE = 200
 
 
+def _strict_fundamental_mode() -> bool:
+    return str(
+        os.getenv(
+            "FUNDAMENTAL_STRICT_MODE",
+            os.getenv("APEX_STRICT_FUNDAMENTALS", "1"),
+        )
+        or "1"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _allow_estimated_available_date() -> bool:
+    return str(
+        os.getenv("FUNDAMENTAL_ALLOW_ESTIMATED_AVAILABLE_DATE", "0") or "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _fundamental_release_lag_days() -> int:
     try:
         lag_days = int(os.getenv("FUNDAMENTAL_RELEASE_LAG_DAYS", "45") or "45")
@@ -112,10 +128,11 @@ def _load_cache() -> pd.DataFrame:
         df["available_date"] = pd.NaT
     if "fetched_at" in df.columns:
         df["fetched_at"] = pd.to_datetime(df["fetched_at"], errors="coerce")
-    lag_days = _fundamental_release_lag_days()
-    if "report_date" in df.columns:
-        fallback_avail = df["report_date"] + pd.Timedelta(days=lag_days)
-        df["available_date"] = df["available_date"].where(df["available_date"].notna(), fallback_avail)
+    if (not _strict_fundamental_mode()) or _allow_estimated_available_date():
+        lag_days = _fundamental_release_lag_days()
+        if "report_date" in df.columns:
+            fallback_avail = df["report_date"] + pd.Timedelta(days=lag_days)
+            df["available_date"] = df["available_date"].where(df["available_date"].notna(), fallback_avail)
 
     for col in FUNDAMENTAL_METRIC_COLUMNS:
         if col not in df.columns:
@@ -183,8 +200,11 @@ def _load_edgar_symbol_frame(symbol: str) -> pd.DataFrame:
 
     report_date = pd.to_datetime(pdf[quarter_col], errors="coerce").dt.normalize()
     filing_date = pd.to_datetime(pdf.get("filing_date"), errors="coerce").dt.normalize()
-    lag_days = _fundamental_release_lag_days()
-    available_date = filing_date.where(filing_date.notna(), report_date + pd.Timedelta(days=lag_days))
+    if _strict_fundamental_mode() and not _allow_estimated_available_date():
+        available_date = filing_date
+    else:
+        lag_days = _fundamental_release_lag_days()
+        available_date = filing_date.where(filing_date.notna(), report_date + pd.Timedelta(days=lag_days))
 
     frame = pd.DataFrame(
         {
@@ -369,7 +389,10 @@ def _fetch_snapshots(symbols: Sequence[str]) -> pd.DataFrame:
 
 def fetch_fundamental_data(symbols: Sequence[str]) -> Dict[str, pd.DataFrame]:
     """
-    Fetch Schwab fundamental snapshots and return quarterly-indexed metric frames.
+    Fetch point-in-time fundamentals keyed by tradable availability date.
+
+    In strict mode (default), this returns EDGAR-derived data only and does not
+    synthesize historical availability from snapshot/cache fields.
 
     Returns a dict keyed by symbol where each value is:
         index: availability_date (first date fundamentals are tradable)
@@ -382,6 +405,17 @@ def fetch_fundamental_data(symbols: Sequence[str]) -> Dict[str, pd.DataFrame]:
 
     edgar_data = _load_edgar_fundamental_data(symbols)
     edgar_covered = {sym for sym, frame in edgar_data.items() if frame is not None and not frame.empty}
+    strict_mode = _strict_fundamental_mode()
+
+    if strict_mode:
+        out: Dict[str, pd.DataFrame] = {}
+        for sym in symbols:
+            frame = edgar_data.get(sym)
+            if frame is None or frame.empty:
+                out[sym] = _empty_symbol_frame()
+            else:
+                out[sym] = frame
+        return out
 
     cache_df = _load_cache()
     latest_map = _latest_fetched_map(cache_df)
@@ -456,9 +490,10 @@ def fetch_fundamental_data(symbols: Sequence[str]) -> Dict[str, pd.DataFrame]:
             frame["report_date"] = pd.to_datetime(frame["report_date"], errors="coerce")
         else:
             frame["report_date"] = pd.NaT
-        lag_days = _fundamental_release_lag_days()
-        fallback_avail = frame["report_date"] + pd.Timedelta(days=lag_days)
-        frame["available_date"] = frame["available_date"].where(frame["available_date"].notna(), fallback_avail)
+        if _allow_estimated_available_date():
+            lag_days = _fundamental_release_lag_days()
+            fallback_avail = frame["report_date"] + pd.Timedelta(days=lag_days)
+            frame["available_date"] = frame["available_date"].where(frame["available_date"].notna(), fallback_avail)
         frame = frame.dropna(subset=["available_date"]).sort_values(["available_date", "report_date", "fetched_at"])
         if frame.empty:
             out[sym] = _empty_symbol_frame()

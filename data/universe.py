@@ -62,11 +62,10 @@ def get_universe_symbols(name: str) -> List[str]:
     elif key == "NASDAQ100":
         symbols = _fetch_from_indices("NASDAQ 100")
     elif key == "RUSSELL3000":
-        print(
-            "⚠️ WARNING: Russell 3000 contains Survivorship Bias. "
-            "Backtest results > 5 years are inflated."
+        raise RuntimeError(
+            "CRITICAL: Non-PIT Russell 3000 requested. "
+            "Universe must be fail-closed. No fallback to current constituents allowed."
         )
-        symbols = _fetch_russell_3000()
     else:
         symbols = []
 
@@ -76,7 +75,7 @@ def get_universe_symbols(name: str) -> List[str]:
 def get_universe_symbols_pit(name: str, as_of_date: Optional[str] = None) -> List[str]:
     """
     Return point-in-time universe members when local PIT files are available.
-    Falls back to get_universe_symbols(name) when PIT data is missing.
+    Returns an empty list when PIT data is unavailable.
     """
     symbols, _ = get_universe_symbols_pit_with_meta(name, as_of_date)
     return symbols
@@ -91,12 +90,15 @@ def get_universe_symbols_pit_with_meta(
     - pit_snapshot
     - pit_ranges
     - current_index
-    - fallback_current
+    - unavailable
     """
     key = _normalize_name(name)
     as_of = _parse_date_ymd(as_of_date)
-    if as_of is None or key != "RUSSELL3000":
+    if key != "RUSSELL3000":
         return get_universe_symbols(name), "current_index"
+    if as_of is None:
+        print("   ❌ ERROR: Invalid or missing as-of date for PIT Russell 3000 lookup.")
+        return [], "unavailable"
 
     symbols = _load_russell_3000_pit_from_snapshots(as_of)
     if symbols:
@@ -108,11 +110,10 @@ def get_universe_symbols_pit_with_meta(
         print(f"   └── Loaded PIT Russell 3000 membership ranges for {as_of.isoformat()} ({len(symbols)} symbols)")
         return symbols, "pit_ranges"
 
-    print(
-        "   ⚠️ WARNING: No PIT Russell 3000 dataset found. "
-        "Falling back to current constituents (survivorship bias remains)."
+    raise RuntimeError(
+        "CRITICAL: No PIT Russell 3000 dataset found for the requested as-of date. "
+        "Failing closed to prevent survivorship bias."
     )
-    return get_universe_symbols(name), "fallback_current"
 
 
 def get_universe_symbols_pit_window_with_meta(
@@ -168,6 +169,8 @@ def get_universe_symbols_pit_window_with_meta(
 
 def build_russell3000_membership_by_day(
     all_dates: Sequence[Any],
+    *,
+    allow_missing_days: bool = False,
 ) -> Tuple[List[Optional[frozenset[str]]], str]:
     """
     Build day-level PIT membership references aligned to all_dates.
@@ -187,6 +190,7 @@ def build_russell3000_membership_by_day(
     memberships: List[Optional[frozenset[str]]] = []
     snap_i = 0
     current: Optional[frozenset[str]] = None
+    missing_days = 0
 
     for day in day_values:
         if day is None:
@@ -195,10 +199,14 @@ def build_russell3000_membership_by_day(
         while snap_i < len(snapshots) and snapshots[snap_i][0] <= day:
             current = snapshots[snap_i][1]
             snap_i += 1
+        if current is None:
+            missing_days += 1
         memberships.append(current)
 
     if not any(m is not None for m in memberships):
         return [], "unavailable"
+    if missing_days > 0 and not allow_missing_days:
+        return [], "incomplete"
     return memberships, "pit_snapshot_timeline"
 
 

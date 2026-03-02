@@ -454,13 +454,16 @@ class SuperperformanceStrategy(BaseStrategy):
             return None
 
         force_next_day = bool(self.params.get("ep_force_next_day", False))
-        entry_timing = "same_day_open" if ep_entry_mode == "open" else "same_day_close"
-        signal_mode = "open" if ep_entry_mode == "open" else "close"
         if force_next_day:
-            # Audit/validation mode: enforce next-session execution while preserving
-            # the EP signal construction exactly as-is.
+            # Enforce next-session execution before assigning any same-day mode.
             entry_timing = "next_day"
             signal_mode = "after_close"
+        elif ep_entry_mode == "open":
+            entry_timing = "same_day_open"
+            signal_mode = "open"
+        else:
+            entry_timing = "same_day_close"
+            signal_mode = "close"
 
         return {
             "trigger_price": trigger_px,
