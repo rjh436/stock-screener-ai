@@ -80,7 +80,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--search-years",
         type=int,
-        default=5,
+        default=7,
         help="Primary optimization window in years.",
     )
     parser.add_argument(
@@ -92,13 +92,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-evals",
         type=int,
-        default=28,
+        default=64,
         help="Total candidates to evaluate in search window (including seeds).",
     )
     parser.add_argument(
         "--finalists",
         type=int,
-        default=6,
+        default=12,
         help="Top search candidates to validate on long window.",
     )
     parser.add_argument(
@@ -270,15 +270,20 @@ def _enforce_practical_constraints(
     cfg["ep_force_next_day"] = True
     cfg["vcp_entry_mode"] = "next_day"
     cfg["market_exposure_mode"] = "exposure"
-    cfg["use_market_regime_traffic_light"] = False
+    cfg["use_market_regime_traffic_light"] = True
     cfg["bear_cash_mode"] = "off"
     cfg["log_regime_skips"] = False
+    cfg["use_market_breadth_overlay"] = True
+    cfg["breadth_entry_floor"] = 0.28
+    cfg["breadth_risk_floor"] = 0.35
+    cfg["breadth_yellow_floor"] = 0.42
+    cfg["breadth_green_floor"] = 0.58
 
-    # No fees/commissions in this user's modeling preference.
-    cfg["transaction_cost_bps"] = 0.0
-    cfg["slippage_bps"] = 0.0
-    cfg["entry_slippage_bps"] = 0.0
-    cfg["exit_slippage_bps"] = 0.0
+    # Enforce realistic default friction for selection robustness.
+    cfg["transaction_cost_bps"] = 5.0
+    cfg["slippage_bps"] = 9.0
+    cfg["entry_slippage_bps"] = 8.0
+    cfg["exit_slippage_bps"] = 10.0
 
     # Hard no-leverage constraints.
     bull_exposure = min(1.0, max(0.20, _safe_float(cfg.get("max_total_exposure_pct_bull", 1.0), 1.0)))

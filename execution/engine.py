@@ -42,6 +42,12 @@ _VCP_BB_WIDTH_THRESH = 0.15
 
 _DEBUG_TRAIL_ACTIVATION = os.environ.get("APEX_DEBUG_TRAIL_ACTIVATION", "").strip() not in ("", "0", "false", "False")
 _DEBUG_FUND_SCORING = os.environ.get("APEX_DEBUG_FUND_SCORING", "").strip() not in ("", "0", "false", "False")
+_MISSING_FUNDAMENTAL_NEUTRAL_SCORE = float(
+    os.getenv("APEX_MISSING_FUNDAMENTAL_NEUTRAL_SCORE", "50.0") or "50.0"
+)
+_MISSING_FUNDAMENTAL_PROXY_CAP_SCORE = float(
+    os.getenv("APEX_MISSING_FUNDAMENTAL_PROXY_CAP_SCORE", "60.0") or "60.0"
+)
 
 _INDICATOR_CACHE_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "data", "cache_indicators.pkl")
@@ -255,6 +261,8 @@ def _init_backtest_audit_report() -> Dict[str, Any]:
         "max_gross_exposure_notional": 0.0,
         "max_gross_exposure_pct": 0.0,
         "max_gross_exposure_date": None,
+        "entry_type_counts": {"vcp": 0, "ep": 0, "other": 0},
+        "total_entry_events": 0,
     }
 
 
@@ -321,6 +329,22 @@ def _audit_track_gross_exposure(
         audit_report["max_gross_exposure_date"] = date_str
 
 
+def _audit_track_entry_event(
+    audit_report: Dict[str, Any],
+    *,
+    entry_type: str,
+) -> None:
+    counts = audit_report.setdefault("entry_type_counts", {"vcp": 0, "ep": 0, "other": 0})
+    if not isinstance(counts, dict):
+        counts = {"vcp": 0, "ep": 0, "other": 0}
+        audit_report["entry_type_counts"] = counts
+    entry_key = str(entry_type or "").strip().lower()
+    if entry_key not in {"vcp", "ep"}:
+        entry_key = "other"
+    counts[entry_key] = int(counts.get(entry_key, 0) or 0) + 1
+    audit_report["total_entry_events"] = int(audit_report.get("total_entry_events", 0) or 0) + 1
+
+
 def _finalize_backtest_audit_report(audit_report: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(audit_report or {})
     same_day_syms = out.get("same_day_open_symbols", set())
@@ -339,7 +363,82 @@ def _finalize_backtest_audit_report(audit_report: Dict[str, Any]) -> Dict[str, A
         out["max_gross_exposure_date"] = "N/A"
     out["max_gross_exposure_notional"] = float(out.get("max_gross_exposure_notional", 0.0) or 0.0)
     out["max_gross_exposure_pct"] = float(out.get("max_gross_exposure_pct", 0.0) or 0.0)
+    entry_counts = out.get("entry_type_counts", {})
+    if not isinstance(entry_counts, dict):
+        entry_counts = {}
+    normalized_entry_counts = {
+        "vcp": int(entry_counts.get("vcp", 0) or 0),
+        "ep": int(entry_counts.get("ep", 0) or 0),
+        "other": int(entry_counts.get("other", 0) or 0),
+    }
+    out["entry_type_counts"] = normalized_entry_counts
+    total_entry_events = int(sum(normalized_entry_counts.values()))
+    out["total_entry_events"] = total_entry_events
+    if total_entry_events > 0:
+        out["entry_type_shares"] = {
+            key: float(val) / float(total_entry_events)
+            for key, val in normalized_entry_counts.items()
+        }
+    else:
+        out["entry_type_shares"] = {key: 0.0 for key in normalized_entry_counts}
     return out
+
+
+def _compute_market_breadth_snapshots(
+    enriched: Dict[str, "_SymbolArrays"],
+    n_days: int,
+    *,
+    rs_floor: float = 80.0,
+) -> Dict[str, np.ndarray]:
+    total = np.zeros(n_days, dtype=np.int32)
+    above_50 = np.zeros(n_days, dtype=np.int32)
+    above_200 = np.zeros(n_days, dtype=np.int32)
+    rs_above = np.zeros(n_days, dtype=np.int32)
+
+    for sd in enriched.values():
+        gidx = getattr(sd, "gidx", None)
+        if gidx is None or len(gidx) == 0:
+            continue
+        valid = (
+            (gidx >= 0)
+            & (gidx < n_days)
+            & np.isfinite(sd.close)
+            & (sd.close > 0)
+        )
+        if not np.any(valid):
+            continue
+        day_idx = gidx[valid]
+        close = sd.close[valid]
+        sma50 = sd.sma50[valid]
+        sma200 = sd.sma200[valid]
+        rs = sd.rsrating[valid]
+
+        np.add.at(total, day_idx, 1)
+        gate_50 = np.isfinite(sma50) & (close >= sma50)
+        gate_200 = np.isfinite(sma200) & (close >= sma200)
+        gate_rs = np.isfinite(rs) & (rs >= float(rs_floor))
+        if np.any(gate_50):
+            np.add.at(above_50, day_idx[gate_50], 1)
+        if np.any(gate_200):
+            np.add.at(above_200, day_idx[gate_200], 1)
+        if np.any(gate_rs):
+            np.add.at(rs_above, day_idx[gate_rs], 1)
+
+    ratio_50 = np.full(n_days, np.nan, dtype=np.float64)
+    ratio_200 = np.full(n_days, np.nan, dtype=np.float64)
+    ratio_rs = np.full(n_days, np.nan, dtype=np.float64)
+    active = total > 0
+    if np.any(active):
+        ratio_50[active] = above_50[active] / total[active]
+        ratio_200[active] = above_200[active] / total[active]
+        ratio_rs[active] = rs_above[active] / total[active]
+
+    return {
+        "total": total,
+        "above_50_ratio": ratio_50,
+        "above_200_ratio": ratio_200,
+        "rs_above_ratio": ratio_rs,
+    }
 
 
 def _merge_fundamentals_into_df(df: pd.DataFrame, fundamental_df: Optional[pd.DataFrame]) -> None:
@@ -1321,8 +1420,8 @@ def _score_row_dual_core(
     if fundamentals_available:
         composite_score = (tech_w * technical_score) + (fund_w * fundamental_score)
     else:
-        # If historical fundamentals are missing, allow a proxy-fundamental override
-        # for true episodic pivots: >=4% gap with >=2.5x 50-day relative volume.
+        # If historical fundamentals are missing, keep scoring conservative.
+        # True EP-like gaps can receive only a mild uplift, never full-score credit.
         proxy_fundamental_signal = (
             np.isfinite(gap_pct)
             and float(gap_pct) >= 4.0
@@ -1331,17 +1430,13 @@ def _score_row_dual_core(
             and float(vol_ma50) > 0.0
             and float(volume) >= (2.5 * float(vol_ma50))
         )
+        proxy_cap = _clamp_0_100(_MISSING_FUNDAMENTAL_PROXY_CAP_SCORE, fallback=60.0)
+        neutral_score = _clamp_0_100(_MISSING_FUNDAMENTAL_NEUTRAL_SCORE, fallback=50.0)
         if proxy_fundamental_signal:
-            fundamental_score = 100.0
-            composite_score = (tech_w * technical_score) + (fund_w * fundamental_score)
+            fundamental_score = proxy_cap
         else:
-            # Ghost-fundamentals fallback:
-            # if fundamentals are entirely missing, scale technicals to full-score range.
-            # Example: with default 60/40 split, technical 60 maps to composite 100.
-            if tech_w > 0:
-                composite_score = technical_score / tech_w
-            else:
-                composite_score = technical_score
+            fundamental_score = neutral_score
+        composite_score = (tech_w * technical_score) + (fund_w * fundamental_score)
 
     composite_score = _clamp_0_100(composite_score, fallback=0.0)
     if return_components:
@@ -1995,6 +2090,11 @@ def _legacy_run_backtest(
                 regime_aligned = regime_series.reindex(all_dates_idx, method="ffill").fillna("RED")
                 market_regime_by_day = regime_aligned.astype(str).str.upper().to_numpy(dtype=object)
 
+    breadth_snapshot = _compute_market_breadth_snapshots(enriched, len(all_dates), rs_floor=80.0)
+    breadth_above_50_by_day = breadth_snapshot["above_50_ratio"]
+    breadth_above_200_by_day = breadth_snapshot["above_200_ratio"]
+    breadth_rs_by_day = breadth_snapshot["rs_above_ratio"]
+
 
     # --- MAIN LOOP (Optimized) ---
     batch_size = 0
@@ -2066,6 +2166,20 @@ def _legacy_run_backtest(
                         if 0 <= regime_idx < len(market_regime_by_day)
                         else "RED"
                     )
+                    breadth_above_50 = (
+                        float(breadth_above_50_by_day[regime_idx])
+                        if 0 <= regime_idx < len(breadth_above_50_by_day)
+                        else float("nan")
+                    )
+                    use_breadth_overlay = bool(params.get("use_market_breadth_overlay", True))
+                    breadth_entry_floor = float(params.get("breadth_entry_floor", 0.28) or 0.28)
+                    if (
+                        use_breadth_overlay
+                        and np.isfinite(breadth_above_50)
+                        and breadth_above_50 < breadth_entry_floor
+                        and regime_state in {"RED", "ORANGE"}
+                    ):
+                        continue
                     bear_cash_mode = str(params.get("bear_cash_mode", "off") or "off").lower()
                     hard_red_cash = bear_cash_mode in {"hard", "cash", "all_cash"} and regime_state == "RED"
                     if hard_red_cash:
@@ -2345,13 +2459,13 @@ def _legacy_run_backtest(
                                 and row_volume >= (2.5 * row_vol_ma50)
                             )
                             if proxy_fundamental:
-                                mode = "PROXY_FUND_100"
+                                mode = "PROXY_FUND_CAPPED"
                             elif has_fund and tech_score >= 90.0:
                                 mode = "AGGR_80_20"
                             elif has_fund:
                                 mode = "DUAL_CORE"
                             else:
-                                mode = "TECH_ONLY"
+                                mode = "MISSING_FUND_NEUTRAL"
                             print(
                                 f"[{date_str}] {sym} Fundamental Score={fund_score:.1f} | "
                                 f"Technical Score={tech_score:.1f} | Composite={score:.1f} | Mode={mode}"
@@ -2483,13 +2597,28 @@ def _legacy_run_backtest(
             max_pos_today = max_pos
             if exposure_mode in {"hybrid", "scaled", "exposure"} and not market_is_bull:
                 bear_max = int(params.get("bear_max_positions", 2) or 2)
-                max_pos_today = max(1, min(max_pos, bear_max))
+                max_pos_today = max(0, min(max_pos, bear_max))
 
             traffic_light_enabled = bool(params.get("use_market_regime_traffic_light", True))
             regime_state = (
                 str(market_regime_by_day[lag_day_idx]).upper()
                 if 0 <= lag_day_idx < len(market_regime_by_day)
                 else "RED"
+            )
+            breadth_above_50 = (
+                float(breadth_above_50_by_day[lag_day_idx])
+                if 0 <= lag_day_idx < len(breadth_above_50_by_day)
+                else float("nan")
+            )
+            breadth_above_200 = (
+                float(breadth_above_200_by_day[lag_day_idx])
+                if 0 <= lag_day_idx < len(breadth_above_200_by_day)
+                else float("nan")
+            )
+            breadth_rs = (
+                float(breadth_rs_by_day[lag_day_idx])
+                if 0 <= lag_day_idx < len(breadth_rs_by_day)
+                else float("nan")
             )
             bear_cash_mode = str(params.get("bear_cash_mode", "off") or "off").lower()
             hard_red_cash = bear_cash_mode in {"hard", "cash", "all_cash"} and regime_state == "RED"
@@ -2516,13 +2645,39 @@ def _legacy_run_backtest(
 
             if traffic_light_enabled:
                 if regime_state == "YELLOW":
-                    yellow_cap_default = max(1, int(round(max_pos * 0.5)))
+                    yellow_cap_default = max(0, int(round(max_pos * 0.5)))
                     yellow_cap = int(params.get("yellow_max_positions", yellow_cap_default) or yellow_cap_default)
-                    max_pos_today = max(1, min(max_pos_today, yellow_cap))
+                    max_pos_today = max(0, min(max_pos_today, yellow_cap))
                 elif regime_state == "ORANGE":
-                    orange_cap_default = max(1, int(round(max_pos * 0.2)))
+                    orange_cap_default = max(0, int(round(max_pos * 0.2)))
                     orange_cap = int(params.get("orange_max_positions", orange_cap_default) or orange_cap_default)
-                    max_pos_today = max(1, min(max_pos_today, orange_cap))
+                    max_pos_today = max(0, min(max_pos_today, orange_cap))
+
+            use_breadth_overlay = bool(params.get("use_market_breadth_overlay", True))
+            breadth_entry_floor = float(params.get("breadth_entry_floor", 0.28) or 0.28)
+            breadth_risk_floor = float(params.get("breadth_risk_floor", 0.35) or 0.35)
+            breadth_yellow_floor = float(params.get("breadth_yellow_floor", 0.42) or 0.42)
+            breadth_green_floor = float(params.get("breadth_green_floor", 0.58) or 0.58)
+            if use_breadth_overlay and np.isfinite(breadth_above_50):
+                if breadth_above_50 < breadth_entry_floor and regime_state in {"RED", "ORANGE"}:
+                    regime_block_new_entries = True
+
+                breadth_scalar = 1.0
+                if breadth_above_50 < breadth_risk_floor:
+                    breadth_scalar = 0.35
+                elif breadth_above_50 < breadth_yellow_floor:
+                    breadth_scalar = 0.65
+                elif breadth_above_50 < breadth_green_floor:
+                    breadth_scalar = 0.85
+                if np.isfinite(breadth_above_200):
+                    breadth_scalar *= float(np.clip(0.5 + breadth_above_200, 0.5, 1.0))
+                if np.isfinite(breadth_rs):
+                    breadth_scalar *= float(np.clip(0.6 + breadth_rs, 0.6, 1.0))
+                regime_risk_scalar *= float(np.clip(breadth_scalar, 0.0, 1.0))
+
+                if max_pos_today > 0:
+                    position_scalar = float(np.clip(breadth_above_50 / max(breadth_green_floor, 0.01), 0.25, 1.0))
+                    max_pos_today = max(0, int(np.floor(max_pos_today * position_scalar)))
 
             stop_loss_atr_bull = float(params.get("stop_loss_atr_bull", params.get("stop_loss_atr", 3.0)) or 3.0)
             stop_loss_atr_bear = float(params.get("stop_loss_atr_bear", params.get("bear_stop_loss_atr", 0.5)) or 0.5)
@@ -2748,12 +2903,15 @@ def _legacy_run_backtest(
                 if (not should_exit) and (not pos.get("exit_pending", False)):
                     # Schedule pyramiding for next session (after-close decision)
                     pyramid_cfg = None
-                    if hasattr(strat, "pyramid"):
+                    pyramid_green_only = bool(params.get("pyramid_green_only", True))
+                    if pyramid_green_only and regime_state != "GREEN":
+                        pyramid_cfg = None
+                    elif hasattr(strat, "pyramid"):
                         try:
                             pyramid_cfg = strat.pyramid(sym_data.df, loc, pos)
                         except Exception:
                             pyramid_cfg = None
-                    if pyramid_cfg is None:
+                    if pyramid_cfg is None and (not pyramid_green_only or regime_state == "GREEN"):
                         threshold = float(params.get("pyramid_threshold", 0.0) or 0.0)
                         if threshold > 0:
                             entry_px = float(pos.get("entry_price", 0.0) or 0.0)
@@ -2953,6 +3111,10 @@ def _legacy_run_backtest(
                             day_idx=day_idx,
                             all_dates=all_dates,
                         )
+                    _audit_track_entry_event(
+                        audit_report,
+                        entry_type=entry_type,
+                    )
                     entry_gross = shares * entry_px
                     entry_fee = entry_gross * transaction_cost_rate
                     cash -= (entry_gross + entry_fee)
@@ -3146,11 +3308,16 @@ def _legacy_run_backtest(
         print(f"Avg VCP Candidates: {avg_vcp:.2f}")
         audit = final_results[0].get("audit_report") if isinstance(final_results[0], dict) else None
         if isinstance(audit, dict):
+            entry_counts = audit.get("entry_type_counts", {}) if isinstance(audit.get("entry_type_counts", {}), dict) else {}
             print(
                 "Audit: "
                 f"same_day_open_entries={int(audit.get('same_day_open_entries', 0) or 0)}, "
                 f"stale_position_days={int(audit.get('stale_position_days', 0) or 0)}, "
-                f"max_gross_pct={float(audit.get('max_gross_exposure_pct', 0.0) or 0.0):.2%}"
+                f"max_gross_pct={float(audit.get('max_gross_exposure_pct', 0.0) or 0.0):.2%}, "
+                f"entries(vcp/ep/other)="
+                f"{int(entry_counts.get('vcp', 0) or 0)}/"
+                f"{int(entry_counts.get('ep', 0) or 0)}/"
+                f"{int(entry_counts.get('other', 0) or 0)}"
             )
         return final_results[0]
     avg_universe = float(np.mean(debug_counts["n_universe"])) if len(all_dates) else 0.0

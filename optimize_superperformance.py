@@ -88,7 +88,13 @@ MIN_PF_FLOOR = float(os.getenv("APEX_MIN_PF_FLOOR", "1.20") or "1.20")
 MIN_WINLOSS_RATIO = float(os.getenv("APEX_MIN_WINLOSS_RATIO", "2.50") or "2.50")
 MIN_TRADES_FLOOR = int(os.getenv("APEX_MIN_TRADES_FLOOR", "50") or "50")
 MAX_TRADES_SOFT = int(os.getenv("APEX_MAX_TRADES_SOFT", "700") or "700")
-OPTIMIZER_COST_BPS = float(os.getenv("APEX_OPTIMIZER_COST_BPS", "0") or "0")
+OPTIMIZER_COST_BPS = float(os.getenv("APEX_OPTIMIZER_COST_BPS", "5.0") or "5.0")
+OPTIMIZER_ENTRY_SLIPPAGE_BPS = float(
+    os.getenv("APEX_OPTIMIZER_ENTRY_SLIPPAGE_BPS", "8.0") or "8.0"
+)
+OPTIMIZER_EXIT_SLIPPAGE_BPS = float(
+    os.getenv("APEX_OPTIMIZER_EXIT_SLIPPAGE_BPS", "10.0") or "10.0"
+)
 OPTIMIZER_TRACE_REJECTS = str(
     os.getenv("APEX_OPTIMIZER_TRACE_REJECTS", "0") or "0"
 ).strip().lower() in {
@@ -106,6 +112,12 @@ RECENT_5Y_CAGR_FLOOR = float(os.getenv("APEX_RECENT_5Y_CAGR_FLOOR", "12.0") or "
 RECENT_3Y_CAGR_FLOOR = float(os.getenv("APEX_RECENT_3Y_CAGR_FLOOR", "14.0") or "14.0")
 RECENT_5Y_CAGR_TARGET = float(os.getenv("APEX_RECENT_5Y_CAGR_TARGET", "16.0") or "16.0")
 RECENT_3Y_CAGR_TARGET = float(os.getenv("APEX_RECENT_3Y_CAGR_TARGET", "18.0") or "18.0")
+RECENT_5Y_WEIGHT = float(os.getenv("APEX_RECENT_5Y_WEIGHT", "0.25") or "0.25")
+RECENT_3Y_WEIGHT = float(os.getenv("APEX_RECENT_3Y_WEIGHT", "0.10") or "0.10")
+RECENT_5Y_PENALTY_MULT = float(os.getenv("APEX_RECENT_5Y_PENALTY_MULT", "3.0") or "3.0")
+RECENT_3Y_PENALTY_MULT = float(os.getenv("APEX_RECENT_3Y_PENALTY_MULT", "2.0") or "2.0")
+WORST_12M_FLOOR_PCT = float(os.getenv("APEX_WORST_12M_FLOOR_PCT", "-20.0") or "-20.0")
+WORST_12M_PENALTY_MULT = float(os.getenv("APEX_WORST_12M_PENALTY_MULT", "2.5") or "2.5")
 FUNDAMENTAL_PARQUET_DIR = str(
     os.getenv("APEX_FUNDAMENTAL_PARQUET_DIR", os.path.join("data", "fundamentals", "edgar_income"))
 )
@@ -666,6 +678,31 @@ def _recent_cagr_pct(equity_curve, years):
     return ((end_eq / start_eq) ** (1 / span_years) - 1.0) * 100.0
 
 
+def _worst_rolling_12m_return_pct(equity_curve):
+    if not equity_curve:
+        return float("nan")
+    try:
+        ec = pd.DataFrame(equity_curve)
+    except Exception:
+        return float("nan")
+    if ec.empty or "Date" not in ec.columns or "Equity" not in ec.columns:
+        return float("nan")
+    try:
+        ec["Date"] = pd.to_datetime(ec["Date"], errors="coerce")
+        ec["Equity"] = pd.to_numeric(ec["Equity"], errors="coerce")
+        ec = ec.dropna(subset=["Date", "Equity"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+    except Exception:
+        return float("nan")
+    if len(ec) < 252:
+        return float("nan")
+
+    equity = ec["Equity"].to_numpy(dtype=np.float64, copy=False)
+    rolling_ret = (equity[252:] / equity[:-252]) - 1.0
+    if rolling_ret.size == 0:
+        return float("nan")
+    return float(np.nanmin(rolling_ret) * 100.0)
+
+
 def evaluate_genome(genome_id_and_genome):
     try:
         genome_id, genome, max_dd_cap = genome_id_and_genome
@@ -721,6 +758,22 @@ def evaluate_genome(genome_id_and_genome):
         genome_adj["entry_day_stop_mode"] = entry_day_stop_mode
         if np.isfinite(OPTIMIZER_COST_BPS) and OPTIMIZER_COST_BPS > 0:
             strategy_config["transaction_cost_bps"] = float(max(0.0, OPTIMIZER_COST_BPS))
+            strategy_config["slippage_bps"] = float(
+                max(
+                    0.0,
+                    (
+                        max(0.0, OPTIMIZER_ENTRY_SLIPPAGE_BPS)
+                        + max(0.0, OPTIMIZER_EXIT_SLIPPAGE_BPS)
+                    )
+                    / 2.0,
+                )
+            )
+            strategy_config["entry_slippage_bps"] = float(max(0.0, OPTIMIZER_ENTRY_SLIPPAGE_BPS))
+            strategy_config["exit_slippage_bps"] = float(max(0.0, OPTIMIZER_EXIT_SLIPPAGE_BPS))
+            genome_adj["transaction_cost_bps"] = strategy_config["transaction_cost_bps"]
+            genome_adj["slippage_bps"] = strategy_config["slippage_bps"]
+            genome_adj["entry_slippage_bps"] = strategy_config["entry_slippage_bps"]
+            genome_adj["exit_slippage_bps"] = strategy_config["exit_slippage_bps"]
         # Default to bull-deploy/bear-cash behavior for superperformance tuning.
         default_exposure_mode = "filter" if OBJECTIVE_PROFILE == "no_leverage" else "hybrid"
         exposure_mode = str(
@@ -853,6 +906,7 @@ def evaluate_genome(genome_id_and_genome):
         cagr_pct = ((final_val / 100000.0) ** (1/years) - 1) * 100
         recent_5y_cagr = _recent_cagr_pct(metrics.get("equity_curve", []), 5)
         recent_3y_cagr = _recent_cagr_pct(metrics.get("equity_curve", []), 3)
+        worst_12m_return_pct = _worst_rolling_12m_return_pct(metrics.get("equity_curve", []))
 
         # DEATH PENALTY: Disqualify high drawdown genomes
         if max_dd > float(max_dd_cap):
@@ -909,7 +963,7 @@ def evaluate_genome(genome_id_and_genome):
         if cagr_pct > 20.0:
             cagr_curve += (cagr_pct - 20.0) * 1.50
         if cagr_pct > 30.0:
-            cagr_curve += (cagr_pct - 30.0) * 2.25
+            cagr_curve += (cagr_pct - 30.0) * 0.75
 
         trades_floor = max(float(MIN_TRADES_FLOOR), 1.0)
         trade_factor = max(0.0, min(float(trades) / trades_floor, 1.0))
@@ -948,25 +1002,23 @@ def evaluate_genome(genome_id_and_genome):
             if max_gross_exposure_pct > 1.0:
                 score -= (max_gross_exposure_pct - 1.0) * 400.0
 
-        # Recency retention bias:
-        # keep strong modern-market performance while still optimizing full-cycle CAGR.
+        # Keep some recency awareness, but avoid hard-wiring optimization to a single market phase.
         if np.isfinite(recent_5y_cagr):
-            score += recent_5y_cagr * 0.80
+            score += recent_5y_cagr * RECENT_5Y_WEIGHT
             if recent_5y_cagr < RECENT_5Y_CAGR_FLOOR:
-                score -= (RECENT_5Y_CAGR_FLOOR - recent_5y_cagr) * 8.0
-            elif recent_5y_cagr >= RECENT_5Y_CAGR_TARGET:
-                score += 10.0
+                score -= (RECENT_5Y_CAGR_FLOOR - recent_5y_cagr) * RECENT_5Y_PENALTY_MULT
         else:
             score -= 3.0
 
         if np.isfinite(recent_3y_cagr):
-            score += recent_3y_cagr * 0.40
+            score += recent_3y_cagr * RECENT_3Y_WEIGHT
             if recent_3y_cagr < RECENT_3Y_CAGR_FLOOR:
-                score -= (RECENT_3Y_CAGR_FLOOR - recent_3y_cagr) * 6.0
-            elif recent_3y_cagr >= RECENT_3Y_CAGR_TARGET:
-                score += 6.0
+                score -= (RECENT_3Y_CAGR_FLOOR - recent_3y_cagr) * RECENT_3Y_PENALTY_MULT
         else:
             score -= 2.0
+
+        if np.isfinite(worst_12m_return_pct) and worst_12m_return_pct < WORST_12M_FLOOR_PCT:
+            score -= (WORST_12M_FLOOR_PCT - worst_12m_return_pct) * WORST_12M_PENALTY_MULT
 
         # Soft anti-overrestriction bias:
         # Keep broad-profile runs from collapsing into ultra-sparse screeners.
@@ -991,7 +1043,7 @@ def evaluate_genome(genome_id_and_genome):
             and trades >= MIN_TRADES_FLOOR
         )
         if is_super_candidate:
-            score += 35.0
+            score += 10.0
 
         return {
             "id": genome_id,
@@ -1004,6 +1056,7 @@ def evaluate_genome(genome_id_and_genome):
             "calmar": calmar,
             "pf": pf,
             "trades": trades,
+            "worst_12m_return_pct": worst_12m_return_pct,
             "avg_win_pct": avg_win_pct,
             "avg_loss_pct": avg_loss_pct,
             "win_loss_ratio": win_loss_ratio,
@@ -1027,7 +1080,12 @@ if __name__ == "__main__":
         f"HARDWARE: M3 Max | REQUESTED_WORKERS: {MAX_WORKERS} | "
         f"MP_START_METHOD: {start_method_in_use}"
     )
-    print(f"FRICTION MODEL: optimizer_cost_bps={OPTIMIZER_COST_BPS:.1f}")
+    print(
+        "FRICTION MODEL: "
+        f"transaction_cost_bps={OPTIMIZER_COST_BPS:.1f}, "
+        f"entry_slippage_bps={OPTIMIZER_ENTRY_SLIPPAGE_BPS:.1f}, "
+        f"exit_slippage_bps={OPTIMIZER_EXIT_SLIPPAGE_BPS:.1f}"
+    )
     if "APEX_TRACE_KNOWN_WINNER_REJECTS" not in os.environ:
         os.environ["APEX_TRACE_KNOWN_WINNER_REJECTS"] = "1" if OPTIMIZER_TRACE_REJECTS else "0"
     if "APEX_TRACE_REJECTS_MAX_LINES" not in os.environ:

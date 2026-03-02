@@ -755,6 +755,16 @@ class SuperperformanceStrategy(BaseStrategy):
         vol_ma30 = _as_float(row.get("vol_ma30"), float("nan"))
         if min_avg_volume > 0 and math.isfinite(vol_ma30) and vol_ma30 < min_avg_volume:
             return self._reject(f"liquidity vol_ma30={vol_ma30:.0f} < {min_avg_volume:.0f}")
+        min_avg_dollar_volume_50 = float(self.params.get("min_avg_dollar_volume_50", 0.0) or 0.0)
+        if min_avg_dollar_volume_50 > 0:
+            vol_ma50 = _as_float(row.get("vol_ma50"), float("nan"))
+            if (not math.isfinite(vol_ma50)) or vol_ma50 <= 0:
+                return self._reject("liquidity adv50_missing")
+            adv50 = close_px * vol_ma50
+            if adv50 < min_avg_dollar_volume_50:
+                return self._reject(
+                    f"liquidity adv50={adv50:.0f} < {min_avg_dollar_volume_50:.0f}"
+                )
 
         # Gate 2: Volatility floor (avoid sluggish, low-ADR names).
         adr_min = _as_percent_threshold(
