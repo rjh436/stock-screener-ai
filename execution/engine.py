@@ -837,6 +837,30 @@ def _evaluate_exit_state_machine(
     return False, current_close, None, cash
 
 
+def _resolve_position_exit_params(
+    params: Dict[str, Any],
+    pos: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(params, dict):
+        return params
+    entry_type = str(pos.get("entry_type", "") or "").strip().lower()
+    if entry_type not in {"ep", "vcp"}:
+        return params
+
+    out = dict(params)
+
+    def _override(target_key: str, source_key: str) -> None:
+        if source_key in out and out.get(source_key) is not None:
+            out[target_key] = out.get(source_key)
+
+    _override("time_stop_days", f"{entry_type}_time_stop_days")
+    _override("dead_money_days", f"{entry_type}_time_stop_days")
+    _override("dead_money_profit_pct", f"{entry_type}_dead_money_profit_pct")
+    _override("exit_sma_fast", f"{entry_type}_exit_sma_fast")
+    _override("exit_sma_slow", f"{entry_type}_exit_sma_slow")
+    return out
+
+
 def get_sector(symbol: str) -> str:
     tech = {"AAPL", "MSFT", "NVDA", "GOOG", "GOOGL", "META", "AMZN", "TSLA", "AVGO", "AMD"}
     symbol_upper = (symbol or "").upper()
@@ -2172,9 +2196,11 @@ def _legacy_run_backtest(
                         else float("nan")
                     )
                     use_breadth_overlay = bool(params.get("use_market_breadth_overlay", True))
-                    breadth_entry_floor = float(params.get("breadth_entry_floor", 0.28) or 0.28)
+                    breadth_hard_block_entries = bool(params.get("breadth_hard_block_entries", False))
+                    breadth_entry_floor = float(params.get("breadth_entry_floor", 0.22) or 0.22)
                     if (
                         use_breadth_overlay
+                        and breadth_hard_block_entries
                         and np.isfinite(breadth_above_50)
                         and breadth_above_50 < breadth_entry_floor
                         and regime_state in {"RED", "ORANGE"}
@@ -2644,40 +2670,59 @@ def _legacy_run_backtest(
                     regime_risk_scalar = float(np.clip(orange_risk_scalar, 0.0, 1.0))
 
             if traffic_light_enabled:
-                if regime_state == "YELLOW":
-                    yellow_cap_default = max(0, int(round(max_pos * 0.5)))
-                    yellow_cap = int(params.get("yellow_max_positions", yellow_cap_default) or yellow_cap_default)
-                    max_pos_today = max(0, min(max_pos_today, yellow_cap))
-                elif regime_state == "ORANGE":
-                    orange_cap_default = max(0, int(round(max_pos * 0.2)))
-                    orange_cap = int(params.get("orange_max_positions", orange_cap_default) or orange_cap_default)
-                    max_pos_today = max(0, min(max_pos_today, orange_cap))
+                apply_tl_position_caps = True
+                if exposure_mode in {"hybrid", "scaled", "exposure"} and not strict_tl_in_exposure:
+                    apply_tl_position_caps = bool(
+                        params.get("apply_traffic_light_position_caps_in_exposure", False)
+                    )
+                if apply_tl_position_caps:
+                    if regime_state == "YELLOW":
+                        yellow_cap_default = max(0, int(round(max_pos * 0.5)))
+                        yellow_cap = int(params.get("yellow_max_positions", yellow_cap_default) or yellow_cap_default)
+                        max_pos_today = max(0, min(max_pos_today, yellow_cap))
+                    elif regime_state == "ORANGE":
+                        orange_cap_default = max(0, int(round(max_pos * 0.2)))
+                        orange_cap = int(params.get("orange_max_positions", orange_cap_default) or orange_cap_default)
+                        max_pos_today = max(0, min(max_pos_today, orange_cap))
 
             use_breadth_overlay = bool(params.get("use_market_breadth_overlay", True))
-            breadth_entry_floor = float(params.get("breadth_entry_floor", 0.28) or 0.28)
-            breadth_risk_floor = float(params.get("breadth_risk_floor", 0.35) or 0.35)
-            breadth_yellow_floor = float(params.get("breadth_yellow_floor", 0.42) or 0.42)
-            breadth_green_floor = float(params.get("breadth_green_floor", 0.58) or 0.58)
+            breadth_hard_block_entries = bool(params.get("breadth_hard_block_entries", False))
+            breadth_entry_floor = float(params.get("breadth_entry_floor", 0.22) or 0.22)
+            breadth_risk_floor = float(params.get("breadth_risk_floor", 0.25) or 0.25)
+            breadth_yellow_floor = float(params.get("breadth_yellow_floor", 0.35) or 0.35)
+            breadth_green_floor = float(params.get("breadth_green_floor", 0.50) or 0.50)
+            breadth_low_risk_scalar = float(params.get("breadth_low_risk_scalar", 0.60) or 0.60)
+            breadth_mid_risk_scalar = float(params.get("breadth_mid_risk_scalar", 0.80) or 0.80)
+            breadth_high_risk_scalar = float(params.get("breadth_high_risk_scalar", 0.95) or 0.95)
             if use_breadth_overlay and np.isfinite(breadth_above_50):
-                if breadth_above_50 < breadth_entry_floor and regime_state in {"RED", "ORANGE"}:
+                if (
+                    breadth_hard_block_entries
+                    and breadth_above_50 < breadth_entry_floor
+                    and regime_state in {"RED", "ORANGE"}
+                ):
                     regime_block_new_entries = True
 
-                breadth_scalar = 1.0
                 if breadth_above_50 < breadth_risk_floor:
-                    breadth_scalar = 0.35
+                    breadth_scalar = breadth_low_risk_scalar
                 elif breadth_above_50 < breadth_yellow_floor:
-                    breadth_scalar = 0.65
+                    breadth_scalar = breadth_mid_risk_scalar
                 elif breadth_above_50 < breadth_green_floor:
-                    breadth_scalar = 0.85
-                if np.isfinite(breadth_above_200):
-                    breadth_scalar *= float(np.clip(0.5 + breadth_above_200, 0.5, 1.0))
-                if np.isfinite(breadth_rs):
-                    breadth_scalar *= float(np.clip(0.6 + breadth_rs, 0.6, 1.0))
+                    breadth_scalar = breadth_high_risk_scalar
+                else:
+                    breadth_scalar = 1.0
+
+                # Gentle breadth conditioning: preserve offensive participation.
+                if np.isfinite(breadth_above_200) and breadth_above_200 < 0.35:
+                    breadth_scalar *= 0.90
+                if np.isfinite(breadth_rs) and breadth_rs < 0.30:
+                    breadth_scalar *= 0.90
                 regime_risk_scalar *= float(np.clip(breadth_scalar, 0.0, 1.0))
 
                 if max_pos_today > 0:
-                    position_scalar = float(np.clip(breadth_above_50 / max(breadth_green_floor, 0.01), 0.25, 1.0))
-                    max_pos_today = max(0, int(np.floor(max_pos_today * position_scalar)))
+                    if breadth_above_50 < 0.25:
+                        max_pos_today = max(0, int(np.floor(max_pos_today * 0.50)))
+                    elif breadth_above_50 < 0.35:
+                        max_pos_today = max(0, int(np.floor(max_pos_today * 0.75)))
 
             stop_loss_atr_bull = float(params.get("stop_loss_atr_bull", params.get("stop_loss_atr", 3.0)) or 3.0)
             stop_loss_atr_bear = float(params.get("stop_loss_atr_bear", params.get("bear_stop_loss_atr", 0.5)) or 0.5)
@@ -2873,10 +2918,11 @@ def _legacy_run_backtest(
                                         should_exit = True
                                         exit_px = float(sym_data.open[loc])  # Exit at Open
                 if not should_exit:
+                    exit_params = _resolve_position_exit_params(params, pos)
                     should_exit, exit_px, reason, cash = _evaluate_exit_state_machine(
                         sym=sym,
                         pos=pos,
-                        params=params,
+                        params=exit_params,
                         sym_data=sym_data,
                         loc=loc,
                         day_idx=day_idx,
@@ -2904,14 +2950,24 @@ def _legacy_run_backtest(
                     # Schedule pyramiding for next session (after-close decision)
                     pyramid_cfg = None
                     pyramid_green_only = bool(params.get("pyramid_green_only", True))
-                    if pyramid_green_only and regime_state != "GREEN":
+                    pos_entry_type = str(pos.get("entry_type", "") or "").strip().lower()
+                    allow_pyramid_for_type = True
+                    if pos_entry_type == "ep":
+                        allow_pyramid_for_type = bool(params.get("pyramid_ep_enabled", False))
+                    elif pos_entry_type == "vcp":
+                        allow_pyramid_for_type = bool(params.get("pyramid_vcp_enabled", True))
+                    if (not allow_pyramid_for_type) or (pyramid_green_only and regime_state != "GREEN"):
                         pyramid_cfg = None
                     elif hasattr(strat, "pyramid"):
                         try:
                             pyramid_cfg = strat.pyramid(sym_data.df, loc, pos)
                         except Exception:
                             pyramid_cfg = None
-                    if pyramid_cfg is None and (not pyramid_green_only or regime_state == "GREEN"):
+                    if (
+                        pyramid_cfg is None
+                        and allow_pyramid_for_type
+                        and (not pyramid_green_only or regime_state == "GREEN")
+                    ):
                         threshold = float(params.get("pyramid_threshold", 0.0) or 0.0)
                         if threshold > 0:
                             entry_px = float(pos.get("entry_price", 0.0) or 0.0)
@@ -3162,6 +3218,7 @@ def _legacy_run_backtest(
                         "stop_price": stop_px,
                         "shares": shares,
                         "entry_day_idx": day_idx,
+                        "entry_type": entry_type,
                         "last_price": entry_px,
                         "partial_taken": False,
                         "pyramids": 0,

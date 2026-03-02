@@ -274,16 +274,20 @@ def _enforce_practical_constraints(
     cfg["bear_cash_mode"] = "off"
     cfg["log_regime_skips"] = False
     cfg["use_market_breadth_overlay"] = True
-    cfg["breadth_entry_floor"] = 0.28
-    cfg["breadth_risk_floor"] = 0.35
-    cfg["breadth_yellow_floor"] = 0.42
-    cfg["breadth_green_floor"] = 0.58
+    cfg["breadth_hard_block_entries"] = False
+    cfg["breadth_entry_floor"] = 0.22
+    cfg["breadth_risk_floor"] = 0.25
+    cfg["breadth_yellow_floor"] = 0.35
+    cfg["breadth_green_floor"] = 0.50
+    cfg["breadth_low_risk_scalar"] = 0.60
+    cfg["breadth_mid_risk_scalar"] = 0.80
+    cfg["breadth_high_risk_scalar"] = 0.95
 
     # Enforce realistic default friction for selection robustness.
-    cfg["transaction_cost_bps"] = 5.0
-    cfg["slippage_bps"] = 9.0
-    cfg["entry_slippage_bps"] = 8.0
-    cfg["exit_slippage_bps"] = 10.0
+    cfg["transaction_cost_bps"] = 2.0
+    cfg["slippage_bps"] = 5.0
+    cfg["entry_slippage_bps"] = 4.0
+    cfg["exit_slippage_bps"] = 6.0
 
     # Hard no-leverage constraints.
     bull_exposure = min(1.0, max(0.20, _safe_float(cfg.get("max_total_exposure_pct_bull", 1.0), 1.0)))

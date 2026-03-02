@@ -88,12 +88,12 @@ MIN_PF_FLOOR = float(os.getenv("APEX_MIN_PF_FLOOR", "1.20") or "1.20")
 MIN_WINLOSS_RATIO = float(os.getenv("APEX_MIN_WINLOSS_RATIO", "2.50") or "2.50")
 MIN_TRADES_FLOOR = int(os.getenv("APEX_MIN_TRADES_FLOOR", "50") or "50")
 MAX_TRADES_SOFT = int(os.getenv("APEX_MAX_TRADES_SOFT", "700") or "700")
-OPTIMIZER_COST_BPS = float(os.getenv("APEX_OPTIMIZER_COST_BPS", "5.0") or "5.0")
+OPTIMIZER_COST_BPS = float(os.getenv("APEX_OPTIMIZER_COST_BPS", "2.0") or "2.0")
 OPTIMIZER_ENTRY_SLIPPAGE_BPS = float(
-    os.getenv("APEX_OPTIMIZER_ENTRY_SLIPPAGE_BPS", "8.0") or "8.0"
+    os.getenv("APEX_OPTIMIZER_ENTRY_SLIPPAGE_BPS", "4.0") or "4.0"
 )
 OPTIMIZER_EXIT_SLIPPAGE_BPS = float(
-    os.getenv("APEX_OPTIMIZER_EXIT_SLIPPAGE_BPS", "10.0") or "10.0"
+    os.getenv("APEX_OPTIMIZER_EXIT_SLIPPAGE_BPS", "6.0") or "6.0"
 )
 OPTIMIZER_TRACE_REJECTS = str(
     os.getenv("APEX_OPTIMIZER_TRACE_REJECTS", "0") or "0"
