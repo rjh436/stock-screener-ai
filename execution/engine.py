@@ -2406,6 +2406,7 @@ def _legacy_run_backtest(
         equity_curve_daily = []
         trade_outcomes = []
         audit_report = _init_backtest_audit_report()
+        mtm = float(cash)
         
         params = _flatten_params(getattr(strat, "params", getattr(strat, "genome", {})) or {})
         max_pos = int(params.get("max_positions", 10) or 10)
@@ -3194,7 +3195,13 @@ def _run_cli() -> int:
 
     strategies = load_strategies(strat_configs)
     if args.start_date:
-        symbols, universe_source = get_universe_symbols_pit_with_meta("RUSSELL3000", args.start_date)
+        try:
+            symbols, universe_source = get_universe_symbols_pit_with_meta("RUSSELL3000", args.start_date)
+        except RuntimeError as e:
+            raise ValueError(
+                "PIT universe required for accuracy, but Russell 3000 PIT data could not be resolved for this run. "
+                "Configure RUSSELL3000_PIT_DIR or RUSSELL3000_PIT_MEMBERSHIP_CSV."
+            ) from e
         require_pit = str(os.getenv("APEX_REQUIRE_PIT_UNIVERSE", "1") or "1").strip().lower() in {
             "1", "true", "yes", "on"
         }

@@ -168,16 +168,17 @@ def _build_window_context(
     fetch_workers: int,
 ) -> WindowContext:
     start_date, end_date = _resolve_window(years)
-    symbols, universe_source = get_universe_symbols_pit_window_with_meta(
-        "RUSSELL3000",
-        start_date,
-        end_date,
-    )
-    if universe_source == "fallback_current":
+    try:
+        symbols, universe_source = get_universe_symbols_pit_window_with_meta(
+            "RUSSELL3000",
+            start_date,
+            end_date,
+        )
+    except RuntimeError as e:
         raise RuntimeError(
             "PIT Russell 3000 window data is required but unavailable. "
             "Set RUSSELL3000_PIT_DIR or RUSSELL3000_PIT_MEMBERSHIP_CSV."
-        )
+        ) from e
     symbols = sorted({str(s).upper() for s in symbols if str(s).strip()})
     if max_symbols > 0:
         symbols = symbols[: int(max_symbols)]

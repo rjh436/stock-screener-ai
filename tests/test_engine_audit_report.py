@@ -31,7 +31,7 @@ class EngineAuditReportTests(unittest.TestCase):
         )
         self.assertEqual(label, "next_day_open")
 
-    def test_same_day_open_and_stale_events_are_counted(self) -> None:
+    def test_same_day_open_raises_and_stale_events_are_counted(self) -> None:
         audit = _init_backtest_audit_report()
         dates = np.array(
             [
@@ -41,15 +41,17 @@ class EngineAuditReportTests(unittest.TestCase):
             dtype="datetime64[ns]",
         )
 
-        _audit_track_same_day_open_entry(audit, symbol="abcd", day_idx=0, all_dates=dates)
+        with self.assertRaises(ValueError) as context:
+            _audit_track_same_day_open_entry(audit, symbol="abcd", day_idx=0, all_dates=dates)
+        self.assertIn("CRITICAL", str(context.exception))
         _audit_track_stale_position_event(audit, symbol="wxyz", day_idx=1, all_dates=dates)
 
         final = _finalize_backtest_audit_report(audit)
-        self.assertEqual(final["same_day_open_entries"], 1)
-        self.assertEqual(final["same_day_open_symbol_count"], 1)
+        self.assertEqual(final["same_day_open_entries"], 0)
+        self.assertEqual(final["same_day_open_symbol_count"], 0)
         self.assertEqual(final["stale_position_days"], 1)
         self.assertEqual(final["stale_position_symbol_count"], 1)
-        self.assertIn("ABCD", final["same_day_open_symbols"])
+        self.assertNotIn("ABCD", final["same_day_open_symbols"])
         self.assertIn("WXYZ", final["stale_position_symbols"])
 
     def test_gross_exposure_audit_tracks_daily_and_max(self) -> None:

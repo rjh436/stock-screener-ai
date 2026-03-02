@@ -912,7 +912,18 @@ if mode == "Live Screener":
         progress_bar.progress(0.2, text="20% Complete")
         if universe in ("Russell 3000", "RUSSELL3000"):
             live_as_of = datetime.now(ZoneInfo("UTC")).date().isoformat()
-            symbols, live_universe_source = get_universe_symbols_pit_with_meta("RUSSELL3000", live_as_of)
+            try:
+                symbols, live_universe_source = get_universe_symbols_pit_with_meta("RUSSELL3000", live_as_of)
+            except RuntimeError as e:
+                st.error(
+                    "Point-in-time Russell 3000 membership data is required for this scan. "
+                    "Configure `RUSSELL3000_PIT_DIR` or `RUSSELL3000_PIT_MEMBERSHIP_CSV`."
+                )
+                st.caption(f"Resolver detail: {e}")
+                progress_bar.empty()
+                status_msg.empty()
+                timer_msg.empty()
+                st.stop()
         else:
             symbols = get_universe_symbols(universe)
             live_universe_source = "current_index"
@@ -1508,25 +1519,21 @@ elif mode == "Backtest":
                 if not cache_hit:
                     stage_msg.caption("Stage: Resolving universe membership...")
                     if bt_universe in ("Russell 3000", "RUSSELL3000"):
-                        symbols, universe_source = get_universe_symbols_pit_window_with_meta(
-                            "RUSSELL3000",
-                            bt_start_date,
-                            bt_end_date,
-                        )
-                        if universe_source == "fallback_current":
-                            msg = (
-                                "Point-in-time Russell 3000 membership data was not found. "
-                                "Using current constituents introduces survivorship bias."
+                        try:
+                            symbols, universe_source = get_universe_symbols_pit_window_with_meta(
+                                "RUSSELL3000",
+                                bt_start_date,
+                                bt_end_date,
                             )
-                            if require_pit_universe:
-                                st.error(
-                                    f"{msg} Set `RUSSELL3000_PIT_DIR` or "
-                                    "`RUSSELL3000_PIT_MEMBERSHIP_CSV` to run accurate long-horizon backtests."
-                                )
-                                st.session_state.backtest_results = {}
-                                symbols = []
-                            else:
-                                st.warning(msg)
+                        except RuntimeError as e:
+                            st.error(
+                                "Point-in-time Russell 3000 membership data is required for this backtest. "
+                                "Set `RUSSELL3000_PIT_DIR` or `RUSSELL3000_PIT_MEMBERSHIP_CSV`."
+                            )
+                            st.caption(f"Resolver detail: {e}")
+                            st.session_state.backtest_results = {}
+                            symbols = []
+                            universe_source = "unavailable"
                     else:
                         symbols = get_index_symbols(bt_universe)
                         universe_source = "current_index"
@@ -1864,18 +1871,21 @@ elif mode == "Backtest":
                     # Re-enter with fresh data for stale cache case.
                     stage_msg.caption("Stage: Refreshing stale prepared dataset...")
                     if bt_universe in ("Russell 3000", "RUSSELL3000"):
-                        symbols, universe_source = get_universe_symbols_pit_window_with_meta(
-                            "RUSSELL3000",
-                            bt_start_date,
-                            bt_end_date,
-                        )
-                        if universe_source == "fallback_current" and require_pit_universe:
+                        try:
+                            symbols, universe_source = get_universe_symbols_pit_window_with_meta(
+                                "RUSSELL3000",
+                                bt_start_date,
+                                bt_end_date,
+                            )
+                        except RuntimeError as e:
                             st.error(
                                 "Point-in-time Russell 3000 membership is required for accurate backtests. "
                                 "Configure `RUSSELL3000_PIT_DIR` or `RUSSELL3000_PIT_MEMBERSHIP_CSV`."
                             )
+                            st.caption(f"Resolver detail: {e}")
                             st.session_state.backtest_results = {}
                             symbols = []
+                            universe_source = "unavailable"
                     else:
                         symbols = get_index_symbols(bt_universe)
                         universe_source = "current_index"
@@ -1960,13 +1970,16 @@ elif mode == "Backtest":
                 max_end_lag_days = max(0, max_end_lag_days)
                 recent_scope = None
                 if bt_universe in ("Russell 3000", "RUSSELL3000") and bt_end_date:
-                    end_members, end_source = get_universe_symbols_pit_with_meta("RUSSELL3000", bt_end_date)
-                    if end_members:
-                        recent_scope = {str(s).upper() for s in end_members if str(s).strip()}
-                        st.caption(
-                            f"Recent coverage scope: end-of-window PIT membership "
-                            f"({len(recent_scope)} symbols, source `{end_source}`)."
-                        )
+                    try:
+                        end_members, end_source = get_universe_symbols_pit_with_meta("RUSSELL3000", bt_end_date)
+                        if end_members:
+                            recent_scope = {str(s).upper() for s in end_members if str(s).strip()}
+                            st.caption(
+                                f"Recent coverage scope: end-of-window PIT membership "
+                                f"({len(recent_scope)} symbols, source `{end_source}`)."
+                            )
+                    except RuntimeError as e:
+                        st.caption(f"Recent coverage scope unavailable (PIT resolver: {e}).")
                 fresh_symbols, fresh_total, fresh_cov = _recent_data_coverage(
                     prepared,
                     expected_symbol_count=len(recent_scope) if recent_scope else expected_symbol_count,
@@ -2157,8 +2170,12 @@ elif mode == "Backtest":
                         status_text = st.empty()
                         stage_msg.caption("Stage: Running strategy simulation...")
                         universe_membership_by_day = None
+                        run_requires_pit_membership = False
                         membership_source = "none"
                         if bt_universe in ("Russell 3000", "RUSSELL3000"):
+                            run_requires_pit_membership = bool(
+                                require_pit_universe and run_accuracy_mode == "block"
+                            )
                             prepared_dates = getattr(prepared, "all_dates", None)
                             if prepared_dates is None:
                                 prepared_dates_seq = []
@@ -2174,24 +2191,41 @@ elif mode == "Backtest":
                                     f"`{membership_source}`"
                                 )
                             else:
-                                st.warning(
-                                    "PIT timeline could not be constructed for this run; "
-                                    "falling back to static start-window membership."
+                                timeline_msg = (
+                                    "PIT timeline could not be constructed for this run."
                                 )
+                                if run_requires_pit_membership:
+                                    st.error(
+                                        f"{timeline_msg} Verified mode requires complete day-level PIT membership; "
+                                        "run aborted."
+                                    )
+                                else:
+                                    st.warning(
+                                        f"{timeline_msg} Falling back to static start-window membership."
+                                    )
                         start_time = time.time()
                         status_text.text(f"Running {len(run_strategies)} strategy simulation(s)...")
-                        try:
-                            raw_results = run_backtest(
-                                run_strategies,
-                                prepared,
-                                start_cash=100000.0,
-                                start_date=bt_start_date,
-                                global_data=global_data,
-                                universe_membership_by_day=universe_membership_by_day,
-                            )
-                        except Exception as e:
-                            st.error(f"Backtest run failed: {e}")
-                            raw_results = []
+                        raw_results = []
+                        if (
+                            run_requires_pit_membership
+                            and bt_universe in ("Russell 3000", "RUSSELL3000")
+                            and universe_membership_by_day is None
+                        ):
+                            status_text.text("Backtest aborted: missing day-level PIT membership.")
+                        else:
+                            try:
+                                raw_results = run_backtest(
+                                    run_strategies,
+                                    prepared,
+                                    start_cash=100000.0,
+                                    start_date=bt_start_date,
+                                    global_data=global_data,
+                                    universe_membership_by_day=universe_membership_by_day,
+                                    require_pit_membership=run_requires_pit_membership,
+                                )
+                            except Exception as e:
+                                st.error(f"Backtest run failed: {e}")
+                                raw_results = []
 
                         elapsed = max(0.0, time.time() - start_time)
                         status_text.text(f"Completed in {elapsed:.1f}s")
@@ -2503,10 +2537,15 @@ elif mode == "Simulator":
             status.write(f"2️⃣ Resolving {sim_universe} constituents...")
             if sim_universe in ("Russell 3000", "RUSSELL3000"):
                 sim_as_of = datetime.now(ZoneInfo("UTC")).date().isoformat()
-                symbols, sim_universe_source = get_universe_symbols_pit_with_meta(
-                    "RUSSELL3000",
-                    sim_as_of,
-                )
+                try:
+                    symbols, sim_universe_source = get_universe_symbols_pit_with_meta(
+                        "RUSSELL3000",
+                        sim_as_of,
+                    )
+                except RuntimeError as e:
+                    raise RuntimeError(
+                        f"Point-in-time Russell 3000 membership data is required for simulation: {e}"
+                    ) from e
             else:
                 symbols = get_universe_symbols(sim_universe)
                 sim_universe_source = "current_index"

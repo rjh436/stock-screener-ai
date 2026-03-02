@@ -25,13 +25,13 @@ class UniversePitFailClosedTests(unittest.TestCase):
             else:
                 os.environ[key] = value
 
-    def test_missing_pit_returns_unavailable_without_fallback(self) -> None:
+    def test_missing_pit_raises_without_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             os.environ["RUSSELL3000_PIT_DIR"] = tmpdir
             os.environ["RUSSELL3000_PIT_MEMBERSHIP_CSV"] = ""
-            symbols, source = get_universe_symbols_pit_with_meta("RUSSELL3000", "2024-01-15")
-            self.assertEqual(source, "unavailable")
-            self.assertEqual(symbols, [])
+            with self.assertRaises(RuntimeError) as context:
+                get_universe_symbols_pit_with_meta("RUSSELL3000", "2024-01-15")
+            self.assertIn("CRITICAL", str(context.exception))
 
     def test_incomplete_daily_membership_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

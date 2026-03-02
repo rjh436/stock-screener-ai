@@ -122,15 +122,20 @@ def main() -> int:
         "yes",
         "on",
     }
-    symbols, universe_source = get_universe_symbols_pit_window_with_meta(
-        "RUSSELL3000",
-        start_date,
-        end_date,
-    )
-    if require_pit and universe_source == "fallback_current":
+    try:
+        symbols, universe_source = get_universe_symbols_pit_window_with_meta(
+            "RUSSELL3000",
+            start_date,
+            end_date,
+        )
+    except RuntimeError as e:
         raise RuntimeError(
             "PIT universe required, but Russell 3000 PIT data was not found. "
             "Set RUSSELL3000_PIT_DIR or RUSSELL3000_PIT_MEMBERSHIP_CSV."
+        ) from e
+    if require_pit and universe_source not in {"pit_snapshot", "pit_ranges", "pit_snapshot_window"}:
+        raise RuntimeError(
+            f"PIT universe required, but resolver returned unsupported source: {universe_source!r}."
         )
     if not symbols:
         raise RuntimeError("No symbols loaded for Russell 3000 PIT universe.")
