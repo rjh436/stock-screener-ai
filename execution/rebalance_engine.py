@@ -154,6 +154,45 @@ def _turnover(prev_weights: Mapping[str, float], next_weights: Mapping[str, floa
     return 0.5 * sum(abs(float(next_weights.get(k, 0.0)) - float(prev_weights.get(k, 0.0))) for k in keys)
 
 
+def _portfolio_state(
+    positions: Mapping[str, int],
+    cash: float,
+    prices: Mapping[str, float],
+) -> Dict[str, object]:
+    equity = float(cash)
+    notionals: Dict[str, float] = {}
+    for sym, shares in dict(positions or {}).items():
+        try:
+            qty = int(shares)
+        except Exception:
+            continue
+        if qty == 0:
+            continue
+        px = prices.get(sym)
+        if px is None:
+            continue
+        try:
+            px_val = float(px)
+        except Exception:
+            continue
+        if not np.isfinite(px_val) or px_val <= 0:
+            continue
+        val = float(qty) * px_val
+        if val <= 0:
+            continue
+        notionals[str(sym)] = val
+        equity += val
+
+    if equity <= 0:
+        return {"equity": 0.0, "weights": {}}
+
+    weights = {sym: (val / equity) for sym, val in notionals.items() if val > 0}
+    total_w = float(sum(weights.values()))
+    if total_w > 1.0 + 1e-12:
+        weights = {k: (v / total_w) for k, v in weights.items()}
+    return {"equity": float(equity), "weights": weights}
+
+
 def generate_orders_from_target(
     current_positions: Mapping[str, int],
     target_weights: Mapping[str, float],
@@ -270,6 +309,7 @@ def run_periodic_rebalance(
     hard_stop_pct: Optional[float] = None,
     trend_ma_days: Optional[int] = None,
     time_stop_days: Optional[int] = None,
+    execution_lag_days: int = 1,
 ) -> Dict[str, object]:
     if prices is None or prices.empty:
         return {
@@ -339,11 +379,24 @@ def run_periodic_rebalance(
     if freq not in {"M", "Q"}:
         raise ValueError(f"Unsupported rebalance_freq '{rebalance_freq}'. Expected 'M' or 'Q'.")
 
-    rebalance_dates = set(px.groupby(px.index.to_period(freq)).tail(1).index)
+    raw_signal_dates = list(px.groupby(px.index.to_period(freq)).tail(1).index)
+    lag_days = max(0, int(execution_lag_days))
+    trade_dates_index = list(pd.Index(trade_dates))
+    date_pos = {pd.Timestamp(d): i for i, d in enumerate(trade_dates_index)}
+    rebalance_events: Dict[pd.Timestamp, pd.Timestamp] = {}
+    for raw_dt in raw_signal_dates:
+        signal_dt = pd.Timestamp(raw_dt)
+        pos = date_pos.get(signal_dt)
+        if pos is None:
+            continue
+        exec_pos = pos + lag_days
+        if exec_pos >= len(trade_dates_index):
+            continue
+        exec_dt = pd.Timestamp(trade_dates_index[exec_pos])
+        rebalance_events[exec_dt] = signal_dt
 
     cash = float(start_cash)
     positions: Dict[str, int] = {}
-    prev_weights: Dict[str, float] = {}
     last_prices: Dict[str, float] = {}
     position_meta: Dict[str, Dict[str, object]] = {}
 
@@ -351,7 +404,9 @@ def run_periodic_rebalance(
     rebalance_log: List[Dict[str, object]] = []
     total_orders = 0
     exposure_profile: List[float] = []
-    annual_turnover: Dict[str, float] = {}
+    annual_turnover_target: Dict[str, float] = {}
+    annual_turnover_realized: Dict[str, float] = {}
+    same_day_signal_exec = 0
 
     for dt in trade_dates:
         dt = pd.Timestamp(dt)
@@ -416,12 +471,16 @@ def run_periodic_rebalance(
                     }
                 )
 
-        if dt in rebalance_dates:
+        if dt in rebalance_events:
+            signal_dt = rebalance_events[dt]
+            if signal_dt == dt:
+                same_day_signal_exec += 1
             if target_schedule is not None:
-                target_weights = _coerce_weight_row(target_schedule, dt)
+                target_weights = _coerce_weight_row(target_schedule, signal_dt)
                 selected = sorted(target_weights.keys())
             else:
-                score_hist = scores.loc[scores.index <= dt]
+                signal_prices = pd.to_numeric(px.loc[signal_dt], errors="coerce")
+                score_hist = scores.loc[scores.index <= signal_dt]
                 if not score_hist.empty:
                     score_row = score_hist.iloc[-1]
                     if isinstance(score_row, pd.Series):
@@ -429,8 +488,8 @@ def run_periodic_rebalance(
                     else:
                         ranked = pd.Series(dtype=float)
                     ranked = ranked.dropna()
-                    ranked = ranked.loc[ranked.index.intersection(row_prices.index)]
-                    ranked = ranked.loc[pd.to_numeric(row_prices[ranked.index], errors="coerce") > 0]
+                    ranked = ranked.loc[ranked.index.intersection(signal_prices.index)]
+                    ranked = ranked.loc[pd.to_numeric(signal_prices[ranked.index], errors="coerce") > 0]
 
                     selected = select_target_portfolio(
                         ranked,
@@ -448,15 +507,18 @@ def run_periodic_rebalance(
                     selected = []
                     target_weights = {}
 
+            state = _portfolio_state(positions, cash, last_prices)
+            actual_prev_weights = dict(state.get("weights") or {})
+            pre_trade_equity = float(state.get("equity") or 0.0)
+
             target_weights = enforce_position_cap(target_weights, float(position_cap))
             if sector_map:
                 target_weights = enforce_sector_cap(target_weights, sector_map, float(sector_cap))
             if industry_map:
                 target_weights = enforce_industry_cap(target_weights, industry_map, float(industry_cap))
-            target_weights = enforce_turnover_budget(prev_weights, target_weights, float(turnover_budget))
 
             if risk_scalars is not None and target_weights:
-                hist = risk_scalars.loc[risk_scalars.index <= dt]
+                hist = risk_scalars.loc[risk_scalars.index <= signal_dt]
                 risk_scalar = float(hist.iloc[-1]) if not hist.empty else 1.0
                 if not np.isfinite(risk_scalar):
                     risk_scalar = 1.0
@@ -466,10 +528,14 @@ def run_periodic_rebalance(
                 elif risk_scalar < 1.0:
                     target_weights = {k: (v * risk_scalar) for k, v in target_weights.items()}
 
+            target_weights = enforce_turnover_budget(actual_prev_weights, target_weights, float(turnover_budget))
+            target_turnover_val = float(_turnover(actual_prev_weights, target_weights))
+
+            execution_prices = tradable_prices if tradable_prices else last_prices
             order_res = generate_orders_from_target(
                 current_positions=positions,
                 target_weights=target_weights,
-                prices=last_prices,
+                prices=execution_prices,
                 cash=cash,
                 transaction_cost_bps=float(transaction_cost_bps),
             )
@@ -478,6 +544,12 @@ def run_periodic_rebalance(
             cash = float(order_res["cash"])
             orders = list(order_res["orders"])
             total_orders += len(orders)
+            traded_notional = float(order_res.get("traded_notional", 0.0) or 0.0)
+            realized_turnover_val = (
+                float(traded_notional / (2.0 * pre_trade_equity))
+                if pre_trade_equity > 0.0 and traded_notional > 0.0
+                else 0.0
+            )
 
             for order in orders:
                 sym = str(order.get("symbol", ""))
@@ -491,21 +563,23 @@ def run_periodic_rebalance(
                     if int(positions.get(sym, 0)) <= 0:
                         position_meta.pop(sym, None)
 
-            turnover_val = float(_turnover(prev_weights, target_weights))
             year_key = str(pd.Timestamp(dt).year)
-            annual_turnover[year_key] = float(annual_turnover.get(year_key, 0.0) + turnover_val)
+            annual_turnover_target[year_key] = float(annual_turnover_target.get(year_key, 0.0) + target_turnover_val)
+            annual_turnover_realized[year_key] = float(
+                annual_turnover_realized.get(year_key, 0.0) + realized_turnover_val
+            )
             rebalance_log.append(
                 {
                     "date": dt.isoformat(),
+                    "signal_date": signal_dt.isoformat(),
                     "selected": list(selected),
                     "weights": dict(target_weights),
-                    "turnover": turnover_val,
+                    "target_turnover": target_turnover_val,
+                    "realized_turnover": realized_turnover_val,
                     "orders": orders,
                     "stop_exits": stop_exits,
                 }
             )
-
-            prev_weights = dict(target_weights)
 
         mtm = float(cash)
         gross = 0.0
@@ -551,9 +625,12 @@ def run_periodic_rebalance(
     final_value = float(eq.iloc[-1])
     cagr = ((final_value / float(start_cash)) ** (1.0 / years) - 1.0) if start_cash > 0 else 0.0
     max_gross = float(max(exposure_profile)) if exposure_profile else 0.0
-    annual_turnover_pct = {k: float(v * 100.0) for k, v in annual_turnover.items()}
-    turnover_years = list(annual_turnover_pct.values())
-    avg_turnover_pct = float(np.mean(turnover_years)) if turnover_years else 0.0
+    annual_turnover_target_pct = {k: float(v * 100.0) for k, v in annual_turnover_target.items()}
+    annual_turnover_realized_pct = {k: float(v * 100.0) for k, v in annual_turnover_realized.items()}
+    target_turnover_years = list(annual_turnover_target_pct.values())
+    realized_turnover_years = list(annual_turnover_realized_pct.values())
+    avg_turnover_target_pct = float(np.mean(target_turnover_years)) if target_turnover_years else 0.0
+    avg_turnover_realized_pct = float(np.mean(realized_turnover_years)) if realized_turnover_years else 0.0
 
     return {
         "final_value": final_value,
@@ -562,11 +639,16 @@ def run_periodic_rebalance(
         "total_trades": int(total_orders),
         "equity_curve": equity_curve,
         "rebalance_log": rebalance_log,
-        "annual_turnover_pct": annual_turnover_pct,
-        "avg_annual_turnover_pct": avg_turnover_pct,
+        "annual_turnover_target_pct": annual_turnover_target_pct,
+        "annual_turnover_realized_pct": annual_turnover_realized_pct,
+        "annual_turnover_pct": annual_turnover_realized_pct,
+        "avg_annual_turnover_target_pct": avg_turnover_target_pct,
+        "avg_annual_turnover_realized_pct": avg_turnover_realized_pct,
+        "avg_annual_turnover_pct": avg_turnover_realized_pct,
         "audit_report": {
-            "same_day_open_entries": 0,
+            "same_day_open_entries": int(same_day_signal_exec),
             "max_gross_exposure_pct": max_gross,
             "exposure_profile": exposure_profile,
+            "execution_lag_days": int(lag_days),
         },
     }

@@ -27,6 +27,7 @@ from scripts.run_factor_walkforward import (
     FrictionScenario,
     _build_market_risk_scalar,
     _build_momentum_quality_scores,
+    _load_symbol_map,
     _build_value_proxy_scores,
     _extract_feature_arrays,
     _pct_dd,
@@ -162,7 +163,7 @@ def main() -> None:
     parser.add_argument("--transaction-cost-bps", type=float, default=2.0)
     parser.add_argument("--frictions", default="10,20,35,50")
     parser.add_argument("--cache-only", action="store_true", help="Use local cache only")
-    parser.add_argument("--min-universe-coverage", type=float, default=0.55)
+    parser.add_argument("--min-universe-coverage", type=float, default=0.85)
     args = parser.parse_args()
 
     start_date = str(args.start)
@@ -206,6 +207,10 @@ def main() -> None:
     prices = pd.DataFrame(features["close"], index=features["dates"], columns=features["symbols"])
     eps_yoy_df = pd.DataFrame(features["eps_yoy"], index=features["dates"], columns=features["symbols"])
     sales_yoy_df = pd.DataFrame(features["sales_yoy"], index=features["dates"], columns=features["symbols"])
+    sector_map = _load_symbol_map(ROOT / "config" / "sectors.json")
+    industry_map = _load_symbol_map(ROOT / "config" / "industries.json")
+    if not industry_map:
+        industry_map = _load_symbol_map(ROOT / "config" / "industry.json")
 
     factor_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
     for cfg in configs:
@@ -264,6 +269,8 @@ def main() -> None:
                     eps_yoy_df=eps_yoy_df,
                     sales_yoy_df=sales_yoy_df,
                     risk_scalar_by_date=mats.get("risk_scalar"),
+                    sector_map=sector_map,
+                    industry_map=industry_map,
                     start_date=start_date,
                     end_date=end_date,
                     friction=fr,

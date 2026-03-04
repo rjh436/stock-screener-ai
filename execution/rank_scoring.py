@@ -119,7 +119,10 @@ def compute_momentum_rank(frame: pd.DataFrame, date_idx: object = None, params: 
         if c in snap.columns
     ]
     if quality_proxy_cols:
-        quality_growth = snap[quality_proxy_cols].apply(pd.to_numeric, errors="coerce").mean(axis=1)
+        quality_parts: Dict[str, pd.Series] = {}
+        for col in quality_proxy_cols:
+            quality_parts[str(col)] = _percentile_rank(pd.to_numeric(snap[col], errors="coerce"), higher_is_better=True)
+        quality_growth = _weighted_average_rank(quality_parts, {k: 1.0 for k in quality_parts})
     else:
         quality_growth = pd.Series(np.nan, index=snap.index, dtype=float)
 

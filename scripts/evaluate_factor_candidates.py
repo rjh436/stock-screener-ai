@@ -26,7 +26,9 @@ from scripts.run_factor_walkforward import (
     _build_market_risk_scalar,
     _build_momentum_quality_scores,
     _build_test_windows,
+    _build_value_proxy_scores,
     _extract_feature_arrays,
+    _load_symbol_map,
     _pct_dd,
     _run_factor_window,
     _safe_float,
@@ -57,7 +59,7 @@ def main() -> None:
     parser.add_argument("--frictions", default="20,35")
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--output", default="")
-    parser.add_argument("--min-universe-coverage", type=float, default=0.55)
+    parser.add_argument("--min-universe-coverage", type=float, default=0.85)
     args = parser.parse_args()
 
     config_paths = [Path(p).expanduser().resolve() for p in args.configs]
@@ -99,6 +101,10 @@ def main() -> None:
     prices = pd.DataFrame(features["close"], index=features["dates"], columns=features["symbols"])
     eps_yoy_df = pd.DataFrame(features["eps_yoy"], index=features["dates"], columns=features["symbols"])
     sales_yoy_df = pd.DataFrame(features["sales_yoy"], index=features["dates"], columns=features["symbols"])
+    sector_map = _load_symbol_map(ROOT / "config" / "sectors.json")
+    industry_map = _load_symbol_map(ROOT / "config" / "industries.json")
+    if not industry_map:
+        industry_map = _load_symbol_map(ROOT / "config" / "industry.json")
 
     friction_vals: List[float] = []
     for part in str(args.frictions or "").split(","):
@@ -125,6 +131,9 @@ def main() -> None:
     rows: List[Dict[str, Any]] = []
     for cfg in configs:
         mom_scores = _build_momentum_quality_scores(features, cfg)
+        value_scores = None
+        if str(cfg.get("strategy_type", "")).lower() == "separate_value_momentum":
+            value_scores = _build_value_proxy_scores(features, cfg)
         risk_scalar = _build_market_risk_scalar(global_data, prices.index, cfg)
         cfg_row: Dict[str, Any] = {"name": cfg["_label"], "config_path": cfg["_path"], "scenarios": {}}
         print(f"Evaluating: {cfg['_label']}")
@@ -134,10 +143,12 @@ def main() -> None:
                 cfg=cfg,
                 prices=prices,
                 momentum_scores=mom_scores,
-                value_scores=None,
+                value_scores=value_scores,
                 eps_yoy_df=eps_yoy_df,
                 sales_yoy_df=sales_yoy_df,
                 risk_scalar_by_date=risk_scalar,
+                sector_map=sector_map,
+                industry_map=industry_map,
                 start_date=start_date,
                 end_date=end_date,
                 friction=fr,
@@ -146,10 +157,12 @@ def main() -> None:
                 cfg=cfg,
                 prices=prices,
                 momentum_scores=mom_scores,
-                value_scores=None,
+                value_scores=value_scores,
                 eps_yoy_df=eps_yoy_df,
                 sales_yoy_df=sales_yoy_df,
                 risk_scalar_by_date=risk_scalar,
+                sector_map=sector_map,
+                industry_map=industry_map,
                 windows=windows_60_12,
                 test_months=12,
                 friction=fr,

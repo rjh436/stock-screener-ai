@@ -170,6 +170,52 @@ class RebalanceEngineTests(unittest.TestCase):
 
         self.assertGreater(float(with_stop.get("final_value", 0.0)), float(no_stop.get("final_value", 0.0)))
 
+    def test_default_execution_uses_t_plus_one_and_audits_same_day(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=90, freq="B")
+        prices = pd.DataFrame(
+            {
+                "AAA": [100.0 + (i * 0.2) for i in range(len(dates))],
+                "BBB": [100.0 - (i * 0.05) for i in range(len(dates))],
+            },
+            index=dates,
+        )
+        ranks = pd.DataFrame(
+            {
+                "AAA": [90.0] * len(dates),
+                "BBB": [80.0] * len(dates),
+            },
+            index=dates,
+        )
+
+        t1 = run_periodic_rebalance(
+            prices,
+            ranks,
+            rebalance_freq="M",
+            target_count=1,
+            transaction_cost_bps=0.0,
+            turnover_budget=1.0,
+            start_cash=100000.0,
+        )
+        same_day = int((t1.get("audit_report", {}) or {}).get("same_day_open_entries", 0) or 0)
+        self.assertEqual(same_day, 0)
+        for row in t1.get("rebalance_log", []):
+            sig = pd.Timestamp(row.get("signal_date"))
+            exe = pd.Timestamp(row.get("date"))
+            self.assertLess(sig, exe)
+
+        t0 = run_periodic_rebalance(
+            prices,
+            ranks,
+            rebalance_freq="M",
+            target_count=1,
+            transaction_cost_bps=0.0,
+            turnover_budget=1.0,
+            start_cash=100000.0,
+            execution_lag_days=0,
+        )
+        same_day0 = int((t0.get("audit_report", {}) or {}).get("same_day_open_entries", 0) or 0)
+        self.assertGreaterEqual(same_day0, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,6 +28,7 @@ from scripts.run_factor_walkforward import (
     _build_momentum_quality_scores,
     _build_test_windows,
     _extract_feature_arrays,
+    _load_symbol_map,
     _run_factor_window,
     _safe_float,
     _stitch_test_windows,
@@ -111,7 +112,7 @@ def main() -> None:
     parser.add_argument("--transaction-cost-bps", type=float, default=2.0)
     parser.add_argument("--frictions", default="20,35")
     parser.add_argument("--top-stage2", type=int, default=20)
-    parser.add_argument("--min-universe-coverage", type=float, default=0.55)
+    parser.add_argument("--min-universe-coverage", type=float, default=0.85)
     args = parser.parse_args()
 
     base_path = Path(args.base_config).expanduser().resolve()
@@ -148,6 +149,10 @@ def main() -> None:
     prices = pd.DataFrame(features["close"], index=features["dates"], columns=features["symbols"])
     eps_yoy_df = pd.DataFrame(features["eps_yoy"], index=features["dates"], columns=features["symbols"])
     sales_yoy_df = pd.DataFrame(features["sales_yoy"], index=features["dates"], columns=features["symbols"])
+    sector_map = _load_symbol_map(ROOT / "config" / "sectors.json")
+    industry_map = _load_symbol_map(ROOT / "config" / "industries.json")
+    if not industry_map:
+        industry_map = _load_symbol_map(ROOT / "config" / "industry.json")
 
     # We intentionally keep signal weights fixed in this optimizer and sweep construction/risk controls.
     momentum_scores = _build_momentum_quality_scores(features, base_cfg)
@@ -193,6 +198,8 @@ def main() -> None:
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar,
+            sector_map=sector_map,
+            industry_map=industry_map,
             start_date=start_date,
             end_date=end_date,
             friction=scenarios[20],
@@ -205,6 +212,8 @@ def main() -> None:
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar,
+            sector_map=sector_map,
+            industry_map=industry_map,
             start_date=start_date,
             end_date=end_date,
             friction=scenarios[35],
@@ -238,6 +247,8 @@ def main() -> None:
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar,
+            sector_map=sector_map,
+            industry_map=industry_map,
             windows=windows_60_12,
             test_months=12,
             friction=scenarios[20],
@@ -250,6 +261,8 @@ def main() -> None:
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar,
+            sector_map=sector_map,
+            industry_map=industry_map,
             windows=windows_60_12,
             test_months=12,
             friction=scenarios[35],
@@ -262,6 +275,8 @@ def main() -> None:
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar,
+            sector_map=sector_map,
+            industry_map=industry_map,
             windows=windows_36_12,
             test_months=12,
             friction=scenarios[20],

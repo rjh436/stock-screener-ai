@@ -3699,6 +3699,7 @@ def _run_rank_mode_backtest(
         turnover_budget=float(kwargs.get("turnover_budget", 1.0) or 1.0),
         transaction_cost_bps=float(kwargs.get("transaction_cost_bps", 2.0) or 2.0),
         start_cash=float(kwargs.get("start_cash", 100000.0) or 100000.0),
+        execution_lag_days=int(kwargs.get("execution_lag_days", 1) or 1),
     )
 
 

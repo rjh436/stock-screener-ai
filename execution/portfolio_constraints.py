@@ -159,8 +159,27 @@ def enforce_turnover_budget(
     target_weights: Mapping[str, float],
     turnover_budget: float,
 ) -> Dict[str, float]:
-    prev = _clean_weights(prev_weights)
-    target = _clean_weights(target_weights)
+    def _clean_abs(weights: Mapping[str, float]) -> Dict[str, float]:
+        out: Dict[str, float] = {}
+        for raw_key, raw_val in dict(weights or {}).items():
+            key = str(raw_key)
+            try:
+                val = float(raw_val)
+            except Exception:
+                continue
+            if not np.isfinite(val) or val <= 0.0:
+                continue
+            out[key] = val
+        total = float(sum(out.values()))
+        if total <= 0.0:
+            return {}
+        # Preserve residual cash when total <= 1.0.
+        if total > 1.0 + 1e-12:
+            out = {k: (v / total) for k, v in out.items()}
+        return out
+
+    prev = _clean_abs(prev_weights)
+    target = _clean_abs(target_weights)
 
     budget = float(turnover_budget)
     if not np.isfinite(budget) or budget <= 0.0:
@@ -176,6 +195,4 @@ def enforce_turnover_budget(
 
     alpha = max(0.0, min(1.0, budget / turnover))
     blended = {k: (prev.get(k, 0.0) + alpha * (target.get(k, 0.0) - prev.get(k, 0.0))) for k in keys}
-
-    cleaned = _clean_weights(blended)
-    return cleaned
+    return _clean_abs(blended)

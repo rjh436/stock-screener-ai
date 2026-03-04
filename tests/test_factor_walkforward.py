@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from scripts.run_factor_walkforward import (
+    _acceptance_snapshot,
     _build_separate_value_momentum_schedule,
     _cross_section_rank_matrix,
 )
@@ -58,6 +59,13 @@ class FactorWalkforwardTests(unittest.TestCase):
         for _, row in sched.iterrows():
             total = float(pd.to_numeric(row, errors="coerce").fillna(0.0).sum())
             self.assertAlmostEqual(total, 1.0, places=6)
+
+    def test_acceptance_snapshot_checks_same_day_contamination(self) -> None:
+        full = {"cagr": 0.12, "max_drawdown_pct": 0.25, "audit_report": {"max_gross_exposure_pct": 1.0, "same_day_open_entries": 2}}
+        stitched = {"stitched_cagr_pct": 11.0}
+        snap = _acceptance_snapshot(full, stitched, stitched)
+        self.assertFalse(bool(snap.get("same_day_contamination_ok")))
+        self.assertEqual(int(snap.get("same_day_contamination_count", 0)), 2)
 
 
 if __name__ == "__main__":

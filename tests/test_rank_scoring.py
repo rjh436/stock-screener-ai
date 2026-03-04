@@ -60,6 +60,30 @@ class RankScoringTests(unittest.TestCase):
         self.assertTrue(np.isfinite(combined.loc["AAA"]))
         self.assertGreater(float(combined.loc["AAA"]), float(combined.loc["CCC"]))
 
+    def test_momentum_quality_proxy_is_ranked_per_column(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "mom_12_1": [0.1, 0.1],
+                "mom_6_1": [0.1, 0.1],
+                "proximity_52w": [0.9, 0.9],
+                # Large scale mismatch should not dominate once per-column ranking is applied.
+                "eps_growth_yoy": [10000.0, 100.0],
+                "sales_growth_yoy": [0.0, 100.0],
+                "f_score": [0.0, 9.0],
+            },
+            index=["AAA", "BBB"],
+        )
+        ranked = compute_momentum_rank(
+            frame,
+            params={
+                "mom_12_1_weight": 0.0,
+                "mom_6_1_weight": 0.0,
+                "proximity_52w_weight": 0.0,
+                "quality_growth_weight": 1.0,
+            },
+        )
+        self.assertEqual(ranked.index[0], "BBB")
+
 
 if __name__ == "__main__":
     unittest.main()

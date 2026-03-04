@@ -469,6 +469,8 @@ def _run_factor_window(
     eps_yoy_df: Optional[pd.DataFrame],
     sales_yoy_df: Optional[pd.DataFrame],
     risk_scalar_by_date: Optional[pd.Series],
+    sector_map: Optional[Mapping[str, str]],
+    industry_map: Optional[Mapping[str, str]],
     start_date: str,
     end_date: str,
     friction: FrictionScenario,
@@ -503,6 +505,7 @@ def _run_factor_window(
     trend_ma_days = None if raw_trend_ma is None else int(raw_trend_ma)
     raw_time_stop = cfg.get("time_stop_days")
     time_stop_days = None if raw_time_stop is None else int(raw_time_stop)
+    execution_lag_days = int(cfg.get("execution_lag_days", 1) or 1)
 
     strategy_type = str(cfg.get("strategy_type", "cross_sectional_momentum") or "cross_sectional_momentum").lower()
     if strategy_type == "separate_value_momentum":
@@ -533,7 +536,9 @@ def _run_factor_window(
             target_count=int(cfg.get("momentum_target_count", 12) or 12),
             hold_buffer_mult=float(cfg.get("hold_buffer_mult", 1.25) or 1.25),
             position_cap=float(cfg.get("max_position_weight", 0.05) or 0.05),
+            sector_map=sector_map,
             sector_cap=float(cfg.get("sector_cap", 0.20) or 0.20),
+            industry_map=industry_map,
             industry_cap=float(cfg.get("industry_cap", 0.15) or 0.15),
             turnover_budget=float(cfg.get("turnover_budget", 0.35) or 0.35),
             transaction_cost_bps=tx_bps,
@@ -543,6 +548,7 @@ def _run_factor_window(
             hard_stop_pct=hard_stop_pct,
             trend_ma_days=trend_ma_days,
             time_stop_days=time_stop_days,
+            execution_lag_days=execution_lag_days,
         )
         return run
 
@@ -553,7 +559,9 @@ def _run_factor_window(
         target_count=int(cfg.get("target_count", 20) or 20),
         hold_buffer_mult=float(cfg.get("hold_buffer_mult", 1.25) or 1.25),
         position_cap=float(cfg.get("max_position_weight", 0.075) or 0.075),
+        sector_map=sector_map,
         sector_cap=float(cfg.get("sector_cap", 0.25) or 0.25),
+        industry_map=industry_map,
         industry_cap=float(cfg.get("industry_cap", 0.15) or 0.15),
         turnover_budget=float(cfg.get("turnover_budget", 0.25) or 0.25),
         transaction_cost_bps=tx_bps,
@@ -562,6 +570,7 @@ def _run_factor_window(
         hard_stop_pct=hard_stop_pct,
         trend_ma_days=trend_ma_days,
         time_stop_days=time_stop_days,
+        execution_lag_days=execution_lag_days,
     )
     return run
 
@@ -575,6 +584,8 @@ def _stitch_test_windows(
     eps_yoy_df: Optional[pd.DataFrame],
     sales_yoy_df: Optional[pd.DataFrame],
     risk_scalar_by_date: Optional[pd.Series],
+    sector_map: Optional[Mapping[str, str]],
+    industry_map: Optional[Mapping[str, str]],
     windows: List[Tuple[str, str]],
     test_months: int,
     friction: FrictionScenario,
@@ -591,6 +602,8 @@ def _stitch_test_windows(
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar_by_date,
+            sector_map=sector_map,
+            industry_map=industry_map,
             start_date=w_start,
             end_date=w_end,
             friction=friction,
@@ -643,6 +656,7 @@ def _stitch_test_windows(
 def _acceptance_snapshot(full_res: Dict[str, Any], stitched_36_12: Dict[str, Any], stitched_60_12: Dict[str, Any]) -> Dict[str, Any]:
     audit = full_res.get("audit_report") or {}
     max_gross = _safe_float(audit.get("max_gross_exposure_pct"), 0.0)
+    same_day = int(audit.get("same_day_open_entries", 0) or 0)
     cagr = _safe_float(full_res.get("cagr"), float("nan"))
     if np.isfinite(cagr):
         cagr *= 100.0
@@ -652,7 +666,8 @@ def _acceptance_snapshot(full_res: Dict[str, Any], stitched_36_12: Dict[str, Any
 
     return {
         "cash_only_ok": bool(np.isfinite(max_gross) and max_gross <= 1.0001),
-        "same_day_contamination_ok": True,
+        "same_day_contamination_ok": bool(same_day == 0),
+        "same_day_contamination_count": same_day,
         "full_cagr_pct": float(cagr) if np.isfinite(cagr) else float("nan"),
         "full_max_dd_pct": float(mdd),
         "oos_36_12_cagr_pct": float(oos_36) if np.isfinite(oos_36) else float("nan"),
@@ -671,6 +686,25 @@ def _load_config(path: Path) -> Dict[str, Any]:
     return cfg
 
 
+def _load_symbol_map(path: Path) -> Dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r") as f:
+            raw = json.load(f)
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for k, v in raw.items():
+        key = str(k).strip().upper()
+        val = str(v).strip()
+        if key and val:
+            out[key] = val
+    return out
+
+
 def _days_for_range(start_date: str, end_date: str, warmup_days: int = 420) -> int:
     start_ts = pd.Timestamp(start_date)
     end_ts = pd.Timestamp(end_date)
@@ -687,7 +721,7 @@ def main() -> None:
     parser.add_argument("--transaction-cost-bps", type=float, default=2.0, help="Base transaction cost bps")
     parser.add_argument("--frictions", default="10,20,35,50", help="Comma-separated slippage bps pairs")
     parser.add_argument("--cache-only", action="store_true", help="Use local cache only (no network refresh)")
-    parser.add_argument("--min-universe-coverage", type=float, default=0.55, help="Minimum loaded/union coverage ratio")
+    parser.add_argument("--min-universe-coverage", type=float, default=0.85, help="Minimum loaded/union coverage ratio")
     args = parser.parse_args()
 
     start_date = str(args.start)
@@ -733,6 +767,10 @@ def main() -> None:
     eps_yoy_df = pd.DataFrame(features["eps_yoy"], index=features["dates"], columns=features["symbols"])
     sales_yoy_df = pd.DataFrame(features["sales_yoy"], index=features["dates"], columns=features["symbols"])
     risk_scalar_by_date = _build_market_risk_scalar(global_data, prices.index, cfg)
+    sector_map = _load_symbol_map(ROOT / "config" / "sectors.json")
+    industry_map = _load_symbol_map(ROOT / "config" / "industries.json")
+    if not industry_map:
+        industry_map = _load_symbol_map(ROOT / "config" / "industry.json")
 
     friction_vals: List[float] = []
     for part in str(args.frictions or "").split(","):
@@ -772,6 +810,8 @@ def main() -> None:
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar_by_date,
+            sector_map=sector_map,
+            industry_map=industry_map,
             start_date=start_date,
             end_date=end_date,
             friction=fr,
@@ -784,6 +824,8 @@ def main() -> None:
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar_by_date,
+            sector_map=sector_map,
+            industry_map=industry_map,
             windows=windows_36_12,
             test_months=12,
             friction=fr,
@@ -796,6 +838,8 @@ def main() -> None:
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar_by_date,
+            sector_map=sector_map,
+            industry_map=industry_map,
             windows=windows_60_12,
             test_months=12,
             friction=fr,
@@ -847,6 +891,11 @@ def main() -> None:
         "walkforward_windows": {
             "36_12": windows_36_12,
             "60_12": windows_60_12,
+            "mode": "rolling_oos_fixed_params",
+        },
+        "classification_maps": {
+            "sector_map_size": len(sector_map),
+            "industry_map_size": len(industry_map),
         },
         "scenarios": scenarios,
     }
