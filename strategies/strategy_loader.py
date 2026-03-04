@@ -3,11 +3,15 @@ from typing import List, Dict, Optional
 from .minervini_sepa import MinerviniSEPAStrategy
 from .superperformance import SuperperformanceStrategy
 from .apex_fusion import ApexFusionStrategy
+from .cross_sectional_momentum import CrossSectionalMomentumStrategy
+from .separate_value_momentum import SeparateValueMomentumStrategy
 
 STRATEGY_CLASSES = {
     "Superperformance": SuperperformanceStrategy,
     "Superperformance Strategy": SuperperformanceStrategy,
     "Superperformance (Practical EOD No Leverage)": SuperperformanceStrategy,
+    "Cross-Sectional Momentum": CrossSectionalMomentumStrategy,
+    "Separate Value Momentum": SeparateValueMomentumStrategy,
     "Minervini SEPA": MinerviniSEPAStrategy,
     "Minervini SEPA (Daily)": MinerviniSEPAStrategy,
     "Apex Fusion": ApexFusionStrategy,
@@ -19,6 +23,10 @@ def _resolve_strategy_class(config: Dict) -> Optional[type]:
     strategy_type = str(config.get("type", "") or "").strip().lower()
     if strategy_type == "superperformance":
         return SuperperformanceStrategy
+    if strategy_type in {"cross_sectional_momentum", "cross-sectional-momentum", "momentum_rank"}:
+        return CrossSectionalMomentumStrategy
+    if strategy_type in {"separate_value_momentum", "value_momentum", "value-momentum"}:
+        return SeparateValueMomentumStrategy
     if strategy_type in {"minervini_sepa", "minervini"}:
         return MinerviniSEPAStrategy
     if strategy_type in {"apex_fusion", "apexfusion", "apex"}:

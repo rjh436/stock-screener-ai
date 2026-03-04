@@ -1,0 +1,27 @@
+{
+  "name": "Factor Momo Quality Tune Q28 MA100 RO00",
+  "strategy_type": "cross_sectional_momentum",
+  "blend_weight": 0.45,
+  "rebalance_freq": "Q",
+  "min_price": 10.0,
+  "min_adv20": 5000000.0,
+  "min_history_bars": 252,
+  "drop_bottom_dv_frac": 0.20,
+  "min_rank_names": 40,
+  "mom_12_1_weight": 0.50,
+  "mom_6_1_weight": 0.20,
+  "proximity_52w_weight": 0.15,
+  "quality_growth_weight": 0.15,
+  "target_count": 28,
+  "hold_buffer_mult": 1.75,
+  "max_position_weight": 0.05,
+  "sector_cap": 0.25,
+  "industry_cap": 0.15,
+  "turnover_budget": 0.12,
+  "market_regime": {
+    "enabled": true,
+    "symbol": "SPY",
+    "ma_days": 100,
+    "risk_off_scalar": 0.0
+  }
+}

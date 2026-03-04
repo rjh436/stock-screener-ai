@@ -3669,8 +3669,72 @@ def _legacy_run_backtest(
     print(f"Avg VCP Candidates: {avg_vcp:.2f}")
     return final_results
 
-# Backwards compatibility
-run_backtest = _legacy_run_backtest
+def _run_rank_mode_backtest(
+    backtest_mode: str,
+    kwargs: Dict[str, Any],
+) -> Dict[str, Any]:
+    from execution.rebalance_engine import run_periodic_rebalance
+
+    rank_prices = kwargs.get("rank_prices")
+    rank_scores = kwargs.get("rank_scores")
+    if rank_prices is None or rank_scores is None:
+        raise ValueError(
+            f"backtest_mode='{backtest_mode}' requires 'rank_prices' and 'rank_scores' DataFrames."
+        )
+    if not isinstance(rank_prices, pd.DataFrame) or not isinstance(rank_scores, pd.DataFrame):
+        raise TypeError("rank_prices and rank_scores must be pandas DataFrame objects.")
+
+    rebalance_freq = "M" if backtest_mode == "monthly_rank" else "Q"
+    return run_periodic_rebalance(
+        prices=rank_prices,
+        ranked_scores=rank_scores,
+        rebalance_freq=rebalance_freq,
+        target_count=int(kwargs.get("rank_target_count", 20) or 20),
+        hold_buffer_mult=float(kwargs.get("rank_hold_buffer_mult", 1.25) or 1.25),
+        position_cap=float(kwargs.get("rank_position_cap", 1.0) or 1.0),
+        sector_map=kwargs.get("sector_map") or None,
+        sector_cap=float(kwargs.get("sector_cap", 1.0) or 1.0),
+        industry_map=kwargs.get("industry_map") or None,
+        industry_cap=float(kwargs.get("industry_cap", 1.0) or 1.0),
+        turnover_budget=float(kwargs.get("turnover_budget", 1.0) or 1.0),
+        transaction_cost_bps=float(kwargs.get("transaction_cost_bps", 2.0) or 2.0),
+        start_cash=float(kwargs.get("start_cash", 100000.0) or 100000.0),
+    )
+
+
+def run_backtest(
+    strategy,
+    data,
+    symbol_universe=None,
+    start_cash=100000.0,
+    start_date=None,
+    global_data=None,
+    scoring_weights=None,
+    pre_calculated_data: Optional["PreparedBacktestData"] = None,
+    end_date=None,
+    **kwargs,
+):
+    backtest_mode = str(kwargs.get("backtest_mode", "event") or "event").strip().lower()
+    if backtest_mode == "event":
+        return _legacy_run_backtest(
+            strategy,
+            data,
+            symbol_universe=symbol_universe,
+            start_cash=start_cash,
+            start_date=start_date,
+            global_data=global_data,
+            scoring_weights=scoring_weights,
+            pre_calculated_data=pre_calculated_data,
+            end_date=end_date,
+            **kwargs,
+        )
+    if backtest_mode in {"monthly_rank", "quarterly_rank"}:
+        rank_kwargs = dict(kwargs)
+        rank_kwargs["start_cash"] = start_cash
+        return _run_rank_mode_backtest(backtest_mode, rank_kwargs)
+    raise ValueError(
+        f"Unsupported backtest_mode '{backtest_mode}'. Supported modes: event, monthly_rank, quarterly_rank."
+    )
 
 def calculate_stop_price(entry_price, atr, multiplier):
     return entry_price - (atr * multiplier)

@@ -1,0 +1,58 @@
+{
+  "name": "Superperformance Breakout Satellite v1",
+  "type": "superperformance",
+  "blend_weight": 0.10,
+
+  "entry_mode": "both",
+  "score_mode": "dual_core",
+  "signal_mode": "after_close",
+  "ep_entry_mode": "close",
+  "vcp_entry_mode": "next_day",
+
+  "min_entry_score": 30,
+  "breakout_min_entry_score": 30,
+
+  "multi_sleeve_enabled": false,
+  "enabled_sleeves": ["breakout"],
+
+  "min_price": 10,
+  "min_avg_volume_30": 100000,
+  "min_avg_dollar_volume_50": 5000000,
+  "max_positions": 2,
+
+  "risk_per_trade": 0.005,
+  "max_pos_size_pct": 0.075,
+  "vcp_max_pos_size_pct": 0.075,
+  "ep_max_pos_size_pct": 0.075,
+
+  "max_total_exposure_pct": 0.15,
+  "max_total_exposure_pct_bull": 0.15,
+  "max_total_exposure_pct_bear": 0.15,
+  "allow_margin": false,
+
+  "market_exposure_mode": "exposure",
+  "use_market_regime_traffic_light": false,
+  "bear_cash_mode": "off",
+
+  "rs_gate_min": 93,
+  "adr_min_pct": 3.0,
+  "prior_runup_min_pct": 25.0,
+  "fundamental_growth_min_pct": 15.0,
+  "vcp_breakout_volume_mult": 2.0,
+  "vcp_lookback_bars": 60,
+  "breakout_buffer": 0.001,
+
+  "ep_gap_pct": 6.0,
+  "ep_vol_mult": 3.0,
+  "ep_close_near_high_min": 0.8,
+
+  "stop_loss_atr": 3.0,
+  "max_stop_pct": 0.09,
+  "time_stop_bars": 50,
+  "dead_money_days": 18,
+  "dead_money_min_profit_pct": 0.01,
+
+  "vcp_gap_chase_max_pct": 0.006,
+  "vcp_gap_chase_rs_min": 97.0,
+  "vcp_gap_chase_score_min": 75.0
+}
