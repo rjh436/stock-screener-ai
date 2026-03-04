@@ -9,6 +9,10 @@ import pandas as pd
 from scipy.signal import argrelextrema
 
 from .base import BaseStrategy
+from .superperformance_breakout import select_breakout_candidate
+from .superperformance_continuation import evaluate_continuation
+from .superperformance_continuation_breakout import evaluate_continuation_breakout
+from .superperformance_recovery import evaluate_recovery
 
 _STOP_WIDTH_TOL = 1e-4
 _DEFAULT_VCP_DAMPING_RATIO = 0.75
@@ -398,6 +402,30 @@ class SuperperformanceStrategy(BaseStrategy):
             ),
         )
 
+    def _is_adaptive_market_green(self, row: pd.Series) -> bool:
+        if not bool(self.params.get("adaptive_breakout_gates_enabled", False)):
+            return False
+        spy_close = _first_finite(
+            [
+                row.get("spy_close"),
+                row.get("spyclose"),
+            ],
+            default=float("nan"),
+        )
+        spy_sma200 = _first_finite(
+            [
+                row.get("spy_sma200"),
+                row.get("spysma200"),
+            ],
+            default=float("nan"),
+        )
+        return bool(
+            math.isfinite(spy_close)
+            and math.isfinite(spy_sma200)
+            and spy_sma200 > 0
+            and spy_close > spy_sma200
+        )
+
     def _ep_candidate(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
         if i < 1:
             return None
@@ -708,7 +736,7 @@ class SuperperformanceStrategy(BaseStrategy):
             "signal_strength": strength,
         }
 
-    def check_setup(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
+    def _check_setup_breakout_only(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
         self._last_reject_reason = ""
         self._last_vcp_failure_reason = ""
 
@@ -774,6 +802,14 @@ class SuperperformanceStrategy(BaseStrategy):
             ),
             0.0,
         )
+        market_green = self._is_adaptive_market_green(row)
+        if market_green:
+            adaptive_adr_min = self.params.get("adaptive_green_adr_min_pct")
+            if adaptive_adr_min is not None:
+                adr_min = min(
+                    adr_min,
+                    _as_percent_threshold(adaptive_adr_min, 0.0),
+                )
         if adr_min > 0:
             adr_pct = _as_float(row.get("adr_pct"), float("nan"))
             adr_pct_q = _as_float(row.get("adr_pct_q"), float("nan"))
@@ -790,6 +826,13 @@ class SuperperformanceStrategy(BaseStrategy):
             ),
             0.0,
         )
+        if market_green:
+            adaptive_runup_min = self.params.get("adaptive_green_runup_min_pct")
+            if adaptive_runup_min is not None:
+                runup_min = min(
+                    runup_min,
+                    _as_percent_threshold(adaptive_runup_min, 0.0),
+                )
         if runup_min > 0:
             ret_1m = _as_float(row.get("ret_1m"), float("nan"))
             ret_3m = _as_float(row.get("ret_3m"), float("nan"))
@@ -807,6 +850,13 @@ class SuperperformanceStrategy(BaseStrategy):
             ),
             85.0,
         )
+        if market_green:
+            adaptive_rs_min = self.params.get("adaptive_green_rs_min")
+            if adaptive_rs_min is not None:
+                rs_gate_min = min(
+                    rs_gate_min,
+                    _as_percent_threshold(adaptive_rs_min, 0.0),
+                )
         if rs_percentile < rs_gate_min:
             return self._reject(f"rs_gate rs_percentile={rs_percentile:.2f} < {rs_gate_min:.2f}")
 
@@ -902,6 +952,104 @@ class SuperperformanceStrategy(BaseStrategy):
         selected = max(candidates, key=lambda c: float(c.get("signal_strength", 0.0)))
         selected.pop("signal_strength", None)
         return selected
+
+    def _check_setup_multi_sleeve(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
+        self._last_reject_reason = ""
+        self._last_vcp_failure_reason = ""
+
+        warmup = int(self.params.get("warmup_bars", 200) or 200)
+        if i < warmup:
+            return self._reject("warmup")
+
+        row = df.iloc[i]
+        close_px = _as_float(row.get("close"), 0.0)
+        if close_px <= 0:
+            return self._reject("close_invalid")
+
+        rs_percentile = self._resolve_rs_percentile(row)
+        candidates: List[Dict[str, Any]] = []
+        details: List[str] = []
+
+        enabled = self.params.get("enabled_sleeves", ["breakout", "continuation", "recovery"])
+        if isinstance(enabled, str):
+            enabled_sleeves = {enabled.strip().lower()}
+        elif isinstance(enabled, (list, tuple, set)):
+            enabled_sleeves = {str(item).strip().lower() for item in enabled if str(item).strip()}
+        else:
+            enabled_sleeves = {"breakout", "continuation", "recovery"}
+        if not enabled_sleeves:
+            enabled_sleeves = {"breakout"}
+
+        if "breakout" in enabled_sleeves:
+            breakout_candidate = self._check_setup_breakout_only(df, i)
+            if breakout_candidate is not None:
+                breakout_candidate = dict(breakout_candidate)
+                breakout_candidate.setdefault("sleeve", "breakout")
+                candidates.append(breakout_candidate)
+            else:
+                details.append(str(self._last_reject_reason or "breakout_rejected"))
+
+        if "continuation" in enabled_sleeves:
+            continuation_candidate = evaluate_continuation(
+                df,
+                i,
+                self.params,
+                rs_percentile=rs_percentile,
+            )
+            if continuation_candidate is None and bool(
+                self.params.get("continuation_breakout_enabled", False)
+            ):
+                continuation_candidate = evaluate_continuation_breakout(
+                    df,
+                    i,
+                    self.params,
+                    rs_percentile=rs_percentile,
+                )
+            if continuation_candidate is not None:
+                candidates.append(continuation_candidate)
+            else:
+                details.append("continuation:no_signal")
+
+        if "recovery" in enabled_sleeves:
+            recovery_candidate = evaluate_recovery(
+                df,
+                i,
+                self.params,
+                rs_percentile=rs_percentile,
+            )
+            if recovery_candidate is not None:
+                candidates.append(recovery_candidate)
+            else:
+                details.append("recovery:no_signal")
+
+        if not candidates:
+            return self._reject("archetype_none " + " | ".join(details))
+
+        # Normalize breakout archetypes into the breakout sleeve and select winner.
+        breakout_like = [c for c in candidates if str(c.get("sleeve", "")).lower() == "breakout"]
+        non_breakout = [c for c in candidates if str(c.get("sleeve", "")).lower() != "breakout"]
+        selected_breakout = None
+        if breakout_like:
+            vcp = next((c for c in breakout_like if str(c.get("entry_type", "")).lower() == "vcp"), None)
+            ep = next((c for c in breakout_like if str(c.get("entry_type", "")).lower() == "ep"), None)
+            selected_breakout = select_breakout_candidate(vcp, ep)
+            if selected_breakout is None:
+                selected_breakout = max(breakout_like, key=lambda c: float(c.get("signal_strength", 0.0)))
+
+        merged_candidates: List[Dict[str, Any]] = []
+        if selected_breakout is not None:
+            merged_candidates.append(selected_breakout)
+        merged_candidates.extend(non_breakout)
+        selected = max(merged_candidates, key=lambda c: float(c.get("signal_strength", 0.0)))
+        selected = dict(selected)
+        selected.pop("signal_strength", None)
+        return selected
+
+    def check_setup(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
+        multi_enabled = bool(self.params.get("multi_sleeve_enabled", False))
+        if not multi_enabled:
+            return self._check_setup_breakout_only(df, i)
+        return self._check_setup_multi_sleeve(df, i)
 
     def entry(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
         return self.check_setup(df, i)

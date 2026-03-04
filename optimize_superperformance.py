@@ -70,9 +70,9 @@ RESUME_CHECKPOINT = str(os.getenv("APEX_RESUME_CHECKPOINT", "1") or "1").strip()
     "true",
     "yes",
 }
-OBJECTIVE_PROFILE = str(os.getenv("APEX_OBJECTIVE_PROFILE", "superperformance") or "superperformance").strip().lower()
+OBJECTIVE_PROFILE = str(os.getenv("APEX_OBJECTIVE_PROFILE", "no_leverage") or "no_leverage").strip().lower()
 if OBJECTIVE_PROFILE not in {"superperformance", "balanced", "defensive", "no_leverage"}:
-    OBJECTIVE_PROFILE = "superperformance"
+    OBJECTIVE_PROFILE = "no_leverage"
 if OBJECTIVE_PROFILE == "superperformance":
     _TARGET_DEFAULT = "35.0"
     _MIN_CAGR_DEFAULT = "20.0"
@@ -87,6 +87,18 @@ MIN_CAGR_FLOOR = float(os.getenv("APEX_MIN_CAGR_FLOOR", _MIN_CAGR_DEFAULT) or _M
 MIN_PF_FLOOR = float(os.getenv("APEX_MIN_PF_FLOOR", "1.20") or "1.20")
 MIN_WINLOSS_RATIO = float(os.getenv("APEX_MIN_WINLOSS_RATIO", "2.50") or "2.50")
 MIN_TRADES_FLOOR = int(os.getenv("APEX_MIN_TRADES_FLOOR", "50") or "50")
+if OBJECTIVE_PROFILE == "no_leverage":
+    _MIN_TRADES_HARD_DEFAULT = "40"
+    _MIN_ACTIVE_YEARS_DEFAULT = "6.0"
+else:
+    _MIN_TRADES_HARD_DEFAULT = "25"
+    _MIN_ACTIVE_YEARS_DEFAULT = "4.0"
+MIN_TRADES_HARD_FLOOR = int(
+    os.getenv("APEX_MIN_TRADES_HARD_FLOOR", _MIN_TRADES_HARD_DEFAULT) or _MIN_TRADES_HARD_DEFAULT
+)
+MIN_ACTIVE_YEARS = float(
+    os.getenv("APEX_MIN_ACTIVE_YEARS", _MIN_ACTIVE_YEARS_DEFAULT) or _MIN_ACTIVE_YEARS_DEFAULT
+)
 MAX_TRADES_SOFT = int(os.getenv("APEX_MAX_TRADES_SOFT", "700") or "700")
 OPTIMIZER_COST_BPS = float(os.getenv("APEX_OPTIMIZER_COST_BPS", "2.0") or "2.0")
 OPTIMIZER_ENTRY_SLIPPAGE_BPS = float(
@@ -118,6 +130,20 @@ RECENT_5Y_PENALTY_MULT = float(os.getenv("APEX_RECENT_5Y_PENALTY_MULT", "3.0") o
 RECENT_3Y_PENALTY_MULT = float(os.getenv("APEX_RECENT_3Y_PENALTY_MULT", "2.0") or "2.0")
 WORST_12M_FLOOR_PCT = float(os.getenv("APEX_WORST_12M_FLOOR_PCT", "-20.0") or "-20.0")
 WORST_12M_PENALTY_MULT = float(os.getenv("APEX_WORST_12M_PENALTY_MULT", "2.5") or "2.5")
+WORST_24M_CAGR_FLOOR = float(os.getenv("APEX_WORST_24M_CAGR_FLOOR", "8.0") or "8.0")
+WORST_24M_CAGR_PENALTY_MULT = float(os.getenv("APEX_WORST_24M_CAGR_PENALTY_MULT", "2.0") or "2.0")
+MEDIAN_24M_CAGR_FLOOR = float(os.getenv("APEX_MEDIAN_24M_CAGR_FLOOR", "12.0") or "12.0")
+MEDIAN_24M_CAGR_PENALTY_MULT = float(os.getenv("APEX_MEDIAN_24M_CAGR_PENALTY_MULT", "1.5") or "1.5")
+MAX_SINGLE_YEAR_PNL_SHARE = float(os.getenv("APEX_MAX_SINGLE_YEAR_PNL_SHARE", "0.35") or "0.35")
+YEAR_CONCENTRATION_PENALTY_MULT = float(os.getenv("APEX_YEAR_CONCENTRATION_PENALTY_MULT", "220.0") or "220.0")
+MAX_TWO_YEAR_PNL_SHARE = float(os.getenv("APEX_MAX_TWO_YEAR_PNL_SHARE", "0.55") or "0.55")
+TWO_YEAR_CONCENTRATION_PENALTY_MULT = float(os.getenv("APEX_TWO_YEAR_CONCENTRATION_PENALTY_MULT", "180.0") or "180.0")
+NEGATIVE_YEAR_SOFT_CAP = int(os.getenv("APEX_NEGATIVE_YEAR_SOFT_CAP", "2") or "2")
+NEGATIVE_YEAR_PENALTY = float(os.getenv("APEX_NEGATIVE_YEAR_PENALTY", "4.0") or "4.0")
+STITCHED_OOS_TRAIN_YEARS = int(os.getenv("APEX_STITCHED_OOS_TRAIN_YEARS", "3") or "3")
+STITCHED_OOS_TEST_YEARS = int(os.getenv("APEX_STITCHED_OOS_TEST_YEARS", "1") or "1")
+STITCHED_OOS_CAGR_FLOOR = float(os.getenv("APEX_STITCHED_OOS_CAGR_FLOOR", "12.0") or "12.0")
+STITCHED_OOS_PENALTY_MULT = float(os.getenv("APEX_STITCHED_OOS_PENALTY_MULT", "3.0") or "3.0")
 FUNDAMENTAL_PARQUET_DIR = str(
     os.getenv("APEX_FUNDAMENTAL_PARQUET_DIR", os.path.join("data", "fundamentals", "edgar_income"))
 )
@@ -157,6 +183,8 @@ GENE_SPACE = {
     "vcp_extrema_order": [2, 3],
     "vcp_breakout_volume_mult": [1.5, 1.75, 2.0],
     "breakout_buffer": [0, 0.0005, 0.001, 0.002],
+    "adr_min_pct": [2.0, 2.5, 3.0, 3.5],
+    "prior_runup_min_pct": [10, 15, 20, 30],
     "ep_gap_pct": [8],
     "ep_vol_mult": [3, 4],
     "ep_close_near_high_min": [0.70, 0.75, 0.80, 0.85],
@@ -180,8 +208,8 @@ GENE_SPACE = {
     "max_positions": [6, 8, 10, 12],
     "risk_per_trade": [0.015, 0.02, 0.025, 0.03],
     "max_pos_size_pct": [0.15, 0.20, 0.25, 0.30],
-    "max_total_exposure_pct_bull": [1.0, 1.2, 1.4, 1.6],
-    "max_total_exposure_pct_bear": [0.0, 0.1, 0.2, 0.3],
+    "max_total_exposure_pct_bull": [0.8, 0.9, 1.0],
+    "max_total_exposure_pct_bear": [0.0, 0.05, 0.10, 0.20, 0.30],
     "vcp_trigger_mode": ["close_confirmed", "setup"],
 }
 
@@ -199,6 +227,8 @@ if OBJECTIVE_PROFILE == "no_leverage":
             "fundamental_growth_min_pct": [10, 15, 20, 25],
             "min_entry_score": [35, 45, 55],
             "vcp_lookback_bars": [40, 60, 80],
+            "adr_min_pct": [2.0, 2.5, 3.0],
+            "prior_runup_min_pct": [10, 15, 20],
             "ep_gap_pct": [6, 8],
             "ep_close_near_high_min": [0.70, 0.75, 0.80, 0.85],
             "ep_entry_mode": ["close"],
@@ -703,6 +733,160 @@ def _worst_rolling_12m_return_pct(equity_curve):
     return float(np.nanmin(rolling_ret) * 100.0)
 
 
+def _equity_curve_df(equity_curve):
+    if not equity_curve:
+        return pd.DataFrame(columns=["Date", "Equity"])
+    try:
+        ec = pd.DataFrame(equity_curve)
+    except Exception:
+        return pd.DataFrame(columns=["Date", "Equity"])
+    if ec.empty or "Date" not in ec.columns or "Equity" not in ec.columns:
+        return pd.DataFrame(columns=["Date", "Equity"])
+    try:
+        ec["Date"] = pd.to_datetime(ec["Date"], errors="coerce")
+        ec["Equity"] = pd.to_numeric(ec["Equity"], errors="coerce")
+    except Exception:
+        return pd.DataFrame(columns=["Date", "Equity"])
+    ec = ec.dropna(subset=["Date", "Equity"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+    if ec.empty:
+        return pd.DataFrame(columns=["Date", "Equity"])
+    return ec[["Date", "Equity"]].reset_index(drop=True)
+
+
+def _calendar_year_returns_pct(equity_curve):
+    ec = _equity_curve_df(equity_curve)
+    if ec.empty:
+        return {}
+    ec["Year"] = ec["Date"].dt.year
+    out = {}
+    for year, grp in ec.groupby("Year"):
+        if len(grp) < 2:
+            continue
+        start_eq = float(grp["Equity"].iloc[0] or 0.0)
+        end_eq = float(grp["Equity"].iloc[-1] or 0.0)
+        if start_eq <= 0 or end_eq <= 0:
+            continue
+        out[int(year)] = ((end_eq / start_eq) - 1.0) * 100.0
+    return out
+
+
+def _year_concentration_stats(equity_curve):
+    yearly = _calendar_year_returns_pct(equity_curve)
+    if not yearly:
+        return {
+            "max_positive_share": float("nan"),
+            "top2_positive_share": float("nan"),
+            "negative_years": 0,
+            "total_years": 0,
+            "worst_year_return_pct": float("nan"),
+            "median_year_return_pct": float("nan"),
+        }
+    vals = list(yearly.values())
+    positive = [max(0.0, float(v)) for v in vals]
+    positive_total = float(sum(positive))
+    top1_share = float("nan")
+    top2_share = float("nan")
+    if positive_total > 0:
+        positive_sorted = sorted(positive, reverse=True)
+        top1_share = float(positive_sorted[0] / positive_total)
+        top2_share = float(sum(positive_sorted[:2]) / positive_total)
+    negative_years = int(sum(1 for v in vals if float(v) < 0.0))
+    return {
+        "max_positive_share": top1_share,
+        "top2_positive_share": top2_share,
+        "negative_years": negative_years,
+        "total_years": int(len(vals)),
+        "worst_year_return_pct": float(min(vals)),
+        "median_year_return_pct": float(np.median(vals)) if vals else float("nan"),
+    }
+
+
+def _rolling_window_cagr_stats(equity_curve, window_years=2, step_days=21):
+    ec = _equity_curve_df(equity_curve)
+    if ec.empty or len(ec) < 10:
+        return float("nan"), float("nan"), 0
+
+    dates = ec["Date"].to_numpy(dtype="datetime64[ns]")
+    equity = ec["Equity"].to_numpy(dtype=np.float64, copy=False)
+    if equity.size < 10:
+        return float("nan"), float("nan"), 0
+
+    window_days = max(90, int(round(float(window_years) * 365.25)))
+    step = max(5, int(step_days))
+    cagrs = []
+
+    for start_idx in range(0, len(ec), step):
+        start_eq = float(equity[start_idx])
+        if not np.isfinite(start_eq) or start_eq <= 0:
+            continue
+        target_date = dates[start_idx] + np.timedelta64(window_days, "D")
+        end_idx = int(np.searchsorted(dates, target_date, side="left"))
+        if end_idx >= len(ec):
+            break
+        end_eq = float(equity[end_idx])
+        if not np.isfinite(end_eq) or end_eq <= 0:
+            continue
+        cagr_pct = ((end_eq / start_eq) ** (1.0 / float(window_years)) - 1.0) * 100.0
+        if np.isfinite(cagr_pct):
+            cagrs.append(float(cagr_pct))
+
+    if not cagrs:
+        return float("nan"), float("nan"), 0
+    return float(min(cagrs)), float(np.median(cagrs)), int(len(cagrs))
+
+
+def _stitched_oos_cagr_pct(equity_curve, train_years=3, test_years=1):
+    ec = _equity_curve_df(equity_curve)
+    if ec.empty or len(ec) < 20:
+        return float("nan"), 0, float("nan")
+    if train_years < 1 or test_years < 1:
+        return float("nan"), 0, float("nan")
+
+    ec = ec.copy()
+    dates = ec["Date"].to_numpy(dtype="datetime64[ns]")
+    equity = ec["Equity"].to_numpy(dtype=np.float64, copy=False)
+
+    start_date = pd.Timestamp(dates[0])
+    end_date = pd.Timestamp(dates[-1])
+    test_start = start_date + pd.DateOffset(years=int(train_years))
+    if test_start >= end_date:
+        return float("nan"), 0, float("nan")
+
+    fold_returns = []
+    while True:
+        test_end = test_start + pd.DateOffset(years=int(test_years))
+        if test_end > end_date:
+            break
+        test_start_np = np.datetime64(test_start.to_datetime64())
+        test_end_np = np.datetime64(test_end.to_datetime64())
+
+        start_idx = int(np.searchsorted(dates, test_start_np, side="right")) - 1
+        end_idx = int(np.searchsorted(dates, test_end_np, side="right")) - 1
+        if start_idx < 0 or end_idx <= start_idx or end_idx >= len(equity):
+            test_start = test_start + pd.DateOffset(years=1)
+            continue
+
+        start_eq = float(equity[start_idx])
+        end_eq = float(equity[end_idx])
+        if start_eq > 0 and end_eq > 0 and np.isfinite(start_eq) and np.isfinite(end_eq):
+            fold_returns.append((end_eq / start_eq) - 1.0)
+        test_start = test_start + pd.DateOffset(years=1)
+
+    if not fold_returns:
+        return float("nan"), 0, float("nan")
+
+    stitched_mult = 1.0
+    for ret in fold_returns:
+        stitched_mult *= (1.0 + float(ret))
+    total_test_years = float(len(fold_returns) * int(test_years))
+    if stitched_mult <= 0 or total_test_years <= 0:
+        return float("nan"), len(fold_returns), float("nan")
+
+    stitched_cagr_pct = ((stitched_mult ** (1.0 / total_test_years)) - 1.0) * 100.0
+    worst_fold_ret_pct = float(min(fold_returns) * 100.0)
+    return float(stitched_cagr_pct), int(len(fold_returns)), worst_fold_ret_pct
+
+
 def evaluate_genome(genome_id_and_genome):
     try:
         genome_id, genome, max_dd_cap = genome_id_and_genome
@@ -725,20 +909,18 @@ def evaluate_genome(genome_id_and_genome):
         # Keep the optimizer in Gate+Archetype union mode.
         strategy_config["entry_mode"] = "both"
         genome_adj["entry_mode"] = "both"
-        # Pairing clamp: enforce cash-only exposure physics
+        # Hard clamp: cash-only, no leverage.
         max_exposure = float(strategy_config.get("max_total_exposure_pct_bull", 1.0) or 1.0)
-        if OBJECTIVE_PROFILE == "no_leverage":
-            max_exposure = min(max_exposure, 1.0)
-            strategy_config["max_total_exposure_pct_bull"] = max_exposure
-            genome_adj["max_total_exposure_pct_bull"] = max_exposure
-            bear_exposure = float(strategy_config.get("max_total_exposure_pct_bear", 0.0) or 0.0)
-            bear_exposure = min(max(bear_exposure, 0.0), 1.0)
-            strategy_config["max_total_exposure_pct_bear"] = bear_exposure
-            genome_adj["max_total_exposure_pct_bear"] = bear_exposure
+        max_exposure = min(max(max_exposure, 0.0), 1.0)
+        strategy_config["max_total_exposure_pct_bull"] = max_exposure
+        genome_adj["max_total_exposure_pct_bull"] = max_exposure
+        bear_exposure = float(strategy_config.get("max_total_exposure_pct_bear", 0.0) or 0.0)
+        bear_exposure = min(max(bear_exposure, 0.0), 1.0)
+        strategy_config["max_total_exposure_pct_bear"] = bear_exposure
+        genome_adj["max_total_exposure_pct_bear"] = bear_exposure
         max_positions = int(strategy_config.get("max_positions", 1) or 1)
         max_pos_size = float(strategy_config.get("max_pos_size_pct", 1.0) or 1.0)
-        if OBJECTIVE_PROFILE == "no_leverage":
-            max_pos_size = min(max_pos_size, 1.0)
+        max_pos_size = min(max(max_pos_size, 0.0), 1.0)
         if max_positions > 0 and (max_positions * max_pos_size) > max_exposure:
             max_pos_size = max_exposure / max_positions
             strategy_config["max_pos_size_pct"] = max_pos_size
@@ -774,8 +956,9 @@ def evaluate_genome(genome_id_and_genome):
             genome_adj["slippage_bps"] = strategy_config["slippage_bps"]
             genome_adj["entry_slippage_bps"] = strategy_config["entry_slippage_bps"]
             genome_adj["exit_slippage_bps"] = strategy_config["exit_slippage_bps"]
-        # Default to bull-deploy/bear-cash behavior for superperformance tuning.
-        default_exposure_mode = "filter" if OBJECTIVE_PROFILE == "no_leverage" else "hybrid"
+        # Default to adaptive exposure in no-leverage mode to avoid sparse,
+        # regime-skipping overfit profiles that sit in cash for long spans.
+        default_exposure_mode = "exposure" if OBJECTIVE_PROFILE == "no_leverage" else "hybrid"
         exposure_mode = str(
             os.getenv("APEX_MARKET_EXPOSURE_MODE", strategy_config.get("market_exposure_mode", default_exposure_mode))
             or default_exposure_mode
@@ -784,12 +967,15 @@ def evaluate_genome(genome_id_and_genome):
             exposure_mode = "hybrid"
         strategy_config["market_exposure_mode"] = exposure_mode
         genome_adj["market_exposure_mode"] = exposure_mode
-        strategy_config["bear_max_positions"] = int(os.getenv("APEX_BEAR_MAX_POSITIONS", "1") or "1")
+        default_bear_max_positions = "2" if OBJECTIVE_PROFILE == "no_leverage" else "1"
+        strategy_config["bear_max_positions"] = int(
+            os.getenv("APEX_BEAR_MAX_POSITIONS", default_bear_max_positions) or default_bear_max_positions
+        )
         strategy_config["regime_filter"] = exposure_mode in {"filter", "hard"}
         strategy_config["regime_exit"] = exposure_mode in {"filter", "hard"}
         strategy_config["market_filter_mode"] = "sma200"
         strategy_config["regime_ma"] = "sma200"
-        default_tl = "1" if OBJECTIVE_PROFILE == "no_leverage" else "0"
+        default_tl = "0"
         use_traffic_light = str(os.getenv("APEX_USE_TRAFFIC_LIGHT", default_tl) or default_tl).strip().lower() in {
             "1",
             "true",
@@ -798,8 +984,8 @@ def evaluate_genome(genome_id_and_genome):
         strategy_config["use_market_regime_traffic_light"] = use_traffic_light
         genome_adj["use_market_regime_traffic_light"] = use_traffic_light
         if OBJECTIVE_PROFILE == "no_leverage":
-            bear_cash_mode = str(os.getenv("APEX_BEAR_CASH_MODE", "hard") or "hard").strip().lower()
-            tl_block_exposure = str(os.getenv("APEX_TL_BLOCK_EXPOSURE", "1") or "1").strip().lower() in {
+            bear_cash_mode = str(os.getenv("APEX_BEAR_CASH_MODE", "off") or "off").strip().lower()
+            tl_block_exposure = str(os.getenv("APEX_TL_BLOCK_EXPOSURE", "0") or "0").strip().lower() in {
                 "1",
                 "true",
                 "yes",
@@ -830,13 +1016,7 @@ def evaluate_genome(genome_id_and_genome):
         strategy_config["exit_sma_slow"] = "sma50"
         strategy_config["move_stop_to_be"] = True
         strategy_config["pyramid_stop_to_avg_cost"] = False
-        if OBJECTIVE_PROFILE == "no_leverage":
-            strategy_config["allow_margin"] = False
-        else:
-            strategy_config["allow_margin"] = (
-                float(strategy_config.get("max_total_exposure_pct_bull", 1.0) or 1.0) > 1.0
-                or float(strategy_config.get("max_pos_size_pct", 1.0) or 1.0) > 1.0
-            )
+        strategy_config["allow_margin"] = False
         score_mode = str(strategy_config.get("score_mode", "dual_core") or "dual_core").strip().lower()
         if score_mode not in {"dual_core", "momentum"}:
             score_mode = "dual_core"
@@ -897,6 +1077,7 @@ def evaluate_genome(genome_id_and_genome):
         
         final_val = metrics.get("final_value", 100000)
         trades = metrics.get("total_trades", 0)
+        active_period_years = float(metrics.get("active_period_years", 0.0) or 0.0)
         raw_dd = metrics.get("max_drawdown_pct", metrics.get("max_drawdown", metrics.get("drawdown", 0.0)))
         max_dd = raw_dd * 100.0 if raw_dd < 1.0 else raw_dd
             
@@ -907,6 +1088,21 @@ def evaluate_genome(genome_id_and_genome):
         recent_5y_cagr = _recent_cagr_pct(metrics.get("equity_curve", []), 5)
         recent_3y_cagr = _recent_cagr_pct(metrics.get("equity_curve", []), 3)
         worst_12m_return_pct = _worst_rolling_12m_return_pct(metrics.get("equity_curve", []))
+        worst_24m_cagr, median_24m_cagr, rolling_24m_samples = _rolling_window_cagr_stats(
+            metrics.get("equity_curve", []),
+            window_years=2,
+            step_days=21,
+        )
+        stitched_oos_cagr, stitched_oos_folds, stitched_oos_worst_fold = _stitched_oos_cagr_pct(
+            metrics.get("equity_curve", []),
+            train_years=STITCHED_OOS_TRAIN_YEARS,
+            test_years=STITCHED_OOS_TEST_YEARS,
+        )
+        year_conc = _year_concentration_stats(metrics.get("equity_curve", []))
+        max_year_share = float(year_conc.get("max_positive_share", float("nan")))
+        top2_year_share = float(year_conc.get("top2_positive_share", float("nan")))
+        negative_years = int(year_conc.get("negative_years", 0) or 0)
+        total_years = int(year_conc.get("total_years", 0) or 0)
 
         # DEATH PENALTY: Disqualify high drawdown genomes
         if max_dd > float(max_dd_cap):
@@ -917,6 +1113,7 @@ def evaluate_genome(genome_id_and_genome):
                 "cagr": cagr_pct,
                 "cagr_5y": recent_5y_cagr,
                 "cagr_3y": recent_3y_cagr,
+                "stitched_oos_cagr": stitched_oos_cagr,
                 "dd": max_dd,
                 "trades": trades,
                 "disqualified": True
@@ -987,6 +1184,10 @@ def evaluate_genome(genome_id_and_genome):
             score -= trade_deficit * 20.0
             if trades < int(MIN_TRADES_FLOOR * 0.60):
                 score -= 6.0
+        if trades < MIN_TRADES_HARD_FLOOR:
+            score -= 35.0
+        if active_period_years < MIN_ACTIVE_YEARS:
+            score -= (MIN_ACTIVE_YEARS - active_period_years) * 8.0
 
         if max_dd > 30.0:
             score -= (max_dd - 30.0) * 1.5
@@ -995,12 +1196,11 @@ def evaluate_genome(genome_id_and_genome):
         if cagr_pct <= 0.0:
             score -= 25.0
 
-        if OBJECTIVE_PROFILE == "no_leverage":
-            # Keep optimization aligned with practical execution constraints.
-            if same_day_open_entries > 0:
-                score -= min(120.0, 20.0 + (same_day_open_entries * 0.25))
-            if max_gross_exposure_pct > 1.0:
-                score -= (max_gross_exposure_pct - 1.0) * 400.0
+        # Keep optimization aligned with practical execution constraints.
+        if same_day_open_entries > 0:
+            score -= min(160.0, 25.0 + (same_day_open_entries * 0.35))
+        if max_gross_exposure_pct > 1.0:
+            score -= (max_gross_exposure_pct - 1.0) * 500.0
 
         # Keep some recency awareness, but avoid hard-wiring optimization to a single market phase.
         if np.isfinite(recent_5y_cagr):
@@ -1019,6 +1219,33 @@ def evaluate_genome(genome_id_and_genome):
 
         if np.isfinite(worst_12m_return_pct) and worst_12m_return_pct < WORST_12M_FLOOR_PCT:
             score -= (WORST_12M_FLOOR_PCT - worst_12m_return_pct) * WORST_12M_PENALTY_MULT
+
+        if np.isfinite(stitched_oos_cagr):
+            score += stitched_oos_cagr * 1.5
+            if stitched_oos_cagr < STITCHED_OOS_CAGR_FLOOR:
+                score -= (STITCHED_OOS_CAGR_FLOOR - stitched_oos_cagr) * STITCHED_OOS_PENALTY_MULT
+        else:
+            score -= 6.0
+
+        if np.isfinite(worst_24m_cagr):
+            if worst_24m_cagr < WORST_24M_CAGR_FLOOR:
+                score -= (WORST_24M_CAGR_FLOOR - worst_24m_cagr) * WORST_24M_CAGR_PENALTY_MULT
+        else:
+            score -= 3.0
+
+        if np.isfinite(median_24m_cagr):
+            score += median_24m_cagr * 0.35
+            if median_24m_cagr < MEDIAN_24M_CAGR_FLOOR:
+                score -= (MEDIAN_24M_CAGR_FLOOR - median_24m_cagr) * MEDIAN_24M_CAGR_PENALTY_MULT
+        else:
+            score -= 3.0
+
+        if np.isfinite(max_year_share) and max_year_share > MAX_SINGLE_YEAR_PNL_SHARE:
+            score -= (max_year_share - MAX_SINGLE_YEAR_PNL_SHARE) * YEAR_CONCENTRATION_PENALTY_MULT
+        if np.isfinite(top2_year_share) and top2_year_share > MAX_TWO_YEAR_PNL_SHARE:
+            score -= (top2_year_share - MAX_TWO_YEAR_PNL_SHARE) * TWO_YEAR_CONCENTRATION_PENALTY_MULT
+        if total_years >= 5 and negative_years > NEGATIVE_YEAR_SOFT_CAP:
+            score -= (negative_years - NEGATIVE_YEAR_SOFT_CAP) * NEGATIVE_YEAR_PENALTY
 
         # Soft anti-overrestriction bias:
         # Keep broad-profile runs from collapsing into ultra-sparse screeners.
@@ -1041,6 +1268,7 @@ def evaluate_genome(genome_id_and_genome):
             and pf_clipped >= max(1.20, MIN_PF_FLOOR)
             and ratio_clipped >= max(2.5, MIN_WINLOSS_RATIO)
             and trades >= MIN_TRADES_FLOOR
+            and (not np.isfinite(stitched_oos_cagr) or stitched_oos_cagr >= STITCHED_OOS_CAGR_FLOOR)
         )
         if is_super_candidate:
             score += 10.0
@@ -1056,7 +1284,18 @@ def evaluate_genome(genome_id_and_genome):
             "calmar": calmar,
             "pf": pf,
             "trades": trades,
+            "active_period_years": active_period_years,
             "worst_12m_return_pct": worst_12m_return_pct,
+            "worst_24m_cagr": worst_24m_cagr,
+            "median_24m_cagr": median_24m_cagr,
+            "rolling_24m_samples": rolling_24m_samples,
+            "stitched_oos_cagr": stitched_oos_cagr,
+            "stitched_oos_folds": stitched_oos_folds,
+            "stitched_oos_worst_fold": stitched_oos_worst_fold,
+            "max_year_pnl_share": max_year_share,
+            "top2_year_pnl_share": top2_year_share,
+            "negative_years": negative_years,
+            "total_years": total_years,
             "avg_win_pct": avg_win_pct,
             "avg_loss_pct": avg_loss_pct,
             "win_loss_ratio": win_loss_ratio,
@@ -1086,6 +1325,7 @@ if __name__ == "__main__":
         f"entry_slippage_bps={OPTIMIZER_ENTRY_SLIPPAGE_BPS:.1f}, "
         f"exit_slippage_bps={OPTIMIZER_EXIT_SLIPPAGE_BPS:.1f}"
     )
+    print(f"OBJECTIVE PROFILE: {OBJECTIVE_PROFILE} (cash-only, no leverage hard-clamped)")
     if "APEX_TRACE_KNOWN_WINNER_REJECTS" not in os.environ:
         os.environ["APEX_TRACE_KNOWN_WINNER_REJECTS"] = "1" if OPTIMIZER_TRACE_REJECTS else "0"
     if "APEX_TRACE_REJECTS_MAX_LINES" not in os.environ:
@@ -1383,6 +1623,7 @@ if __name__ == "__main__":
                             if res.get("disqualified"):
                                 print(
                                     f"   > T:{res.get('trades', 0)} | CAGR:{res.get('cagr', 0):.1f}% "
+                                    f"| OOS:{res.get('stitched_oos_cagr', float('nan')):.1f}% "
                                     f"| 5Y:{res.get('cagr_5y', float('nan')):.1f}% | DD:{res.get('dd', 0):.1f}% "
                                     f"| Fitness:-100 (DD Cap)"
                                 )
@@ -1390,7 +1631,9 @@ if __name__ == "__main__":
                                 print(
                                     f"   > T:{res['trades']} | CAGR:{res['cagr']:.1f}% | DD:{res['dd']:.1f}% "
                                     f"| PF:{res.get('pf', 0.0):.2f} | Calmar:{res.get('calmar', 0):.2f} "
+                                    f"| OOS:{res.get('stitched_oos_cagr', float('nan')):.1f}% "
                                     f"| 5Y:{res.get('cagr_5y', float('nan')):.1f}% | 3Y:{res.get('cagr_3y', float('nan')):.1f}% "
+                                    f"| YShare:{float(res.get('max_year_pnl_share', float('nan'))):.2f} "
                                     f"| SDO:{int(res.get('same_day_open_entries', 0) or 0)} "
                                     f"| Gross:{float(res.get('max_gross_exposure_pct', 0.0) or 0.0) * 100.0:.1f}%"
                                 )
@@ -1423,7 +1666,9 @@ if __name__ == "__main__":
             print(
                 f"🏆 WINNER: CAGR {winner['cagr']:.2f}% | DD {winner['dd']:.2f}% | "
                 f"PF {winner.get('pf', 0.0):.2f} | Calmar {winner.get('calmar', 0):.2f} "
+                f"| OOS {winner.get('stitched_oos_cagr', float('nan')):.2f}% "
                 f"| 5Y {winner.get('cagr_5y', float('nan')):.2f}% | 3Y {winner.get('cagr_3y', float('nan')):.2f}% "
+                f"| YearShare {float(winner.get('max_year_pnl_share', float('nan'))):.2f} "
                 f"| Score: {winner['score']:.2f}"
             )
             print(f"🧬 DNA: {winner['genome']}")
@@ -1438,6 +1683,11 @@ if __name__ == "__main__":
                 "cagr": float(winner.get("cagr", 0.0) or 0.0),
                 "cagr_5y": float(winner.get("cagr_5y", float("nan"))),
                 "cagr_3y": float(winner.get("cagr_3y", float("nan"))),
+                "stitched_oos_cagr": float(winner.get("stitched_oos_cagr", float("nan"))),
+                "stitched_oos_folds": int(winner.get("stitched_oos_folds", 0) or 0),
+                "stitched_oos_worst_fold": float(winner.get("stitched_oos_worst_fold", float("nan"))),
+                "max_year_pnl_share": float(winner.get("max_year_pnl_share", float("nan"))),
+                "top2_year_pnl_share": float(winner.get("top2_year_pnl_share", float("nan"))),
                 "dd": float(winner.get("dd", 0.0) or 0.0),
                 "trades": int(winner.get("trades", 0) or 0),
                 "updated_at": pd.Timestamp.now().isoformat(),

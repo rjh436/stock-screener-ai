@@ -23,6 +23,7 @@ from data.fundamentals import (
     fetch_fundamental_data,
 )
 from execution.market_regime import compute_regime_series
+from execution.allocator import RegimeAllocator
 from execution.parity import (
     apply_strategy_score_multipliers,
     DEFAULT_SCORING_WEIGHTS,
@@ -262,6 +263,7 @@ def _init_backtest_audit_report() -> Dict[str, Any]:
         "max_gross_exposure_pct": 0.0,
         "max_gross_exposure_date": None,
         "entry_type_counts": {"vcp": 0, "ep": 0, "other": 0},
+        "sleeve_entry_counts": {"breakout": 0, "continuation": 0, "recovery": 0, "other": 0},
         "total_entry_events": 0,
     }
 
@@ -333,6 +335,7 @@ def _audit_track_entry_event(
     audit_report: Dict[str, Any],
     *,
     entry_type: str,
+    sleeve: str = "",
 ) -> None:
     counts = audit_report.setdefault("entry_type_counts", {"vcp": 0, "ep": 0, "other": 0})
     if not isinstance(counts, dict):
@@ -342,6 +345,18 @@ def _audit_track_entry_event(
     if entry_key not in {"vcp", "ep"}:
         entry_key = "other"
     counts[entry_key] = int(counts.get(entry_key, 0) or 0) + 1
+
+    sleeve_counts = audit_report.setdefault(
+        "sleeve_entry_counts",
+        {"breakout": 0, "continuation": 0, "recovery": 0, "other": 0},
+    )
+    if not isinstance(sleeve_counts, dict):
+        sleeve_counts = {"breakout": 0, "continuation": 0, "recovery": 0, "other": 0}
+        audit_report["sleeve_entry_counts"] = sleeve_counts
+    sleeve_key = str(sleeve or "").strip().lower()
+    if sleeve_key not in {"breakout", "continuation", "recovery"}:
+        sleeve_key = "other"
+    sleeve_counts[sleeve_key] = int(sleeve_counts.get(sleeve_key, 0) or 0) + 1
     audit_report["total_entry_events"] = int(audit_report.get("total_entry_events", 0) or 0) + 1
 
 
@@ -372,6 +387,16 @@ def _finalize_backtest_audit_report(audit_report: Dict[str, Any]) -> Dict[str, A
         "other": int(entry_counts.get("other", 0) or 0),
     }
     out["entry_type_counts"] = normalized_entry_counts
+    sleeve_counts = out.get("sleeve_entry_counts", {})
+    if not isinstance(sleeve_counts, dict):
+        sleeve_counts = {}
+    normalized_sleeve_counts = {
+        "breakout": int(sleeve_counts.get("breakout", 0) or 0),
+        "continuation": int(sleeve_counts.get("continuation", 0) or 0),
+        "recovery": int(sleeve_counts.get("recovery", 0) or 0),
+        "other": int(sleeve_counts.get("other", 0) or 0),
+    }
+    out["sleeve_entry_counts"] = normalized_sleeve_counts
     total_entry_events = int(sum(normalized_entry_counts.values()))
     out["total_entry_events"] = total_entry_events
     if total_entry_events > 0:
@@ -379,8 +404,13 @@ def _finalize_backtest_audit_report(audit_report: Dict[str, Any]) -> Dict[str, A
             key: float(val) / float(total_entry_events)
             for key, val in normalized_entry_counts.items()
         }
+        out["sleeve_entry_shares"] = {
+            key: float(val) / float(total_entry_events)
+            for key, val in normalized_sleeve_counts.items()
+        }
     else:
         out["entry_type_shares"] = {key: 0.0 for key in normalized_entry_counts}
+        out["sleeve_entry_shares"] = {key: 0.0 for key in normalized_sleeve_counts}
     return out
 
 
@@ -1602,12 +1632,113 @@ class _Candidate:
     signal_mode: str = ""
     entry_type: str = ""
     entry_timing: str = "next_day"
+    sleeve: str = "breakout"
 
 
 @dataclass(slots=True)
 class PreparedBacktestData:
     enriched: Dict[str, _SymbolArrays]
     all_dates: np.ndarray
+
+
+def _normalize_sleeve_name(value: Any) -> str:
+    sleeve = str(value or "").strip().lower()
+    if sleeve in {"breakout", "continuation", "recovery"}:
+        return sleeve
+    return "other"
+
+
+def _infer_sleeve_from_entry_type(entry_type: str) -> str:
+    key = str(entry_type or "").strip().lower()
+    if key in {"vcp", "ep", "breakout"}:
+        return "breakout"
+    if key == "continuation":
+        return "continuation"
+    if key == "recovery":
+        return "recovery"
+    return "other"
+
+
+def _apply_sleeve_budgets(
+    day_candidates: List[_Candidate],
+    *,
+    sleeve_weights: Dict[str, float],
+    open_slots: int,
+    allow_overfill: bool = True,
+) -> List[_Candidate]:
+    if open_slots <= 0 or not day_candidates:
+        return []
+
+    weights_raw = dict(sleeve_weights or {})
+    parsed_weights: Dict[str, float] = {}
+    for raw_key, raw_value in weights_raw.items():
+        key = _normalize_sleeve_name(raw_key)
+        if key == "other":
+            continue
+        try:
+            val = float(raw_value)
+        except Exception:
+            continue
+        if not np.isfinite(val) or val <= 0:
+            continue
+        parsed_weights[key] = val
+    if not parsed_weights:
+        parsed_weights = {"breakout": 1.0}
+
+    weight_sum = float(sum(parsed_weights.values()))
+    if weight_sum <= 0:
+        parsed_weights = {"breakout": 1.0}
+        weight_sum = 1.0
+    normalized_weights = {k: (v / weight_sum) for k, v in parsed_weights.items()}
+
+    buckets: Dict[str, List[_Candidate]] = {"breakout": [], "continuation": [], "recovery": [], "other": []}
+    for cand in day_candidates:
+        buckets[_normalize_sleeve_name(getattr(cand, "sleeve", ""))].append(cand)
+    for bucket in buckets.values():
+        bucket.sort(key=lambda c: c.score, reverse=True)
+
+    targets = {k: int(np.floor(normalized_weights.get(k, 0.0) * open_slots)) for k in ("breakout", "continuation", "recovery")}
+    used = 0
+    selected: List[_Candidate] = []
+    selected_ids = set()
+
+    def _take_from_bucket(bucket_name: str, count: int) -> None:
+        nonlocal used
+        if count <= 0:
+            return
+        bucket = buckets.get(bucket_name, [])
+        taken = 0
+        for cand in bucket:
+            cid = id(cand)
+            if cid in selected_ids:
+                continue
+            selected.append(cand)
+            selected_ids.add(cid)
+            used += 1
+            taken += 1
+            if taken >= count or used >= open_slots:
+                break
+
+    for name in ("breakout", "continuation", "recovery"):
+        _take_from_bucket(name, targets.get(name, 0))
+        if used >= open_slots:
+            break
+
+    if allow_overfill and used < open_slots:
+        remaining = sorted(
+            [cand for cand in day_candidates if id(cand) not in selected_ids],
+            key=lambda c: c.score,
+            reverse=True,
+        )
+        for cand in remaining:
+            selected.append(cand)
+            selected_ids.add(id(cand))
+            used += 1
+            if used >= open_slots:
+                break
+
+    selected.sort(key=lambda c: c.score, reverse=True)
+    return selected
 
 
 def _get_np_col(df: pd.DataFrame, col: str, fallback: float, *, length: int) -> np.ndarray:
@@ -2195,7 +2326,9 @@ def _legacy_run_backtest(
                         if 0 <= regime_idx < len(breadth_above_50_by_day)
                         else float("nan")
                     )
-                    use_breadth_overlay = bool(params.get("use_market_breadth_overlay", True))
+                    # Breadth overlay should be explicit opt-in; default-off avoids
+                    # hidden throttling for legacy configs that never requested it.
+                    use_breadth_overlay = bool(params.get("use_market_breadth_overlay", False))
                     breadth_hard_block_entries = bool(params.get("breadth_hard_block_entries", False))
                     breadth_entry_floor = float(params.get("breadth_entry_floor", 0.22) or 0.22)
                     if (
@@ -2342,13 +2475,18 @@ def _legacy_run_backtest(
                     cand_signal_mode = str(params.get("signal_mode", "after_close"))
                     cand_entry_timing = "next_day"
                     entry_type = ""
+                    cand_sleeve = "breakout"
 
+                    decision_signal_strength = float("nan")
                     if isinstance(decision, dict):
                         trigger = decision.get("trigger_price")
                         stop_px = decision.get("stop_price")
                         if stop_limit_pct is None:
                             stop_limit_pct = decision.get("stop_limit_pct")
                         entry_type = str(decision.get("entry_type", "") or "")
+                        cand_sleeve = str(
+                            decision.get("sleeve", _infer_sleeve_from_entry_type(entry_type)) or "breakout"
+                        ).strip().lower()
                         raw_entry_timing = decision.get("entry_timing") or decision.get("signal_mode")
                         if isinstance(raw_entry_timing, str):
                             timing = raw_entry_timing.lower()
@@ -2361,6 +2499,12 @@ def _legacy_run_backtest(
                                     cand_signal_mode = "open"
                             elif timing in {"open", "close"}:
                                 cand_signal_mode = timing
+                        try:
+                            decision_signal_strength = float(
+                                decision.get("signal_strength", float("nan"))
+                            )
+                        except Exception:
+                            decision_signal_strength = float("nan")
                     cand_entry_timing = _entry_timing_label(
                         entry_i=entry_i,
                         prev_i=prev_i,
@@ -2512,6 +2656,40 @@ def _legacy_run_backtest(
                             )
                         continue
 
+                    sleeve_min_key = f"{cand_sleeve}_min_entry_score"
+                    sleeve_min_entry_score = params.get(sleeve_min_key)
+                    if sleeve_min_entry_score is not None:
+                        try:
+                            sleeve_min_entry_score = float(sleeve_min_entry_score)
+                        except Exception:
+                            sleeve_min_entry_score = 0.0
+                        if (
+                            np.isfinite(sleeve_min_entry_score)
+                            and sleeve_min_entry_score > 0
+                            and score < sleeve_min_entry_score
+                        ):
+                            continue
+
+                    signal_strength_weight = params.get("decision_signal_strength_weight", 0.0)
+                    try:
+                        signal_strength_weight = float(signal_strength_weight)
+                    except Exception:
+                        signal_strength_weight = 0.0
+                    if (
+                        signal_strength_weight != 0.0
+                        and np.isfinite(decision_signal_strength)
+                    ):
+                        score += signal_strength_weight * decision_signal_strength
+
+                    sleeve_score_boosts = params.get("sleeve_score_boosts", {})
+                    if isinstance(sleeve_score_boosts, dict):
+                        try:
+                            sleeve_boost = float(sleeve_score_boosts.get(cand_sleeve, 0.0) or 0.0)
+                        except Exception:
+                            sleeve_boost = 0.0
+                        if np.isfinite(sleeve_boost) and sleeve_boost != 0.0:
+                            score += sleeve_boost
+
                     if entry_day_idx < 0 or entry_day_idx >= len(all_dates):
                         continue
                     candidates_by_day[entry_day_idx].append(
@@ -2527,6 +2705,7 @@ def _legacy_run_backtest(
                             str(cand_signal_mode),
                             entry_type,
                             str(cand_entry_timing),
+                            str(cand_sleeve or "breakout"),
                         )
                     )
                     curr_date_str = str(all_dates[entry_day_idx])[:10]
@@ -2604,6 +2783,14 @@ def _legacy_run_backtest(
         except Exception:
             equity_stride = 1
         equity_stride = max(1, equity_stride)
+
+        allocator_cfg = params.get("allocator", {})
+        if not isinstance(allocator_cfg, dict):
+            allocator_cfg = {}
+        allocator_cfg = dict(allocator_cfg)
+        if "enabled" not in allocator_cfg:
+            allocator_cfg["enabled"] = bool(params.get("allocator_enabled", False))
+        allocator = RegimeAllocator(allocator_cfg)
 
         for day_idx, candidates in enumerate(candidates_by_day):
             # AUDIT FIX: Respect Start/End dates
@@ -2685,7 +2872,9 @@ def _legacy_run_backtest(
                         orange_cap = int(params.get("orange_max_positions", orange_cap_default) or orange_cap_default)
                         max_pos_today = max(0, min(max_pos_today, orange_cap))
 
-            use_breadth_overlay = bool(params.get("use_market_breadth_overlay", True))
+            # Breadth overlay should be explicit opt-in; default-off avoids
+            # hidden throttling for legacy configs that never requested it.
+            use_breadth_overlay = bool(params.get("use_market_breadth_overlay", False))
             breadth_hard_block_entries = bool(params.get("breadth_hard_block_entries", False))
             breadth_entry_floor = float(params.get("breadth_entry_floor", 0.22) or 0.22)
             breadth_risk_floor = float(params.get("breadth_risk_floor", 0.25) or 0.25)
@@ -2724,6 +2913,16 @@ def _legacy_run_backtest(
                     elif breadth_above_50 < 0.35:
                         max_pos_today = max(0, int(np.floor(max_pos_today * 0.75)))
 
+            allocation_decision = allocator.allocate(
+                regime_state=regime_state,
+                breadth_50=breadth_above_50,
+                breadth_200=breadth_above_200,
+                breadth_rs=breadth_rs,
+            )
+            sleeve_weights_today = allocation_decision.sleeve_weights
+            if allocator.enabled:
+                regime_risk_scalar *= float(np.clip(allocation_decision.gross_target, 0.0, 1.0))
+
             stop_loss_atr_bull = float(params.get("stop_loss_atr_bull", params.get("stop_loss_atr", 3.0)) or 3.0)
             stop_loss_atr_bear = float(params.get("stop_loss_atr_bear", params.get("bear_stop_loss_atr", 0.5)) or 0.5)
 
@@ -2731,6 +2930,8 @@ def _legacy_run_backtest(
             max_total_bull = float(params.get("max_total_exposure_pct_bull", base_max_total) or base_max_total)
             max_total_bear = float(params.get("max_total_exposure_pct_bear", base_max_total) or base_max_total)
             max_total_exposure_pct = max_total_bull if market_is_bull else max_total_bear
+            if allocator.enabled:
+                max_total_exposure_pct = min(max_total_exposure_pct, float(allocation_decision.gross_target))
             allow_margin = bool(params.get("allow_margin", False))
             if allow_margin:
                 raise ValueError("CRITICAL: allow_margin=True is forbidden by hard constraints.")
@@ -2740,6 +2941,8 @@ def _legacy_run_backtest(
                 raise ValueError(f"CRITICAL: max_pos_size_pct={max_pos_size_pct} exceeds 1.0 limit.")
 
             # 1. Manage Positions
+            stale_position_max_days = int(params.get("stale_position_max_days", 2) or 2)
+            stale_position_max_days = max(1, stale_position_max_days)
             to_remove = []
             for sym, pos in positions.items():
                 sym_data = enriched[sym]
@@ -2752,6 +2955,34 @@ def _legacy_run_backtest(
                         day_idx=day_idx,
                         all_dates=all_dates,
                     )
+                    stale_days = int(pos.get("stale_days", 0) or 0) + 1
+                    pos["stale_days"] = stale_days
+                    if stale_days >= stale_position_max_days:
+                        exit_px = float(pos.get("last_price", pos.get("entry_price", 0.0)) or 0.0) * (1.0 - exit_slippage_rate)
+                        if np.isfinite(exit_px) and exit_px > 0:
+                            shares = int(pos.get("shares", 0) or 0)
+                            if shares > 0:
+                                gross_proceeds = shares * exit_px
+                                exit_fee = gross_proceeds * transaction_cost_rate
+                                proceeds = gross_proceeds - exit_fee
+                                cash += proceeds
+                                entry_fee_remaining = float(pos.get("entry_fee_remaining", 0.0) or 0.0)
+                                pnl = proceeds - (shares * float(pos.get("entry_price", 0.0) or 0.0)) - entry_fee_remaining
+                                trade_outcomes.append(1 if pnl > 0 else 0)
+                                invested = (shares * float(pos.get("entry_price", 0.0) or 0.0)) + entry_fee_remaining
+                                trades_list.append(
+                                    {
+                                        "Symbol": sym,
+                                        "Entry": float(pos.get("entry_price", 0.0) or 0.0),
+                                        "Exit": exit_px,
+                                        "PnL": pnl,
+                                        "Return %": ((pnl / invested) * 100) if invested > 0 else 0.0,
+                                        "Reason": "STALE_DATA_EXIT",
+                                        "Shares": shares,
+                                        "Fees": entry_fee_remaining + exit_fee,
+                                    }
+                                )
+                                to_remove.append(sym)
                     continue
                 loc = curr_loc_arr[0]
                 
@@ -2763,12 +2994,41 @@ def _legacy_run_backtest(
                         day_idx=day_idx,
                         all_dates=all_dates,
                     )
+                    stale_days = int(pos.get("stale_days", 0) or 0) + 1
+                    pos["stale_days"] = stale_days
+                    if stale_days >= stale_position_max_days:
+                        exit_px = float(pos.get("last_price", pos.get("entry_price", 0.0)) or 0.0) * (1.0 - exit_slippage_rate)
+                        if np.isfinite(exit_px) and exit_px > 0:
+                            shares = int(pos.get("shares", 0) or 0)
+                            if shares > 0:
+                                gross_proceeds = shares * exit_px
+                                exit_fee = gross_proceeds * transaction_cost_rate
+                                proceeds = gross_proceeds - exit_fee
+                                cash += proceeds
+                                entry_fee_remaining = float(pos.get("entry_fee_remaining", 0.0) or 0.0)
+                                pnl = proceeds - (shares * float(pos.get("entry_price", 0.0) or 0.0)) - entry_fee_remaining
+                                trade_outcomes.append(1 if pnl > 0 else 0)
+                                invested = (shares * float(pos.get("entry_price", 0.0) or 0.0)) + entry_fee_remaining
+                                trades_list.append(
+                                    {
+                                        "Symbol": sym,
+                                        "Entry": float(pos.get("entry_price", 0.0) or 0.0),
+                                        "Exit": exit_px,
+                                        "PnL": pnl,
+                                        "Return %": ((pnl / invested) * 100) if invested > 0 else 0.0,
+                                        "Reason": "STALE_DATA_EXIT",
+                                        "Shares": shares,
+                                        "Fees": entry_fee_remaining + exit_fee,
+                                    }
+                                )
+                                to_remove.append(sym)
                     continue
 
                 current_close = float(sym_data.close[loc])
                 current_low = float(sym_data.low[loc])
                 current_open = float(sym_data.open[loc])
                 current_high = float(sym_data.high[loc])
+                pos["stale_days"] = 0
 
                 # Execute pending next-day exits generated by prior close-based logic.
                 if pos.get("exit_pending") and pos.get("exit_pending_day") is not None:
@@ -3040,6 +3300,15 @@ def _legacy_run_backtest(
                 regime_skip_log_count += 1
             if regime_block_new_entries:
                 day_candidates = []
+            open_slots = max(0, max_pos_today - len(positions))
+            if allocator.enabled and open_slots > 0 and day_candidates:
+                allocator_allow_overfill = bool(params.get("allocator_allow_overfill", True))
+                day_candidates = _apply_sleeve_budgets(
+                    day_candidates,
+                    sleeve_weights=sleeve_weights_today,
+                    open_slots=open_slots,
+                    allow_overfill=allocator_allow_overfill,
+                )
 
             for cand in day_candidates:
                 if len(positions) >= max_pos_today: break
@@ -3057,6 +3326,9 @@ def _legacy_run_backtest(
                 low_px = float(sym_data.low[entry_loc])
                 close_px = float(sym_data.close[entry_loc])
                 entry_type = str(getattr(cand, "entry_type", "") or "").lower()
+                entry_sleeve = _normalize_sleeve_name(
+                    getattr(cand, "sleeve", _infer_sleeve_from_entry_type(entry_type))
+                )
 
                 signal_mode = str(cand.signal_mode or params.get("signal_mode", "after_close")).lower()
                 if signal_mode in {"market", "open", "moo"}:
@@ -3170,6 +3442,7 @@ def _legacy_run_backtest(
                     _audit_track_entry_event(
                         audit_report,
                         entry_type=entry_type,
+                        sleeve=entry_sleeve,
                     )
                     entry_gross = shares * entry_px
                     entry_fee = entry_gross * transaction_cost_rate
@@ -3219,7 +3492,9 @@ def _legacy_run_backtest(
                         "shares": shares,
                         "entry_day_idx": day_idx,
                         "entry_type": entry_type,
+                        "sleeve": entry_sleeve,
                         "last_price": entry_px,
+                        "stale_days": 0,
                         "partial_taken": False,
                         "pyramids": 0,
                         "pyramid_pending": False,
@@ -3238,6 +3513,7 @@ def _legacy_run_backtest(
                             "Shares": shares,
                             "Fees": entry_fee,
                             "EntryType": entry_type,
+                            "Sleeve": entry_sleeve,
                             "Score": float(cand.score),
                         }
                     )
@@ -3366,6 +3642,7 @@ def _legacy_run_backtest(
         audit = final_results[0].get("audit_report") if isinstance(final_results[0], dict) else None
         if isinstance(audit, dict):
             entry_counts = audit.get("entry_type_counts", {}) if isinstance(audit.get("entry_type_counts", {}), dict) else {}
+            sleeve_counts = audit.get("sleeve_entry_counts", {}) if isinstance(audit.get("sleeve_entry_counts", {}), dict) else {}
             print(
                 "Audit: "
                 f"same_day_open_entries={int(audit.get('same_day_open_entries', 0) or 0)}, "
@@ -3374,7 +3651,12 @@ def _legacy_run_backtest(
                 f"entries(vcp/ep/other)="
                 f"{int(entry_counts.get('vcp', 0) or 0)}/"
                 f"{int(entry_counts.get('ep', 0) or 0)}/"
-                f"{int(entry_counts.get('other', 0) or 0)}"
+                f"{int(entry_counts.get('other', 0) or 0)}, "
+                f"sleeves(b/c/r/o)="
+                f"{int(sleeve_counts.get('breakout', 0) or 0)}/"
+                f"{int(sleeve_counts.get('continuation', 0) or 0)}/"
+                f"{int(sleeve_counts.get('recovery', 0) or 0)}/"
+                f"{int(sleeve_counts.get('other', 0) or 0)}"
             )
         return final_results[0]
     avg_universe = float(np.mean(debug_counts["n_universe"])) if len(all_dates) else 0.0

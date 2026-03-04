@@ -88,15 +88,18 @@ class EngineAuditReportTests(unittest.TestCase):
 
     def test_entry_type_audit_counts_and_shares(self) -> None:
         audit = _init_backtest_audit_report()
-        _audit_track_entry_event(audit, entry_type="vcp")
-        _audit_track_entry_event(audit, entry_type="ep")
-        _audit_track_entry_event(audit, entry_type="unknown")
+        _audit_track_entry_event(audit, entry_type="vcp", sleeve="breakout")
+        _audit_track_entry_event(audit, entry_type="ep", sleeve="breakout")
+        _audit_track_entry_event(audit, entry_type="unknown", sleeve="continuation")
         final = _finalize_backtest_audit_report(audit)
         self.assertEqual(final["total_entry_events"], 3)
         self.assertEqual(final["entry_type_counts"]["vcp"], 1)
         self.assertEqual(final["entry_type_counts"]["ep"], 1)
         self.assertEqual(final["entry_type_counts"]["other"], 1)
         self.assertAlmostEqual(final["entry_type_shares"]["vcp"], 1.0 / 3.0)
+        self.assertEqual(final["sleeve_entry_counts"]["breakout"], 2)
+        self.assertEqual(final["sleeve_entry_counts"]["continuation"], 1)
+        self.assertAlmostEqual(final["sleeve_entry_shares"]["breakout"], 2.0 / 3.0)
 
 
 if __name__ == "__main__":
