@@ -1,5 +1,5 @@
 {
-  "name": "Factor Momentum Pure12 N16 Balanced Sector-Relative v1",
+  "name": "Factor Momentum Pure12 N16 Quality Financing v1",
   "strategy_type": "cross_sectional_momentum",
   "blend_weight": 0.50,
   "rebalance_freq": "M",
@@ -10,16 +10,25 @@
   "drop_bottom_dv_frac": 0.20,
   "min_rank_names": 40,
 
-  "mom_12_1_weight": 0.90,
+  "mom_12_1_weight": 0.75,
   "mom_6_1_weight": 0.00,
   "mom_1_0_penalty_weight": 0.10,
   "proximity_52w_weight": 0.00,
-  "quality_growth_weight": 0.00,
-  "use_sector_relative_momentum": true,
-  "sector_relative_min_group_size": 8,
+  "quality_growth_weight": 0.15,
+
+  "quality_eps_yoy_weight": 1.00,
+  "quality_sales_yoy_weight": 1.00,
+  "quality_inst_weight": 0.50,
+  "quality_eps_accel_weight": 1.00,
+  "quality_revenue_accel_weight": 1.00,
+  "quality_accruals_weight": 0.75,
+  "quality_roe_trend_weight": 0.75,
+  "quality_issuance_weight": 0.50,
 
   "target_count": 16,
   "hold_buffer_mult": 1.75,
+  "conviction_weighted": true,
+  "conviction_power": 1.25,
 
   "max_position_weight": 0.06,
   "sector_cap": 0.25,
@@ -31,7 +40,10 @@
     "enabled": true,
     "symbol": "SPY",
     "ma_days": 200,
-    "risk_off_scalar": 0.55
+    "risk_off_scalar": 0.50,
+    "use_vix_overlay": true,
+    "use_credit_overlay": true,
+    "overlay_weight": 0.35
   },
 
   "acceptance_gates": {

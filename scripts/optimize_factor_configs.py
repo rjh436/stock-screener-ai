@@ -167,6 +167,7 @@ def main() -> None:
     parser.add_argument("--gate-oos60-35", type=float, default=4.5)
     parser.add_argument("--gate-dd20", type=float, default=42.0)
     parser.add_argument("--gate-turnover20", type=float, default=220.0)
+    parser.add_argument("--gate-window", choices=["24", "60"], default="24", help="Primary OOS window for gates")
     args = parser.parse_args()
 
     base_path = Path(args.base_config).expanduser().resolve()
@@ -182,7 +183,7 @@ def main() -> None:
     days = _days_for_range(start_date, end_date, warmup_days=420)
     print(f"Loading Russell 3000 PIT union: {len(symbols)} symbols ({start_date} -> {end_date}, days={days})")
     data = fetch_data_pack(symbols, days=days, backtest_mode=bool(args.cache_only)) or {}
-    global_data = fetch_data_pack(["SPY", "VIX"], days=days, backtest_mode=True) or {}
+    global_data = fetch_data_pack(["SPY", "VIX", "HYG", "LQD"], days=days, backtest_mode=True) or {}
 
     loaded_symbols = sorted(list(data.keys()))
     coverage = (len(loaded_symbols) / float(len(symbols))) if symbols else 0.0
@@ -424,10 +425,17 @@ def main() -> None:
                 oos60_20 = oos24_20
         if not np.isfinite(oos60_35) and np.isfinite(oos24_35):
             oos60_35 = oos24_35
+        gate_window = str(args.gate_window)
+        if gate_window == "24":
+            oos_gate_20 = oos24_20 if np.isfinite(oos24_20) else oos60_20
+            oos_gate_35 = oos24_35 if np.isfinite(oos24_35) else oos60_35
+        else:
+            oos_gate_20 = oos60_20 if np.isfinite(oos60_20) else oos24_20
+            oos_gate_35 = oos60_35 if np.isfinite(oos60_35) else oos24_35
 
         gates = {
-            "oos60_20_gate": bool(np.isfinite(oos60_20) and oos60_20 >= float(args.gate_oos60_20)),
-            "oos60_35_gate": bool(np.isfinite(oos60_35) and oos60_35 >= float(args.gate_oos60_35)),
+            "oos60_20_gate": bool(np.isfinite(oos_gate_20) and oos_gate_20 >= float(args.gate_oos60_20)),
+            "oos60_35_gate": bool(np.isfinite(oos_gate_35) and oos_gate_35 >= float(args.gate_oos60_35)),
             "dd20_gate": bool(np.isfinite(dd20) and dd20 <= float(args.gate_dd20)),
             "turnover20_gate": bool(np.isfinite(turnover20) and turnover20 <= float(args.gate_turnover20)),
         }
@@ -435,8 +443,8 @@ def main() -> None:
 
         final_score = (
             (gate_count * 1000.0)
-            + (oos60_20 if np.isfinite(oos60_20) else -999.0) * 10.0
-            + (oos60_35 if np.isfinite(oos60_35) else -999.0) * 8.0
+            + (oos_gate_20 if np.isfinite(oos_gate_20) else -999.0) * 10.0
+            + (oos_gate_35 if np.isfinite(oos_gate_35) else -999.0) * 8.0
             + (c20 if np.isfinite(c20) else -999.0) * 2.0
             - max(0.0, dd20 - float(args.gate_dd20)) * 3.0
             - max(0.0, (turnover20 if np.isfinite(turnover20) else 300.0) - float(args.gate_turnover20)) * 0.5
@@ -480,6 +488,9 @@ def main() -> None:
                     "oos60_20_cagr_pct_warm": oos60_20_warm,
                     "oos60_35_cagr_pct_warm": oos60_35_warm,
                     "oos_mode": "warm" if use_warm else "cold",
+                    "gate_window": gate_window,
+                    "oos_gate_20_cagr_pct": oos_gate_20,
+                    "oos_gate_35_cagr_pct": oos_gate_35,
                 },
                 "config": cfg,
             }
@@ -494,6 +505,7 @@ def main() -> None:
         "start_date": start_date,
         "end_date": end_date,
         "oos_mode": str(args.oos_mode).lower(),
+        "gate_window": str(args.gate_window),
         "gates": {
             "oos60_20_cagr_pct": float(args.gate_oos60_20),
             "oos60_35_cagr_pct": float(args.gate_oos60_35),

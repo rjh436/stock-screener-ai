@@ -435,9 +435,35 @@ class FactorWalkforwardTests(unittest.TestCase):
             stitched_36_12=cold,
             stitched_60_12=cold,
             stitched_60_12_warm=warm,
-            gate_cfg={"use_warm_restart_for_oos_gate": True, "oos60_gate_20x20_cagr_pct": 6.0},
+            gate_cfg={
+                "use_warm_restart_for_oos_gate": True,
+                "oos_gate_primary_window": "60_12",
+                "oos60_gate_20x20_cagr_pct": 6.0,
+            },
         )
         self.assertEqual(str(snap.get("oos_gate_mode")), "warm_restart")
+        self.assertTrue(bool(snap.get("meets_20x20_gate")))
+
+    def test_acceptance_snapshot_supports_primary_window_selection(self) -> None:
+        full = {"cagr": 0.10, "max_drawdown_pct": 0.30, "audit_report": {"max_gross_exposure_pct": 1.0, "same_day_open_entries": 0}}
+        stitched_36 = {"stitched_cagr_pct": 6.0}
+        stitched_60 = {"stitched_cagr_pct": 3.0}
+        stitched_24 = {"stitched_cagr_pct": 8.0}
+        snap = _acceptance_snapshot(
+            full,
+            stitched_36_12=stitched_36,
+            stitched_60_12=stitched_60,
+            stitched_24_12=stitched_24,
+            stitched_24_12_warm=stitched_24,
+            stitched_60_12_warm=stitched_60,
+            gate_cfg={
+                "use_warm_restart_for_oos_gate": True,
+                "oos_gate_primary_window": "24_12",
+                "oos60_gate_20x20_cagr_pct": 6.0,
+            },
+        )
+        self.assertEqual(str(snap.get("oos_gate_primary_window")), "24_12")
+        self.assertEqual(float(snap.get("oos_60_12_cagr_pct")), 8.0)
         self.assertTrue(bool(snap.get("meets_20x20_gate")))
 
 

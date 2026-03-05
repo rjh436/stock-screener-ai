@@ -122,8 +122,42 @@ def _build_market_risk_scalar(
     regime = pd.Series(1.0, index=close.index, dtype=float)
     regime[(close < ma) & ma.notna()] = risk_off_scalar
 
+    # Optional overlays to de-risk earlier in credit/volatility stress regimes.
+    overlay_w = float(regime_cfg.get("overlay_weight", 0.35) or 0.35)
+    overlay_w = float(np.clip(overlay_w, 0.0, 1.0))
+
+    if bool(regime_cfg.get("use_vix_overlay", False)):
+        vix_frame = global_data.get("VIX") if isinstance(global_data, Mapping) else None
+        vix_close = _close_col(vix_frame) if vix_frame is not None else None
+        if vix_close is not None and not vix_close.empty:
+            vix_ma = vix_close.rolling(63, min_periods=20).mean()
+            vix_std = vix_close.rolling(63, min_periods=20).std()
+            with np.errstate(invalid="ignore", divide="ignore"):
+                z = (vix_close - vix_ma) / vix_std.replace(0.0, np.nan)
+            # z <= 0 -> risk-on (1.0), z >= 2.5 -> risk-off (0.0).
+            vix_scalar = 1.0 - np.clip((z - 0.0) / 2.5, 0.0, 1.0)
+            vix_scalar = pd.Series(vix_scalar, index=vix_close.index, dtype=float).clip(lower=0.0, upper=1.0)
+            regime = ((1.0 - overlay_w) * regime) + (overlay_w * vix_scalar.reindex(regime.index).ffill().fillna(1.0))
+
+    if bool(regime_cfg.get("use_credit_overlay", False)):
+        hyg_frame = global_data.get("HYG") if isinstance(global_data, Mapping) else None
+        lqd_frame = global_data.get("LQD") if isinstance(global_data, Mapping) else None
+        hyg_close = _close_col(hyg_frame) if hyg_frame is not None else None
+        lqd_close = _close_col(lqd_frame) if lqd_frame is not None else None
+        if hyg_close is not None and lqd_close is not None and not hyg_close.empty and not lqd_close.empty:
+            aligned = pd.concat([hyg_close.rename("h"), lqd_close.rename("l")], axis=1).dropna()
+            if not aligned.empty:
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    ratio = aligned["h"] / aligned["l"]
+                    mom63 = (ratio / ratio.shift(63)) - 1.0
+                # <= -10% -> risk-off (0), >= +10% -> risk-on (1)
+                credit_scalar = np.clip((mom63 + 0.10) / 0.20, 0.0, 1.0)
+                credit_scalar = pd.Series(credit_scalar, index=aligned.index, dtype=float)
+                regime = ((1.0 - overlay_w) * regime) + (overlay_w * credit_scalar.reindex(regime.index).ffill().fillna(1.0))
+
     target_idx = pd.DatetimeIndex(pd.to_datetime(index, errors="coerce")).tz_localize(None).normalize()
     out = regime.reindex(target_idx).ffill().fillna(1.0)
+    out = out.clip(lower=risk_off_scalar, upper=1.0)
     out = out.astype(float).clip(lower=0.0, upper=1.0)
     return out
 
@@ -211,6 +245,10 @@ def _extract_feature_arrays(
     net_margin_ttm = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     eps_accel = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     revenue_accel = np.full((n_days, n_syms), np.nan, dtype=np.float32)
+    accruals_ratio = np.full((n_days, n_syms), np.nan, dtype=np.float32)
+    roe_ttm = np.full((n_days, n_syms), np.nan, dtype=np.float32)
+    roe_trend = np.full((n_days, n_syms), np.nan, dtype=np.float32)
+    net_issuance_12m = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     natr = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     adr = np.full((n_days, n_syms), np.nan, dtype=np.float32)
 
@@ -252,6 +290,14 @@ def _extract_feature_arrays(
             eps_accel[idx, j] = pd.to_numeric(df["eps_accel"], errors="coerce").to_numpy(dtype=np.float32)[valid]
         if "revenue_accel" in df.columns:
             revenue_accel[idx, j] = pd.to_numeric(df["revenue_accel"], errors="coerce").to_numpy(dtype=np.float32)[valid]
+        if "accruals_ratio" in df.columns:
+            accruals_ratio[idx, j] = pd.to_numeric(df["accruals_ratio"], errors="coerce").to_numpy(dtype=np.float32)[valid]
+        if "roe_ttm" in df.columns:
+            roe_ttm[idx, j] = pd.to_numeric(df["roe_ttm"], errors="coerce").to_numpy(dtype=np.float32)[valid]
+        if "roe_trend" in df.columns:
+            roe_trend[idx, j] = pd.to_numeric(df["roe_trend"], errors="coerce").to_numpy(dtype=np.float32)[valid]
+        if "net_issuance_12m" in df.columns:
+            net_issuance_12m[idx, j] = pd.to_numeric(df["net_issuance_12m"], errors="coerce").to_numpy(dtype=np.float32)[valid]
 
     membership_mask = _build_membership_mask(all_dates, symbols, membership_by_day)
 
@@ -270,6 +316,10 @@ def _extract_feature_arrays(
         "net_margin_ttm": net_margin_ttm,
         "eps_accel": eps_accel,
         "revenue_accel": revenue_accel,
+        "accruals_ratio": accruals_ratio,
+        "roe_ttm": roe_ttm,
+        "roe_trend": roe_trend,
+        "net_issuance_12m": net_issuance_12m,
         "natr": natr,
         "adr": adr,
         "membership_mask": membership_mask,
@@ -419,10 +469,19 @@ def _build_momentum_quality_scores(
     inst = features["inst"]
     eps_accel = features.get("eps_accel")
     revenue_accel = features.get("revenue_accel")
+    accruals_ratio = features.get("accruals_ratio")
+    roe_trend = features.get("roe_trend")
+    net_issuance_12m = features.get("net_issuance_12m")
     if eps_accel is None:
         eps_accel = np.full(close.shape, np.nan, dtype=np.float32)
     if revenue_accel is None:
         revenue_accel = np.full(close.shape, np.nan, dtype=np.float32)
+    if accruals_ratio is None:
+        accruals_ratio = np.full(close.shape, np.nan, dtype=np.float32)
+    if roe_trend is None:
+        roe_trend = np.full(close.shape, np.nan, dtype=np.float32)
+    if net_issuance_12m is None:
+        net_issuance_12m = np.full(close.shape, np.nan, dtype=np.float32)
 
     valid = _base_valid_mask(features, cfg)
 
@@ -452,19 +511,53 @@ def _build_momentum_quality_scores(
     r_m61 = _cross_section_rank_matrix(mom6_1, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
     r_m10_penalty = _cross_section_rank_matrix(mom1_0, valid_mask=valid, higher_is_better=False, min_names=min_rank_names)
     r_prox = _cross_section_rank_matrix(proximity, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
-    q_parts = [
-        _cross_section_rank_matrix(eps_yoy, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
-        _cross_section_rank_matrix(sales_yoy, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
-        _cross_section_rank_matrix(inst, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
-        _cross_section_rank_matrix(eps_accel, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
-        _cross_section_rank_matrix(revenue_accel, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+    q_entries: List[Tuple[np.ndarray, float]] = [
+        (
+            _cross_section_rank_matrix(eps_yoy, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+            float(cfg.get("quality_eps_yoy_weight", 1.0) or 1.0),
+        ),
+        (
+            _cross_section_rank_matrix(sales_yoy, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+            float(cfg.get("quality_sales_yoy_weight", 1.0) or 1.0),
+        ),
+        (
+            _cross_section_rank_matrix(inst, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+            float(cfg.get("quality_inst_weight", 1.0) or 1.0),
+        ),
+        (
+            _cross_section_rank_matrix(eps_accel, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+            float(cfg.get("quality_eps_accel_weight", 1.0) or 1.0),
+        ),
+        (
+            _cross_section_rank_matrix(revenue_accel, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+            float(cfg.get("quality_revenue_accel_weight", 1.0) or 1.0),
+        ),
+        (
+            _cross_section_rank_matrix(accruals_ratio, valid_mask=valid, higher_is_better=False, min_names=min_rank_names),
+            float(cfg.get("quality_accruals_weight", 0.0) or 0.0),
+        ),
+        (
+            _cross_section_rank_matrix(roe_trend, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+            float(cfg.get("quality_roe_trend_weight", 0.0) or 0.0),
+        ),
+        (
+            _cross_section_rank_matrix(net_issuance_12m, valid_mask=valid, higher_is_better=False, min_names=min_rank_names),
+            float(cfg.get("quality_issuance_weight", 0.0) or 0.0),
+        ),
     ]
-    q_stack = np.stack(q_parts, axis=0)
-    q_sum = np.nansum(q_stack, axis=0)
-    q_cnt = np.sum(np.isfinite(q_stack), axis=0)
+    q_num = np.zeros(close.shape, dtype=np.float32)
+    q_den = np.zeros(close.shape, dtype=np.float32)
+    for mat, wt in q_entries:
+        if not np.isfinite(wt) or wt <= 0.0:
+            continue
+        m = np.isfinite(mat)
+        if not np.any(m):
+            continue
+        q_num[m] += (float(wt) * mat[m]).astype(np.float32)
+        q_den[m] += float(wt)
     with np.errstate(invalid="ignore", divide="ignore"):
-        q_blend = q_sum / q_cnt
-    q_blend[q_cnt <= 0] = np.nan
+        q_blend = q_num / q_den
+    q_blend[q_den <= 0.0] = np.nan
     r_qual = _cross_section_rank_matrix(q_blend, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
 
     w_m12 = float(cfg.get("mom_12_1_weight", 0.45) or 0.45)
@@ -488,6 +581,15 @@ def _build_value_proxy_scores(features: Dict[str, Any], cfg: Dict[str, Any]) -> 
     inst = features["inst"]
     eps_ttm = features.get("eps_ttm")
     net_margin_ttm = features.get("net_margin_ttm")
+    accruals_ratio = features.get("accruals_ratio")
+    roe_ttm = features.get("roe_ttm")
+    net_issuance_12m = features.get("net_issuance_12m")
+    if accruals_ratio is None:
+        accruals_ratio = np.full(close.shape, np.nan, dtype=np.float32)
+    if roe_ttm is None:
+        roe_ttm = np.full(close.shape, np.nan, dtype=np.float32)
+    if net_issuance_12m is None:
+        net_issuance_12m = np.full(close.shape, np.nan, dtype=np.float32)
 
     valid = _base_valid_mask(features, cfg)
 
@@ -519,6 +621,9 @@ def _build_value_proxy_scores(features: Dict[str, Any], cfg: Dict[str, Any]) -> 
     r_qual = _cross_section_rank_matrix(q_blend, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
     r_stab = _cross_section_rank_matrix(stability, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
     r_ey = _cross_section_rank_matrix(earnings_yield, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
+    r_accrual = _cross_section_rank_matrix(accruals_ratio, valid_mask=valid, higher_is_better=False, min_names=min_rank_names)
+    r_roe = _cross_section_rank_matrix(roe_ttm, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
+    r_issuance = _cross_section_rank_matrix(net_issuance_12m, valid_mask=valid, higher_is_better=False, min_names=min_rank_names)
     if net_margin_ttm is not None:
         r_margin = _cross_section_rank_matrix(
             net_margin_ttm,
@@ -534,6 +639,9 @@ def _build_value_proxy_scores(features: Dict[str, Any], cfg: Dict[str, Any]) -> 
     w_stab = float(cfg.get("value_stability_weight", 0.10) or 0.10)
     w_ey = float(cfg.get("value_earnings_yield_weight", 0.35) or 0.35)
     w_margin = float(cfg.get("value_margin_weight", 0.05) or 0.05)
+    w_accrual = float(cfg.get("value_accruals_weight", 0.0) or 0.0)
+    w_roe = float(cfg.get("value_roe_weight", 0.0) or 0.0)
+    w_issuance = float(cfg.get("value_issuance_weight", 0.0) or 0.0)
 
     score_num = np.zeros(close.shape, dtype=np.float32)
     score_den = np.zeros(close.shape, dtype=np.float32)
@@ -543,6 +651,9 @@ def _build_value_proxy_scores(features: Dict[str, Any], cfg: Dict[str, Any]) -> 
         (r_stab, w_stab),
         (r_ey, w_ey),
         (r_margin, w_margin),
+        (r_accrual, w_accrual),
+        (r_roe, w_roe),
+        (r_issuance, w_issuance),
     ):
         if wt <= 0:
             continue
@@ -1056,6 +1167,7 @@ def _stitch_test_windows_warm(
             "folds": [],
             "fold_count": 0,
             "stitched_cagr_pct": float("nan"),
+            "oos_max_dd_pct": float("nan"),
             "worst_fold_return_pct": float("nan"),
             "compounded_return_pct": float("nan"),
             "total_test_years": float("nan"),
@@ -1114,6 +1226,7 @@ def _stitch_test_windows_warm(
             "folds": fold_rows,
             "fold_count": 0,
             "stitched_cagr_pct": float("nan"),
+            "oos_max_dd_pct": float("nan"),
             "worst_fold_return_pct": float("nan"),
             "compounded_return_pct": float("nan"),
             "total_test_years": float("nan"),
@@ -1126,11 +1239,23 @@ def _stitch_test_windows_warm(
         total_test_years = float(len(fold_returns) * (float(test_months) / 12.0))
     stitched_cagr = _annualized_cagr(1.0, compounded, total_test_years)
     worst_fold = float(min(fold_returns) * 100.0)
+    if windows:
+        oos_start = pd.Timestamp(windows[0][0])
+        oos_end_exclusive = pd.Timestamp(windows[-1][1])
+        oos_seg = eq.loc[(eq.index >= oos_start) & (eq.index < oos_end_exclusive)]
+        if len(oos_seg) >= 2:
+            oos_peaks = oos_seg.cummax()
+            oos_dd = float(abs(((oos_seg - oos_peaks) / oos_peaks).min()) * 100.0)
+        else:
+            oos_dd = float("nan")
+    else:
+        oos_dd = float("nan")
     return {
         "mode": "warm_restart_equity_slice",
         "folds": fold_rows,
         "fold_count": len(fold_returns),
         "stitched_cagr_pct": float(stitched_cagr) if np.isfinite(stitched_cagr) else float("nan"),
+        "oos_max_dd_pct": float(oos_dd) if np.isfinite(oos_dd) else float("nan"),
         "worst_fold_return_pct": worst_fold,
         "compounded_return_pct": float((compounded - 1.0) * 100.0),
         "total_test_years": total_test_years,
@@ -1155,24 +1280,34 @@ def _acceptance_snapshot(
     mdd = _pct_dd(full_res.get("max_drawdown_pct", 0.0))
     oos_24_cold = _safe_float((stitched_24_12 or {}).get("stitched_cagr_pct"), float("nan"))
     oos_24_warm = _safe_float((stitched_24_12_warm or {}).get("stitched_cagr_pct"), float("nan"))
+    oos_24_warm_dd = _safe_float((stitched_24_12_warm or {}).get("oos_max_dd_pct"), float("nan"))
     oos_36 = _safe_float(stitched_36_12.get("stitched_cagr_pct"), float("nan"))
     oos_60_cold = _safe_float(stitched_60_12.get("stitched_cagr_pct"), float("nan"))
     oos_60_warm = _safe_float((stitched_60_12_warm or {}).get("stitched_cagr_pct"), float("nan"))
+    oos_60_warm_dd = _safe_float((stitched_60_12_warm or {}).get("oos_max_dd_pct"), float("nan"))
 
     gates = dict(gate_cfg or {})
     oos_gate_20 = _safe_float(gates.get("oos60_gate_20x20_cagr_pct"), 6.0)
     oos_gate_35 = _safe_float(gates.get("oos60_gate_35x35_cagr_pct"), 4.5)
     dd_gate = _safe_float(gates.get("max_dd_gate_pct"), 42.0)
     use_warm = bool(gates.get("use_warm_restart_for_oos_gate", True))
-    oos_mode = "warm_restart" if (use_warm and np.isfinite(oos_60_warm)) else "cold_start"
-    oos_for_gate = oos_60_warm if (use_warm and np.isfinite(oos_60_warm)) else oos_60_cold
+    primary_window = str(gates.get("oos_gate_primary_window", "24_12") or "24_12").strip().lower()
+    if primary_window not in {"24_12", "60_12"}:
+        primary_window = "24_12"
+    oos_primary_cold = oos_24_cold if primary_window == "24_12" else oos_60_cold
+    oos_primary_warm = oos_24_warm if primary_window == "24_12" else oos_60_warm
+    oos_secondary_cold = oos_60_cold if primary_window == "24_12" else oos_24_cold
+    oos_secondary_warm = oos_60_warm if primary_window == "24_12" else oos_24_warm
+
+    oos_mode = "warm_restart" if (use_warm and np.isfinite(oos_primary_warm)) else "cold_start"
+    oos_for_gate = oos_primary_warm if (use_warm and np.isfinite(oos_primary_warm)) else oos_primary_cold
     if not np.isfinite(oos_for_gate):
-        if use_warm and np.isfinite(oos_24_warm):
-            oos_for_gate = oos_24_warm
-            oos_mode = "warm_restart_fallback_24_12"
-        elif np.isfinite(oos_24_cold):
-            oos_for_gate = oos_24_cold
-            oos_mode = "cold_start_fallback_24_12"
+        if use_warm and np.isfinite(oos_secondary_warm):
+            oos_for_gate = oos_secondary_warm
+            oos_mode = "warm_restart_fallback_secondary"
+        elif np.isfinite(oos_secondary_cold):
+            oos_for_gate = oos_secondary_cold
+            oos_mode = "cold_start_fallback_secondary"
 
     return {
         "cash_only_ok": bool(np.isfinite(max_gross) and max_gross <= 1.0001),
@@ -1182,11 +1317,14 @@ def _acceptance_snapshot(
         "full_max_dd_pct": float(mdd),
         "oos_24_12_cagr_pct_cold": float(oos_24_cold) if np.isfinite(oos_24_cold) else float("nan"),
         "oos_24_12_cagr_pct_warm": float(oos_24_warm) if np.isfinite(oos_24_warm) else float("nan"),
+        "oos_24_12_max_dd_pct_warm": float(oos_24_warm_dd) if np.isfinite(oos_24_warm_dd) else float("nan"),
         "oos_24_12_cagr_pct": float(oos_24_warm) if np.isfinite(oos_24_warm) else (float(oos_24_cold) if np.isfinite(oos_24_cold) else float("nan")),
         "oos_36_12_cagr_pct": float(oos_36) if np.isfinite(oos_36) else float("nan"),
         "oos_60_12_cagr_pct_cold": float(oos_60_cold) if np.isfinite(oos_60_cold) else float("nan"),
         "oos_60_12_cagr_pct_warm": float(oos_60_warm) if np.isfinite(oos_60_warm) else float("nan"),
+        "oos_60_12_max_dd_pct_warm": float(oos_60_warm_dd) if np.isfinite(oos_60_warm_dd) else float("nan"),
         "oos_60_12_cagr_pct": float(oos_for_gate) if np.isfinite(oos_for_gate) else float("nan"),
+        "oos_gate_primary_window": primary_window,
         "oos_gate_mode": oos_mode,
         "oos60_gate_20x20_cagr_pct": float(oos_gate_20),
         "oos60_gate_35x35_cagr_pct": float(oos_gate_35),
@@ -1264,7 +1402,7 @@ def main() -> None:
     days = _days_for_range(start_date, end_date, warmup_days=420)
     print(f"Loading Russell 3000 PIT union: {len(symbols)} symbols ({start_date} -> {end_date}, days={days})")
     data = fetch_data_pack(symbols, days=days, backtest_mode=bool(args.cache_only)) or {}
-    global_data = fetch_data_pack(["SPY", "VIX"], days=days, backtest_mode=True) or {}
+    global_data = fetch_data_pack(["SPY", "VIX", "HYG", "LQD"], days=days, backtest_mode=True) or {}
 
     loaded_symbols = sorted(list(data.keys()))
     coverage = (len(loaded_symbols) / float(len(symbols))) if symbols else 0.0

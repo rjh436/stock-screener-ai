@@ -20,6 +20,10 @@ FUNDAMENTAL_METRIC_COLUMNS: List[str] = [
     "sales_growth_yoy",
     "eps_accel",
     "revenue_accel",
+    "accruals_ratio",
+    "roe_ttm",
+    "roe_trend",
+    "net_issuance_12m",
     "institutional_sponsorship",
     "eps_ttm",
     "revenue_ttm",
@@ -72,6 +76,13 @@ def _safe_float(value, default: float = np.nan) -> float:
     if not np.isfinite(out):
         return default
     return out
+
+
+def _first_numeric_column(frame: pd.DataFrame, candidates: Sequence[str]) -> pd.Series:
+    for name in candidates:
+        if name in frame.columns:
+            return pd.to_numeric(frame[name], errors="coerce")
+    return pd.Series(np.nan, index=frame.index, dtype=float)
 
 
 def _parse_dt(value) -> pd.Timestamp | None:
@@ -212,9 +223,41 @@ def _load_edgar_symbol_frame(symbol: str) -> pd.DataFrame:
         lag_days = _fundamental_release_lag_days()
         available_date = filing_date.where(filing_date.notna(), report_date + pd.Timedelta(days=lag_days))
 
-    revenue = pd.to_numeric(pdf.get("revenue"), errors="coerce")
-    net_income = pd.to_numeric(pdf.get("net_income"), errors="coerce")
-    eps = pd.to_numeric(pdf.get("eps"), errors="coerce")
+    revenue = _first_numeric_column(pdf, ["revenue", "revenues", "Revenue"])
+    net_income = _first_numeric_column(pdf, ["net_income", "netIncome", "NetIncomeLoss"])
+    eps = _first_numeric_column(pdf, ["eps", "eps_diluted", "epsDiluted"])
+    operating_cash_flow = _first_numeric_column(
+        pdf,
+        [
+            "operating_cash_flow",
+            "cash_from_operations",
+            "net_cash_from_operating_activities",
+            "netCashOperating",
+            "NetCashProvidedByUsedInOperatingActivities",
+        ],
+    )
+    total_equity = _first_numeric_column(
+        pdf,
+        [
+            "total_equity",
+            "stockholders_equity",
+            "shareholders_equity",
+            "StockholdersEquity",
+            "total_stockholders_equity",
+        ],
+    )
+    shares_outstanding = _first_numeric_column(
+        pdf,
+        [
+            "shares_outstanding",
+            "weighted_avg_shares_diluted",
+            "weighted_average_shares_diluted",
+            "shares_diluted",
+            "weighted_avg_shares_basic",
+            "weighted_average_shares_basic",
+            "shares_basic",
+        ],
+    )
 
     frame = pd.DataFrame(
         {
@@ -228,6 +271,9 @@ def _load_edgar_symbol_frame(symbol: str) -> pd.DataFrame:
             "revenue": revenue,
             "net_income": net_income,
             "eps": eps,
+            "operating_cash_flow": operating_cash_flow,
+            "total_equity": total_equity,
+            "shares_outstanding": shares_outstanding,
         }
     )
     frame = frame.dropna(subset=["available_date"]).sort_values("available_date")
@@ -237,6 +283,7 @@ def _load_edgar_symbol_frame(symbol: str) -> pd.DataFrame:
     frame["eps_ttm"] = frame["eps"].rolling(window=4, min_periods=4).sum()
     frame["revenue_ttm"] = frame["revenue"].rolling(window=4, min_periods=4).sum()
     frame["net_income_ttm"] = frame["net_income"].rolling(window=4, min_periods=4).sum()
+    frame["cfo_ttm"] = frame["operating_cash_flow"].rolling(window=4, min_periods=4).sum()
     frame["eps_accel"] = (
         frame["eps_growth_qoq"]
         - frame["eps_growth_qoq"].shift(1).rolling(window=3, min_periods=2).mean()
@@ -245,6 +292,18 @@ def _load_edgar_symbol_frame(symbol: str) -> pd.DataFrame:
         frame["sales_growth_qoq"]
         - frame["sales_growth_qoq"].shift(1).rolling(window=3, min_periods=2).mean()
     )
+    with np.errstate(invalid="ignore", divide="ignore"):
+        revenue_abs = frame["revenue_ttm"].abs().where(frame["revenue_ttm"].abs() > 1e-6)
+        frame["accruals_ratio"] = (frame["net_income_ttm"] - frame["cfo_ttm"]) / revenue_abs
+    equity_avg = frame["total_equity"].rolling(window=4, min_periods=2).mean()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        frame["roe_ttm"] = (frame["net_income_ttm"] / equity_avg.where(equity_avg.abs() > 1e-6)) * 100.0
+    frame["roe_trend"] = frame["roe_ttm"] - frame["roe_ttm"].shift(4)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        shares_lag = frame["shares_outstanding"].shift(4)
+        ratio = frame["shares_outstanding"] / shares_lag
+        ratio = ratio.where((frame["shares_outstanding"] > 0) & (shares_lag > 0))
+        frame["net_issuance_12m"] = np.log(ratio)
     with np.errstate(invalid="ignore", divide="ignore"):
         frame["net_margin_ttm"] = (frame["net_income_ttm"] / frame["revenue_ttm"]) * 100.0
     frame["net_margin_ttm"] = pd.to_numeric(frame["net_margin_ttm"], errors="coerce")
@@ -408,6 +467,10 @@ def _fetch_snapshots(symbols: Sequence[str]) -> pd.DataFrame:
                 "sales_growth_yoy": sales_yoy,
                 "eps_accel": np.nan,
                 "revenue_accel": np.nan,
+                "accruals_ratio": np.nan,
+                "roe_ttm": np.nan,
+                "roe_trend": np.nan,
+                "net_issuance_12m": np.nan,
                 "institutional_sponsorship": _institutional_sponsorship_proxy(fund),
                 "eps_ttm": np.nan,
                 "revenue_ttm": np.nan,
