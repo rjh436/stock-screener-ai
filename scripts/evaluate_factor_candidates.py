@@ -23,6 +23,8 @@ from data.universe import (
 from execution.engine import prepare_backtest_data
 from scripts.run_factor_walkforward import (
     FrictionScenario,
+    _daily_membership_price_coverage,
+    _build_low_vol_scores,
     _build_market_risk_scalar,
     _build_momentum_quality_scores,
     _build_test_windows,
@@ -59,7 +61,8 @@ def main() -> None:
     parser.add_argument("--frictions", default="20,35")
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--output", default="")
-    parser.add_argument("--min-universe-coverage", type=float, default=0.85)
+    parser.add_argument("--min-universe-coverage", type=float, default=0.60)
+    parser.add_argument("--min-daily-membership-coverage", type=float, default=0.75)
     args = parser.parse_args()
 
     config_paths = [Path(p).expanduser().resolve() for p in args.configs]
@@ -98,6 +101,15 @@ def main() -> None:
         raise RuntimeError("PIT day membership unavailable/misaligned. Failing closed.")
 
     features = _extract_feature_arrays(prepared, membership_by_day)
+    coverage_stats = _daily_membership_price_coverage(features)
+    mean_daily_coverage = _safe_float(coverage_stats.get("mean"), 0.0)
+    print(f"Daily PIT membership price coverage (mean): {mean_daily_coverage:.1%}")
+    if mean_daily_coverage < float(args.min_daily_membership_coverage):
+        raise RuntimeError(
+            f"Daily PIT coverage too low ({mean_daily_coverage:.1%} < {float(args.min_daily_membership_coverage):.1%}). "
+            "Refusing to run biased evaluation."
+        )
+
     prices = pd.DataFrame(features["close"], index=features["dates"], columns=features["symbols"])
     eps_yoy_df = pd.DataFrame(features["eps_yoy"], index=features["dates"], columns=features["symbols"])
     sales_yoy_df = pd.DataFrame(features["sales_yoy"], index=features["dates"], columns=features["symbols"])
@@ -132,8 +144,12 @@ def main() -> None:
     for cfg in configs:
         mom_scores = _build_momentum_quality_scores(features, cfg)
         value_scores = None
-        if str(cfg.get("strategy_type", "")).lower() == "separate_value_momentum":
+        low_vol_scores = None
+        strategy_type = str(cfg.get("strategy_type", "")).lower()
+        if strategy_type == "separate_value_momentum":
             value_scores = _build_value_proxy_scores(features, cfg)
+        elif strategy_type == "momentum_low_vol_blend":
+            low_vol_scores = _build_low_vol_scores(features, cfg)
         risk_scalar = _build_market_risk_scalar(global_data, prices.index, cfg)
         cfg_row: Dict[str, Any] = {"name": cfg["_label"], "config_path": cfg["_path"], "scenarios": {}}
         print(f"Evaluating: {cfg['_label']}")
@@ -144,6 +160,7 @@ def main() -> None:
                 prices=prices,
                 momentum_scores=mom_scores,
                 value_scores=value_scores,
+                low_vol_scores=low_vol_scores,
                 eps_yoy_df=eps_yoy_df,
                 sales_yoy_df=sales_yoy_df,
                 risk_scalar_by_date=risk_scalar,
@@ -158,6 +175,7 @@ def main() -> None:
                 prices=prices,
                 momentum_scores=mom_scores,
                 value_scores=value_scores,
+                low_vol_scores=low_vol_scores,
                 eps_yoy_df=eps_yoy_df,
                 sales_yoy_df=sales_yoy_df,
                 risk_scalar_by_date=risk_scalar,
@@ -215,6 +233,8 @@ def main() -> None:
             "requested_symbol_count": len(symbols),
             "loaded_symbol_count": len(loaded_symbols),
             "coverage_ratio": coverage,
+            "daily_membership_price_coverage": coverage_stats,
+            "min_daily_membership_coverage": float(args.min_daily_membership_coverage),
             "cache_only": bool(args.cache_only),
         },
         "results": rows,

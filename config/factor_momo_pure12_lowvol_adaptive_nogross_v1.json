@@ -1,0 +1,44 @@
+{
+  "name": "Factor Pure12 LowVol Adaptive NoGross v1",
+  "strategy_type": "momentum_low_vol_blend",
+  "rebalance_freq": "M",
+
+  "min_price": 10.0,
+  "min_adv20": 5000000.0,
+  "min_history_bars": 252,
+  "drop_bottom_dv_frac": 0.20,
+  "min_rank_names": 40,
+
+  "mom_12_1_weight": 1.00,
+  "mom_6_1_weight": 0.00,
+  "proximity_52w_weight": 0.00,
+  "quality_growth_weight": 0.00,
+
+  "low_vol_lookback_days": 63,
+  "low_volatility_weight": 0.70,
+  "low_natr_weight": 0.20,
+  "low_adr_weight": 0.10,
+
+  "momentum_target_count": 20,
+  "low_vol_target_count": 8,
+  "hold_buffer_mult": 1.50,
+  "momentum_weight": 0.80,
+  "low_vol_weight": 0.20,
+  "risk_adaptive_blend": true,
+  "adaptive_low_vol_max_weight": 0.60,
+
+  "max_position_weight": 0.06,
+  "sector_cap": 0.20,
+  "industry_cap": 0.15,
+  "turnover_budget": 0.22,
+
+  "market_regime": {
+    "enabled": true,
+    "symbol": "SPY",
+    "ma_days": 200,
+    "risk_off_scalar": 0.50
+  },
+  "apply_risk_scalar_to_gross": false,
+
+  "execution_lag_days": 1
+}

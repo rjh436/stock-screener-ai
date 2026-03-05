@@ -169,7 +169,13 @@ def compute_value_rank(frame: pd.DataFrame, date_idx: object = None, params: Opt
             weights[key] = 1.0
 
     out = pd.DataFrame(ranks, index=snap.index)
-    out["value_rank"] = _weighted_average_rank(ranks, weights)
+    value_rank = _weighted_average_rank(ranks, weights)
+    min_factor_count = int(cfg.get("min_value_factors", 2) or 2)
+    if min_factor_count > 1 and ranks:
+        valid_count = pd.DataFrame({k: v.notna() for k, v in ranks.items()}, index=snap.index).sum(axis=1)
+        value_rank = value_rank.where(valid_count >= int(min_factor_count), np.nan)
+
+    out["value_rank"] = value_rank
     return out.sort_values("value_rank", ascending=False, na_position="last")
 
 
@@ -202,6 +208,35 @@ def compute_quality_rank(frame: pd.DataFrame, date_idx: object = None, params: O
     out = pd.DataFrame(ranks, index=snap.index)
     out["quality_rank"] = _weighted_average_rank(ranks, weights)
     return out.sort_values("quality_rank", ascending=False, na_position="last")
+
+
+def compute_low_vol_rank(frame: pd.DataFrame, date_idx: object = None, params: Optional[Dict[str, object]] = None) -> pd.DataFrame:
+    cfg = dict(params or {})
+    snap = _slice_cross_section(frame, date_idx)
+    if snap.empty:
+        return pd.DataFrame(columns=["low_vol_rank"])
+
+    low_cols = cfg.get("low_vol_cols", ["realized_vol_63d", "natr", "adr", "atr_pct", "volatility_63d"])
+    high_cols = cfg.get("low_vol_high_cols", [])
+
+    ranks: Dict[str, pd.Series] = {}
+    weights: Dict[str, float] = {}
+
+    for col in low_cols:
+        if col in snap.columns:
+            key = str(col)
+            ranks[key] = _percentile_rank(pd.to_numeric(snap[col], errors="coerce"), higher_is_better=False)
+            weights[key] = 1.0
+
+    for col in high_cols:
+        if col in snap.columns:
+            key = str(col)
+            ranks[key] = _percentile_rank(pd.to_numeric(snap[col], errors="coerce"), higher_is_better=True)
+            weights[key] = 1.0
+
+    out = pd.DataFrame(ranks, index=snap.index)
+    out["low_vol_rank"] = _weighted_average_rank(ranks, weights)
+    return out.sort_values("low_vol_rank", ascending=False, na_position="last")
 
 
 def combine_rank_columns(frame: pd.DataFrame, weights: Mapping[str, float]) -> pd.Series:

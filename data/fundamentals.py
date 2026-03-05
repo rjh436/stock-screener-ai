@@ -19,6 +19,10 @@ FUNDAMENTAL_METRIC_COLUMNS: List[str] = [
     "sales_growth_qoq",
     "sales_growth_yoy",
     "institutional_sponsorship",
+    "eps_ttm",
+    "revenue_ttm",
+    "net_income_ttm",
+    "net_margin_ttm",
 ]
 
 _FUND_CACHE_PATH = os.path.abspath(
@@ -206,6 +210,10 @@ def _load_edgar_symbol_frame(symbol: str) -> pd.DataFrame:
         lag_days = _fundamental_release_lag_days()
         available_date = filing_date.where(filing_date.notna(), report_date + pd.Timedelta(days=lag_days))
 
+    revenue = pd.to_numeric(pdf.get("revenue"), errors="coerce")
+    net_income = pd.to_numeric(pdf.get("net_income"), errors="coerce")
+    eps = pd.to_numeric(pdf.get("eps"), errors="coerce")
+
     frame = pd.DataFrame(
         {
             "report_date": report_date,
@@ -215,12 +223,22 @@ def _load_edgar_symbol_frame(symbol: str) -> pd.DataFrame:
             "sales_growth_qoq": pd.to_numeric(pdf.get("revenue_qoq_growth_pct"), errors="coerce"),
             "sales_growth_yoy": pd.to_numeric(pdf.get("revenue_yoy_growth_pct"), errors="coerce"),
             "institutional_sponsorship": np.nan,
+            "revenue": revenue,
+            "net_income": net_income,
+            "eps": eps,
         }
     )
     frame = frame.dropna(subset=["available_date"]).sort_values("available_date")
     if frame.empty:
         return _empty_symbol_frame()
     frame = frame.drop_duplicates(subset=["available_date"], keep="last")
+    frame["eps_ttm"] = frame["eps"].rolling(window=4, min_periods=4).sum()
+    frame["revenue_ttm"] = frame["revenue"].rolling(window=4, min_periods=4).sum()
+    frame["net_income_ttm"] = frame["net_income"].rolling(window=4, min_periods=4).sum()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        frame["net_margin_ttm"] = (frame["net_income_ttm"] / frame["revenue_ttm"]) * 100.0
+    frame["net_margin_ttm"] = pd.to_numeric(frame["net_margin_ttm"], errors="coerce")
+
     frame = frame.set_index("available_date")[FUNDAMENTAL_METRIC_COLUMNS].sort_index()
     return frame
 
@@ -379,6 +397,10 @@ def _fetch_snapshots(symbols: Sequence[str]) -> pd.DataFrame:
                 "sales_growth_qoq": sales_qoq,
                 "sales_growth_yoy": sales_yoy,
                 "institutional_sponsorship": _institutional_sponsorship_proxy(fund),
+                "eps_ttm": np.nan,
+                "revenue_ttm": np.nan,
+                "net_income_ttm": np.nan,
+                "net_margin_ttm": np.nan,
             }
         )
 

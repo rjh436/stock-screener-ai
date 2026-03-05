@@ -24,6 +24,8 @@ from data.universe import (
 from execution.engine import prepare_backtest_data
 from scripts.run_factor_walkforward import (
     FrictionScenario,
+    _daily_membership_price_coverage,
+    _build_low_vol_scores,
     _build_market_risk_scalar,
     _build_momentum_quality_scores,
     _build_test_windows,
@@ -51,6 +53,44 @@ def _days_for_range(start_date: str, end_date: str, warmup_days: int = 420) -> i
 
 def _candidate_grid(base_cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     candidates: List[Dict[str, Any]] = []
+    strategy_type = str(base_cfg.get("strategy_type", "cross_sectional_momentum") or "cross_sectional_momentum").lower()
+    if strategy_type == "momentum_low_vol_blend":
+        for rebalance_freq, mom_count, lv_count, lv_weight, hold_buffer_mult, turnover_budget, max_pos, risk_off in itertools.product(
+            ["M", "Q"],
+            [14, 16, 18],
+            [6, 8, 10],
+            [0.20, 0.30, 0.40],
+            [1.50, 1.75],
+            [0.12, 0.18, 0.24],
+            [0.05, 0.06, 0.075],
+            [None, 0.35, 0.50],
+        ):
+            cfg = dict(base_cfg)
+            cfg["rebalance_freq"] = rebalance_freq
+            cfg["momentum_target_count"] = int(mom_count)
+            cfg["low_vol_target_count"] = int(lv_count)
+            cfg["momentum_weight"] = float(max(0.0, 1.0 - float(lv_weight)))
+            cfg["low_vol_weight"] = float(lv_weight)
+            cfg["hold_buffer_mult"] = float(hold_buffer_mult)
+            cfg["turnover_budget"] = float(turnover_budget)
+            cfg["max_position_weight"] = float(max_pos)
+            cfg["name"] = (
+                f"mlv_opt_rf{rebalance_freq}_m{mom_count}_lv{lv_count}_lvw{int(lv_weight*100):02d}"
+                f"_hb{hold_buffer_mult:.2f}_tb{turnover_budget:.2f}_cap{max_pos:.3f}_ro"
+                f"{'none' if risk_off is None else str(risk_off).replace('.', '')}"
+            )
+            if risk_off is None:
+                cfg["market_regime"] = {"enabled": False}
+            else:
+                cfg["market_regime"] = {
+                    "enabled": True,
+                    "symbol": "SPY",
+                    "ma_days": 200,
+                    "risk_off_scalar": float(risk_off),
+                }
+            candidates.append(cfg)
+        return candidates
+
     for rebalance_freq, target_count, hold_buffer_mult, turnover_budget, max_pos, risk_off in itertools.product(
         ["M", "Q"],
         [20, 24, 28],
@@ -112,7 +152,8 @@ def main() -> None:
     parser.add_argument("--transaction-cost-bps", type=float, default=2.0)
     parser.add_argument("--frictions", default="20,35")
     parser.add_argument("--top-stage2", type=int, default=20)
-    parser.add_argument("--min-universe-coverage", type=float, default=0.85)
+    parser.add_argument("--min-universe-coverage", type=float, default=0.60)
+    parser.add_argument("--min-daily-membership-coverage", type=float, default=0.75)
     args = parser.parse_args()
 
     base_path = Path(args.base_config).expanduser().resolve()
@@ -146,6 +187,15 @@ def main() -> None:
         raise RuntimeError("PIT day membership unavailable/misaligned. Failing closed.")
 
     features = _extract_feature_arrays(prepared, membership_by_day)
+    coverage_stats = _daily_membership_price_coverage(features)
+    mean_daily_coverage = _safe_float(coverage_stats.get("mean"), 0.0)
+    print(f"Daily PIT membership price coverage (mean): {mean_daily_coverage:.1%}")
+    if mean_daily_coverage < float(args.min_daily_membership_coverage):
+        raise RuntimeError(
+            f"Daily PIT coverage too low ({mean_daily_coverage:.1%} < {float(args.min_daily_membership_coverage):.1%}). "
+            "Refusing to run biased optimization."
+        )
+
     prices = pd.DataFrame(features["close"], index=features["dates"], columns=features["symbols"])
     eps_yoy_df = pd.DataFrame(features["eps_yoy"], index=features["dates"], columns=features["symbols"])
     sales_yoy_df = pd.DataFrame(features["sales_yoy"], index=features["dates"], columns=features["symbols"])
@@ -156,6 +206,8 @@ def main() -> None:
 
     # We intentionally keep signal weights fixed in this optimizer and sweep construction/risk controls.
     momentum_scores = _build_momentum_quality_scores(features, base_cfg)
+    base_strategy_type = str(base_cfg.get("strategy_type", "cross_sectional_momentum") or "cross_sectional_momentum").lower()
+    low_vol_scores = _build_low_vol_scores(features, base_cfg) if base_strategy_type == "momentum_low_vol_blend" else None
 
     friction_vals: List[float] = []
     for part in str(args.frictions or "").split(","):
@@ -195,6 +247,7 @@ def main() -> None:
             prices=prices,
             momentum_scores=momentum_scores,
             value_scores=None,
+            low_vol_scores=low_vol_scores,
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar,
@@ -209,6 +262,7 @@ def main() -> None:
             prices=prices,
             momentum_scores=momentum_scores,
             value_scores=None,
+            low_vol_scores=low_vol_scores,
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar,
@@ -244,6 +298,7 @@ def main() -> None:
             prices=prices,
             momentum_scores=momentum_scores,
             value_scores=None,
+            low_vol_scores=low_vol_scores,
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar,
@@ -258,6 +313,7 @@ def main() -> None:
             prices=prices,
             momentum_scores=momentum_scores,
             value_scores=None,
+            low_vol_scores=low_vol_scores,
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar,
@@ -272,6 +328,7 @@ def main() -> None:
             prices=prices,
             momentum_scores=momentum_scores,
             value_scores=None,
+            low_vol_scores=low_vol_scores,
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar,
@@ -317,6 +374,10 @@ def main() -> None:
                 "params": {
                     "rebalance_freq": cfg.get("rebalance_freq"),
                     "target_count": cfg.get("target_count"),
+                    "momentum_target_count": cfg.get("momentum_target_count"),
+                    "low_vol_target_count": cfg.get("low_vol_target_count"),
+                    "momentum_weight": cfg.get("momentum_weight"),
+                    "low_vol_weight": cfg.get("low_vol_weight"),
                     "hold_buffer_mult": cfg.get("hold_buffer_mult"),
                     "turnover_budget": cfg.get("turnover_budget"),
                     "max_position_weight": cfg.get("max_position_weight"),
@@ -350,6 +411,8 @@ def main() -> None:
             "requested_symbol_count": len(symbols),
             "loaded_symbol_count": len(loaded_symbols),
             "coverage_ratio": coverage,
+            "daily_membership_price_coverage": coverage_stats,
+            "min_daily_membership_coverage": float(args.min_daily_membership_coverage),
             "cache_only": bool(args.cache_only),
         },
         "stage1_candidate_count": len(candidates),

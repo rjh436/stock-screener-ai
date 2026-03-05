@@ -25,6 +25,8 @@ from execution.engine import prepare_backtest_data, run_backtest
 from strategies.superperformance import SuperperformanceStrategy
 from scripts.run_factor_walkforward import (
     FrictionScenario,
+    _daily_membership_price_coverage,
+    _build_low_vol_scores,
     _build_market_risk_scalar,
     _build_momentum_quality_scores,
     _load_symbol_map,
@@ -151,7 +153,11 @@ def _run_event_window(
 
 
 def _is_factor_config(cfg: Dict[str, Any]) -> bool:
-    return str(cfg.get("strategy_type", "") or "").lower() in {"cross_sectional_momentum", "separate_value_momentum"}
+    return str(cfg.get("strategy_type", "") or "").lower() in {
+        "cross_sectional_momentum",
+        "separate_value_momentum",
+        "momentum_low_vol_blend",
+    }
 
 
 def main() -> None:
@@ -163,7 +169,8 @@ def main() -> None:
     parser.add_argument("--transaction-cost-bps", type=float, default=2.0)
     parser.add_argument("--frictions", default="10,20,35,50")
     parser.add_argument("--cache-only", action="store_true", help="Use local cache only")
-    parser.add_argument("--min-universe-coverage", type=float, default=0.85)
+    parser.add_argument("--min-universe-coverage", type=float, default=0.60)
+    parser.add_argument("--min-daily-membership-coverage", type=float, default=0.75)
     args = parser.parse_args()
 
     start_date = str(args.start)
@@ -204,6 +211,15 @@ def main() -> None:
 
     # Precompute factor matrices once.
     features = _extract_feature_arrays(prepared, membership_by_day)
+    coverage_stats = _daily_membership_price_coverage(features)
+    mean_daily_coverage = _safe_float(coverage_stats.get("mean"), 0.0)
+    print(f"Daily PIT membership price coverage (mean): {mean_daily_coverage:.1%}")
+    if mean_daily_coverage < float(args.min_daily_membership_coverage):
+        raise RuntimeError(
+            f"Daily PIT coverage too low ({mean_daily_coverage:.1%} < {float(args.min_daily_membership_coverage):.1%}). "
+            "Refusing to run biased ablation."
+        )
+
     prices = pd.DataFrame(features["close"], index=features["dates"], columns=features["symbols"])
     eps_yoy_df = pd.DataFrame(features["eps_yoy"], index=features["dates"], columns=features["symbols"])
     sales_yoy_df = pd.DataFrame(features["sales_yoy"], index=features["dates"], columns=features["symbols"])
@@ -218,10 +234,14 @@ def main() -> None:
             continue
         mom = _build_momentum_quality_scores(features, cfg)
         val = None
-        if str(cfg.get("strategy_type", "")).lower() == "separate_value_momentum":
+        low_vol = None
+        strategy_type = str(cfg.get("strategy_type", "")).lower()
+        if strategy_type == "separate_value_momentum":
             val = _build_value_proxy_scores(features, cfg)
+        elif strategy_type == "momentum_low_vol_blend":
+            low_vol = _build_low_vol_scores(features, cfg)
         risk_scalar = _build_market_risk_scalar(global_data, prices.index, cfg)
-        factor_cache[cfg["_path"]] = {"momentum": mom, "value": val, "risk_scalar": risk_scalar}
+        factor_cache[cfg["_path"]] = {"momentum": mom, "value": val, "low_vol": low_vol, "risk_scalar": risk_scalar}
 
     friction_vals: List[float] = []
     for part in str(args.frictions or "").split(","):
@@ -266,6 +286,7 @@ def main() -> None:
                     prices=prices,
                     momentum_scores=mats["momentum"],
                     value_scores=mats["value"],
+                    low_vol_scores=mats.get("low_vol"),
                     eps_yoy_df=eps_yoy_df,
                     sales_yoy_df=sales_yoy_df,
                     risk_scalar_by_date=mats.get("risk_scalar"),
@@ -357,6 +378,8 @@ def main() -> None:
             "requested_symbol_count": len(symbols),
             "loaded_symbol_count": len(loaded_symbols),
             "coverage_ratio": coverage,
+            "daily_membership_price_coverage": coverage_stats,
+            "min_daily_membership_coverage": float(args.min_daily_membership_coverage),
             "cache_only": bool(args.cache_only),
         },
         "scenarios": scenarios,

@@ -1,0 +1,26 @@
+{
+  "name": "Factor Momentum Pure12 N20 v1",
+  "strategy_type": "cross_sectional_momentum",
+  "blend_weight": 0.50,
+  "rebalance_freq": "M",
+
+  "min_price": 10.0,
+  "min_adv20": 5000000.0,
+  "min_history_bars": 252,
+  "drop_bottom_dv_frac": 0.20,
+  "min_rank_names": 40,
+
+  "mom_12_1_weight": 1.00,
+  "mom_6_1_weight": 0.00,
+  "proximity_52w_weight": 0.00,
+  "quality_growth_weight": 0.00,
+
+  "target_count": 20,
+  "hold_buffer_mult": 1.25,
+
+  "max_position_weight": 0.06,
+  "sector_cap": 0.25,
+  "industry_cap": 0.15,
+  "turnover_budget": 0.35,
+  "execution_lag_days": 1
+}

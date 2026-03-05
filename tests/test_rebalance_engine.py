@@ -216,6 +216,44 @@ class RebalanceEngineTests(unittest.TestCase):
         same_day0 = int((t0.get("audit_report", {}) or {}).get("same_day_open_entries", 0) or 0)
         self.assertGreaterEqual(same_day0, 1)
 
+    def test_stale_price_exit_liquidates_unquoted_position(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=70, freq="B")
+        aaa = [100.0 + (i * 0.2) for i in range(len(dates))]
+        # Force prolonged quote outage after initial position entry.
+        for i in range(28, len(dates)):
+            aaa[i] = float("nan")
+
+        prices = pd.DataFrame(
+            {
+                "AAA": aaa,
+                "BBB": [95.0 + (i * 0.05) for i in range(len(dates))],
+            },
+            index=dates,
+        )
+        ranks = pd.DataFrame(
+            {
+                "AAA": [95.0] * len(dates),
+                "BBB": [80.0] * len(dates),
+            },
+            index=dates,
+        )
+
+        out = run_periodic_rebalance(
+            prices,
+            ranks,
+            rebalance_freq="M",
+            target_count=1,
+            transaction_cost_bps=0.0,
+            turnover_budget=1.0,
+            start_cash=100000.0,
+            hard_stop_pct=None,
+            trend_ma_days=None,
+            time_stop_days=None,
+            max_stale_price_days=3,
+        )
+        # Buy then stale-price forced sell.
+        self.assertGreaterEqual(int(out.get("total_trades", 0) or 0), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

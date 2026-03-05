@@ -310,6 +310,7 @@ def run_periodic_rebalance(
     trend_ma_days: Optional[int] = None,
     time_stop_days: Optional[int] = None,
     execution_lag_days: int = 1,
+    max_stale_price_days: Optional[int] = 5,
 ) -> Dict[str, object]:
     if prices is None or prices.empty:
         return {
@@ -362,6 +363,14 @@ def run_periodic_rebalance(
                 max_hold_days = td
         except Exception:
             max_hold_days = None
+    stale_limit_days: Optional[int] = None
+    if max_stale_price_days is not None:
+        try:
+            sd = int(max_stale_price_days)
+            if sd > 0:
+                stale_limit_days = sd
+        except Exception:
+            stale_limit_days = None
 
     # Restrict to dates with available prices; score snapshots are pulled on or before date.
     trade_dates = list(pd.Index(px.index).unique())
@@ -399,6 +408,7 @@ def run_periodic_rebalance(
     positions: Dict[str, int] = {}
     last_prices: Dict[str, float] = {}
     position_meta: Dict[str, Dict[str, object]] = {}
+    last_fresh_seen: Dict[str, pd.Timestamp] = {}
 
     equity_curve: List[Dict[str, object]] = []
     rebalance_log: List[Dict[str, object]] = []
@@ -418,14 +428,21 @@ def run_periodic_rebalance(
         }
         if tradable_prices:
             last_prices.update(tradable_prices)
+            for sym in tradable_prices.keys():
+                last_fresh_seen[str(sym)] = dt
 
         # Daily stop logic for open positions before periodic rebalance.
         stop_exits: List[Dict[str, object]] = []
-        if positions and (hard_stop is not None or trend_ma is not None or max_hold_days is not None):
+        if positions and (
+            hard_stop is not None
+            or trend_ma is not None
+            or max_hold_days is not None
+            or stale_limit_days is not None
+        ):
             for sym, shares in list(positions.items()):
-                price = row_prices.get(sym)
-                if price is None or not np.isfinite(price) or float(price) <= 0:
-                    price = last_prices.get(sym)
+                fresh_px = row_prices.get(sym)
+                fresh_valid = fresh_px is not None and np.isfinite(fresh_px) and float(fresh_px) > 0
+                price = float(fresh_px) if fresh_valid else last_prices.get(sym)
                 if price is None or not np.isfinite(price) or float(price) <= 0:
                     continue
                 px_val = float(price)
@@ -449,6 +466,16 @@ def run_periodic_rebalance(
                     held_days = int((dt - entry_dt).days)
                     if held_days >= int(max_hold_days):
                         reason = "time_stop"
+                stale_days = None
+                if reason is None and stale_limit_days is not None and not fresh_valid:
+                    last_seen = last_fresh_seen.get(str(sym))
+                    if isinstance(last_seen, pd.Timestamp):
+                        stale_days = int((dt - last_seen).days)
+                        if stale_days >= int(stale_limit_days):
+                            last_px = last_prices.get(sym)
+                            if last_px is not None and np.isfinite(last_px) and float(last_px) > 0:
+                                px_val = float(last_px)
+                                reason = "stale_price_exit"
 
                 if reason is None:
                     continue
@@ -468,6 +495,7 @@ def run_periodic_rebalance(
                         "price": px_val,
                         "fee": fee,
                         "reason": reason,
+                        "stale_days": stale_days,
                     }
                 )
 

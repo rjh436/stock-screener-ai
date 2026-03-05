@@ -205,6 +205,10 @@ def _extract_feature_arrays(
     eps_yoy = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     sales_yoy = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     inst = np.full((n_days, n_syms), np.nan, dtype=np.float32)
+    eps_ttm = np.full((n_days, n_syms), np.nan, dtype=np.float32)
+    revenue_ttm = np.full((n_days, n_syms), np.nan, dtype=np.float32)
+    net_income_ttm = np.full((n_days, n_syms), np.nan, dtype=np.float32)
+    net_margin_ttm = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     natr = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     adr = np.full((n_days, n_syms), np.nan, dtype=np.float32)
 
@@ -234,6 +238,14 @@ def _extract_feature_arrays(
             sales_yoy[idx, j] = pd.to_numeric(df["sales_growth_yoy"], errors="coerce").to_numpy(dtype=np.float32)[valid]
         if "institutional_sponsorship" in df.columns:
             inst[idx, j] = pd.to_numeric(df["institutional_sponsorship"], errors="coerce").to_numpy(dtype=np.float32)[valid]
+        if "eps_ttm" in df.columns:
+            eps_ttm[idx, j] = pd.to_numeric(df["eps_ttm"], errors="coerce").to_numpy(dtype=np.float32)[valid]
+        if "revenue_ttm" in df.columns:
+            revenue_ttm[idx, j] = pd.to_numeric(df["revenue_ttm"], errors="coerce").to_numpy(dtype=np.float32)[valid]
+        if "net_income_ttm" in df.columns:
+            net_income_ttm[idx, j] = pd.to_numeric(df["net_income_ttm"], errors="coerce").to_numpy(dtype=np.float32)[valid]
+        if "net_margin_ttm" in df.columns:
+            net_margin_ttm[idx, j] = pd.to_numeric(df["net_margin_ttm"], errors="coerce").to_numpy(dtype=np.float32)[valid]
 
     membership_mask = _build_membership_mask(all_dates, symbols, membership_by_day)
 
@@ -246,6 +258,10 @@ def _extract_feature_arrays(
         "eps_yoy": eps_yoy,
         "sales_yoy": sales_yoy,
         "inst": inst,
+        "eps_ttm": eps_ttm,
+        "revenue_ttm": revenue_ttm,
+        "net_income_ttm": net_income_ttm,
+        "net_margin_ttm": net_margin_ttm,
         "natr": natr,
         "adr": adr,
         "membership_mask": membership_mask,
@@ -284,6 +300,51 @@ def _base_valid_mask(features: Dict[str, Any], cfg: Dict[str, Any]) -> np.ndarra
     return valid
 
 
+def _daily_membership_price_coverage(features: Dict[str, Any]) -> Dict[str, float]:
+    membership = np.asarray(features.get("membership_mask"), dtype=bool)
+    close = np.asarray(features.get("close"), dtype=np.float64)
+    if membership.size == 0 or close.size == 0 or membership.shape != close.shape:
+        return {
+            "mean": float("nan"),
+            "median": float("nan"),
+            "p10": float("nan"),
+            "p25": float("nan"),
+            "p75": float("nan"),
+            "min": float("nan"),
+            "max": float("nan"),
+        }
+
+    with np.errstate(invalid="ignore"):
+        available = membership & np.isfinite(close) & (close > 0.0)
+    denom = membership.sum(axis=1).astype(np.float64)
+    numer = available.sum(axis=1).astype(np.float64)
+
+    ratios = np.full(denom.shape[0], np.nan, dtype=np.float64)
+    valid_rows = denom > 0
+    ratios[valid_rows] = numer[valid_rows] / denom[valid_rows]
+    clean = ratios[np.isfinite(ratios)]
+    if clean.size == 0:
+        return {
+            "mean": float("nan"),
+            "median": float("nan"),
+            "p10": float("nan"),
+            "p25": float("nan"),
+            "p75": float("nan"),
+            "min": float("nan"),
+            "max": float("nan"),
+        }
+
+    return {
+        "mean": float(np.nanmean(clean)),
+        "median": float(np.nanmedian(clean)),
+        "p10": float(np.nanpercentile(clean, 10.0)),
+        "p25": float(np.nanpercentile(clean, 25.0)),
+        "p75": float(np.nanpercentile(clean, 75.0)),
+        "min": float(np.nanmin(clean)),
+        "max": float(np.nanmax(clean)),
+    }
+
+
 def _build_momentum_quality_scores(features: Dict[str, Any], cfg: Dict[str, Any]) -> pd.DataFrame:
     close = features["close"]
     high_52w = features["high_52w"]
@@ -302,18 +363,22 @@ def _build_momentum_quality_scores(features: Dict[str, Any], cfg: Dict[str, Any]
         mom6_1 = (c21 / c126) - 1.0
         proximity = close / high_52w
 
-    stack = np.stack([eps_yoy, sales_yoy, inst], axis=0)
-    quality_sum = np.nansum(stack, axis=0)
-    quality_cnt = np.sum(np.isfinite(stack), axis=0)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        quality_raw = quality_sum / quality_cnt
-    quality_raw[quality_cnt <= 0] = np.nan
-
     min_rank_names = int(cfg.get("min_rank_names", 40) or 40)
     r_m12 = _cross_section_rank_matrix(mom12_1, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
     r_m61 = _cross_section_rank_matrix(mom6_1, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
     r_prox = _cross_section_rank_matrix(proximity, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
-    r_qual = _cross_section_rank_matrix(quality_raw, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
+    q_parts = [
+        _cross_section_rank_matrix(eps_yoy, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+        _cross_section_rank_matrix(sales_yoy, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+        _cross_section_rank_matrix(inst, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+    ]
+    q_stack = np.stack(q_parts, axis=0)
+    q_sum = np.nansum(q_stack, axis=0)
+    q_cnt = np.sum(np.isfinite(q_stack), axis=0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        q_blend = q_sum / q_cnt
+    q_blend[q_cnt <= 0] = np.nan
+    r_qual = _cross_section_rank_matrix(q_blend, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
 
     w_m12 = float(cfg.get("mom_12_1_weight", 0.50) or 0.50)
     w_m61 = float(cfg.get("mom_6_1_weight", 0.20) or 0.20)
@@ -333,6 +398,8 @@ def _build_value_proxy_scores(features: Dict[str, Any], cfg: Dict[str, Any]) -> 
     eps_yoy = features["eps_yoy"]
     sales_yoy = features["sales_yoy"]
     inst = features["inst"]
+    eps_ttm = features.get("eps_ttm")
+    net_margin_ttm = features.get("net_margin_ttm")
 
     valid = _base_valid_mask(features, cfg)
 
@@ -342,33 +409,101 @@ def _build_value_proxy_scores(features: Dict[str, Any], cfg: Dict[str, Any]) -> 
 
     with np.errstate(divide="ignore", invalid="ignore"):
         mom12_1 = (c21 / c252) - 1.0
+        earnings_yield = (eps_ttm / close) if eps_ttm is not None else np.full(close.shape, np.nan, dtype=np.float32)
 
-    stack = np.stack([eps_yoy, sales_yoy, inst], axis=0)
-    quality_sum = np.nansum(stack, axis=0)
-    quality_cnt = np.sum(np.isfinite(stack), axis=0)
+    min_rank_names = int(cfg.get("min_rank_names", 40) or 40)
+    q_parts = [
+        _cross_section_rank_matrix(eps_yoy, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+        _cross_section_rank_matrix(sales_yoy, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+        _cross_section_rank_matrix(inst, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+    ]
+    q_stack = np.stack(q_parts, axis=0)
+    q_sum = np.nansum(q_stack, axis=0)
+    q_cnt = np.sum(np.isfinite(q_stack), axis=0)
     with np.errstate(invalid="ignore", divide="ignore"):
-        quality_raw = quality_sum / quality_cnt
-    quality_raw[quality_cnt <= 0] = np.nan
+        q_blend = q_sum / q_cnt
+    q_blend[q_cnt <= 0] = np.nan
     with np.errstate(invalid="ignore"):
         stability = -0.5 * natr - 0.5 * adr
 
     # Value-proxy sleeve: prefer laggards with improving fundamentals and lower volatility.
-    min_rank_names = int(cfg.get("min_rank_names", 40) or 40)
     r_rev = _cross_section_rank_matrix(mom12_1, valid_mask=valid, higher_is_better=False, min_names=min_rank_names)
-    r_qual = _cross_section_rank_matrix(quality_raw, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
+    r_qual = _cross_section_rank_matrix(q_blend, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
     r_stab = _cross_section_rank_matrix(stability, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
+    r_ey = _cross_section_rank_matrix(earnings_yield, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
+    if net_margin_ttm is not None:
+        r_margin = _cross_section_rank_matrix(
+            net_margin_ttm,
+            valid_mask=valid,
+            higher_is_better=True,
+            min_names=min_rank_names,
+        )
+    else:
+        r_margin = np.full(close.shape, np.nan, dtype=np.float32)
 
-    w_rev = float(cfg.get("value_rev_weight", 0.45) or 0.45)
-    w_qual = float(cfg.get("value_quality_weight", 0.30) or 0.30)
-    w_stab = float(cfg.get("value_stability_weight", 0.25) or 0.25)
+    w_rev = float(cfg.get("value_rev_weight", 0.30) or 0.30)
+    w_qual = float(cfg.get("value_quality_weight", 0.20) or 0.20)
+    w_stab = float(cfg.get("value_stability_weight", 0.10) or 0.10)
+    w_ey = float(cfg.get("value_earnings_yield_weight", 0.35) or 0.35)
+    w_margin = float(cfg.get("value_margin_weight", 0.05) or 0.05)
 
-    score = (w_rev * r_rev) + (w_qual * r_qual) + (w_stab * r_stab)
+    score_num = np.zeros(close.shape, dtype=np.float32)
+    score_den = np.zeros(close.shape, dtype=np.float32)
+    for mat, wt in (
+        (r_rev, w_rev),
+        (r_qual, w_qual),
+        (r_stab, w_stab),
+        (r_ey, w_ey),
+        (r_margin, w_margin),
+    ):
+        if wt <= 0:
+            continue
+        mask = np.isfinite(mat)
+        if not np.any(mask):
+            continue
+        score_num[mask] += (float(wt) * mat[mask]).astype(np.float32)
+        score_den[mask] += float(wt)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        score = score_num / score_den
+    score[score_den <= 0.0] = np.nan
     score[~valid] = np.nan
 
     # Avoid deep downtrends unless explicitly allowed.
     max_12_1_draw = float(cfg.get("value_max_negative_mom12_1", -0.55) or -0.55)
     score[mom12_1 < max_12_1_draw] = np.nan
+    min_earnings_yield = float(cfg.get("value_min_earnings_yield", -0.10) or -0.10)
+    score[earnings_yield < min_earnings_yield] = np.nan
 
+    return pd.DataFrame(score, index=features["dates"], columns=features["symbols"])
+
+
+def _build_low_vol_scores(features: Dict[str, Any], cfg: Dict[str, Any]) -> pd.DataFrame:
+    close = features["close"]
+    natr = features["natr"]
+    adr = features["adr"]
+    valid = _base_valid_mask(features, cfg)
+
+    lookback = int(cfg.get("low_vol_lookback_days", 63) or 63)
+    c1 = _lag_matrix(close, 1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ret1 = (close / c1) - 1.0
+
+    ret_df = pd.DataFrame(ret1, index=features["dates"], columns=features["symbols"])
+    rolling_std = ret_df.rolling(window=lookback, min_periods=max(20, lookback // 2)).std()
+    vol = rolling_std.to_numpy(dtype=np.float32)
+
+    min_rank_names = int(cfg.get("min_rank_names", 40) or 40)
+    r_vol = _cross_section_rank_matrix(vol, valid_mask=valid, higher_is_better=False, min_names=min_rank_names)
+    r_natr = _cross_section_rank_matrix(natr, valid_mask=valid, higher_is_better=False, min_names=min_rank_names)
+    r_adr = _cross_section_rank_matrix(adr, valid_mask=valid, higher_is_better=False, min_names=min_rank_names)
+
+    w_vol = float(cfg.get("low_volatility_weight", 0.70) or 0.70)
+    w_natr = float(cfg.get("low_natr_weight", 0.20) or 0.20)
+    w_adr = float(cfg.get("low_adr_weight", 0.10) or 0.10)
+
+    score = (w_vol * r_vol) + (w_natr * r_natr) + (w_adr * r_adr)
+    score[~valid] = np.nan
     return pd.DataFrame(score, index=features["dates"], columns=features["symbols"])
 
 
@@ -454,6 +589,86 @@ def _build_separate_value_momentum_schedule(
     return schedule
 
 
+def _build_momentum_low_vol_schedule(
+    momentum_scores: pd.DataFrame,
+    low_vol_scores: pd.DataFrame,
+    *,
+    rebalance_freq: str,
+    momentum_count: int,
+    low_vol_count: int,
+    hold_buffer_mult: float,
+    momentum_weight: float,
+    low_vol_weight: float,
+    risk_scalar_by_date: Optional[pd.Series] = None,
+    adaptive_low_vol_max_weight: Optional[float] = None,
+) -> pd.DataFrame:
+    reb_dates = _rebalance_dates(momentum_scores.index, rebalance_freq)
+    out_rows: List[Dict[str, float]] = []
+    out_idx: List[pd.Timestamp] = []
+    prev_m: List[str] = []
+    prev_lv: List[str] = []
+
+    for dt in reb_dates:
+        mom_row = pd.to_numeric(momentum_scores.loc[dt], errors="coerce").dropna().sort_values(ascending=False)
+        lv_row = pd.to_numeric(low_vol_scores.loc[dt], errors="coerce").dropna().sort_values(ascending=False)
+
+        m_sel = select_target_portfolio(
+            mom_row,
+            target_count=int(momentum_count),
+            existing_symbols=prev_m,
+            hold_buffer_mult=float(hold_buffer_mult),
+        )
+        lv_sel = select_target_portfolio(
+            lv_row,
+            target_count=int(low_vol_count),
+            existing_symbols=prev_lv,
+            hold_buffer_mult=float(hold_buffer_mult),
+        )
+
+        eff_momentum_weight = float(momentum_weight)
+        eff_low_vol_weight = float(low_vol_weight)
+        if risk_scalar_by_date is not None:
+            hist = pd.to_numeric(risk_scalar_by_date.loc[risk_scalar_by_date.index <= dt], errors="coerce")
+            risk_scalar = float(hist.iloc[-1]) if not hist.empty else 1.0
+            if not np.isfinite(risk_scalar):
+                risk_scalar = 1.0
+            risk_scalar = float(np.clip(risk_scalar, 0.0, 1.0))
+            lv_cap = float(
+                adaptive_low_vol_max_weight
+                if adaptive_low_vol_max_weight is not None
+                else max(float(low_vol_weight), 0.60)
+            )
+            lv_cap = float(np.clip(lv_cap, 0.0, 1.0))
+            eff_low_vol_weight = float(low_vol_weight) + (1.0 - risk_scalar) * (lv_cap - float(low_vol_weight))
+            eff_low_vol_weight = float(np.clip(eff_low_vol_weight, 0.0, 1.0))
+            eff_momentum_weight = float(np.clip(1.0 - eff_low_vol_weight, 0.0, 1.0))
+
+        weights: Dict[str, float] = {}
+        if m_sel:
+            wm = float(eff_momentum_weight) / float(len(m_sel))
+            for sym in m_sel:
+                weights[sym] = weights.get(sym, 0.0) + wm
+        if lv_sel:
+            wv = float(eff_low_vol_weight) / float(len(lv_sel))
+            for sym in lv_sel:
+                weights[sym] = weights.get(sym, 0.0) + wv
+
+        total = float(sum(weights.values()))
+        if total > 0:
+            weights = {k: (v / total) for k, v in weights.items()}
+
+        out_idx.append(pd.Timestamp(dt))
+        out_rows.append(weights)
+        prev_m = list(m_sel)
+        prev_lv = list(lv_sel)
+
+    if not out_rows:
+        return pd.DataFrame(index=momentum_scores.index)
+    schedule = pd.DataFrame(out_rows, index=pd.DatetimeIndex(out_idx)).fillna(0.0)
+    schedule = schedule.sort_index()
+    return schedule
+
+
 def _slice_frame(frame: pd.DataFrame, start_date: str, end_date: str) -> pd.DataFrame:
     start_ts = pd.Timestamp(start_date)
     end_ts = pd.Timestamp(end_date)
@@ -466,6 +681,7 @@ def _run_factor_window(
     prices: pd.DataFrame,
     momentum_scores: pd.DataFrame,
     value_scores: Optional[pd.DataFrame],
+    low_vol_scores: Optional[pd.DataFrame],
     eps_yoy_df: Optional[pd.DataFrame],
     sales_yoy_df: Optional[pd.DataFrame],
     risk_scalar_by_date: Optional[pd.Series],
@@ -506,6 +722,8 @@ def _run_factor_window(
     raw_time_stop = cfg.get("time_stop_days")
     time_stop_days = None if raw_time_stop is None else int(raw_time_stop)
     execution_lag_days = int(cfg.get("execution_lag_days", 1) or 1)
+    apply_risk_scalar_to_gross = bool(cfg.get("apply_risk_scalar_to_gross", True))
+    gross_risk_scalar = risk_scalar_by_date if apply_risk_scalar_to_gross else None
 
     strategy_type = str(cfg.get("strategy_type", "cross_sectional_momentum") or "cross_sectional_momentum").lower()
     if strategy_type == "separate_value_momentum":
@@ -544,7 +762,49 @@ def _run_factor_window(
             transaction_cost_bps=tx_bps,
             start_cash=100000.0,
             target_weights_by_date=schedule,
-            risk_scalar_by_date=risk_scalar_by_date,
+            risk_scalar_by_date=gross_risk_scalar,
+            hard_stop_pct=hard_stop_pct,
+            trend_ma_days=trend_ma_days,
+            time_stop_days=time_stop_days,
+            execution_lag_days=execution_lag_days,
+        )
+        return run
+    if strategy_type == "momentum_low_vol_blend":
+        if low_vol_scores is None:
+            raise ValueError("momentum_low_vol_blend requires low volatility score matrix")
+        lv_win = _slice_frame(low_vol_scores, start_date, end_date)
+        schedule = _build_momentum_low_vol_schedule(
+            m_win,
+            lv_win,
+            rebalance_freq=rebalance_freq,
+            momentum_count=int(cfg.get("momentum_target_count", 16) or 16),
+            low_vol_count=int(cfg.get("low_vol_target_count", 8) or 8),
+            hold_buffer_mult=float(cfg.get("hold_buffer_mult", 1.25) or 1.25),
+            momentum_weight=float(cfg.get("momentum_weight", 0.75) or 0.75),
+            low_vol_weight=float(cfg.get("low_vol_weight", 0.25) or 0.25),
+            risk_scalar_by_date=risk_scalar_by_date if bool(cfg.get("risk_adaptive_blend", True)) else None,
+            adaptive_low_vol_max_weight=(
+                None
+                if cfg.get("adaptive_low_vol_max_weight") is None
+                else float(cfg.get("adaptive_low_vol_max_weight"))
+            ),
+        )
+        run = run_periodic_rebalance(
+            prices=p_win,
+            ranked_scores=m_win,
+            rebalance_freq=rebalance_freq,
+            target_count=int(cfg.get("momentum_target_count", 16) or 16),
+            hold_buffer_mult=float(cfg.get("hold_buffer_mult", 1.25) or 1.25),
+            position_cap=float(cfg.get("max_position_weight", 0.06) or 0.06),
+            sector_map=sector_map,
+            sector_cap=float(cfg.get("sector_cap", 0.20) or 0.20),
+            industry_map=industry_map,
+            industry_cap=float(cfg.get("industry_cap", 0.15) or 0.15),
+            turnover_budget=float(cfg.get("turnover_budget", 0.20) or 0.20),
+            transaction_cost_bps=tx_bps,
+            start_cash=100000.0,
+            target_weights_by_date=schedule,
+            risk_scalar_by_date=gross_risk_scalar,
             hard_stop_pct=hard_stop_pct,
             trend_ma_days=trend_ma_days,
             time_stop_days=time_stop_days,
@@ -566,7 +826,7 @@ def _run_factor_window(
         turnover_budget=float(cfg.get("turnover_budget", 0.25) or 0.25),
         transaction_cost_bps=tx_bps,
         start_cash=100000.0,
-        risk_scalar_by_date=risk_scalar_by_date,
+        risk_scalar_by_date=gross_risk_scalar,
         hard_stop_pct=hard_stop_pct,
         trend_ma_days=trend_ma_days,
         time_stop_days=time_stop_days,
@@ -581,6 +841,7 @@ def _stitch_test_windows(
     prices: pd.DataFrame,
     momentum_scores: pd.DataFrame,
     value_scores: Optional[pd.DataFrame],
+    low_vol_scores: Optional[pd.DataFrame],
     eps_yoy_df: Optional[pd.DataFrame],
     sales_yoy_df: Optional[pd.DataFrame],
     risk_scalar_by_date: Optional[pd.Series],
@@ -599,6 +860,7 @@ def _stitch_test_windows(
             prices=prices,
             momentum_scores=momentum_scores,
             value_scores=value_scores,
+            low_vol_scores=low_vol_scores,
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar_by_date,
@@ -721,7 +983,13 @@ def main() -> None:
     parser.add_argument("--transaction-cost-bps", type=float, default=2.0, help="Base transaction cost bps")
     parser.add_argument("--frictions", default="10,20,35,50", help="Comma-separated slippage bps pairs")
     parser.add_argument("--cache-only", action="store_true", help="Use local cache only (no network refresh)")
-    parser.add_argument("--min-universe-coverage", type=float, default=0.85, help="Minimum loaded/union coverage ratio")
+    parser.add_argument("--min-universe-coverage", type=float, default=0.60, help="Minimum loaded/union coverage ratio")
+    parser.add_argument(
+        "--min-daily-membership-coverage",
+        type=float,
+        default=0.75,
+        help="Minimum mean daily PIT membership coverage with available prices",
+    )
     args = parser.parse_args()
 
     start_date = str(args.start)
@@ -757,12 +1025,25 @@ def main() -> None:
         raise RuntimeError("PIT day membership unavailable/misaligned. Failing closed.")
 
     features = _extract_feature_arrays(prepared, membership_by_day)
+    coverage_stats = _daily_membership_price_coverage(features)
+    mean_daily_coverage = _safe_float(coverage_stats.get("mean"), 0.0)
+    print(f"Daily PIT membership price coverage (mean): {mean_daily_coverage:.1%}")
+    if mean_daily_coverage < float(args.min_daily_membership_coverage):
+        raise RuntimeError(
+            f"Daily PIT coverage too low ({mean_daily_coverage:.1%} < {float(args.min_daily_membership_coverage):.1%}). "
+            "Refusing to run biased factor test."
+        )
+
     prices = pd.DataFrame(features["close"], index=features["dates"], columns=features["symbols"])
 
     momentum_scores = _build_momentum_quality_scores(features, cfg)
     value_scores: Optional[pd.DataFrame] = None
-    if str(cfg.get("strategy_type", "cross_sectional_momentum") or "").lower() == "separate_value_momentum":
+    low_vol_scores: Optional[pd.DataFrame] = None
+    strategy_type = str(cfg.get("strategy_type", "cross_sectional_momentum") or "").lower()
+    if strategy_type == "separate_value_momentum":
         value_scores = _build_value_proxy_scores(features, cfg)
+    elif strategy_type == "momentum_low_vol_blend":
+        low_vol_scores = _build_low_vol_scores(features, cfg)
 
     eps_yoy_df = pd.DataFrame(features["eps_yoy"], index=features["dates"], columns=features["symbols"])
     sales_yoy_df = pd.DataFrame(features["sales_yoy"], index=features["dates"], columns=features["symbols"])
@@ -807,6 +1088,7 @@ def main() -> None:
             prices=prices,
             momentum_scores=momentum_scores,
             value_scores=value_scores,
+            low_vol_scores=low_vol_scores,
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar_by_date,
@@ -821,6 +1103,7 @@ def main() -> None:
             prices=prices,
             momentum_scores=momentum_scores,
             value_scores=value_scores,
+            low_vol_scores=low_vol_scores,
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar_by_date,
@@ -835,6 +1118,7 @@ def main() -> None:
             prices=prices,
             momentum_scores=momentum_scores,
             value_scores=value_scores,
+            low_vol_scores=low_vol_scores,
             eps_yoy_df=eps_yoy_df,
             sales_yoy_df=sales_yoy_df,
             risk_scalar_by_date=risk_scalar_by_date,
@@ -882,6 +1166,8 @@ def main() -> None:
             "requested_symbol_count": len(symbols),
             "loaded_symbol_count": len(loaded_symbols),
             "coverage_ratio": coverage,
+            "daily_membership_price_coverage": coverage_stats,
+            "min_daily_membership_coverage": float(args.min_daily_membership_coverage),
             "cache_only": bool(args.cache_only),
         },
         "constraints": {

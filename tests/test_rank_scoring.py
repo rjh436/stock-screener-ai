@@ -5,6 +5,7 @@ import pandas as pd
 
 from execution.rank_scoring import (
     combine_rank_columns,
+    compute_low_vol_rank,
     compute_momentum_rank,
     compute_quality_rank,
     compute_value_rank,
@@ -46,6 +47,20 @@ class RankScoringTests(unittest.TestCase):
         self.assertEqual(value_rank.index[0], "AAA")
         self.assertEqual(quality_rank.index[0], "AAA")
 
+    def test_value_rank_requires_min_factor_count(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "ebit_tev": [0.30, np.nan, np.nan],
+                "pe": [9.0, 12.0, np.nan],
+                "pb": [1.2, np.nan, np.nan],
+            },
+            index=["AAA", "BBB", "CCC"],
+        )
+        ranked = compute_value_rank(frame, params={"min_value_factors": 2})
+        self.assertTrue(np.isfinite(float(ranked.loc["AAA", "value_rank"])))
+        self.assertTrue(np.isnan(float(ranked.loc["BBB", "value_rank"])))
+        self.assertTrue(np.isnan(float(ranked.loc["CCC", "value_rank"])))
+
     def test_combine_rank_columns_uses_weights(self) -> None:
         frame = pd.DataFrame(
             {
@@ -83,6 +98,19 @@ class RankScoringTests(unittest.TestCase):
             },
         )
         self.assertEqual(ranked.index[0], "BBB")
+
+    def test_low_vol_rank_prefers_lower_volatility_metrics(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "realized_vol_63d": [0.12, 0.45, 0.30],
+                "natr": [1.5, 4.5, 3.0],
+                "adr": [2.0, 5.0, 3.5],
+            },
+            index=["LOW", "HIGH", "MID"],
+        )
+        ranked = compute_low_vol_rank(frame)
+        self.assertIn("low_vol_rank", ranked.columns)
+        self.assertEqual(ranked.index[0], "LOW")
 
 
 if __name__ == "__main__":
