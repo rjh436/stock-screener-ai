@@ -256,6 +256,40 @@ class RebalanceEngineTests(unittest.TestCase):
         self.assertEqual(int((daily.get("audit_report", {}) or {}).get("same_day_open_entries", 0) or 0), 0)
         self.assertEqual(int((weekly.get("audit_report", {}) or {}).get("same_day_open_entries", 0) or 0), 0)
 
+    def test_execution_prices_can_differ_from_mark_prices(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=10, freq="B")
+        close_prices = pd.DataFrame(
+            {
+                "AAA": [100.0 + i for i in range(len(dates))],
+            },
+            index=dates,
+        )
+        open_prices = pd.DataFrame(
+            {
+                "AAA": [90.0 + i for i in range(len(dates))],
+            },
+            index=dates,
+        )
+        ranks = pd.DataFrame({"AAA": [100.0] * len(dates)}, index=dates)
+
+        out = run_periodic_rebalance(
+            close_prices,
+            ranks,
+            execution_prices=open_prices,
+            rebalance_freq="D",
+            target_count=1,
+            transaction_cost_bps=0.0,
+            turnover_budget=1.0,
+            start_cash=100000.0,
+            execution_lag_days=1,
+        )
+
+        rebalance_log = out.get("rebalance_log", [])
+        self.assertTrue(rebalance_log)
+        first_orders = rebalance_log[0].get("orders", [])
+        self.assertTrue(first_orders)
+        self.assertEqual(float(first_orders[0]["price"]), float(open_prices.iloc[1, 0]))
+
     def test_stale_price_exit_liquidates_unquoted_position(self) -> None:
         dates = pd.date_range("2024-01-01", periods=70, freq="B")
         aaa = [100.0 + (i * 0.2) for i in range(len(dates))]

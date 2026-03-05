@@ -345,6 +345,7 @@ def run_periodic_rebalance(
     prices: pd.DataFrame,
     ranked_scores: pd.DataFrame,
     *,
+    execution_prices: Optional[pd.DataFrame] = None,
     rebalance_freq: str = "M",
     target_count: int = 20,
     hold_buffer_mult: float = 1.25,
@@ -380,6 +381,8 @@ def run_periodic_rebalance(
     scores = ranked_scores.copy().sort_index()
     px.index = pd.to_datetime(px.index)
     scores.index = pd.to_datetime(scores.index)
+    exec_px = execution_prices.copy().sort_index() if execution_prices is not None else px
+    exec_px.index = pd.to_datetime(exec_px.index)
     target_schedule = None
     if target_weights_by_date is not None:
         target_schedule = target_weights_by_date.copy().sort_index()
@@ -479,9 +482,17 @@ def run_periodic_rebalance(
     for dt in trade_dates:
         dt = pd.Timestamp(dt)
         row_prices = pd.to_numeric(px.loc[dt], errors="coerce")
+        row_exec_prices = pd.Series(dtype=float)
+        if dt in exec_px.index:
+            row_exec_prices = pd.to_numeric(exec_px.loc[dt], errors="coerce")
         tradable_prices = {
             str(sym): float(val)
             for sym, val in row_prices.items()
+            if np.isfinite(val) and float(val) > 0
+        }
+        tradable_exec_prices = {
+            str(sym): float(val)
+            for sym, val in row_exec_prices.items()
             if np.isfinite(val) and float(val) > 0
         }
         if tradable_prices:
@@ -621,11 +632,11 @@ def run_periodic_rebalance(
             target_weights = enforce_turnover_budget(actual_prev_weights, target_weights, float(turnover_budget))
             target_turnover_val = float(_turnover(actual_prev_weights, target_weights))
 
-            execution_prices = tradable_prices if tradable_prices else last_prices
+            execution_price_map = tradable_exec_prices if tradable_exec_prices else (tradable_prices if tradable_prices else last_prices)
             order_res = generate_orders_from_target(
                 current_positions=positions,
                 target_weights=target_weights,
-                prices=execution_prices,
+                prices=execution_price_map,
                 cash=cash,
                 transaction_cost_bps=float(transaction_cost_bps),
             )
