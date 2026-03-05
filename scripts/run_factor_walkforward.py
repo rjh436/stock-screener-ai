@@ -209,6 +209,8 @@ def _extract_feature_arrays(
     revenue_ttm = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     net_income_ttm = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     net_margin_ttm = np.full((n_days, n_syms), np.nan, dtype=np.float32)
+    eps_accel = np.full((n_days, n_syms), np.nan, dtype=np.float32)
+    revenue_accel = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     natr = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     adr = np.full((n_days, n_syms), np.nan, dtype=np.float32)
 
@@ -246,6 +248,10 @@ def _extract_feature_arrays(
             net_income_ttm[idx, j] = pd.to_numeric(df["net_income_ttm"], errors="coerce").to_numpy(dtype=np.float32)[valid]
         if "net_margin_ttm" in df.columns:
             net_margin_ttm[idx, j] = pd.to_numeric(df["net_margin_ttm"], errors="coerce").to_numpy(dtype=np.float32)[valid]
+        if "eps_accel" in df.columns:
+            eps_accel[idx, j] = pd.to_numeric(df["eps_accel"], errors="coerce").to_numpy(dtype=np.float32)[valid]
+        if "revenue_accel" in df.columns:
+            revenue_accel[idx, j] = pd.to_numeric(df["revenue_accel"], errors="coerce").to_numpy(dtype=np.float32)[valid]
 
     membership_mask = _build_membership_mask(all_dates, symbols, membership_by_day)
 
@@ -262,6 +268,8 @@ def _extract_feature_arrays(
         "revenue_ttm": revenue_ttm,
         "net_income_ttm": net_income_ttm,
         "net_margin_ttm": net_margin_ttm,
+        "eps_accel": eps_accel,
+        "revenue_accel": revenue_accel,
         "natr": natr,
         "adr": adr,
         "membership_mask": membership_mask,
@@ -351,6 +359,12 @@ def _build_momentum_quality_scores(features: Dict[str, Any], cfg: Dict[str, Any]
     eps_yoy = features["eps_yoy"]
     sales_yoy = features["sales_yoy"]
     inst = features["inst"]
+    eps_accel = features.get("eps_accel")
+    revenue_accel = features.get("revenue_accel")
+    if eps_accel is None:
+        eps_accel = np.full(close.shape, np.nan, dtype=np.float32)
+    if revenue_accel is None:
+        revenue_accel = np.full(close.shape, np.nan, dtype=np.float32)
 
     valid = _base_valid_mask(features, cfg)
 
@@ -361,16 +375,20 @@ def _build_momentum_quality_scores(features: Dict[str, Any], cfg: Dict[str, Any]
     with np.errstate(divide="ignore", invalid="ignore"):
         mom12_1 = (c21 / c252) - 1.0
         mom6_1 = (c21 / c126) - 1.0
+        mom1_0 = (close / c21) - 1.0
         proximity = close / high_52w
 
     min_rank_names = int(cfg.get("min_rank_names", 40) or 40)
     r_m12 = _cross_section_rank_matrix(mom12_1, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
     r_m61 = _cross_section_rank_matrix(mom6_1, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
+    r_m10_penalty = _cross_section_rank_matrix(mom1_0, valid_mask=valid, higher_is_better=False, min_names=min_rank_names)
     r_prox = _cross_section_rank_matrix(proximity, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
     q_parts = [
         _cross_section_rank_matrix(eps_yoy, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
         _cross_section_rank_matrix(sales_yoy, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
         _cross_section_rank_matrix(inst, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+        _cross_section_rank_matrix(eps_accel, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
+        _cross_section_rank_matrix(revenue_accel, valid_mask=valid, higher_is_better=True, min_names=min_rank_names),
     ]
     q_stack = np.stack(q_parts, axis=0)
     q_sum = np.nansum(q_stack, axis=0)
@@ -380,12 +398,13 @@ def _build_momentum_quality_scores(features: Dict[str, Any], cfg: Dict[str, Any]
     q_blend[q_cnt <= 0] = np.nan
     r_qual = _cross_section_rank_matrix(q_blend, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
 
-    w_m12 = float(cfg.get("mom_12_1_weight", 0.50) or 0.50)
+    w_m12 = float(cfg.get("mom_12_1_weight", 0.45) or 0.45)
     w_m61 = float(cfg.get("mom_6_1_weight", 0.20) or 0.20)
+    w_m10 = float(cfg.get("mom_1_0_penalty_weight", 0.10) or 0.10)
     w_prox = float(cfg.get("proximity_52w_weight", 0.15) or 0.15)
     w_qual = float(cfg.get("quality_growth_weight", 0.15) or 0.15)
 
-    score = (w_m12 * r_m12) + (w_m61 * r_m61) + (w_prox * r_prox) + (w_qual * r_qual)
+    score = (w_m12 * r_m12) + (w_m61 * r_m61) + (w_m10 * r_m10_penalty) + (w_prox * r_prox) + (w_qual * r_qual)
     score[~valid] = np.nan
 
     return pd.DataFrame(score, index=features["dates"], columns=features["symbols"])
@@ -767,6 +786,8 @@ def _run_factor_window(
             trend_ma_days=trend_ma_days,
             time_stop_days=time_stop_days,
             execution_lag_days=execution_lag_days,
+            conviction_weighted=bool(cfg.get("conviction_weighted", False)),
+            conviction_power=float(cfg.get("conviction_power", 1.0) or 1.0),
         )
         return run
     if strategy_type == "momentum_low_vol_blend":
@@ -809,6 +830,8 @@ def _run_factor_window(
             trend_ma_days=trend_ma_days,
             time_stop_days=time_stop_days,
             execution_lag_days=execution_lag_days,
+            conviction_weighted=bool(cfg.get("conviction_weighted", False)),
+            conviction_power=float(cfg.get("conviction_power", 1.0) or 1.0),
         )
         return run
 
@@ -831,6 +854,8 @@ def _run_factor_window(
         trend_ma_days=trend_ma_days,
         time_stop_days=time_stop_days,
         execution_lag_days=execution_lag_days,
+        conviction_weighted=bool(cfg.get("conviction_weighted", False)),
+        conviction_power=float(cfg.get("conviction_power", 1.0) or 1.0),
     )
     return run
 

@@ -108,6 +108,7 @@ def compute_momentum_rank(frame: pd.DataFrame, date_idx: object = None, params: 
 
     mom_12_1 = _safe_series(snap, ["mom_12_1", "ret_12_1", "momentum_12_1"])
     mom_6_1 = _safe_series(snap, ["mom_6_1", "ret_6_1", "momentum_6_1"])
+    mom_1_0 = _safe_series(snap, ["mom_1_0", "ret_1_0", "ret_1m", "momentum_1_0"])
 
     proximity = _safe_series(snap, ["proximity_52w", "near_52w", "high_proximity"])
     if proximity.isna().all() and "pct_off_high_52w" in snap.columns:
@@ -115,7 +116,16 @@ def compute_momentum_rank(frame: pd.DataFrame, date_idx: object = None, params: 
 
     quality_proxy_cols = [
         c
-        for c in ("quality_growth", "eps_growth_yoy", "sales_growth_yoy", "roe", "roic", "f_score")
+        for c in (
+            "quality_growth",
+            "eps_growth_yoy",
+            "sales_growth_yoy",
+            "roe",
+            "roic",
+            "f_score",
+            "eps_accel",
+            "revenue_accel",
+        )
         if c in snap.columns
     ]
     if quality_proxy_cols:
@@ -129,13 +139,15 @@ def compute_momentum_rank(frame: pd.DataFrame, date_idx: object = None, params: 
     ranked = {
         "mom_12_1": _percentile_rank(mom_12_1, higher_is_better=True),
         "mom_6_1": _percentile_rank(mom_6_1, higher_is_better=True),
+        "mom_1_0_penalty": _percentile_rank(mom_1_0, higher_is_better=False),
         "proximity_52w": _percentile_rank(proximity, higher_is_better=True),
         "quality_growth": _percentile_rank(quality_growth, higher_is_better=True),
     }
 
     weights = {
-        "mom_12_1": float(cfg.get("mom_12_1_weight", 0.50) or 0.50),
+        "mom_12_1": float(cfg.get("mom_12_1_weight", 0.45) or 0.45),
         "mom_6_1": float(cfg.get("mom_6_1_weight", 0.20) or 0.20),
+        "mom_1_0_penalty": float(cfg.get("mom_1_0_penalty_weight", 0.10) or 0.10),
         "proximity_52w": float(cfg.get("proximity_52w_weight", 0.15) or 0.15),
         "quality_growth": float(cfg.get("quality_growth_weight", 0.15) or 0.15),
     }

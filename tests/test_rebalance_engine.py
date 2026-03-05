@@ -254,6 +254,38 @@ class RebalanceEngineTests(unittest.TestCase):
         # Buy then stale-price forced sell.
         self.assertGreaterEqual(int(out.get("total_trades", 0) or 0), 2)
 
+    def test_conviction_weighted_targets_overweight_higher_rank(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=66, freq="B")
+        prices = pd.DataFrame(
+            {
+                "AAA": [100.0 + (i * 0.1) for i in range(len(dates))],
+                "BBB": [100.0 + (i * 0.1) for i in range(len(dates))],
+            },
+            index=dates,
+        )
+        ranks = pd.DataFrame(
+            {
+                "AAA": [95.0] * len(dates),
+                "BBB": [70.0] * len(dates),
+            },
+            index=dates,
+        )
+        out = run_periodic_rebalance(
+            prices,
+            ranks,
+            rebalance_freq="M",
+            target_count=2,
+            transaction_cost_bps=0.0,
+            turnover_budget=1.0,
+            start_cash=100000.0,
+            conviction_weighted=True,
+            conviction_power=1.0,
+        )
+        logs = out.get("rebalance_log", [])
+        self.assertTrue(logs)
+        first_weights = logs[0].get("weights", {})
+        self.assertGreater(float(first_weights.get("AAA", 0.0)), float(first_weights.get("BBB", 0.0)))
+
 
 if __name__ == "__main__":
     unittest.main()

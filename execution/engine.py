@@ -3700,6 +3700,8 @@ def _run_rank_mode_backtest(
         transaction_cost_bps=float(kwargs.get("transaction_cost_bps", 2.0) or 2.0),
         start_cash=float(kwargs.get("start_cash", 100000.0) or 100000.0),
         execution_lag_days=int(kwargs.get("execution_lag_days", 1) or 1),
+        conviction_weighted=bool(kwargs.get("rank_conviction_weighted", False)),
+        conviction_power=float(kwargs.get("rank_conviction_power", 1.0) or 1.0),
     )
 
 

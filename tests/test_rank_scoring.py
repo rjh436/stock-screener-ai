@@ -93,11 +93,35 @@ class RankScoringTests(unittest.TestCase):
             params={
                 "mom_12_1_weight": 0.0,
                 "mom_6_1_weight": 0.0,
+                "mom_1_0_penalty_weight": 0.0,
                 "proximity_52w_weight": 0.0,
                 "quality_growth_weight": 1.0,
             },
         )
         self.assertEqual(ranked.index[0], "BBB")
+
+    def test_momentum_rank_can_penalize_one_month_chase(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "mom_12_1": [0.2, 0.2],
+                "mom_6_1": [0.1, 0.1],
+                "proximity_52w": [0.9, 0.9],
+                "quality_growth": [0.5, 0.5],
+                "mom_1_0": [0.25, -0.05],
+            },
+            index=["CHASED", "STEADY"],
+        )
+        ranked = compute_momentum_rank(
+            frame,
+            params={
+                "mom_12_1_weight": 0.0,
+                "mom_6_1_weight": 0.0,
+                "proximity_52w_weight": 0.0,
+                "quality_growth_weight": 0.0,
+                "mom_1_0_penalty_weight": 1.0,
+            },
+        )
+        self.assertEqual(ranked.index[0], "STEADY")
 
     def test_low_vol_rank_prefers_lower_volatility_metrics(self) -> None:
         frame = pd.DataFrame(

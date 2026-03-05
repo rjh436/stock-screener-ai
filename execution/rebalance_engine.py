@@ -136,6 +136,58 @@ def _sanitize_target_weights(weights: Mapping[str, float]) -> Dict[str, float]:
     return clean
 
 
+def _build_selected_target_weights(
+    selected: Iterable[str],
+    ranked_scores: Mapping[str, float] | pd.Series,
+    *,
+    conviction_weighted: bool,
+    conviction_power: float = 1.0,
+) -> Dict[str, float]:
+    chosen = [str(s) for s in selected if str(s)]
+    if not chosen:
+        return {}
+
+    n = len(chosen)
+    if not conviction_weighted or n <= 1:
+        equal = 1.0 / float(n)
+        return {sym: equal for sym in chosen}
+
+    ranked = pd.to_numeric(pd.Series(ranked_scores), errors="coerce")
+    ranked = ranked.reindex(chosen).dropna()
+    if ranked.empty:
+        equal = 1.0 / float(n)
+        return {sym: equal for sym in chosen}
+
+    shifted = ranked - float(ranked.min()) + 1e-6
+    try:
+        power = float(conviction_power)
+    except Exception:
+        power = 1.0
+    if not np.isfinite(power) or power <= 0:
+        power = 1.0
+    if abs(power - 1.0) > 1e-9:
+        shifted = shifted.pow(power)
+
+    total = float(shifted.sum())
+    if not np.isfinite(total) or total <= 0:
+        equal = 1.0 / float(n)
+        return {sym: equal for sym in chosen}
+
+    base = (1.0 - (len(ranked) / float(n))) / float(n) if len(ranked) < n else 0.0
+    out: Dict[str, float] = {}
+    for sym in chosen:
+        if sym in shifted.index:
+            out[sym] = float(shifted.loc[sym] / total)
+        else:
+            out[sym] = max(0.0, base)
+    out = _normalize_weights(out)
+    if out:
+        return out
+
+    equal = 1.0 / float(n)
+    return {sym: equal for sym in chosen}
+
+
 def _coerce_weight_row(frame: pd.DataFrame, dt: pd.Timestamp) -> Dict[str, float]:
     if frame is None or frame.empty:
         return {}
@@ -311,6 +363,8 @@ def run_periodic_rebalance(
     time_stop_days: Optional[int] = None,
     execution_lag_days: int = 1,
     max_stale_price_days: Optional[int] = 5,
+    conviction_weighted: bool = False,
+    conviction_power: float = 1.0,
 ) -> Dict[str, object]:
     if prices is None or prices.empty:
         return {
@@ -527,8 +581,12 @@ def run_periodic_rebalance(
                     )
 
                     if selected:
-                        equal_weight = 1.0 / float(len(selected))
-                        target_weights = {sym: equal_weight for sym in selected}
+                        target_weights = _build_selected_target_weights(
+                            selected,
+                            ranked,
+                            conviction_weighted=bool(conviction_weighted),
+                            conviction_power=float(conviction_power),
+                        )
                     else:
                         target_weights = {}
                 else:

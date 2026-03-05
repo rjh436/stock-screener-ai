@@ -191,12 +191,56 @@ class FactorWalkforwardTests(unittest.TestCase):
             "min_rank_names": 2,
             "mom_12_1_weight": 0.0,
             "mom_6_1_weight": 0.0,
+            "mom_1_0_penalty_weight": 0.0,
             "proximity_52w_weight": 0.0,
             "quality_growth_weight": 1.0,
         }
         scores = _build_momentum_quality_scores(features, cfg)
         last = pd.to_numeric(scores.iloc[-1], errors="coerce").dropna().sort_values(ascending=False)
         self.assertEqual(last.index[0], "BBB")
+
+    def test_momentum_quality_scores_can_apply_one_month_reversal_penalty(self) -> None:
+        dates = pd.bdate_range("2024-01-01", periods=300)
+        symbols = ["CHASED", "STEADY"]
+        shape = (len(dates), len(symbols))
+        close = np.full(shape, 100.0, dtype=np.float32)
+        high = np.full(shape, 200.0, dtype=np.float32)
+        vol = np.full(shape, 2_000_000.0, dtype=np.float32)
+
+        # Keep longer momentum broadly similar, but spike CHASED in the last month.
+        close[:, 0] = np.linspace(80.0, 100.0, len(dates))
+        close[:, 1] = np.linspace(80.0, 100.0, len(dates))
+        close[-21:, 0] = np.linspace(100.0, 140.0, 21)
+        close[-21:, 1] = np.linspace(100.0, 102.0, 21)
+
+        features = {
+            "dates": pd.DatetimeIndex(dates),
+            "symbols": symbols,
+            "close": close,
+            "high_52w": high,
+            "vol_ma20": vol,
+            "eps_yoy": np.zeros(shape, dtype=np.float32),
+            "sales_yoy": np.zeros(shape, dtype=np.float32),
+            "inst": np.zeros(shape, dtype=np.float32),
+            "natr": np.full(shape, 2.0, dtype=np.float32),
+            "adr": np.full(shape, 2.0, dtype=np.float32),
+            "membership_mask": np.ones(shape, dtype=bool),
+        }
+        cfg = {
+            "min_price": 10.0,
+            "min_adv20": 1.0,
+            "min_history_bars": 252,
+            "drop_bottom_dv_frac": 0.0,
+            "min_rank_names": 2,
+            "mom_12_1_weight": 0.0,
+            "mom_6_1_weight": 0.0,
+            "mom_1_0_penalty_weight": 1.0,
+            "proximity_52w_weight": 0.0,
+            "quality_growth_weight": 0.0,
+        }
+        scores = _build_momentum_quality_scores(features, cfg)
+        last = pd.to_numeric(scores.iloc[-1], errors="coerce").dropna().sort_values(ascending=False)
+        self.assertEqual(last.index[0], "STEADY")
 
     def test_build_low_vol_scores_prefers_lower_realized_vol(self) -> None:
         dates = pd.bdate_range("2024-01-01", periods=220)

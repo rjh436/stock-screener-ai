@@ -18,6 +18,8 @@ FUNDAMENTAL_METRIC_COLUMNS: List[str] = [
     "eps_growth_yoy",
     "sales_growth_qoq",
     "sales_growth_yoy",
+    "eps_accel",
+    "revenue_accel",
     "institutional_sponsorship",
     "eps_ttm",
     "revenue_ttm",
@@ -235,6 +237,14 @@ def _load_edgar_symbol_frame(symbol: str) -> pd.DataFrame:
     frame["eps_ttm"] = frame["eps"].rolling(window=4, min_periods=4).sum()
     frame["revenue_ttm"] = frame["revenue"].rolling(window=4, min_periods=4).sum()
     frame["net_income_ttm"] = frame["net_income"].rolling(window=4, min_periods=4).sum()
+    frame["eps_accel"] = (
+        frame["eps_growth_qoq"]
+        - frame["eps_growth_qoq"].shift(1).rolling(window=3, min_periods=2).mean()
+    )
+    frame["revenue_accel"] = (
+        frame["sales_growth_qoq"]
+        - frame["sales_growth_qoq"].shift(1).rolling(window=3, min_periods=2).mean()
+    )
     with np.errstate(invalid="ignore", divide="ignore"):
         frame["net_margin_ttm"] = (frame["net_income_ttm"] / frame["revenue_ttm"]) * 100.0
     frame["net_margin_ttm"] = pd.to_numeric(frame["net_margin_ttm"], errors="coerce")
@@ -396,6 +406,8 @@ def _fetch_snapshots(symbols: Sequence[str]) -> pd.DataFrame:
                 "eps_growth_yoy": eps_yoy,
                 "sales_growth_qoq": sales_qoq,
                 "sales_growth_yoy": sales_yoy,
+                "eps_accel": np.nan,
+                "revenue_accel": np.nan,
                 "institutional_sponsorship": _institutional_sponsorship_proxy(fund),
                 "eps_ttm": np.nan,
                 "revenue_ttm": np.nan,
