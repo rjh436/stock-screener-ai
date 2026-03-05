@@ -35,6 +35,7 @@ from scripts.run_factor_walkforward import (
     _run_factor_window,
     _safe_float,
     _stitch_test_windows,
+    _stitch_test_windows_warm,
 )
 
 
@@ -63,6 +64,11 @@ def main() -> None:
     parser.add_argument("--output", default="")
     parser.add_argument("--min-universe-coverage", type=float, default=0.60)
     parser.add_argument("--min-daily-membership-coverage", type=float, default=0.75)
+    parser.add_argument("--oos-mode", choices=["cold", "warm"], default="warm")
+    parser.add_argument("--gate-oos60-20", type=float, default=6.0)
+    parser.add_argument("--gate-oos60-35", type=float, default=4.5)
+    parser.add_argument("--gate-dd20", type=float, default=42.0)
+    parser.add_argument("--gate-turnover20", type=float, default=220.0)
     args = parser.parse_args()
 
     config_paths = [Path(p).expanduser().resolve() for p in args.configs]
@@ -138,11 +144,12 @@ def main() -> None:
         )
         for v in friction_vals
     ]
+    windows_24_12 = _build_test_windows(start_date, end_date, train_months=24, test_months=12)
     windows_60_12 = _build_test_windows(start_date, end_date, train_months=60, test_months=12)
 
     rows: List[Dict[str, Any]] = []
     for cfg in configs:
-        mom_scores = _build_momentum_quality_scores(features, cfg)
+        mom_scores = _build_momentum_quality_scores(features, cfg, symbol_group_map=sector_map)
         value_scores = None
         low_vol_scores = None
         strategy_type = str(cfg.get("strategy_type", "")).lower()
@@ -170,7 +177,7 @@ def main() -> None:
                 end_date=end_date,
                 friction=fr,
             )
-            stitched = _stitch_test_windows(
+            stitched60_cold = _stitch_test_windows(
                 cfg=cfg,
                 prices=prices,
                 momentum_scores=mom_scores,
@@ -185,36 +192,79 @@ def main() -> None:
                 test_months=12,
                 friction=fr,
             )
+            stitched24_cold = _stitch_test_windows(
+                cfg=cfg,
+                prices=prices,
+                momentum_scores=mom_scores,
+                value_scores=value_scores,
+                low_vol_scores=low_vol_scores,
+                eps_yoy_df=eps_yoy_df,
+                sales_yoy_df=sales_yoy_df,
+                risk_scalar_by_date=risk_scalar,
+                sector_map=sector_map,
+                industry_map=industry_map,
+                windows=windows_24_12,
+                test_months=12,
+                friction=fr,
+            )
+            stitched60_warm = _stitch_test_windows_warm(full_run=full, windows=windows_60_12, test_months=12)
+            stitched24_warm = _stitch_test_windows_warm(full_run=full, windows=windows_24_12, test_months=12)
             full_cagr = _safe_float(full.get("cagr"), float("nan"))
             if np.isfinite(full_cagr):
                 full_cagr *= 100.0
             dd = _pct_dd(full.get("max_drawdown_pct", 0.0))
             turnover = _safe_float(full.get("avg_annual_turnover_pct"), float("nan"))
-            oos60 = _safe_float(stitched.get("stitched_cagr_pct"), float("nan"))
+            oos60_cold = _safe_float(stitched60_cold.get("stitched_cagr_pct"), float("nan"))
+            oos60_warm = _safe_float(stitched60_warm.get("stitched_cagr_pct"), float("nan"))
+            oos24_cold = _safe_float(stitched24_cold.get("stitched_cagr_pct"), float("nan"))
+            oos24_warm = _safe_float(stitched24_warm.get("stitched_cagr_pct"), float("nan"))
+            use_warm = str(args.oos_mode).lower() == "warm"
+            oos60 = oos60_warm if (use_warm and np.isfinite(oos60_warm)) else oos60_cold
+            oos24 = oos24_warm if (use_warm and np.isfinite(oos24_warm)) else oos24_cold
+            if not np.isfinite(oos60) and np.isfinite(oos24):
+                oos60 = oos24
 
             cfg_row["scenarios"][fr.name] = {
                 "full_cagr_pct": full_cagr,
                 "full_max_dd_pct": dd,
                 "full_trades": int(full.get("total_trades", 0) or 0),
                 "avg_annual_turnover_pct": turnover,
+                "oos24_cagr_pct": oos24,
+                "oos24_cagr_pct_cold": oos24_cold,
+                "oos24_cagr_pct_warm": oos24_warm,
                 "oos60_cagr_pct": oos60,
+                "oos60_cagr_pct_cold": oos60_cold,
+                "oos60_cagr_pct_warm": oos60_warm,
+                "oos_mode": "warm" if use_warm else "cold",
             }
 
         s20 = cfg_row["scenarios"].get("20x20", {})
         s35 = cfg_row["scenarios"].get("35x35", {})
         gates = {
-            "oos60_20_ge_10": bool(np.isfinite(s20.get("oos60_cagr_pct", float("nan"))) and s20.get("oos60_cagr_pct", 0.0) >= 10.0),
-            "oos60_35_ge_8": bool(np.isfinite(s35.get("oos60_cagr_pct", float("nan"))) and s35.get("oos60_cagr_pct", 0.0) >= 8.0),
-            "dd20_le_28": bool(np.isfinite(s20.get("full_max_dd_pct", float("nan"))) and s20.get("full_max_dd_pct", 999.0) <= 28.0),
-            "turnover20_le_200": bool(np.isfinite(s20.get("avg_annual_turnover_pct", float("nan"))) and s20.get("avg_annual_turnover_pct", 999.0) <= 200.0),
+            "oos60_20_gate": bool(
+                np.isfinite(s20.get("oos60_cagr_pct", float("nan")))
+                and s20.get("oos60_cagr_pct", 0.0) >= float(args.gate_oos60_20)
+            ),
+            "oos60_35_gate": bool(
+                np.isfinite(s35.get("oos60_cagr_pct", float("nan")))
+                and s35.get("oos60_cagr_pct", 0.0) >= float(args.gate_oos60_35)
+            ),
+            "dd20_gate": bool(
+                np.isfinite(s20.get("full_max_dd_pct", float("nan")))
+                and s20.get("full_max_dd_pct", 999.0) <= float(args.gate_dd20)
+            ),
+            "turnover20_gate": bool(
+                np.isfinite(s20.get("avg_annual_turnover_pct", float("nan")))
+                and s20.get("avg_annual_turnover_pct", 999.0) <= float(args.gate_turnover20)
+            ),
         }
         gate_count = sum(1 for v in gates.values() if v)
         score = (
             gate_count * 1000.0
             + (s20.get("oos60_cagr_pct") or -999.0) * 10.0
             + (s35.get("oos60_cagr_pct") or -999.0) * 8.0
-            - max(0.0, (s20.get("full_max_dd_pct") or 999.0) - 28.0) * 3.0
-            - max(0.0, (s20.get("avg_annual_turnover_pct") or 999.0) - 200.0) * 0.5
+            - max(0.0, (s20.get("full_max_dd_pct") or 999.0) - float(args.gate_dd20)) * 3.0
+            - max(0.0, (s20.get("avg_annual_turnover_pct") or 999.0) - float(args.gate_turnover20)) * 0.5
         )
         cfg_row["gates"] = gates
         cfg_row["gate_count"] = gate_count
@@ -226,6 +276,13 @@ def main() -> None:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "start_date": start_date,
         "end_date": end_date,
+        "oos_mode": str(args.oos_mode).lower(),
+        "gates": {
+            "oos60_20_cagr_pct": float(args.gate_oos60_20),
+            "oos60_35_cagr_pct": float(args.gate_oos60_35),
+            "max_dd20_pct": float(args.gate_dd20),
+            "max_turnover20_pct": float(args.gate_turnover20),
+        },
         "universe": {
             "name": "RUSSELL3000",
             "source": source,

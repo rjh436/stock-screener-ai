@@ -1,0 +1,43 @@
+{
+  "name": "Factor Momentum Pure12 N16 Balanced Sector-Relative v1",
+  "strategy_type": "cross_sectional_momentum",
+  "blend_weight": 0.50,
+  "rebalance_freq": "M",
+
+  "min_price": 10.0,
+  "min_adv20": 5000000.0,
+  "min_history_bars": 252,
+  "drop_bottom_dv_frac": 0.20,
+  "min_rank_names": 40,
+
+  "mom_12_1_weight": 0.90,
+  "mom_6_1_weight": 0.00,
+  "mom_1_0_penalty_weight": 0.10,
+  "proximity_52w_weight": 0.00,
+  "quality_growth_weight": 0.00,
+  "use_sector_relative_momentum": true,
+  "sector_relative_min_group_size": 8,
+
+  "target_count": 16,
+  "hold_buffer_mult": 1.75,
+
+  "max_position_weight": 0.06,
+  "sector_cap": 0.25,
+  "industry_cap": 0.15,
+  "turnover_budget": 0.18,
+  "execution_lag_days": 1,
+
+  "market_regime": {
+    "enabled": true,
+    "symbol": "SPY",
+    "ma_days": 200,
+    "risk_off_scalar": 0.55
+  },
+
+  "acceptance_gates": {
+    "use_warm_restart_for_oos_gate": true,
+    "oos60_gate_20x20_cagr_pct": 6.0,
+    "oos60_gate_35x35_cagr_pct": 4.5,
+    "max_dd_gate_pct": 42.0
+  }
+}

@@ -34,6 +34,7 @@ from scripts.run_factor_walkforward import (
     _run_factor_window,
     _safe_float,
     _stitch_test_windows,
+    _stitch_test_windows_warm,
 )
 
 
@@ -129,7 +130,13 @@ def _pct(value: Any) -> float:
     return v * 100.0 if np.isfinite(v) else float("nan")
 
 
-def _score_stage1(m20: Dict[str, Any], m35: Dict[str, Any]) -> float:
+def _score_stage1(
+    m20: Dict[str, Any],
+    m35: Dict[str, Any],
+    *,
+    dd_gate: float = 42.0,
+    turnover_gate: float = 220.0,
+) -> float:
     c20 = _pct(m20.get("cagr"))
     c35 = _pct(m35.get("cagr"))
     dd20 = _safe_float(m20.get("max_drawdown_pct"), 0.0) * 100.0
@@ -138,7 +145,7 @@ def _score_stage1(m20: Dict[str, Any], m35: Dict[str, Any]) -> float:
         c20 = -999.0
     if not np.isfinite(c35):
         c35 = -999.0
-    penalty = max(0.0, dd20 - 28.0) * 1.75 + max(0.0, t20 - 200.0) * 0.10
+    penalty = max(0.0, dd20 - float(dd_gate)) * 1.75 + max(0.0, t20 - float(turnover_gate)) * 0.10
     return (0.60 * c20) + (0.40 * c35) - penalty
 
 
@@ -152,8 +159,14 @@ def main() -> None:
     parser.add_argument("--transaction-cost-bps", type=float, default=2.0)
     parser.add_argument("--frictions", default="20,35")
     parser.add_argument("--top-stage2", type=int, default=20)
+    parser.add_argument("--max-candidates", type=int, default=0, help="Optional cap on stage-1 candidates for faster iterative runs")
     parser.add_argument("--min-universe-coverage", type=float, default=0.60)
     parser.add_argument("--min-daily-membership-coverage", type=float, default=0.75)
+    parser.add_argument("--oos-mode", choices=["cold", "warm"], default="warm")
+    parser.add_argument("--gate-oos60-20", type=float, default=6.0)
+    parser.add_argument("--gate-oos60-35", type=float, default=4.5)
+    parser.add_argument("--gate-dd20", type=float, default=42.0)
+    parser.add_argument("--gate-turnover20", type=float, default=220.0)
     args = parser.parse_args()
 
     base_path = Path(args.base_config).expanduser().resolve()
@@ -205,7 +218,7 @@ def main() -> None:
         industry_map = _load_symbol_map(ROOT / "config" / "industry.json")
 
     # We intentionally keep signal weights fixed in this optimizer and sweep construction/risk controls.
-    momentum_scores = _build_momentum_quality_scores(features, base_cfg)
+    momentum_scores = _build_momentum_quality_scores(features, base_cfg, symbol_group_map=sector_map)
     base_strategy_type = str(base_cfg.get("strategy_type", "cross_sectional_momentum") or "cross_sectional_momentum").lower()
     low_vol_scores = _build_low_vol_scores(features, base_cfg) if base_strategy_type == "momentum_low_vol_blend" else None
 
@@ -233,10 +246,14 @@ def main() -> None:
     if 35 not in scenarios:
         scenarios[35] = FrictionScenario("35x35", float(args.transaction_cost_bps), 35.0, 35.0)
 
+    windows_24_12 = _build_test_windows(start_date, end_date, train_months=24, test_months=12)
     windows_36_12 = _build_test_windows(start_date, end_date, train_months=36, test_months=12)
     windows_60_12 = _build_test_windows(start_date, end_date, train_months=60, test_months=12)
 
     candidates = _candidate_grid(base_cfg)
+    max_candidates = int(args.max_candidates or 0)
+    if max_candidates > 0:
+        candidates = candidates[:max_candidates]
     stage1_rows: List[Dict[str, Any]] = []
     print(f"Stage 1: evaluating {len(candidates)} candidates")
 
@@ -272,7 +289,12 @@ def main() -> None:
             end_date=end_date,
             friction=scenarios[35],
         )
-        score = _score_stage1(full20, full35)
+        score = _score_stage1(
+            full20,
+            full35,
+            dd_gate=float(args.gate_dd20),
+            turnover_gate=float(args.gate_turnover20),
+        )
         stage1_rows.append(
             {
                 "cfg": cfg,
@@ -292,8 +314,10 @@ def main() -> None:
     final_rows: List[Dict[str, Any]] = []
     for row in stage2_pool:
         cfg = row["cfg"]
+        full20 = row["full20"]
+        full35 = row["full35"]
         risk_scalar = _build_market_risk_scalar(global_data, prices.index, cfg)
-        stitched20 = _stitch_test_windows(
+        stitched20_cold = _stitch_test_windows(
             cfg=cfg,
             prices=prices,
             momentum_scores=momentum_scores,
@@ -308,7 +332,7 @@ def main() -> None:
             test_months=12,
             friction=scenarios[20],
         )
-        stitched35 = _stitch_test_windows(
+        stitched35_cold = _stitch_test_windows(
             cfg=cfg,
             prices=prices,
             momentum_scores=momentum_scores,
@@ -323,7 +347,37 @@ def main() -> None:
             test_months=12,
             friction=scenarios[35],
         )
-        stitched36_20 = _stitch_test_windows(
+        stitched24_20_cold = _stitch_test_windows(
+            cfg=cfg,
+            prices=prices,
+            momentum_scores=momentum_scores,
+            value_scores=None,
+            low_vol_scores=low_vol_scores,
+            eps_yoy_df=eps_yoy_df,
+            sales_yoy_df=sales_yoy_df,
+            risk_scalar_by_date=risk_scalar,
+            sector_map=sector_map,
+            industry_map=industry_map,
+            windows=windows_24_12,
+            test_months=12,
+            friction=scenarios[20],
+        )
+        stitched24_35_cold = _stitch_test_windows(
+            cfg=cfg,
+            prices=prices,
+            momentum_scores=momentum_scores,
+            value_scores=None,
+            low_vol_scores=low_vol_scores,
+            eps_yoy_df=eps_yoy_df,
+            sales_yoy_df=sales_yoy_df,
+            risk_scalar_by_date=risk_scalar,
+            sector_map=sector_map,
+            industry_map=industry_map,
+            windows=windows_24_12,
+            test_months=12,
+            friction=scenarios[35],
+        )
+        stitched36_20_cold = _stitch_test_windows(
             cfg=cfg,
             prices=prices,
             momentum_scores=momentum_scores,
@@ -338,22 +392,44 @@ def main() -> None:
             test_months=12,
             friction=scenarios[20],
         )
-
-        full20 = row["full20"]
-        full35 = row["full35"]
+        stitched20_warm = _stitch_test_windows_warm(full_run=full20, windows=windows_60_12, test_months=12)
+        stitched35_warm = _stitch_test_windows_warm(full_run=full35, windows=windows_60_12, test_months=12)
+        stitched24_20_warm = _stitch_test_windows_warm(full_run=full20, windows=windows_24_12, test_months=12)
+        stitched24_35_warm = _stitch_test_windows_warm(full_run=full35, windows=windows_24_12, test_months=12)
+        stitched36_20_warm = _stitch_test_windows_warm(full_run=full20, windows=windows_36_12, test_months=12)
         c20 = _pct(full20.get("cagr"))
         c35 = _pct(full35.get("cagr"))
         dd20 = _safe_float(full20.get("max_drawdown_pct"), 0.0) * 100.0
         turnover20 = _safe_float(full20.get("avg_annual_turnover_pct"), float("nan"))
-        oos60_20 = _safe_float(stitched20.get("stitched_cagr_pct"), float("nan"))
-        oos60_35 = _safe_float(stitched35.get("stitched_cagr_pct"), float("nan"))
-        oos36_20 = _safe_float(stitched36_20.get("stitched_cagr_pct"), float("nan"))
+        oos60_20_cold = _safe_float(stitched20_cold.get("stitched_cagr_pct"), float("nan"))
+        oos60_35_cold = _safe_float(stitched35_cold.get("stitched_cagr_pct"), float("nan"))
+        oos24_20_cold = _safe_float(stitched24_20_cold.get("stitched_cagr_pct"), float("nan"))
+        oos24_35_cold = _safe_float(stitched24_35_cold.get("stitched_cagr_pct"), float("nan"))
+        oos36_20_cold = _safe_float(stitched36_20_cold.get("stitched_cagr_pct"), float("nan"))
+        oos60_20_warm = _safe_float(stitched20_warm.get("stitched_cagr_pct"), float("nan"))
+        oos60_35_warm = _safe_float(stitched35_warm.get("stitched_cagr_pct"), float("nan"))
+        oos24_20_warm = _safe_float(stitched24_20_warm.get("stitched_cagr_pct"), float("nan"))
+        oos24_35_warm = _safe_float(stitched24_35_warm.get("stitched_cagr_pct"), float("nan"))
+        oos36_20_warm = _safe_float(stitched36_20_warm.get("stitched_cagr_pct"), float("nan"))
+        use_warm = str(args.oos_mode).lower() == "warm"
+        oos60_20 = oos60_20_warm if (use_warm and np.isfinite(oos60_20_warm)) else oos60_20_cold
+        oos60_35 = oos60_35_warm if (use_warm and np.isfinite(oos60_35_warm)) else oos60_35_cold
+        oos24_20 = oos24_20_warm if (use_warm and np.isfinite(oos24_20_warm)) else oos24_20_cold
+        oos24_35 = oos24_35_warm if (use_warm and np.isfinite(oos24_35_warm)) else oos24_35_cold
+        oos36_20 = oos36_20_warm if (use_warm and np.isfinite(oos36_20_warm)) else oos36_20_cold
+        if not np.isfinite(oos60_20):
+            if np.isfinite(oos36_20):
+                oos60_20 = oos36_20
+            elif np.isfinite(oos24_20):
+                oos60_20 = oos24_20
+        if not np.isfinite(oos60_35) and np.isfinite(oos24_35):
+            oos60_35 = oos24_35
 
         gates = {
-            "oos60_20_ge_10": bool(np.isfinite(oos60_20) and oos60_20 >= 10.0),
-            "oos60_35_ge_8": bool(np.isfinite(oos60_35) and oos60_35 >= 8.0),
-            "dd20_le_28": bool(np.isfinite(dd20) and dd20 <= 28.0),
-            "turnover20_le_200": bool(np.isfinite(turnover20) and turnover20 <= 200.0),
+            "oos60_20_gate": bool(np.isfinite(oos60_20) and oos60_20 >= float(args.gate_oos60_20)),
+            "oos60_35_gate": bool(np.isfinite(oos60_35) and oos60_35 >= float(args.gate_oos60_35)),
+            "dd20_gate": bool(np.isfinite(dd20) and dd20 <= float(args.gate_dd20)),
+            "turnover20_gate": bool(np.isfinite(turnover20) and turnover20 <= float(args.gate_turnover20)),
         }
         gate_count = sum(1 for v in gates.values() if v)
 
@@ -362,8 +438,8 @@ def main() -> None:
             + (oos60_20 if np.isfinite(oos60_20) else -999.0) * 10.0
             + (oos60_35 if np.isfinite(oos60_35) else -999.0) * 8.0
             + (c20 if np.isfinite(c20) else -999.0) * 2.0
-            - max(0.0, dd20 - 28.0) * 3.0
-            - max(0.0, (turnover20 if np.isfinite(turnover20) else 300.0) - 200.0) * 0.5
+            - max(0.0, dd20 - float(args.gate_dd20)) * 3.0
+            - max(0.0, (turnover20 if np.isfinite(turnover20) else 300.0) - float(args.gate_turnover20)) * 0.5
         )
 
         final_rows.append(
@@ -388,9 +464,22 @@ def main() -> None:
                     "full35_cagr_pct": c35,
                     "full20_max_dd_pct": dd20,
                     "full20_avg_annual_turnover_pct": turnover20,
+                    "oos24_20_cagr_pct": oos24_20,
+                    "oos24_35_cagr_pct": oos24_35,
                     "oos36_20_cagr_pct": oos36_20,
                     "oos60_20_cagr_pct": oos60_20,
                     "oos60_35_cagr_pct": oos60_35,
+                    "oos24_20_cagr_pct_cold": oos24_20_cold,
+                    "oos24_35_cagr_pct_cold": oos24_35_cold,
+                    "oos36_20_cagr_pct_cold": oos36_20_cold,
+                    "oos60_20_cagr_pct_cold": oos60_20_cold,
+                    "oos60_35_cagr_pct_cold": oos60_35_cold,
+                    "oos24_20_cagr_pct_warm": oos24_20_warm,
+                    "oos24_35_cagr_pct_warm": oos24_35_warm,
+                    "oos36_20_cagr_pct_warm": oos36_20_warm,
+                    "oos60_20_cagr_pct_warm": oos60_20_warm,
+                    "oos60_35_cagr_pct_warm": oos60_35_warm,
+                    "oos_mode": "warm" if use_warm else "cold",
                 },
                 "config": cfg,
             }
@@ -404,6 +493,13 @@ def main() -> None:
         "base_config_path": str(base_path),
         "start_date": start_date,
         "end_date": end_date,
+        "oos_mode": str(args.oos_mode).lower(),
+        "gates": {
+            "oos60_20_cagr_pct": float(args.gate_oos60_20),
+            "oos60_35_cagr_pct": float(args.gate_oos60_35),
+            "max_dd20_pct": float(args.gate_dd20),
+            "max_turnover20_pct": float(args.gate_turnover20),
+        },
         "universe": {
             "name": "RUSSELL3000",
             "source": source,

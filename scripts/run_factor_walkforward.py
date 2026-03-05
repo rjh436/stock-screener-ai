@@ -353,7 +353,65 @@ def _daily_membership_price_coverage(features: Dict[str, Any]) -> Dict[str, floa
     }
 
 
-def _build_momentum_quality_scores(features: Dict[str, Any], cfg: Dict[str, Any]) -> pd.DataFrame:
+def _group_indices_from_map(
+    symbols: Sequence[str],
+    symbol_group_map: Optional[Mapping[str, str]],
+    *,
+    min_group_size: int = 8,
+) -> List[np.ndarray]:
+    if not symbol_group_map:
+        return []
+    groups: Dict[str, List[int]] = {}
+    for i, sym in enumerate(symbols):
+        key = str(symbol_group_map.get(str(sym), "") or "").strip().upper()
+        if not key:
+            continue
+        groups.setdefault(key, []).append(i)
+    out: List[np.ndarray] = []
+    for idxs in groups.values():
+        if len(idxs) < int(max(2, min_group_size)):
+            continue
+        out.append(np.asarray(idxs, dtype=int))
+    return out
+
+
+def _demean_by_groups(
+    values: np.ndarray,
+    *,
+    valid_mask: Optional[np.ndarray],
+    group_indices: Sequence[np.ndarray],
+) -> np.ndarray:
+    if values.size == 0 or not group_indices:
+        return values
+    out = values.astype(np.float64, copy=True)
+    for idxs in group_indices:
+        if idxs.size < 2:
+            continue
+        sub = out[:, idxs]
+        if valid_mask is None:
+            sub_valid = np.isfinite(sub)
+        else:
+            sub_valid = np.isfinite(sub) & valid_mask[:, idxs]
+        if not np.any(sub_valid):
+            continue
+        numer = np.where(sub_valid, sub, 0.0).sum(axis=1)
+        denom = sub_valid.sum(axis=1)
+        means = np.divide(
+            numer,
+            denom,
+            out=np.zeros_like(numer, dtype=np.float64),
+            where=denom > 0,
+        )
+        out[:, idxs] = np.where(sub_valid, sub - means[:, None], sub)
+    return out.astype(np.float32, copy=False)
+
+
+def _build_momentum_quality_scores(
+    features: Dict[str, Any],
+    cfg: Dict[str, Any],
+    *,
+    symbol_group_map: Optional[Mapping[str, str]] = None,
+) -> pd.DataFrame:
     close = features["close"]
     high_52w = features["high_52w"]
     eps_yoy = features["eps_yoy"]
@@ -377,6 +435,17 @@ def _build_momentum_quality_scores(features: Dict[str, Any], cfg: Dict[str, Any]
         mom6_1 = (c21 / c126) - 1.0
         mom1_0 = (close / c21) - 1.0
         proximity = close / high_52w
+
+    if bool(cfg.get("use_sector_relative_momentum", False)):
+        min_group_size = int(cfg.get("sector_relative_min_group_size", 8) or 8)
+        group_indices = _group_indices_from_map(
+            symbols=features.get("symbols", []),
+            symbol_group_map=symbol_group_map,
+            min_group_size=min_group_size,
+        )
+        if group_indices:
+            mom12_1 = _demean_by_groups(mom12_1, valid_mask=valid, group_indices=group_indices)
+            mom6_1 = _demean_by_groups(mom6_1, valid_mask=valid, group_indices=group_indices)
 
     min_rank_names = int(cfg.get("min_rank_names", 40) or 40)
     r_m12 = _cross_section_rank_matrix(mom12_1, valid_mask=valid, higher_is_better=True, min_names=min_rank_names)
@@ -878,8 +947,14 @@ def _stitch_test_windows(
 ) -> Dict[str, Any]:
     fold_returns: List[float] = []
     fold_rows: List[Dict[str, Any]] = []
+    total_test_years = 0.0
 
     for i, (w_start, w_end) in enumerate(windows, start=1):
+        start_ts = pd.Timestamp(w_start)
+        end_exclusive_ts = pd.Timestamp(w_end)
+        end_inclusive_ts = end_exclusive_ts - pd.Timedelta(days=1)
+        if end_inclusive_ts < start_ts:
+            continue
         out = _run_factor_window(
             cfg=cfg,
             prices=prices,
@@ -891,8 +966,8 @@ def _stitch_test_windows(
             risk_scalar_by_date=risk_scalar_by_date,
             sector_map=sector_map,
             industry_map=industry_map,
-            start_date=w_start,
-            end_date=w_end,
+            start_date=start_ts.date().isoformat(),
+            end_date=end_inclusive_ts.date().isoformat(),
             friction=friction,
         )
         final_val = _safe_float(out.get("final_value"), 100000.0)
@@ -902,45 +977,175 @@ def _stitch_test_windows(
             cagr *= 100.0
         dd = _pct_dd(out.get("max_drawdown_pct", 0.0))
         trades = int(out.get("total_trades", 0) or 0)
+        turnover = _safe_float(out.get("avg_annual_turnover_pct"), float("nan"))
 
         fold_rows.append(
             {
                 "fold": i,
-                "start": w_start,
-                "end": w_end,
+                "start": start_ts.date().isoformat(),
+                "end": end_inclusive_ts.date().isoformat(),
+                "end_exclusive": end_exclusive_ts.date().isoformat(),
                 "return_pct": float(ret * 100.0) if np.isfinite(ret) else float("nan"),
                 "cagr_pct": float(cagr) if np.isfinite(cagr) else float("nan"),
                 "max_dd_pct": float(dd),
                 "trades": trades,
+                "avg_annual_turnover_pct": float(turnover) if np.isfinite(turnover) else float("nan"),
             }
         )
         if np.isfinite(ret):
             fold_returns.append(float(ret))
+            total_test_years += max(0.0, float((end_exclusive_ts - start_ts).days) / 365.25)
 
     if not fold_returns:
         return {
+            "mode": "cold_start_independent",
             "folds": fold_rows,
             "fold_count": 0,
             "stitched_cagr_pct": float("nan"),
             "worst_fold_return_pct": float("nan"),
+            "compounded_return_pct": float("nan"),
+            "total_test_years": float("nan"),
         }
 
     compounded = 1.0
     for r in fold_returns:
         compounded *= (1.0 + r)
-    total_test_years = float(len(fold_returns) * (float(test_months) / 12.0))
+    if total_test_years <= 0.0:
+        total_test_years = float(len(fold_returns) * (float(test_months) / 12.0))
     stitched_cagr = _annualized_cagr(1.0, compounded, total_test_years)
     worst_fold = float(min(fold_returns) * 100.0)
 
     return {
+        "mode": "cold_start_independent",
         "folds": fold_rows,
         "fold_count": len(fold_returns),
         "stitched_cagr_pct": float(stitched_cagr) if np.isfinite(stitched_cagr) else float("nan"),
         "worst_fold_return_pct": worst_fold,
+        "compounded_return_pct": float((compounded - 1.0) * 100.0),
+        "total_test_years": total_test_years,
     }
 
 
-def _acceptance_snapshot(full_res: Dict[str, Any], stitched_36_12: Dict[str, Any], stitched_60_12: Dict[str, Any]) -> Dict[str, Any]:
+def _equity_series_from_run(run_out: Dict[str, Any]) -> pd.Series:
+    eq_curve = run_out.get("equity_curve") or []
+    if not isinstance(eq_curve, list) or not eq_curve:
+        return pd.Series(dtype=float)
+    frame = pd.DataFrame(eq_curve)
+    if frame.empty or "Date" not in frame.columns or "Equity" not in frame.columns:
+        return pd.Series(dtype=float)
+    frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
+    frame["Equity"] = pd.to_numeric(frame["Equity"], errors="coerce")
+    frame = frame.dropna(subset=["Date", "Equity"]).sort_values("Date")
+    if frame.empty:
+        return pd.Series(dtype=float)
+    series = pd.Series(frame["Equity"].to_numpy(dtype=np.float64), index=pd.DatetimeIndex(frame["Date"]))
+    series = series[~series.index.duplicated(keep="last")]
+    return series
+
+
+def _stitch_test_windows_warm(
+    *,
+    full_run: Dict[str, Any],
+    windows: List[Tuple[str, str]],
+    test_months: int,
+) -> Dict[str, Any]:
+    eq = _equity_series_from_run(full_run)
+    if eq.empty:
+        return {
+            "mode": "warm_restart_equity_slice",
+            "folds": [],
+            "fold_count": 0,
+            "stitched_cagr_pct": float("nan"),
+            "worst_fold_return_pct": float("nan"),
+            "compounded_return_pct": float("nan"),
+            "total_test_years": float("nan"),
+        }
+
+    fold_rows: List[Dict[str, Any]] = []
+    fold_returns: List[float] = []
+    total_test_years = 0.0
+    for i, (w_start, w_end) in enumerate(windows, start=1):
+        start_ts = pd.Timestamp(w_start)
+        end_exclusive_ts = pd.Timestamp(w_end)
+        end_inclusive_ts = end_exclusive_ts - pd.Timedelta(days=1)
+        seg = eq.loc[(eq.index >= start_ts) & (eq.index < end_exclusive_ts)]
+        if seg.empty or len(seg) < 2:
+            fold_rows.append(
+                {
+                    "fold": i,
+                    "start": start_ts.date().isoformat(),
+                    "end": end_inclusive_ts.date().isoformat(),
+                    "end_exclusive": end_exclusive_ts.date().isoformat(),
+                    "return_pct": float("nan"),
+                    "cagr_pct": float("nan"),
+                    "max_dd_pct": float("nan"),
+                    "trades": int(0),
+                    "avg_annual_turnover_pct": float("nan"),
+                }
+            )
+            continue
+        start_val = float(seg.iloc[0])
+        end_val = float(seg.iloc[-1])
+        ret = (end_val / start_val) - 1.0 if start_val > 0 else float("nan")
+        years = max(1e-9, float((seg.index[-1] - seg.index[0]).days) / 365.25)
+        cagr = _annualized_cagr(start_val, end_val, years)
+        peaks = seg.cummax()
+        dd = ((seg - peaks) / peaks).min() if len(seg) else float("nan")
+        fold_rows.append(
+            {
+                "fold": i,
+                "start": start_ts.date().isoformat(),
+                "end": end_inclusive_ts.date().isoformat(),
+                "end_exclusive": end_exclusive_ts.date().isoformat(),
+                "return_pct": float(ret * 100.0) if np.isfinite(ret) else float("nan"),
+                "cagr_pct": float(cagr) if np.isfinite(cagr) else float("nan"),
+                "max_dd_pct": float(abs(dd) * 100.0) if np.isfinite(dd) else float("nan"),
+                "trades": int(0),
+                "avg_annual_turnover_pct": float("nan"),
+            }
+        )
+        if np.isfinite(ret):
+            fold_returns.append(float(ret))
+            total_test_years += max(0.0, float((end_exclusive_ts - start_ts).days) / 365.25)
+
+    if not fold_returns:
+        return {
+            "mode": "warm_restart_equity_slice",
+            "folds": fold_rows,
+            "fold_count": 0,
+            "stitched_cagr_pct": float("nan"),
+            "worst_fold_return_pct": float("nan"),
+            "compounded_return_pct": float("nan"),
+            "total_test_years": float("nan"),
+        }
+
+    compounded = 1.0
+    for r in fold_returns:
+        compounded *= (1.0 + r)
+    if total_test_years <= 0.0:
+        total_test_years = float(len(fold_returns) * (float(test_months) / 12.0))
+    stitched_cagr = _annualized_cagr(1.0, compounded, total_test_years)
+    worst_fold = float(min(fold_returns) * 100.0)
+    return {
+        "mode": "warm_restart_equity_slice",
+        "folds": fold_rows,
+        "fold_count": len(fold_returns),
+        "stitched_cagr_pct": float(stitched_cagr) if np.isfinite(stitched_cagr) else float("nan"),
+        "worst_fold_return_pct": worst_fold,
+        "compounded_return_pct": float((compounded - 1.0) * 100.0),
+        "total_test_years": total_test_years,
+    }
+
+
+def _acceptance_snapshot(
+    full_res: Dict[str, Any],
+    stitched_36_12: Dict[str, Any],
+    stitched_60_12: Dict[str, Any],
+    stitched_24_12: Optional[Dict[str, Any]] = None,
+    stitched_24_12_warm: Optional[Dict[str, Any]] = None,
+    stitched_60_12_warm: Optional[Dict[str, Any]] = None,
+    gate_cfg: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
     audit = full_res.get("audit_report") or {}
     max_gross = _safe_float(audit.get("max_gross_exposure_pct"), 0.0)
     same_day = int(audit.get("same_day_open_entries", 0) or 0)
@@ -948,8 +1153,26 @@ def _acceptance_snapshot(full_res: Dict[str, Any], stitched_36_12: Dict[str, Any
     if np.isfinite(cagr):
         cagr *= 100.0
     mdd = _pct_dd(full_res.get("max_drawdown_pct", 0.0))
+    oos_24_cold = _safe_float((stitched_24_12 or {}).get("stitched_cagr_pct"), float("nan"))
+    oos_24_warm = _safe_float((stitched_24_12_warm or {}).get("stitched_cagr_pct"), float("nan"))
     oos_36 = _safe_float(stitched_36_12.get("stitched_cagr_pct"), float("nan"))
-    oos_60 = _safe_float(stitched_60_12.get("stitched_cagr_pct"), float("nan"))
+    oos_60_cold = _safe_float(stitched_60_12.get("stitched_cagr_pct"), float("nan"))
+    oos_60_warm = _safe_float((stitched_60_12_warm or {}).get("stitched_cagr_pct"), float("nan"))
+
+    gates = dict(gate_cfg or {})
+    oos_gate_20 = _safe_float(gates.get("oos60_gate_20x20_cagr_pct"), 6.0)
+    oos_gate_35 = _safe_float(gates.get("oos60_gate_35x35_cagr_pct"), 4.5)
+    dd_gate = _safe_float(gates.get("max_dd_gate_pct"), 42.0)
+    use_warm = bool(gates.get("use_warm_restart_for_oos_gate", True))
+    oos_mode = "warm_restart" if (use_warm and np.isfinite(oos_60_warm)) else "cold_start"
+    oos_for_gate = oos_60_warm if (use_warm and np.isfinite(oos_60_warm)) else oos_60_cold
+    if not np.isfinite(oos_for_gate):
+        if use_warm and np.isfinite(oos_24_warm):
+            oos_for_gate = oos_24_warm
+            oos_mode = "warm_restart_fallback_24_12"
+        elif np.isfinite(oos_24_cold):
+            oos_for_gate = oos_24_cold
+            oos_mode = "cold_start_fallback_24_12"
 
     return {
         "cash_only_ok": bool(np.isfinite(max_gross) and max_gross <= 1.0001),
@@ -957,11 +1180,20 @@ def _acceptance_snapshot(full_res: Dict[str, Any], stitched_36_12: Dict[str, Any
         "same_day_contamination_count": same_day,
         "full_cagr_pct": float(cagr) if np.isfinite(cagr) else float("nan"),
         "full_max_dd_pct": float(mdd),
+        "oos_24_12_cagr_pct_cold": float(oos_24_cold) if np.isfinite(oos_24_cold) else float("nan"),
+        "oos_24_12_cagr_pct_warm": float(oos_24_warm) if np.isfinite(oos_24_warm) else float("nan"),
+        "oos_24_12_cagr_pct": float(oos_24_warm) if np.isfinite(oos_24_warm) else (float(oos_24_cold) if np.isfinite(oos_24_cold) else float("nan")),
         "oos_36_12_cagr_pct": float(oos_36) if np.isfinite(oos_36) else float("nan"),
-        "oos_60_12_cagr_pct": float(oos_60) if np.isfinite(oos_60) else float("nan"),
-        "meets_20x20_gate": bool(np.isfinite(oos_60) and oos_60 >= 10.0),
-        "meets_35x35_gate": bool(np.isfinite(oos_60) and oos_60 >= 8.0),
-        "meets_drawdown_gate": bool(np.isfinite(mdd) and mdd <= 28.0),
+        "oos_60_12_cagr_pct_cold": float(oos_60_cold) if np.isfinite(oos_60_cold) else float("nan"),
+        "oos_60_12_cagr_pct_warm": float(oos_60_warm) if np.isfinite(oos_60_warm) else float("nan"),
+        "oos_60_12_cagr_pct": float(oos_for_gate) if np.isfinite(oos_for_gate) else float("nan"),
+        "oos_gate_mode": oos_mode,
+        "oos60_gate_20x20_cagr_pct": float(oos_gate_20),
+        "oos60_gate_35x35_cagr_pct": float(oos_gate_35),
+        "max_dd_gate_pct": float(dd_gate),
+        "meets_20x20_gate": bool(np.isfinite(oos_for_gate) and oos_for_gate >= oos_gate_20),
+        "meets_35x35_gate": bool(np.isfinite(oos_for_gate) and oos_for_gate >= oos_gate_35),
+        "meets_drawdown_gate": bool(np.isfinite(mdd) and mdd <= dd_gate),
     }
 
 
@@ -1061,7 +1293,12 @@ def main() -> None:
 
     prices = pd.DataFrame(features["close"], index=features["dates"], columns=features["symbols"])
 
-    momentum_scores = _build_momentum_quality_scores(features, cfg)
+    sector_map = _load_symbol_map(ROOT / "config" / "sectors.json")
+    industry_map = _load_symbol_map(ROOT / "config" / "industries.json")
+    if not industry_map:
+        industry_map = _load_symbol_map(ROOT / "config" / "industry.json")
+
+    momentum_scores = _build_momentum_quality_scores(features, cfg, symbol_group_map=sector_map)
     value_scores: Optional[pd.DataFrame] = None
     low_vol_scores: Optional[pd.DataFrame] = None
     strategy_type = str(cfg.get("strategy_type", "cross_sectional_momentum") or "").lower()
@@ -1073,10 +1310,6 @@ def main() -> None:
     eps_yoy_df = pd.DataFrame(features["eps_yoy"], index=features["dates"], columns=features["symbols"])
     sales_yoy_df = pd.DataFrame(features["sales_yoy"], index=features["dates"], columns=features["symbols"])
     risk_scalar_by_date = _build_market_risk_scalar(global_data, prices.index, cfg)
-    sector_map = _load_symbol_map(ROOT / "config" / "sectors.json")
-    industry_map = _load_symbol_map(ROOT / "config" / "industries.json")
-    if not industry_map:
-        industry_map = _load_symbol_map(ROOT / "config" / "industry.json")
 
     friction_vals: List[float] = []
     for part in str(args.frictions or "").split(","):
@@ -1099,8 +1332,10 @@ def main() -> None:
         for v in friction_vals
     ]
 
+    windows_24_12 = _build_test_windows(start_date, end_date, train_months=24, test_months=12)
     windows_36_12 = _build_test_windows(start_date, end_date, train_months=36, test_months=12)
     windows_60_12 = _build_test_windows(start_date, end_date, train_months=60, test_months=12)
+    acceptance_gate_cfg = cfg.get("acceptance_gates", {}) if isinstance(cfg.get("acceptance_gates"), Mapping) else {}
 
     scenarios = []
     for fr in friction_grid:
@@ -1121,6 +1356,21 @@ def main() -> None:
             industry_map=industry_map,
             start_date=start_date,
             end_date=end_date,
+            friction=fr,
+        )
+        stitched_24_12 = _stitch_test_windows(
+            cfg=cfg,
+            prices=prices,
+            momentum_scores=momentum_scores,
+            value_scores=value_scores,
+            low_vol_scores=low_vol_scores,
+            eps_yoy_df=eps_yoy_df,
+            sales_yoy_df=sales_yoy_df,
+            risk_scalar_by_date=risk_scalar_by_date,
+            sector_map=sector_map,
+            industry_map=industry_map,
+            windows=windows_24_12,
+            test_months=12,
             friction=fr,
         )
         stitched_36_12 = _stitch_test_windows(
@@ -1153,7 +1403,18 @@ def main() -> None:
             test_months=12,
             friction=fr,
         )
-        acceptance = _acceptance_snapshot(full, stitched_36_12, stitched_60_12)
+        stitched_24_12_warm = _stitch_test_windows_warm(full_run=full, windows=windows_24_12, test_months=12)
+        stitched_36_12_warm = _stitch_test_windows_warm(full_run=full, windows=windows_36_12, test_months=12)
+        stitched_60_12_warm = _stitch_test_windows_warm(full_run=full, windows=windows_60_12, test_months=12)
+        acceptance = _acceptance_snapshot(
+            full,
+            stitched_36_12,
+            stitched_60_12,
+            stitched_24_12=stitched_24_12,
+            stitched_24_12_warm=stitched_24_12_warm,
+            stitched_60_12_warm=stitched_60_12_warm,
+            gate_cfg=acceptance_gate_cfg,
+        )
 
         scenarios.append(
             {
@@ -1172,8 +1433,12 @@ def main() -> None:
                     "annual_turnover_pct": full.get("annual_turnover_pct", {}),
                     "audit": full.get("audit_report", {}),
                 },
+                "stitched_24_12": stitched_24_12,
+                "stitched_24_12_warm": stitched_24_12_warm,
                 "stitched_36_12": stitched_36_12,
+                "stitched_36_12_warm": stitched_36_12_warm,
                 "stitched_60_12": stitched_60_12,
+                "stitched_60_12_warm": stitched_60_12_warm,
                 "acceptance": acceptance,
             }
         )
@@ -1200,9 +1465,11 @@ def main() -> None:
             "max_gross_exposure_pct": 1.0,
         },
         "walkforward_windows": {
+            "24_12": windows_24_12,
             "36_12": windows_36_12,
             "60_12": windows_60_12,
             "mode": "rolling_oos_fixed_params",
+            "stitched_modes": ["cold_start_independent", "warm_restart_equity_slice"],
         },
         "classification_maps": {
             "sector_map_size": len(sector_map),

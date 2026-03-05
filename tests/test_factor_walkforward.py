@@ -12,6 +12,7 @@ from scripts.run_factor_walkforward import (
     _build_separate_value_momentum_schedule,
     _cross_section_rank_matrix,
     _daily_membership_price_coverage,
+    _stitch_test_windows_warm,
 )
 
 
@@ -242,6 +243,58 @@ class FactorWalkforwardTests(unittest.TestCase):
         last = pd.to_numeric(scores.iloc[-1], errors="coerce").dropna().sort_values(ascending=False)
         self.assertEqual(last.index[0], "STEADY")
 
+    def test_momentum_quality_scores_can_use_sector_relative_momentum(self) -> None:
+        dates = pd.bdate_range("2024-01-01", periods=300)
+        symbols = ["A1", "A2", "B1", "B2"]
+        shape = (len(dates), len(symbols))
+        close = np.full(shape, np.nan, dtype=np.float32)
+        vol = np.full(shape, 2_000_000.0, dtype=np.float32)
+
+        close[:, 0] = np.linspace(50.0, 200.0, len(dates))   # A1 strongest in sector A
+        close[:, 1] = np.linspace(50.0, 180.0, len(dates))   # A2 weaker in sector A
+        close[:, 2] = np.linspace(100.0, 120.0, len(dates))  # B1 strongest in sector B
+        close[:, 3] = np.linspace(100.0, 110.0, len(dates))  # B2 weaker in sector B
+
+        features = {
+            "dates": pd.DatetimeIndex(dates),
+            "symbols": symbols,
+            "close": close,
+            "high_52w": np.maximum.accumulate(close, axis=0),
+            "vol_ma20": vol,
+            "eps_yoy": np.zeros(shape, dtype=np.float32),
+            "sales_yoy": np.zeros(shape, dtype=np.float32),
+            "inst": np.zeros(shape, dtype=np.float32),
+            "natr": np.full(shape, 2.0, dtype=np.float32),
+            "adr": np.full(shape, 2.0, dtype=np.float32),
+            "membership_mask": np.ones(shape, dtype=bool),
+        }
+        base_cfg = {
+            "min_price": 10.0,
+            "min_adv20": 1.0,
+            "min_history_bars": 252,
+            "drop_bottom_dv_frac": 0.0,
+            "min_rank_names": 4,
+            "mom_12_1_weight": 1.0,
+            "mom_6_1_weight": 0.0,
+            "mom_1_0_penalty_weight": 0.0,
+            "proximity_52w_weight": 0.0,
+            "quality_growth_weight": 0.0,
+        }
+        sectors = {"A1": "SEC_A", "A2": "SEC_A", "B1": "SEC_B", "B2": "SEC_B"}
+
+        plain = _build_momentum_quality_scores(features, dict(base_cfg))
+        sector_rel = _build_momentum_quality_scores(
+            features,
+            {**base_cfg, "use_sector_relative_momentum": True, "sector_relative_min_group_size": 2},
+            symbol_group_map=sectors,
+        )
+        plain_last = pd.to_numeric(plain.iloc[-1], errors="coerce")
+        sector_last = pd.to_numeric(sector_rel.iloc[-1], errors="coerce")
+
+        self.assertGreater(float(plain_last["A2"]), float(plain_last["B1"]))
+        self.assertGreater(float(sector_last["B1"]), float(sector_last["A2"]))
+        self.assertGreater(float(sector_last["B1"]), float(plain_last["B1"]))
+
     def test_build_low_vol_scores_prefers_lower_realized_vol(self) -> None:
         dates = pd.bdate_range("2024-01-01", periods=220)
         symbols = ["LOW", "HIGH"]
@@ -356,6 +409,36 @@ class FactorWalkforwardTests(unittest.TestCase):
         snap = _acceptance_snapshot(full, stitched, stitched)
         self.assertFalse(bool(snap.get("same_day_contamination_ok")))
         self.assertEqual(int(snap.get("same_day_contamination_count", 0)), 2)
+
+    def test_stitch_windows_warm_uses_equity_curve_slice(self) -> None:
+        dates = pd.bdate_range("2024-01-01", periods=120)
+        equity = []
+        val = 100_000.0
+        for i, dt in enumerate(dates):
+            val *= (1.0005 if i < 60 else 1.0010)
+            equity.append({"Date": dt.isoformat(), "Equity": float(val)})
+        full_run = {"equity_curve": equity}
+        windows = [
+            ("2024-03-01", "2024-06-01"),
+            ("2024-06-01", "2024-09-01"),
+        ]
+        stitched = _stitch_test_windows_warm(full_run=full_run, windows=windows, test_months=12)
+        self.assertEqual(int(stitched.get("fold_count", 0)), 2)
+        self.assertTrue(np.isfinite(float(stitched.get("stitched_cagr_pct", np.nan))))
+
+    def test_acceptance_snapshot_prefers_warm_oos_when_configured(self) -> None:
+        full = {"cagr": 0.10, "max_drawdown_pct": 0.30, "audit_report": {"max_gross_exposure_pct": 1.0, "same_day_open_entries": 0}}
+        cold = {"stitched_cagr_pct": 4.0}
+        warm = {"stitched_cagr_pct": 7.0}
+        snap = _acceptance_snapshot(
+            full,
+            stitched_36_12=cold,
+            stitched_60_12=cold,
+            stitched_60_12_warm=warm,
+            gate_cfg={"use_warm_restart_for_oos_gate": True, "oos60_gate_20x20_cagr_pct": 6.0},
+        )
+        self.assertEqual(str(snap.get("oos_gate_mode")), "warm_restart")
+        self.assertTrue(bool(snap.get("meets_20x20_gate")))
 
 
 if __name__ == "__main__":
