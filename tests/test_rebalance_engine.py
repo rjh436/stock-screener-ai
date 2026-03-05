@@ -216,6 +216,46 @@ class RebalanceEngineTests(unittest.TestCase):
         same_day0 = int((t0.get("audit_report", {}) or {}).get("same_day_open_entries", 0) or 0)
         self.assertGreaterEqual(same_day0, 1)
 
+    def test_run_periodic_rebalance_supports_daily_and_weekly_frequency(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=40, freq="B")
+        prices = pd.DataFrame(
+            {
+                "AAA": [100.0 + (i * 0.25) for i in range(len(dates))],
+                "BBB": [95.0 + (i * 0.10) for i in range(len(dates))],
+            },
+            index=dates,
+        )
+        ranks = pd.DataFrame(
+            {
+                "AAA": [90.0] * len(dates),
+                "BBB": [80.0] * len(dates),
+            },
+            index=dates,
+        )
+
+        daily = run_periodic_rebalance(
+            prices,
+            ranks,
+            rebalance_freq="D",
+            target_count=1,
+            transaction_cost_bps=0.0,
+            turnover_budget=1.0,
+            start_cash=100000.0,
+        )
+        weekly = run_periodic_rebalance(
+            prices,
+            ranks,
+            rebalance_freq="W",
+            target_count=1,
+            transaction_cost_bps=0.0,
+            turnover_budget=1.0,
+            start_cash=100000.0,
+        )
+
+        self.assertGreater(len(daily.get("rebalance_log", [])), len(weekly.get("rebalance_log", [])))
+        self.assertEqual(int((daily.get("audit_report", {}) or {}).get("same_day_open_entries", 0) or 0), 0)
+        self.assertEqual(int((weekly.get("audit_report", {}) or {}).get("same_day_open_entries", 0) or 0), 0)
+
     def test_stale_price_exit_liquidates_unquoted_position(self) -> None:
         dates = pd.date_range("2024-01-01", periods=70, freq="B")
         aaa = [100.0 + (i * 0.2) for i in range(len(dates))]

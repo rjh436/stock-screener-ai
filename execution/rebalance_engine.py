@@ -439,10 +439,14 @@ def run_periodic_rebalance(
         }
 
     freq = str(rebalance_freq or "M").upper()
-    if freq not in {"M", "Q"}:
-        raise ValueError(f"Unsupported rebalance_freq '{rebalance_freq}'. Expected 'M' or 'Q'.")
+    if freq not in {"D", "W", "M", "Q"}:
+        raise ValueError(f"Unsupported rebalance_freq '{rebalance_freq}'. Expected 'D', 'W', 'M', or 'Q'.")
 
-    raw_signal_dates = list(px.groupby(px.index.to_period(freq)).tail(1).index)
+    if freq == "D":
+        raw_signal_dates = list(trade_dates)
+    else:
+        period_freq = "W-FRI" if freq == "W" else freq
+        raw_signal_dates = list(px.groupby(px.index.to_period(period_freq)).tail(1).index)
     lag_days = max(0, int(execution_lag_days))
     trade_dates_index = list(pd.Index(trade_dates))
     date_pos = {pd.Timestamp(d): i for i, d in enumerate(trade_dates_index)}
