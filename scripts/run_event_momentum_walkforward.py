@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data.custom_universe import list_cached_symbols, load_symbol_file
+from data.fundamentals import fetch_fundamental_data
 from data.loader import fetch_data_pack
 from execution.engine import prepare_backtest_data
 from execution.rebalance_engine import run_periodic_rebalance
@@ -90,6 +91,7 @@ def _extract_event_feature_arrays(prepared) -> Dict[str, Any]:
     sales_yoy = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     eps_accel = np.full((n_days, n_syms), np.nan, dtype=np.float32)
     revenue_accel = np.full((n_days, n_syms), np.nan, dtype=np.float32)
+    shares_outstanding = np.full((n_days, n_syms), np.nan, dtype=np.float32)
 
     for j, sym in enumerate(symbols):
         sd = prepared.enriched.get(sym)
@@ -126,6 +128,8 @@ def _extract_event_feature_arrays(prepared) -> Dict[str, Any]:
             eps_accel[idx, j] = pd.to_numeric(df["eps_accel"], errors="coerce").to_numpy(dtype=np.float32)[valid]
         if "revenue_accel" in df.columns:
             revenue_accel[idx, j] = pd.to_numeric(df["revenue_accel"], errors="coerce").to_numpy(dtype=np.float32)[valid]
+        if "shares_outstanding" in df.columns:
+            shares_outstanding[idx, j] = pd.to_numeric(df["shares_outstanding"], errors="coerce").to_numpy(dtype=np.float32)[valid]
 
     membership_mask = np.isfinite(close) & (close > 0.0)
     return {
@@ -145,6 +149,7 @@ def _extract_event_feature_arrays(prepared) -> Dict[str, Any]:
         "sales_yoy": sales_yoy,
         "eps_accel": eps_accel,
         "revenue_accel": revenue_accel,
+        "shares_outstanding": shares_outstanding,
         "membership_mask": membership_mask,
     }
 
@@ -152,11 +157,18 @@ def _extract_event_feature_arrays(prepared) -> Dict[str, Any]:
 def _base_valid_mask(features: Dict[str, Any], cfg: Dict[str, Any]) -> np.ndarray:
     close = np.asarray(features["close"], dtype=np.float32)
     vol_ma20 = np.asarray(features["vol_ma20"], dtype=np.float32)
+    shares_outstanding = (
+        np.asarray(features["shares_outstanding"], dtype=np.float32)
+        if "shares_outstanding" in features
+        else np.full_like(close, np.nan, dtype=np.float32)
+    )
     membership_mask = np.asarray(features["membership_mask"], dtype=bool)
 
     min_price = float(cfg.get("min_price", 8.0) or 8.0)
     min_adv20 = float(cfg.get("min_adv20", 5_000_000.0) or 5_000_000.0)
     max_adv20 = float(cfg.get("max_adv20", 0.0) or 0.0)
+    min_market_cap = float(cfg.get("min_market_cap", 0.0) or 0.0)
+    max_market_cap = float(cfg.get("max_market_cap", 0.0) or 0.0)
     min_history = int(cfg.get("min_history_bars", 252) or 252)
 
     dollar_vol = close * vol_ma20
@@ -165,10 +177,95 @@ def _base_valid_mask(features: Dict[str, Any], cfg: Dict[str, Any]) -> np.ndarra
     valid &= dollar_vol >= min_adv20
     if max_adv20 > 0:
         valid &= dollar_vol <= max_adv20
+    if min_market_cap > 0 or max_market_cap > 0:
+        market_cap = close * shares_outstanding
+        valid &= np.isfinite(market_cap)
+        if min_market_cap > 0:
+            valid &= market_cap >= min_market_cap
+        if max_market_cap > 0:
+            valid &= market_cap <= max_market_cap
 
     hist = np.cumsum(np.isfinite(close), axis=0)
     valid &= hist >= int(min_history)
     return valid
+
+
+def _build_available_event_mask(
+    dates: Sequence[pd.Timestamp],
+    symbols: Sequence[str],
+    fundamentals: Mapping[str, pd.DataFrame],
+    *,
+    freshness_days: int = 1,
+    membership_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    trading_dates = pd.DatetimeIndex(pd.to_datetime(list(dates), errors="coerce"))
+    if getattr(trading_dates, "tz", None) is not None:
+        trading_dates = trading_dates.tz_localize(None)
+    trading_dates = trading_dates.normalize()
+
+    mask = np.zeros((len(trading_dates), len(symbols)), dtype=bool)
+    if len(trading_dates) == 0 or not symbols:
+        return mask
+
+    freshness_days = max(1, int(freshness_days))
+    for j, sym in enumerate(symbols):
+        frame = fundamentals.get(sym)
+        if frame is None:
+            frame = fundamentals.get(str(sym).upper())
+        if frame is None or frame.empty:
+            continue
+        idx = pd.DatetimeIndex(pd.to_datetime(frame.index, errors="coerce"))
+        idx = idx[~idx.isna()]
+        if len(idx) == 0:
+            continue
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+        for event_dt in pd.DatetimeIndex(idx).normalize().unique().sort_values():
+            start = int(trading_dates.searchsorted(pd.Timestamp(event_dt), side="left"))
+            if start >= len(trading_dates):
+                continue
+            stop = min(len(trading_dates), start + freshness_days)
+            mask[start:stop, j] = True
+
+    if membership_mask is not None:
+        mask &= np.asarray(membership_mask, dtype=bool)
+    return mask
+
+
+def _build_fundamental_matrix(
+    dates: Sequence[pd.Timestamp],
+    symbols: Sequence[str],
+    fundamentals: Mapping[str, pd.DataFrame],
+    column: str,
+) -> np.ndarray:
+    trading_dates = pd.DatetimeIndex(pd.to_datetime(list(dates), errors="coerce"))
+    if getattr(trading_dates, "tz", None) is not None:
+        trading_dates = trading_dates.tz_localize(None)
+    trading_dates = trading_dates.normalize()
+
+    out = np.full((len(trading_dates), len(symbols)), np.nan, dtype=np.float32)
+    if len(trading_dates) == 0 or not symbols:
+        return out
+
+    for j, sym in enumerate(symbols):
+        frame = fundamentals.get(sym)
+        if frame is None:
+            frame = fundamentals.get(str(sym).upper())
+        if frame is None or frame.empty or column not in frame.columns:
+            continue
+        series = pd.to_numeric(frame[column], errors="coerce")
+        if series.empty:
+            continue
+        idx = pd.DatetimeIndex(pd.to_datetime(series.index, errors="coerce"))
+        idx = idx[~idx.isna()]
+        if len(idx) == 0:
+            continue
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+        aligned = pd.Series(series.to_numpy(dtype=np.float32), index=idx.normalize())
+        aligned = aligned[~aligned.index.duplicated(keep="last")].sort_index()
+        out[:, j] = aligned.reindex(trading_dates, method="ffill").to_numpy(dtype=np.float32)
+    return out
 
 
 def _build_event_change_mask(features: Dict[str, Any]) -> np.ndarray:
@@ -229,7 +326,7 @@ def _build_event_momentum_scores(features: Dict[str, Any], cfg: Dict[str, Any]) 
     revenue_accel = np.asarray(features["revenue_accel"], dtype=np.float32)
 
     valid = _base_valid_mask(features, cfg)
-    event_change = _build_event_change_mask(features)
+    event_change = np.asarray(features.get("event_mask"), dtype=bool) if "event_mask" in features else _build_event_change_mask(features)
 
     prev_close = _lag_matrix(close, 1)
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -374,6 +471,20 @@ def main() -> None:
     print(f"prepared_symbols={len(prepared.enriched)} prepared_dates={len(prepared.all_dates)}")
 
     features = _extract_event_feature_arrays(prepared)
+    fundamentals = fetch_fundamental_data(features["symbols"])
+    features["event_mask"] = _build_available_event_mask(
+        features["dates"],
+        features["symbols"],
+        fundamentals,
+        freshness_days=int(cfg.get("event_freshness_days", 3) or 3),
+        membership_mask=features["membership_mask"],
+    )
+    features["shares_outstanding"] = _build_fundamental_matrix(
+        features["dates"],
+        features["symbols"],
+        fundamentals,
+        "shares_outstanding",
+    )
     scores = _build_event_momentum_scores(features, cfg)
     active_columns = list(scores.columns)
     print(f"active_scored_symbols={len(active_columns)}")

@@ -19,6 +19,7 @@
   "min_volume_surge": 1.5,
   "min_close_strength": 0.65,
   "min_event_names": 1,
+  "event_freshness_days": 3,
   "event_return_weight": 1.0,
   "volume_surge_weight": 0.8,
   "eps_yoy_weight": 0.9,

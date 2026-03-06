@@ -23,6 +23,7 @@ FUNDAMENTAL_METRIC_COLUMNS: List[str] = [
     "accruals_ratio",
     "roe_ttm",
     "roe_trend",
+    "shares_outstanding",
     "net_issuance_12m",
     "institutional_sponsorship",
     "eps_ttm",
@@ -470,6 +471,10 @@ def _fetch_snapshots(symbols: Sequence[str]) -> pd.DataFrame:
                 "accruals_ratio": np.nan,
                 "roe_ttm": np.nan,
                 "roe_trend": np.nan,
+                "shares_outstanding": _safe_float(
+                    fund.get("sharesOutstanding"),
+                    _safe_float(quote_fund.get("sharesOutstanding"), np.nan),
+                ),
                 "net_issuance_12m": np.nan,
                 "institutional_sponsorship": _institutional_sponsorship_proxy(fund),
                 "eps_ttm": np.nan,
