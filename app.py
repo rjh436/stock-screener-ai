@@ -57,10 +57,12 @@ ETF_FROZEN_BENCHMARKS = {
     ),
 }
 ETF_FROZEN_DEFAULT_LABEL = "Validated ETF Benchmark (Frozen)"
+PRIMARY_STRATEGY_OPTIONS = ["ETF Benchmark", "Stock Research"]
 STOCK_RESEARCH_LEADERS = [
     "Superperformance Alpha B4",
     "Superperformance Practical Risk-Off Only",
 ]
+ETF_PAPER_STATE_FILE = os.path.join("data", "etf_paper_state.json")
 st.set_page_config(page_title="Apex Sniper AI", layout="wide", page_icon="🎯")
 
 
@@ -321,6 +323,7 @@ def _load_etf_runner_helpers():
         _build_allocator_target_schedule,
         _build_residual_defensive_target_schedule,
         _build_rotation_scores,
+        _schedule_row_weights,
         _download_yfinance_pack,
         _load_config,
         _normalize_symbol_list,
@@ -333,6 +336,7 @@ def _load_etf_runner_helpers():
         "build_allocator_target_schedule": _build_allocator_target_schedule,
         "build_residual_defensive_target_schedule": _build_residual_defensive_target_schedule,
         "build_rotation_scores": _build_rotation_scores,
+        "schedule_row_weights": _schedule_row_weights,
         "download_yfinance_pack": _download_yfinance_pack,
         "load_config": _load_config,
         "normalize_symbol_list": _normalize_symbol_list,
@@ -516,7 +520,359 @@ def _run_etf_benchmark(
     return payload
 
 
-def _render_etf_benchmark_lab(default_end_date: str) -> None:
+def _read_json_payload(path: str, default: Any) -> Any:
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return default
+
+
+def _write_json_payload(path: str, payload: Any) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, default=str)
+
+
+def _build_etf_live_snapshot(
+    *,
+    config_path: str,
+    end_date: Optional[str] = None,
+    lookback_days: int = 900,
+) -> Dict[str, Any]:
+    helpers = _load_etf_runner_helpers()
+    cfg = helpers["load_config"](Path(config_path).resolve())
+    end_ts = pd.Timestamp(end_date or pd.Timestamp.utcnow().tz_localize(None).date().isoformat()).normalize()
+    start_ts = (end_ts - pd.Timedelta(days=int(lookback_days))).normalize()
+
+    symbols = _etf_config_symbols(cfg, helpers["normalize_symbol_list"])
+    global_symbols = helpers["normalize_symbol_list"](cfg.get("global_symbols", ["SPY", "VIX", "HYG", "LQD"]))
+    requested = helpers["normalize_symbol_list"](list(symbols) + list(global_symbols))
+    data = helpers["download_yfinance_pack"](
+        requested,
+        start_date=start_ts.date().isoformat(),
+        end_date=end_ts.date().isoformat(),
+    )
+    global_data = {sym: data[sym] for sym in global_symbols if sym in data}
+
+    sleeves = cfg.get("sleeves")
+    defensive_cfg = dict(cfg.get("defensive_sleeve") or {})
+    uses_allocator = isinstance(sleeves, Mapping) and bool(sleeves)
+    uses_residual_defensive = defensive_cfg and bool(defensive_cfg.get("enabled", False))
+
+    if uses_allocator:
+        close_px, _open_px, target_schedule, allocator_state = helpers["build_allocator_target_schedule"](data, cfg)
+    elif uses_residual_defensive:
+        close_px, _open_px, target_schedule = helpers["build_residual_defensive_target_schedule"](data, cfg, global_data)
+        allocator_state = None
+    else:
+        raise ValueError("ETF live snapshot currently supports allocator and residual-defensive ETF configs only.")
+
+    signal_schedule = target_schedule.dropna(how="all")
+    if signal_schedule.empty:
+        raise RuntimeError("ETF target schedule produced no active signal dates.")
+
+    latest_signal_dt = pd.Timestamp(signal_schedule.index[-1]).tz_localize(None).normalize()
+    previous_signal_dt = (
+        pd.Timestamp(signal_schedule.index[-2]).tz_localize(None).normalize()
+        if len(signal_schedule.index) > 1
+        else None
+    )
+    latest_weights = helpers["schedule_row_weights"](target_schedule, latest_signal_dt)
+    previous_weights = helpers["schedule_row_weights"](target_schedule, previous_signal_dt) if previous_signal_dt is not None else {}
+    if not latest_weights:
+        raise RuntimeError("Latest ETF signal has no target weights.")
+
+    latest_close_row = {}
+    if latest_signal_dt in close_px.index:
+        latest_close_row = pd.to_numeric(close_px.loc[latest_signal_dt], errors="coerce").dropna().to_dict()
+
+    current_symbols = sorted(set(latest_weights.keys()) | set(previous_weights.keys()))
+    rebalance_rows: List[Dict[str, Any]] = []
+    target_rows: List[Dict[str, Any]] = []
+    aggressive_symbols = {str(sym).upper() for sym in cfg.get("symbols", [])}
+    defensive_symbols = {str(sym).upper() for sym in defensive_cfg.get("symbols", [])}
+    for sym in current_symbols:
+        latest_wt = float(latest_weights.get(sym, 0.0) or 0.0)
+        prev_wt = float(previous_weights.get(sym, 0.0) or 0.0)
+        delta = latest_wt - prev_wt
+        sleeve = "ETF"
+        if str(sym).upper() in aggressive_symbols:
+            sleeve = "Aggressive"
+        elif str(sym).upper() in defensive_symbols:
+            sleeve = "Defensive"
+        last_close = latest_close_row.get(sym)
+        if latest_wt > 0.0:
+            target_rows.append(
+                {
+                    "Sleeve": sleeve,
+                    "Symbol": str(sym),
+                    "Target Weight": latest_wt,
+                    "Target %": latest_wt * 100.0,
+                    "Last Close": float(last_close) if last_close is not None else float("nan"),
+                    "Notional per $100k": latest_wt * 100000.0,
+                }
+            )
+        if abs(delta) > 1e-9:
+            rebalance_rows.append(
+                {
+                    "Sleeve": sleeve,
+                    "Symbol": str(sym),
+                    "Prev %": prev_wt * 100.0,
+                    "Target %": latest_wt * 100.0,
+                    "Delta %": delta * 100.0,
+                    "Action": "Buy / Increase" if delta > 0 else "Sell / Reduce",
+                }
+            )
+
+    target_df = pd.DataFrame(target_rows).sort_values(["Sleeve", "Target Weight"], ascending=[True, False])
+    rebalance_df = pd.DataFrame(rebalance_rows)
+    if not rebalance_df.empty:
+        rebalance_df = rebalance_df.sort_values("Delta %", ascending=False, key=lambda s: s.abs())
+
+    allocator_state_value = None
+    if isinstance(allocator_state, pd.Series) and latest_signal_dt in allocator_state.index:
+        allocator_state_value = str(allocator_state.loc[latest_signal_dt])
+
+    return {
+        "config_name": str(cfg.get("name", "") or os.path.basename(config_path)),
+        "config_path": str(Path(config_path).resolve()),
+        "latest_signal_date": latest_signal_dt.date().isoformat(),
+        "previous_signal_date": previous_signal_dt.date().isoformat() if previous_signal_dt is not None else None,
+        "latest_target_weights": latest_weights,
+        "previous_target_weights": previous_weights,
+        "target_df": target_df,
+        "rebalance_df": rebalance_df,
+        "signal_count": int(len(signal_schedule)),
+        "max_gross_exposure_pct": float(sum(float(v) for v in latest_weights.values())),
+        "allocator_state": allocator_state_value,
+        "symbols": symbols,
+        "loaded_symbols": [sym for sym in symbols if sym in data],
+    }
+
+
+def _load_etf_paper_state() -> Dict[str, Any]:
+    default_state = {
+        "profile_label": ETF_FROZEN_DEFAULT_LABEL,
+        "adopted_signal_date": None,
+        "holdings": {},
+        "updated_at_utc": None,
+    }
+    payload = _read_json_payload(ETF_PAPER_STATE_FILE, default_state)
+    if not isinstance(payload, dict):
+        return dict(default_state)
+    state = dict(default_state)
+    state.update(payload)
+    if not isinstance(state.get("holdings"), dict):
+        state["holdings"] = {}
+    return state
+
+
+def _save_etf_paper_state(state: Mapping[str, Any]) -> None:
+    payload = {
+        "profile_label": str(state.get("profile_label", ETF_FROZEN_DEFAULT_LABEL) or ETF_FROZEN_DEFAULT_LABEL),
+        "adopted_signal_date": state.get("adopted_signal_date"),
+        "holdings": {
+            str(sym): float(weight)
+            for sym, weight in dict(state.get("holdings") or {}).items()
+            if _safe_float(weight, 0.0) > 0.0
+        },
+        "updated_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    }
+    _write_json_payload(ETF_PAPER_STATE_FILE, payload)
+
+
+def _render_etf_live_screener(etf_profile_label: str) -> None:
+    render_mode_header(
+        "🏦 ETF Live Screener",
+        "Review the latest frozen ETF allocation, current rebalance deltas, and next-session target weights.",
+    )
+    st.caption(
+        "This path uses the same frozen ETF strategy family as Backtest and Simulator. "
+        "Signals are built from end-of-day data and are intended for next-session execution only."
+    )
+    if st.button("Refresh ETF Snapshot", type="primary", key="refresh_etf_live_snapshot"):
+        st.session_state.pop("etf_live_snapshot", None)
+
+    snapshot = st.session_state.get("etf_live_snapshot")
+    cached_label = st.session_state.get("etf_live_snapshot_label")
+    if snapshot is None or cached_label != etf_profile_label:
+        with st.spinner("Building ETF live snapshot..."):
+            snapshot = _build_etf_live_snapshot(config_path=ETF_FROZEN_BENCHMARKS[etf_profile_label])
+        st.session_state.etf_live_snapshot = snapshot
+        st.session_state.etf_live_snapshot_label = etf_profile_label
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("ETF Profile", etf_profile_label.replace(" (Frozen)", ""))
+    m2.metric("Signal Date", str(snapshot.get("latest_signal_date", "-")))
+    m3.metric("Gross Exposure", f"{float(snapshot.get('max_gross_exposure_pct', 0.0)):.1%}")
+    m4.metric("Active ETFs", len(dict(snapshot.get("latest_target_weights") or {})))
+    if snapshot.get("allocator_state"):
+        st.caption(f"Allocator state: `{snapshot.get('allocator_state')}`")
+
+    target_df = snapshot.get("target_df")
+    if isinstance(target_df, pd.DataFrame) and not target_df.empty:
+        st.subheader("Current Target Allocation")
+        st.dataframe(
+            target_df[["Sleeve", "Symbol", "Target %", "Last Close", "Notional per $100k"]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Target %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Last Close": st.column_config.NumberColumn(format="$%.2f"),
+                "Notional per $100k": st.column_config.NumberColumn(format="$%.0f"),
+            },
+        )
+
+    rebalance_df = snapshot.get("rebalance_df")
+    if isinstance(rebalance_df, pd.DataFrame) and not rebalance_df.empty:
+        st.subheader("Rebalance Delta vs Previous Signal")
+        st.dataframe(
+            rebalance_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Prev %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Target %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Delta %": st.column_config.NumberColumn(format="%.2f%%"),
+            },
+        )
+    else:
+        st.info("No allocation changes vs the previous ETF signal.")
+
+
+def _render_etf_simulator(etf_profile_label: str) -> None:
+    render_mode_header(
+        "🎮 ETF Paper Allocator",
+        "Track the frozen ETF strategy as a paper allocation book using the same target schedule as Live Screener and Backtest.",
+    )
+    st.caption(
+        "This simulator stores adopted target weights only. It does not run the stock paper-trader engine."
+    )
+    if st.button("Refresh ETF Recommendation", type="primary", key="refresh_etf_sim_snapshot"):
+        st.session_state.pop("etf_sim_snapshot", None)
+
+    snapshot = st.session_state.get("etf_sim_snapshot")
+    cached_label = st.session_state.get("etf_sim_snapshot_label")
+    if snapshot is None or cached_label != etf_profile_label:
+        with st.spinner("Refreshing ETF simulator recommendation..."):
+            snapshot = _build_etf_live_snapshot(config_path=ETF_FROZEN_BENCHMARKS[etf_profile_label])
+        st.session_state.etf_sim_snapshot = snapshot
+        st.session_state.etf_sim_snapshot_label = etf_profile_label
+
+    state = _load_etf_paper_state()
+    current_holdings = {
+        str(sym): float(weight)
+        for sym, weight in dict(state.get("holdings") or {}).items()
+        if _safe_float(weight, 0.0) > 0.0
+    }
+    latest_weights = {
+        str(sym): float(weight)
+        for sym, weight in dict(snapshot.get("latest_target_weights") or {}).items()
+        if _safe_float(weight, 0.0) > 0.0
+    }
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Stored Profile", str(state.get("profile_label") or ETF_FROZEN_DEFAULT_LABEL).replace(" (Frozen)", ""))
+    m2.metric("Adopted Signal", str(state.get("adopted_signal_date") or "None"))
+    m3.metric("Current Gross", f"{sum(current_holdings.values()):.1%}")
+    m4.metric("Target Gross", f"{sum(latest_weights.values()):.1%}")
+
+    action_col1, action_col2 = st.columns(2)
+    with action_col1:
+        if st.button("Adopt Latest ETF Allocation", type="primary", key="adopt_latest_etf_alloc"):
+            _save_etf_paper_state(
+                {
+                    "profile_label": etf_profile_label,
+                    "adopted_signal_date": snapshot.get("latest_signal_date"),
+                    "holdings": latest_weights,
+                }
+            )
+            st.success("ETF simulator allocation updated.")
+            st.rerun()
+    with action_col2:
+        if st.button("Reset ETF Simulator State", key="reset_etf_sim_state"):
+            _save_etf_paper_state(
+                {
+                    "profile_label": etf_profile_label,
+                    "adopted_signal_date": None,
+                    "holdings": {},
+                }
+            )
+            st.success("ETF simulator state reset.")
+            st.rerun()
+
+    current_rows = [
+        {"Symbol": sym, "Weight %": float(weight) * 100.0}
+        for sym, weight in sorted(current_holdings.items())
+    ]
+    target_rows = [
+        {"Symbol": sym, "Weight %": float(weight) * 100.0}
+        for sym, weight in sorted(latest_weights.items())
+    ]
+    delta_rows: List[Dict[str, Any]] = []
+    for sym in sorted(set(current_holdings.keys()) | set(latest_weights.keys())):
+        curr = float(current_holdings.get(sym, 0.0) or 0.0)
+        tgt = float(latest_weights.get(sym, 0.0) or 0.0)
+        delta = tgt - curr
+        if abs(delta) <= 1e-9:
+            continue
+        delta_rows.append(
+            {
+                "Symbol": sym,
+                "Current %": curr * 100.0,
+                "Target %": tgt * 100.0,
+                "Delta %": delta * 100.0,
+                "Action": "Buy / Increase" if delta > 0 else "Sell / Reduce",
+            }
+        )
+    delta_df = pd.DataFrame(delta_rows)
+    if not delta_df.empty:
+        delta_df = delta_df.sort_values("Delta %", ascending=False, key=lambda s: s.abs())
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Stored ETF Allocation")
+        if current_rows:
+            st.dataframe(
+                pd.DataFrame(current_rows),
+                use_container_width=True,
+                hide_index=True,
+                column_config={"Weight %": st.column_config.NumberColumn(format="%.2f%%")},
+            )
+        else:
+            st.info("No ETF allocation stored yet.")
+    with c2:
+        st.subheader("Latest ETF Target")
+        if target_rows:
+            st.dataframe(
+                pd.DataFrame(target_rows),
+                use_container_width=True,
+                hide_index=True,
+                column_config={"Weight %": st.column_config.NumberColumn(format="%.2f%%")},
+            )
+        else:
+            st.warning("Latest ETF target is empty.")
+
+    st.subheader("Required Rebalance")
+    if not delta_df.empty:
+        st.dataframe(
+            delta_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Current %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Target %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Delta %": st.column_config.NumberColumn(format="%.2f%%"),
+            },
+        )
+    else:
+        st.success("Stored ETF allocation already matches the latest target.")
+
+
+def _render_etf_benchmark_lab(default_end_date: str, *, etf_profile_label: str) -> None:
     st.markdown("### 🏦 ETF Benchmark Lab")
     st.caption(
         "Run the frozen ETF benchmark outside the generic stock-strategy engine. "
@@ -527,12 +883,7 @@ def _render_etf_benchmark_lab(default_end_date: str) -> None:
     bench_m2.metric("Frozen Holdout Max DD", "25.45%")
     bench_m3.metric("Frozen Config", "Residual Defensive Calmar")
 
-    etf_profile_label = st.selectbox(
-        "ETF Benchmark Profile",
-        list(ETF_FROZEN_BENCHMARKS.keys()),
-        index=list(ETF_FROZEN_BENCHMARKS.keys()).index(ETF_FROZEN_DEFAULT_LABEL),
-        key="etf_benchmark_profile",
-    )
+    st.info(f"Using ETF profile from the sidebar: **{etf_profile_label}**")
     etf_eval_mode = st.radio(
         "ETF Evaluation Mode",
         ["Blind Holdout", "Full Sample"],
@@ -1135,6 +1486,12 @@ with st.sidebar:
     st.markdown("---")
     st.success("🏆 APEX V9 MEDALLION: RAW ALPHA ACTIVE")
     mode = st.radio("Select Mode", ["Live Screener", "Backtest", "Simulator"])
+    primary_strategy = st.radio(
+        "Strategy Workspace",
+        PRIMARY_STRATEGY_OPTIONS,
+        index=0,
+        help="Keep Live Screener, Backtest, and Simulator aligned to either the frozen ETF benchmark or the stock research engine.",
+    )
 
     st.markdown("### ✅ Accuracy")
     pit_as_of = pd.Timestamp.utcnow().tz_localize(None).date().isoformat()
@@ -1158,18 +1515,37 @@ with st.sidebar:
         st.caption("Run validator: `./.venv/bin/python tools/validate_pit_universe.py --strict`")
     
     st.markdown("### 🏁 Current Focus")
-    st.markdown(
-        "- **ETF benchmark:** Frozen residual-defensive Calmar\n"
-        "- **Best stock profile:** Superperformance Alpha B4\n"
-        "- **Defensive stock profile:** Superperformance Practical Risk-Off Only"
-    )
+    if primary_strategy == "ETF Benchmark":
+        st.markdown(
+            "- **Workspace:** ETF Benchmark\n"
+            "- **Benchmark family:** Residual-defensive leveraged ETF rotation\n"
+            "- **Validated baseline:** 22.04% CAGR / 25.45% DD blind holdout"
+        )
+    else:
+        st.markdown(
+            "- **Workspace:** Stock Research\n"
+            "- **Best stock profile:** Superperformance Alpha B4\n"
+            "- **Defensive stock profile:** Superperformance Practical Risk-Off Only"
+        )
 
-    st.markdown("### 📘 Stock Research Profiles")
+    selected_etf_profile_label = ETF_FROZEN_DEFAULT_LABEL
+    if primary_strategy == "ETF Benchmark":
+        st.markdown("### 🏦 ETF Benchmark Profile")
+        selected_etf_profile_label = st.selectbox(
+            "ETF Strategy",
+            list(ETF_FROZEN_BENCHMARKS.keys()),
+            index=list(ETF_FROZEN_BENCHMARKS.keys()).index(ETF_FROZEN_DEFAULT_LABEL),
+            key="sidebar_etf_profile",
+        )
+        st.caption(
+            "This selection is shared by Live Screener, Backtest, and Simulator."
+        )
+
     strategies_list = load_strategy_configs()
     strategies_map = {s['name']: s for s in strategies_list}
-    
     selected_strategies = []
-    if strategies_list:
+    if primary_strategy == "Stock Research" and strategies_list:
+        st.markdown("### 📘 Stock Research Profiles")
         priority_names = set(STOCK_RESEARCH_LEADERS)
         ordered_strategies = sorted(
             strategies_list,
@@ -1272,15 +1648,14 @@ with st.sidebar:
             st.caption(f"Selected stock profiles: {', '.join(selected_names)}")
         else:
             st.caption("Selected stock profiles: none")
-        st.info(
-            "Frozen ETF benchmark is available in Backtest mode under `ETF Benchmark Lab`. "
-            "It is validated separately from the stock-strategy checkboxes."
-        )
-    else:
+    elif primary_strategy == "Stock Research":
         st.error("⚠️ No strategies found in config file!")
 
 # --- 1. LIVE SCREENER ---
 if mode == "Live Screener":
+    if primary_strategy == "ETF Benchmark":
+        _render_etf_live_screener(selected_etf_profile_label)
+        st.stop()
     render_mode_header(
         "🚀 Daily Opportunity Scanner",
         "Scan the Russell 3000 workflow with point-in-time universe alignment and real-time progress visibility.",
@@ -1766,15 +2141,8 @@ elif mode == "Backtest":
 
     today = pd.Timestamp.utcnow().tz_localize(None).normalize()
     bt_end_date = today.date().isoformat()
-    backtest_workspace = st.radio(
-        "Backtest Workspace",
-        ["ETF Benchmark", "Stock Strategy Research"],
-        horizontal=True,
-        index=0,
-        help="Use ETF Benchmark for the frozen validated winner. Use Stock Strategy Research for legacy stock-profile testing.",
-    )
-    if backtest_workspace == "ETF Benchmark":
-        _render_etf_benchmark_lab(bt_end_date)
+    if primary_strategy == "ETF Benchmark":
+        _render_etf_benchmark_lab(bt_end_date, etf_profile_label=selected_etf_profile_label)
         st.stop()
     
     col_uni, col_dur = st.columns([1, 3])
@@ -2916,6 +3284,9 @@ elif mode == "Backtest":
 
 # --- 3. SIMULATOR (PRO MODE) ---
 elif mode == "Simulator":
+    if primary_strategy == "ETF Benchmark":
+        _render_etf_simulator(selected_etf_profile_label)
+        st.stop()
     render_mode_header(
         "🎮 Paper Trader (Pro)",
         "Execute a realistic paper-trading cycle with nightly scans, morning fills/exits, and live portfolio monitoring.",
