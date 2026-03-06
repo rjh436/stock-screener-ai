@@ -15,7 +15,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data.loader import fetch_data_pack
-from execution.rebalance_engine import _build_selected_target_weights, run_periodic_rebalance
+from execution.rebalance_engine import (
+    _build_selected_target_weights,
+    _sanitize_target_weights,
+    run_periodic_rebalance,
+    select_target_portfolio,
+)
 from scripts.run_factor_walkforward import (
     _build_market_risk_scalar,
     _build_test_windows,
@@ -368,6 +373,8 @@ def _build_exposure_scalar(
     close_px: pd.DataFrame,
     global_data: Mapping[str, pd.DataFrame],
     cfg: Mapping[str, Any],
+    *,
+    portfolio_proxy: Optional[pd.Series] = None,
 ) -> pd.Series:
     dates = pd.DatetimeIndex(close_px.index)
     exposure_cfg = dict(cfg.get("exposure_control") or {})
@@ -383,7 +390,12 @@ def _build_exposure_scalar(
     if close_px.empty:
         return scalar
 
-    proxy = _build_proxy_close(close_px, global_data, cfg)
+    use_portfolio_proxy = bool(exposure_cfg.get("use_portfolio_proxy", False))
+    proxy = None
+    if use_portfolio_proxy and isinstance(portfolio_proxy, pd.Series) and not portfolio_proxy.empty:
+        proxy = pd.to_numeric(portfolio_proxy, errors="coerce").reindex(dates)
+    if proxy is None:
+        proxy = _build_proxy_close(close_px, global_data, cfg)
     proxy = pd.to_numeric(proxy, errors="coerce").reindex(dates)
     proxy_ret = proxy.pct_change().replace([np.inf, -np.inf], np.nan)
 
@@ -427,10 +439,21 @@ def _build_combined_risk_scalar(
     close_px: pd.DataFrame,
     global_data: Mapping[str, pd.DataFrame],
     cfg: Mapping[str, Any],
+    *,
+    portfolio_proxy: Optional[pd.Series] = None,
 ) -> pd.Series:
     market_scalar = _build_market_risk_scalar(global_data, close_px.index, cfg)
-    exposure_scalar = _build_exposure_scalar(close_px, global_data, cfg)
-    market_scalar = pd.to_numeric(market_scalar, errors="coerce").reindex(close_px.index).fillna(1.0)
+    exposure_scalar = _build_exposure_scalar(close_px, global_data, cfg, portfolio_proxy=portfolio_proxy)
+    if isinstance(market_scalar, pd.Series):
+        market_scalar = pd.to_numeric(market_scalar, errors="coerce").reindex(close_px.index).fillna(1.0)
+    else:
+        try:
+            scalar_val = float(market_scalar)
+        except Exception:
+            scalar_val = 1.0
+        if not np.isfinite(scalar_val):
+            scalar_val = 1.0
+        market_scalar = pd.Series(scalar_val, index=close_px.index, dtype=float)
     exposure_scalar = pd.to_numeric(exposure_scalar, errors="coerce").reindex(close_px.index).fillna(1.0)
     combined = (market_scalar * exposure_scalar).clip(lower=0.0, upper=1.0)
     return combined
@@ -541,6 +564,182 @@ def _build_weight_schedule_from_scores(
     return out
 
 
+def _build_signal_schedule_from_scores(
+    scores: pd.DataFrame,
+    *,
+    rebalance_freq: str,
+    target_count: int,
+    hold_buffer_mult: float,
+    conviction_weighted: bool,
+    conviction_power: float,
+    gross_exposure: float,
+) -> pd.DataFrame:
+    if scores is None or scores.empty:
+        return pd.DataFrame()
+    gross = float(max(0.0, gross_exposure))
+    if gross <= 0.0 or int(target_count) <= 0:
+        return pd.DataFrame(index=scores.index, columns=scores.columns, dtype=float)
+
+    freq = str(rebalance_freq or "W").upper()
+    if freq not in {"D", "W", "M", "Q"}:
+        raise ValueError(f"Unsupported rebalance_freq '{rebalance_freq}'.")
+    if freq == "D":
+        signal_dates = list(pd.Index(scores.index).unique())
+    else:
+        period_freq = "W-FRI" if freq == "W" else freq
+        signal_dates = list(scores.groupby(scores.index.to_period(period_freq)).tail(1).index)
+
+    cols = [str(c) for c in scores.columns]
+    out = pd.DataFrame(index=scores.index, columns=cols, dtype=float)
+    existing_symbols: List[str] = []
+    for dt in signal_dates:
+        row = scores.loc[dt]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[-1]
+        ranked = pd.to_numeric(row, errors="coerce").dropna().sort_values(ascending=False)
+        if ranked.empty:
+            existing_symbols = []
+            continue
+        selected = select_target_portfolio(
+            ranked,
+            target_count=int(target_count),
+            existing_symbols=existing_symbols,
+            hold_buffer_mult=float(hold_buffer_mult),
+        )
+        existing_symbols = list(selected)
+        if not selected:
+            continue
+        weights = _build_selected_target_weights(
+            selected,
+            ranked,
+            conviction_weighted=bool(conviction_weighted),
+            conviction_power=float(conviction_power),
+        )
+        if not weights:
+            continue
+        for sym, wt in weights.items():
+            out.at[pd.Timestamp(dt), str(sym)] = gross * float(wt)
+    return out
+
+
+def _build_portfolio_proxy_series(
+    close_px: pd.DataFrame,
+    target_schedule: pd.DataFrame,
+    *,
+    execution_lag_days: int,
+) -> pd.Series:
+    dates = pd.DatetimeIndex(close_px.index)
+    if close_px.empty or target_schedule is None or target_schedule.empty:
+        return pd.Series(index=dates, dtype=float)
+    weights = target_schedule.reindex(index=dates, columns=close_px.columns)
+    weights = weights.ffill().fillna(0.0)
+    lag_days = max(0, int(execution_lag_days))
+    if lag_days > 0:
+        weights = weights.shift(lag_days).fillna(0.0)
+    returns = close_px.astype(float).pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    proxy_ret = (weights * returns).sum(axis=1, skipna=True)
+    proxy = (1.0 + proxy_ret).cumprod()
+    proxy.index = dates
+    return proxy
+
+
+def _schedule_row_weights(frame: Optional[pd.DataFrame], dt: pd.Timestamp) -> Dict[str, float]:
+    if frame is None or frame.empty or dt not in frame.index:
+        return {}
+    row = frame.loc[dt]
+    if isinstance(row, pd.DataFrame):
+        row = row.iloc[-1]
+    return _sanitize_target_weights(pd.to_numeric(row, errors="coerce").dropna().to_dict())
+
+
+def _build_residual_defensive_target_schedule(
+    data: Mapping[str, pd.DataFrame],
+    cfg: Mapping[str, Any],
+    global_data: Mapping[str, pd.DataFrame],
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    defensive_cfg = dict(cfg.get("defensive_sleeve") or {})
+    if not defensive_cfg or not bool(defensive_cfg.get("enabled", False)):
+        raise ValueError("Residual defensive schedule requires enabled defensive_sleeve config")
+
+    aggressive_symbols = _normalize_symbol_list(cfg.get("symbols", []))
+    defensive_symbols = _normalize_symbol_list(defensive_cfg.get("symbols", []))
+    if not aggressive_symbols or not defensive_symbols:
+        raise ValueError("Residual defensive schedule requires aggressive and defensive symbols")
+
+    aggressive_close = _price_frame_from_data(data, aggressive_symbols, "close")
+    aggressive_open = _price_frame_from_data(data, aggressive_symbols, "open").reindex(aggressive_close.index)
+    if aggressive_close.empty or aggressive_open.empty:
+        raise RuntimeError("Failed to build aggressive ETF open/close matrices")
+
+    aggressive_scores = _build_rotation_scores(aggressive_close, cfg)
+    aggressive_schedule = _build_signal_schedule_from_scores(
+        aggressive_scores,
+        rebalance_freq=str(cfg.get("rebalance_freq", "W") or "W"),
+        target_count=int(cfg.get("target_count", 1) or 1),
+        hold_buffer_mult=float(cfg.get("hold_buffer_mult", 1.0) or 1.0),
+        conviction_weighted=bool(cfg.get("conviction_weighted", False)),
+        conviction_power=float(cfg.get("conviction_power", 1.0) or 1.0),
+        gross_exposure=1.0,
+    )
+    aggressive_proxy = _build_portfolio_proxy_series(
+        aggressive_close,
+        aggressive_schedule,
+        execution_lag_days=int(cfg.get("execution_lag_days", 1) or 1),
+    )
+    aggressive_scalar = _build_combined_risk_scalar(
+        aggressive_close,
+        global_data,
+        cfg,
+        portfolio_proxy=aggressive_proxy,
+    ).reindex(aggressive_close.index).ffill().fillna(1.0)
+
+    defensive_merged_cfg = dict(cfg)
+    defensive_merged_cfg.update(defensive_cfg)
+    defensive_close = _price_frame_from_data(data, defensive_symbols, "close")
+    defensive_open = _price_frame_from_data(data, defensive_symbols, "open").reindex(defensive_close.index)
+    if defensive_close.empty or defensive_open.empty:
+        raise RuntimeError("Failed to build defensive ETF open/close matrices")
+
+    defensive_scores = _build_rotation_scores(defensive_close, defensive_merged_cfg)
+    defensive_schedule = _build_signal_schedule_from_scores(
+        defensive_scores,
+        rebalance_freq=str(defensive_merged_cfg.get("rebalance_freq", cfg.get("rebalance_freq", "W")) or "W"),
+        target_count=int(defensive_merged_cfg.get("target_count", 1) or 1),
+        hold_buffer_mult=float(defensive_merged_cfg.get("hold_buffer_mult", cfg.get("hold_buffer_mult", 1.0)) or 1.0),
+        conviction_weighted=bool(defensive_merged_cfg.get("conviction_weighted", False)),
+        conviction_power=float(defensive_merged_cfg.get("conviction_power", 1.0) or 1.0),
+        gross_exposure=1.0,
+    )
+
+    union_symbols = _normalize_symbol_list(aggressive_symbols + defensive_symbols)
+    close_union = _price_frame_from_data(data, union_symbols, "close")
+    open_union = _price_frame_from_data(data, union_symbols, "open").reindex(close_union.index)
+    target_schedule = pd.DataFrame(index=close_union.index, columns=close_union.columns, dtype=float)
+
+    signal_dates = sorted(
+        set(aggressive_schedule.dropna(how="all").index).union(defensive_schedule.dropna(how="all").index)
+    )
+    for dt in signal_dates:
+        hist = aggressive_scalar.loc[aggressive_scalar.index <= dt]
+        scalar = float(hist.iloc[-1]) if not hist.empty else 1.0
+        if not np.isfinite(scalar):
+            scalar = 1.0
+        scalar = float(np.clip(scalar, 0.0, 1.0))
+        aggressive_row = _schedule_row_weights(aggressive_schedule, pd.Timestamp(dt))
+        defensive_row = _schedule_row_weights(defensive_schedule, pd.Timestamp(dt))
+        combined: Dict[str, float] = {}
+        for sym in union_symbols:
+            wt = scalar * float(aggressive_row.get(sym, 0.0))
+            wt += (1.0 - scalar) * float(defensive_row.get(sym, 0.0))
+            if wt > 0.0:
+                combined[sym] = wt
+        combined = _sanitize_target_weights(combined)
+        for sym, wt in combined.items():
+            target_schedule.at[pd.Timestamp(dt), str(sym)] = wt
+
+    return close_union, open_union, target_schedule
+
+
 def _build_allocator_target_schedule(
     data: Mapping[str, pd.DataFrame],
     cfg: Mapping[str, Any],
@@ -623,8 +822,21 @@ def _run_rotation_window(
     win_close = close_px.loc[(close_px.index >= pd.Timestamp(start_date)) & (close_px.index <= pd.Timestamp(end_date))]
     win_open = open_px.reindex(win_close.index)
     win_scores = scores.reindex(win_close.index)
-
-    risk_scalar = _build_combined_risk_scalar(win_close, global_data, cfg)
+    base_target_schedule = _build_signal_schedule_from_scores(
+        win_scores,
+        rebalance_freq=str(cfg.get("rebalance_freq", "W") or "W"),
+        target_count=int(cfg.get("target_count", 1) or 1),
+        hold_buffer_mult=float(cfg.get("hold_buffer_mult", 1.0) or 1.0),
+        conviction_weighted=bool(cfg.get("conviction_weighted", False)),
+        conviction_power=float(cfg.get("conviction_power", 1.0) or 1.0),
+        gross_exposure=1.0,
+    )
+    portfolio_proxy = _build_portfolio_proxy_series(
+        win_close,
+        base_target_schedule,
+        execution_lag_days=int(cfg.get("execution_lag_days", 1) or 1),
+    )
+    risk_scalar = _build_combined_risk_scalar(win_close, global_data, cfg, portfolio_proxy=portfolio_proxy)
     tx_bps = float(cfg.get("transaction_cost_bps", 0.0) or 0.0)
     tx_bps += float(cfg.get("entry_slippage_bps", 0.0) or 0.0)
     tx_bps += float(cfg.get("exit_slippage_bps", 0.0) or 0.0)
@@ -663,8 +875,12 @@ def _run_rotation_window_with_targets(
     win_close = close_px.loc[(close_px.index >= pd.Timestamp(start_date)) & (close_px.index <= pd.Timestamp(end_date))]
     win_open = open_px.reindex(win_close.index)
     win_targets = target_schedule.reindex(win_close.index)
-
-    risk_scalar = _build_combined_risk_scalar(win_close, global_data, cfg)
+    portfolio_proxy = _build_portfolio_proxy_series(
+        win_close,
+        win_targets,
+        execution_lag_days=int(cfg.get("execution_lag_days", 1) or 1),
+    )
+    risk_scalar = _build_combined_risk_scalar(win_close, global_data, cfg, portfolio_proxy=portfolio_proxy)
     tx_bps = float(cfg.get("transaction_cost_bps", 0.0) or 0.0)
     tx_bps += float(cfg.get("entry_slippage_bps", 0.0) or 0.0)
     tx_bps += float(cfg.get("exit_slippage_bps", 0.0) or 0.0)
@@ -747,12 +963,17 @@ def main() -> None:
     args = _parse_args()
     cfg = _load_config(Path(args.config).expanduser().resolve())
     sleeves = cfg.get("sleeves")
+    defensive_cfg = dict(cfg.get("defensive_sleeve") or {})
     if isinstance(sleeves, Mapping) and sleeves:
         sleeve_symbols: List[str] = []
         for sleeve_cfg in sleeves.values():
             if isinstance(sleeve_cfg, Mapping):
                 sleeve_symbols.extend(_normalize_symbol_list(sleeve_cfg.get("symbols", [])))
         symbols = _normalize_symbol_list(sleeve_symbols)
+    elif defensive_cfg and bool(defensive_cfg.get("enabled", False)):
+        symbols = _normalize_symbol_list(
+            list(cfg.get("symbols", [])) + list(defensive_cfg.get("symbols", []))
+        )
     else:
         symbols = _normalize_symbol_list(cfg.get("symbols", []))
     if not symbols:
@@ -782,6 +1003,24 @@ def main() -> None:
         print(f"active_scored_symbols={active}")
         full = _run_rotation_window_with_targets(
             cfg=cfg,
+            close_px=close_px,
+            open_px=open_px,
+            target_schedule=target_schedule,
+            global_data=global_data,
+            start_date=str(args.start_date),
+            end_date=str(args.end_date),
+        )
+    elif defensive_cfg and bool(defensive_cfg.get("enabled", False)):
+        close_px, open_px, target_schedule = _build_residual_defensive_target_schedule(data, cfg, global_data)
+        if close_px.empty or open_px.empty or target_schedule.empty:
+            raise RuntimeError("Failed to build ETF residual defensive matrices")
+        active = int(target_schedule.notna().any(axis=0).sum())
+        print(f"active_scored_symbols={active}")
+        run_cfg = dict(cfg)
+        run_cfg["market_regime"] = {"enabled": False}
+        run_cfg["exposure_control"] = {}
+        full = _run_rotation_window_with_targets(
+            cfg=run_cfg,
             close_px=close_px,
             open_px=open_px,
             target_schedule=target_schedule,

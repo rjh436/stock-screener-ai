@@ -7,7 +7,10 @@ from scripts.run_etf_rotation_walkforward import (
     _build_allocator_state,
     _build_allocator_target_schedule,
     _build_exposure_scalar,
+    _build_portfolio_proxy_series,
+    _build_residual_defensive_target_schedule,
     _build_rotation_scores,
+    _build_signal_schedule_from_scores,
 )
 
 
@@ -194,6 +197,131 @@ class EtfRotationWalkforwardTests(unittest.TestCase):
         scalar = _build_exposure_scalar(close_px, {}, cfg)
         self.assertLess(float(scalar.iloc[-1]), 1.0)
         self.assertGreaterEqual(float(scalar.iloc[-1]), 0.20)
+
+    def test_signal_schedule_uses_rebalance_dates_and_hold_buffer(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=40, freq="B")
+        scores = pd.DataFrame(
+            {
+                "AAA": np.linspace(90.0, 95.0, len(dates)),
+                "BBB": np.linspace(80.0, 85.0, len(dates)),
+                "CCC": np.linspace(70.0, 75.0, len(dates)),
+            },
+            index=dates,
+        )
+        schedule = _build_signal_schedule_from_scores(
+            scores,
+            rebalance_freq="W",
+            target_count=2,
+            hold_buffer_mult=1.25,
+            conviction_weighted=False,
+            conviction_power=1.0,
+            gross_exposure=1.0,
+        )
+        non_empty = schedule.dropna(how="all")
+        self.assertGreaterEqual(len(non_empty), 6)
+        last = non_empty.iloc[-1].dropna()
+        self.assertAlmostEqual(float(last.sum()), 1.0, places=6)
+        self.assertTrue(all(sym in {"AAA", "BBB"} for sym in last.index))
+
+    def test_portfolio_proxy_series_lags_target_schedule(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=6, freq="B")
+        close_px = pd.DataFrame(
+            {
+                "AAA": [100.0, 110.0, 121.0, 133.1, 146.41, 161.051],
+                "BBB": [100.0, 90.0, 81.0, 72.9, 65.61, 59.049],
+            },
+            index=dates,
+        )
+        target_schedule = pd.DataFrame(index=dates, columns=["AAA", "BBB"], dtype=float)
+        target_schedule.iloc[0] = [1.0, np.nan]
+        proxy = _build_portfolio_proxy_series(close_px, target_schedule, execution_lag_days=1)
+        self.assertAlmostEqual(float(proxy.iloc[0]), 1.0, places=6)
+        self.assertGreater(float(proxy.iloc[1]), 1.0)
+        self.assertGreater(float(proxy.iloc[2]), float(proxy.iloc[1]))
+
+    def test_exposure_scalar_prefers_portfolio_proxy_when_provided(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=80, freq="B")
+        basket = pd.DataFrame(
+            {
+                "AAA": np.linspace(100.0, 200.0, len(dates)),
+                "BBB": np.linspace(100.0, 50.0, len(dates)),
+            },
+            index=dates,
+        )
+        low_vol_proxy = pd.Series(np.linspace(1.0, 1.1, len(dates)), index=dates)
+        cfg = {
+            "exposure_control": {
+                "base_gross_exposure": 1.0,
+                "vol_target_annual": 0.10,
+                "vol_lookback_days": 10,
+                "min_gross_exposure": 0.20,
+                "max_gross_exposure": 1.0,
+                "use_portfolio_proxy": True,
+            }
+        }
+        scalar = _build_exposure_scalar(basket, {}, cfg, portfolio_proxy=low_vol_proxy)
+        self.assertAlmostEqual(float(scalar.iloc[-1]), 1.0, places=6)
+
+    def test_residual_defensive_target_schedule_blends_aggressive_and_defensive_weights(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=80, freq="B")
+        ag1 = pd.Series(np.linspace(100.0, 200.0, len(dates)), index=dates)
+        ag2 = pd.Series(np.linspace(100.0, 150.0, len(dates)), index=dates)
+        df1 = pd.Series(np.linspace(100.0, 104.0, len(dates)), index=dates)
+        df2 = pd.Series(np.linspace(100.0, 99.0, len(dates)), index=dates)
+        data = {
+            "AG1": pd.DataFrame({"close": ag1, "open": ag1}, index=dates),
+            "AG2": pd.DataFrame({"close": ag2, "open": ag2}, index=dates),
+            "DF1": pd.DataFrame({"close": df1, "open": df1}, index=dates),
+            "DF2": pd.DataFrame({"close": df2, "open": df2}, index=dates),
+        }
+        cfg = {
+            "symbols": ["AG1", "AG2"],
+            "rebalance_freq": "W",
+            "target_count": 1,
+            "hold_buffer_mult": 1.25,
+            "conviction_weighted": False,
+            "conviction_power": 1.0,
+            "execution_lag_days": 1,
+            "lookbacks": {"21": 1.0},
+            "absolute_momentum_lookback": 21,
+            "absolute_momentum_min": 0.0,
+            "trend_ma_days": 20,
+            "fast_ma_days": 10,
+            "require_fast_above_trend": False,
+            "short_term_reversal_days": 0,
+            "short_term_reversal_weight": 0.0,
+            "volatility_lookback_days": 0,
+            "max_position_weight": 1.0,
+            "turnover_budget": 1.0,
+            "market_regime": {"enabled": False},
+            "exposure_control": {"base_gross_exposure": 0.5},
+            "defensive_sleeve": {
+                "enabled": True,
+                "symbols": ["DF1", "DF2"],
+                "target_count": 1,
+                "lookbacks": {"21": 1.0},
+                "absolute_momentum_lookback": 21,
+                "absolute_momentum_min": -1.0,
+                "trend_ma_days": 20,
+                "fast_ma_days": 10,
+                "require_fast_above_trend": False,
+                "short_term_reversal_days": 0,
+                "short_term_reversal_weight": 0.0,
+                "volatility_lookback_days": 0,
+            },
+        }
+
+        close_px, open_px, target_schedule = _build_residual_defensive_target_schedule(data, cfg, {})
+        self.assertFalse(close_px.empty)
+        self.assertFalse(open_px.empty)
+        non_empty = target_schedule.dropna(how="all")
+        self.assertFalse(non_empty.empty)
+        last = non_empty.iloc[-1].dropna()
+        self.assertAlmostEqual(float(last.sum()), 1.0, places=6)
+        self.assertIn("AG1", last.index)
+        self.assertIn("DF1", last.index)
+        self.assertAlmostEqual(float(last["AG1"]), 0.5, places=6)
+        self.assertAlmostEqual(float(last["DF1"]), 0.5, places=6)
 
 
 if __name__ == "__main__":
