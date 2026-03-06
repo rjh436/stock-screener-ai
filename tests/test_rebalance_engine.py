@@ -360,6 +360,32 @@ class RebalanceEngineTests(unittest.TestCase):
         first_weights = logs[0].get("weights", {})
         self.assertGreater(float(first_weights.get("AAA", 0.0)), float(first_weights.get("BBB", 0.0)))
 
+    def test_target_weight_schedule_preserves_cash_residual(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=66, freq="B")
+        prices = pd.DataFrame(
+            {
+                "AAA": [100.0 + (i * 0.2) for i in range(len(dates))],
+                "BBB": [95.0 + (i * 0.1) for i in range(len(dates))],
+            },
+            index=dates,
+        )
+        ranks = pd.DataFrame({"AAA": [90.0] * len(dates), "BBB": [80.0] * len(dates)}, index=dates)
+        target_weights = pd.DataFrame({"AAA": [0.5] * len(dates)}, index=dates)
+
+        out = run_periodic_rebalance(
+            prices,
+            ranks,
+            target_weights_by_date=target_weights,
+            rebalance_freq="M",
+            target_count=1,
+            transaction_cost_bps=0.0,
+            turnover_budget=1.0,
+            start_cash=100000.0,
+        )
+
+        audit = out.get("audit_report", {}) or {}
+        self.assertLessEqual(float(audit.get("max_gross_exposure_pct", 1.0)), 0.60)
+
 
 if __name__ == "__main__":
     unittest.main()

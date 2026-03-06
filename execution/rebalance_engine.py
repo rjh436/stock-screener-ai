@@ -198,7 +198,7 @@ def _coerce_weight_row(frame: pd.DataFrame, dt: pd.Timestamp) -> Dict[str, float
     if isinstance(row, pd.DataFrame):
         row = row.iloc[-1]
     weights = pd.to_numeric(row, errors="coerce").dropna()
-    return _normalize_weights(weights.to_dict())
+    return _sanitize_target_weights(weights.to_dict())
 
 
 def _turnover(prev_weights: Mapping[str, float], next_weights: Mapping[str, float]) -> float:

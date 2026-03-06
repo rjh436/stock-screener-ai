@@ -19,7 +19,9 @@ def _clean_weights(weights: Mapping[str, float]) -> Dict[str, float]:
     total = float(sum(out.values()))
     if total <= 0:
         return {}
-    return {k: (v / total) for k, v in out.items()}
+    if total > 1.0 + 1e-12:
+        return {k: (v / total) for k, v in out.items()}
+    return out
 
 
 def _enforce_group_cap(weights: Mapping[str, float], group_map: Mapping[str, str], cap: float) -> Dict[str, float]:

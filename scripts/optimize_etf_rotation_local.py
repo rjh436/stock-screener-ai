@@ -231,6 +231,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--turnover-budgets", default="1.0,0.5")
     parser.add_argument("--require-fast", default="true,false")
     parser.add_argument("--abs-lookbacks", default="63,126")
+    parser.add_argument("--base-gross-values", default="1.0")
+    parser.add_argument("--vol-target-values", default="0.0")
     parser.add_argument("--lookback-presets", default="")
     parser.add_argument("--start-date", default="2011-01-01")
     parser.add_argument("--end-date", default="2025-12-31")
@@ -252,9 +254,15 @@ def main() -> None:
     turnover_budgets = _parse_csv_list(args.turnover_budgets, float)
     require_fast = _parse_bool_list(args.require_fast)
     abs_lookbacks = _parse_csv_list(args.abs_lookbacks, int)
+    base_gross_values = _parse_csv_list(args.base_gross_values, float)
+    vol_target_values = _parse_csv_list(args.vol_target_values, float)
     lookback_preset_names = [s.strip() for s in str(args.lookback_presets).split(",") if s.strip()]
     if not lookback_preset_names:
         lookback_preset_names = ["__base__"]
+    if not base_gross_values:
+        base_gross_values = [1.0]
+    if not vol_target_values:
+        vol_target_values = [0.0]
 
     requested_symbols = sorted(
         {sym for name in universe_names for sym in UNIVERSE_PRESETS.get(name, [])}
@@ -292,55 +300,69 @@ def main() -> None:
                     for tb in turnover_budgets:
                         for fast in require_fast:
                             for abs_lb in abs_lookbacks:
-                                for lookback_preset in lookback_preset_names:
-                                    cfg = copy.deepcopy(base)
-                                    cfg["symbols"] = list(symbols)
-                                    cfg["rebalance_freq"] = freq
-                                    cfg["target_count"] = int(target)
-                                    cfg["turnover_budget"] = float(tb)
-                                    cfg["require_fast_above_trend"] = bool(fast)
-                                    cfg["absolute_momentum_lookback"] = int(abs_lb)
-                                    cfg["market_regime"] = copy.deepcopy(regime)
-                                    if lookback_preset != "__base__":
-                                        lb_map = LOOKBACK_PRESETS.get(lookback_preset)
-                                        if not lb_map:
-                                            continue
-                                        cfg["lookbacks"] = dict(lb_map)
-                                    scores = _build_rotation_scores(close, cfg)
-                                    full = _run_rotation_window(
-                                        cfg=cfg,
-                                        close_px=close,
-                                        open_px=open_px,
-                                        scores=scores,
-                                        global_data=global_data,
-                                        start_date=str(args.start_date),
-                                        end_date=str(args.end_date),
-                                    )
-                                    o24 = _stitch_test_windows_warm(full_run=full, windows=windows24, test_months=12)
-                                    o60 = _stitch_test_windows_warm(full_run=full, windows=windows60, test_months=12)
-                                    full_cagr = _safe_float(full.get("cagr"), 0.0) * 100.0
-                                    full_dd = _pct_dd(full.get("max_drawdown_pct", 0.0))
-                                    row = {
-                                        "universe": uname,
-                                        "candidate_pool": candidate_pool or "",
-                                        "symbols": ",".join(symbols),
-                                        "symbol_count": int(len(symbols)),
-                                        "regime": regime_name,
-                                        "freq": freq,
-                                        "target": int(target),
-                                        "turnover_budget": float(tb),
-                                        "require_fast": bool(fast),
-                                        "abs_lookback": int(abs_lb),
-                                        "lookback_preset": "" if lookback_preset == "__base__" else lookback_preset,
-                                        "full_cagr_pct": full_cagr,
-                                        "full_max_dd_pct": full_dd,
-                                        "avg_annual_turnover_pct": _safe_float(full.get("avg_annual_turnover_pct"), float("nan")),
-                                        "oos_24_12_cagr_pct_warm": _safe_float(o24.get("stitched_cagr_pct"), float("nan")),
-                                        "oos_60_12_cagr_pct_warm": _safe_float(o60.get("stitched_cagr_pct"), float("nan")),
-                                        "calmar": (full_cagr / full_dd) if full_dd > 0 else float("nan"),
-                                    }
-                                    rows.append(row)
-                                    print(json.dumps(row))
+                                for base_gross in base_gross_values:
+                                    for vol_target in vol_target_values:
+                                        for lookback_preset in lookback_preset_names:
+                                            cfg = copy.deepcopy(base)
+                                            cfg["symbols"] = list(symbols)
+                                            cfg["rebalance_freq"] = freq
+                                            cfg["target_count"] = int(target)
+                                            cfg["turnover_budget"] = float(tb)
+                                            cfg["require_fast_above_trend"] = bool(fast)
+                                            cfg["absolute_momentum_lookback"] = int(abs_lb)
+                                            cfg["market_regime"] = copy.deepcopy(regime)
+                                            if lookback_preset != "__base__":
+                                                lb_map = LOOKBACK_PRESETS.get(lookback_preset)
+                                                if not lb_map:
+                                                    continue
+                                                cfg["lookbacks"] = dict(lb_map)
+                                            exposure_cfg: Dict[str, Any] = {
+                                                "base_gross_exposure": float(base_gross),
+                                                "proxy_symbols": list(symbols),
+                                                "max_gross_exposure": 1.0,
+                                            }
+                                            if float(vol_target) > 0.0:
+                                                exposure_cfg["vol_target_annual"] = float(vol_target)
+                                                exposure_cfg["vol_lookback_days"] = 21
+                                                exposure_cfg["min_gross_exposure"] = 0.20
+                                            cfg["exposure_control"] = exposure_cfg
+                                            scores = _build_rotation_scores(close, cfg)
+                                            full = _run_rotation_window(
+                                                cfg=cfg,
+                                                close_px=close,
+                                                open_px=open_px,
+                                                scores=scores,
+                                                global_data=global_data,
+                                                start_date=str(args.start_date),
+                                                end_date=str(args.end_date),
+                                            )
+                                            o24 = _stitch_test_windows_warm(full_run=full, windows=windows24, test_months=12)
+                                            o60 = _stitch_test_windows_warm(full_run=full, windows=windows60, test_months=12)
+                                            full_cagr = _safe_float(full.get("cagr"), 0.0) * 100.0
+                                            full_dd = _pct_dd(full.get("max_drawdown_pct", 0.0))
+                                            row = {
+                                                "universe": uname,
+                                                "candidate_pool": candidate_pool or "",
+                                                "symbols": ",".join(symbols),
+                                                "symbol_count": int(len(symbols)),
+                                                "regime": regime_name,
+                                                "freq": freq,
+                                                "target": int(target),
+                                                "turnover_budget": float(tb),
+                                                "require_fast": bool(fast),
+                                                "abs_lookback": int(abs_lb),
+                                                "base_gross_exposure": float(base_gross),
+                                                "vol_target_annual": float(vol_target),
+                                                "lookback_preset": "" if lookback_preset == "__base__" else lookback_preset,
+                                                "full_cagr_pct": full_cagr,
+                                                "full_max_dd_pct": full_dd,
+                                                "avg_annual_turnover_pct": _safe_float(full.get("avg_annual_turnover_pct"), float("nan")),
+                                                "oos_24_12_cagr_pct_warm": _safe_float(o24.get("stitched_cagr_pct"), float("nan")),
+                                                "oos_60_12_cagr_pct_warm": _safe_float(o60.get("stitched_cagr_pct"), float("nan")),
+                                                "calmar": (full_cagr / full_dd) if full_dd > 0 else float("nan"),
+                                            }
+                                            rows.append(row)
+                                            print(json.dumps(row))
 
     out_path = Path(args.out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)

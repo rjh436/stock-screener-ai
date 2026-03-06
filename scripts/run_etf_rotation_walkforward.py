@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data.loader import fetch_data_pack
-from execution.rebalance_engine import run_periodic_rebalance
+from execution.rebalance_engine import _build_selected_target_weights, run_periodic_rebalance
 from scripts.run_factor_walkforward import (
     _build_market_risk_scalar,
     _build_test_windows,
@@ -315,6 +315,301 @@ def _build_rotation_scores(close_px: pd.DataFrame, cfg: Mapping[str, Any]) -> pd
     return pd.DataFrame(score, index=close.index, columns=close.columns)
 
 
+def _aligned_close_series(
+    close_px: pd.DataFrame,
+    global_data: Mapping[str, pd.DataFrame],
+    symbol: str,
+) -> pd.Series:
+    sym = str(symbol or "").strip().upper()
+    dates = pd.DatetimeIndex(close_px.index)
+    if sym in close_px.columns:
+        ser = pd.to_numeric(close_px[sym], errors="coerce")
+        return ser.reindex(dates)
+    frame = global_data.get(sym)
+    if frame is None or frame.empty or "close" not in frame.columns:
+        return pd.Series(index=dates, dtype=float)
+    ser = pd.to_numeric(frame["close"], errors="coerce")
+    idx = pd.DatetimeIndex(pd.to_datetime(ser.index, errors="coerce")).tz_localize(None).normalize()
+    ser.index = idx
+    ser = ser[~ser.index.duplicated(keep="last")]
+    return ser.reindex(dates)
+
+
+def _build_proxy_close(
+    close_px: pd.DataFrame,
+    global_data: Mapping[str, pd.DataFrame],
+    cfg: Mapping[str, Any],
+) -> pd.Series:
+    exposure_cfg = dict(cfg.get("exposure_control") or {})
+    dates = pd.DatetimeIndex(close_px.index)
+    proxy_symbols = _normalize_symbol_list(exposure_cfg.get("proxy_symbols", []))
+    proxy_symbol = str(exposure_cfg.get("proxy_symbol", "") or "").upper()
+    if proxy_symbol:
+        return _aligned_close_series(close_px, global_data, proxy_symbol)
+    if proxy_symbols:
+        cols = [sym for sym in proxy_symbols if sym in close_px.columns]
+        if cols:
+            proxy_close = close_px[cols].astype(float)
+            proxy_ret = proxy_close.pct_change().replace([np.inf, -np.inf], np.nan)
+            ew_ret = proxy_ret.mean(axis=1, skipna=True).fillna(0.0)
+            proxy = (1.0 + ew_ret).cumprod()
+            proxy.index = dates
+            return proxy
+    # Default to an equal-weight basket proxy for the scored ETF universe.
+    proxy_close = close_px.astype(float)
+    proxy_ret = proxy_close.pct_change().replace([np.inf, -np.inf], np.nan)
+    ew_ret = proxy_ret.mean(axis=1, skipna=True).fillna(0.0)
+    proxy = (1.0 + ew_ret).cumprod()
+    proxy.index = dates
+    return proxy
+
+
+def _build_exposure_scalar(
+    close_px: pd.DataFrame,
+    global_data: Mapping[str, pd.DataFrame],
+    cfg: Mapping[str, Any],
+) -> pd.Series:
+    dates = pd.DatetimeIndex(close_px.index)
+    exposure_cfg = dict(cfg.get("exposure_control") or {})
+    base_gross = float(exposure_cfg.get("base_gross_exposure", cfg.get("base_gross_exposure", 1.0)) or 1.0)
+    if not np.isfinite(base_gross):
+        base_gross = 1.0
+    min_gross = float(exposure_cfg.get("min_gross_exposure", 0.0) or 0.0)
+    max_gross = float(exposure_cfg.get("max_gross_exposure", 1.0) or 1.0)
+    min_gross = max(0.0, min(1.0, min_gross))
+    max_gross = max(min_gross, min(1.0, max_gross))
+    scalar = pd.Series(float(max(min_gross, min(max_gross, base_gross))), index=dates, dtype=float)
+
+    if close_px.empty:
+        return scalar
+
+    proxy = _build_proxy_close(close_px, global_data, cfg)
+    proxy = pd.to_numeric(proxy, errors="coerce").reindex(dates)
+    proxy_ret = proxy.pct_change().replace([np.inf, -np.inf], np.nan)
+
+    vol_target = float(exposure_cfg.get("vol_target_annual", 0.0) or 0.0)
+    vol_lookback = int(exposure_cfg.get("vol_lookback_days", 0) or 0)
+    if vol_target > 0.0 and vol_lookback > 1:
+        vol = proxy_ret.rolling(vol_lookback, min_periods=max(5, vol_lookback // 2)).std() * np.sqrt(252.0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            vol_scalar = vol_target / vol
+        vol_scalar = pd.to_numeric(vol_scalar, errors="coerce").replace([np.inf, -np.inf], np.nan)
+        vol_scalar = vol_scalar.clip(lower=min_gross, upper=max_gross).fillna(max_gross)
+        scalar = np.minimum(scalar, vol_scalar)
+
+    dd_start = float(exposure_cfg.get("drawdown_brake_start_pct", 0.0) or 0.0)
+    dd_full = float(exposure_cfg.get("drawdown_brake_full_pct", 0.0) or 0.0)
+    dd_min_gross = float(exposure_cfg.get("drawdown_min_gross_exposure", min_gross) or min_gross)
+    dd_min_gross = max(0.0, min(max_gross, dd_min_gross))
+    dd_lookback = int(exposure_cfg.get("drawdown_lookback_days", 0) or 0)
+    if dd_full > dd_start >= 0.0:
+        if dd_lookback > 1:
+            peak = proxy.rolling(dd_lookback, min_periods=max(20, dd_lookback // 2)).max()
+        else:
+            peak = proxy.cummax()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            dd = 1.0 - (proxy / peak)
+        dd = pd.to_numeric(dd, errors="coerce").fillna(0.0).clip(lower=0.0)
+        dd_scalar = pd.Series(1.0, index=dates, dtype=float)
+        full_mask = dd >= dd_full
+        mid_mask = (dd > dd_start) & (dd < dd_full)
+        dd_scalar.loc[full_mask] = dd_min_gross
+        if bool(mid_mask.any()):
+            frac = (dd.loc[mid_mask] - dd_start) / max(1e-9, (dd_full - dd_start))
+            dd_scalar.loc[mid_mask] = 1.0 - frac * (1.0 - dd_min_gross)
+        dd_scalar = dd_scalar.clip(lower=dd_min_gross, upper=1.0)
+        scalar = np.minimum(scalar, dd_scalar)
+
+    return pd.Series(pd.to_numeric(scalar, errors="coerce"), index=dates).fillna(base_gross).clip(lower=0.0, upper=max_gross)
+
+
+def _build_combined_risk_scalar(
+    close_px: pd.DataFrame,
+    global_data: Mapping[str, pd.DataFrame],
+    cfg: Mapping[str, Any],
+) -> pd.Series:
+    market_scalar = _build_market_risk_scalar(global_data, close_px.index, cfg)
+    exposure_scalar = _build_exposure_scalar(close_px, global_data, cfg)
+    market_scalar = pd.to_numeric(market_scalar, errors="coerce").reindex(close_px.index).fillna(1.0)
+    exposure_scalar = pd.to_numeric(exposure_scalar, errors="coerce").reindex(close_px.index).fillna(1.0)
+    combined = (market_scalar * exposure_scalar).clip(lower=0.0, upper=1.0)
+    return combined
+
+
+def _build_allocator_state(
+    close_px: pd.DataFrame,
+    global_data: Mapping[str, pd.DataFrame],
+    cfg: Mapping[str, Any],
+) -> pd.Series:
+    allocator = dict(cfg.get("allocator") or {})
+    if close_px.empty or not allocator:
+        return pd.Series(dtype=object)
+
+    dates = pd.DatetimeIndex(close_px.index)
+    regime_symbol = str(allocator.get("regime_symbol", "SPY") or "SPY").upper()
+    confirm_symbol = str(allocator.get("confirm_symbol", "QQQ") or "QQQ").upper()
+    vix_symbol = str(allocator.get("vix_symbol", "VIX") or "VIX").upper()
+    regime_ma_days = int(allocator.get("regime_ma_days", 200) or 200)
+    breadth_ma_days = int(allocator.get("breadth_ma_days", regime_ma_days) or regime_ma_days)
+    risk_on_breadth = float(allocator.get("risk_on_breadth", 0.6) or 0.6)
+    risk_off_breadth = float(allocator.get("risk_off_breadth", 0.4) or 0.4)
+    vix_risk_on_max = float(allocator.get("vix_risk_on_max", 20.0) or 20.0)
+    vix_risk_off_min = float(allocator.get("vix_risk_off_min", 28.0) or 28.0)
+    breadth_symbols = _normalize_symbol_list(
+        allocator.get("breadth_symbols")
+        or (cfg.get("sleeves", {}).get("aggressive", {}) if isinstance(cfg.get("sleeves"), Mapping) else {}).get("symbols", [])
+    )
+
+    regime_close = _aligned_close_series(close_px, global_data, regime_symbol)
+    confirm_close = _aligned_close_series(close_px, global_data, confirm_symbol)
+    vix_close = _aligned_close_series(close_px, global_data, vix_symbol)
+    regime_ma = regime_close.rolling(regime_ma_days, min_periods=max(20, regime_ma_days // 2)).mean()
+    confirm_ma = confirm_close.rolling(regime_ma_days, min_periods=max(20, regime_ma_days // 2)).mean()
+
+    breadth = pd.Series(0.0, index=dates, dtype=float)
+    if breadth_symbols:
+        breadth_cols = [sym for sym in breadth_symbols if sym in close_px.columns]
+        if breadth_cols:
+            breadth_close = close_px[breadth_cols].astype(float)
+            breadth_ma = breadth_close.rolling(breadth_ma_days, min_periods=max(20, breadth_ma_days // 2)).mean()
+            with np.errstate(invalid="ignore"):
+                breadth_mask = breadth_close.to_numpy(dtype=np.float64) > breadth_ma.to_numpy(dtype=np.float64)
+            breadth = pd.Series(np.nanmean(breadth_mask.astype(float), axis=1), index=dates)
+
+    state = pd.Series("neutral", index=dates, dtype=object)
+    risk_on = (
+        np.isfinite(regime_close.to_numpy(dtype=np.float64))
+        & np.isfinite(regime_ma.to_numpy(dtype=np.float64))
+        & (regime_close.to_numpy(dtype=np.float64) > regime_ma.to_numpy(dtype=np.float64))
+        & np.isfinite(confirm_close.to_numpy(dtype=np.float64))
+        & np.isfinite(confirm_ma.to_numpy(dtype=np.float64))
+        & (confirm_close.to_numpy(dtype=np.float64) > confirm_ma.to_numpy(dtype=np.float64))
+        & np.isfinite(breadth.to_numpy(dtype=np.float64))
+        & (breadth.to_numpy(dtype=np.float64) >= risk_on_breadth)
+    )
+    if vix_close.notna().any():
+        risk_on &= np.isfinite(vix_close.to_numpy(dtype=np.float64)) & (vix_close.to_numpy(dtype=np.float64) <= vix_risk_on_max)
+
+    risk_off = (
+        ~np.isfinite(regime_close.to_numpy(dtype=np.float64))
+        | ~np.isfinite(regime_ma.to_numpy(dtype=np.float64))
+        | (regime_close.to_numpy(dtype=np.float64) < regime_ma.to_numpy(dtype=np.float64))
+        | ~np.isfinite(confirm_close.to_numpy(dtype=np.float64))
+        | ~np.isfinite(confirm_ma.to_numpy(dtype=np.float64))
+        | (confirm_close.to_numpy(dtype=np.float64) < confirm_ma.to_numpy(dtype=np.float64))
+        | ~np.isfinite(breadth.to_numpy(dtype=np.float64))
+        | (breadth.to_numpy(dtype=np.float64) <= risk_off_breadth)
+    )
+    if vix_close.notna().any():
+        risk_off |= np.isfinite(vix_close.to_numpy(dtype=np.float64)) & (vix_close.to_numpy(dtype=np.float64) >= vix_risk_off_min)
+
+    state.loc[risk_off] = "risk_off"
+    state.loc[risk_on] = "risk_on"
+    return state
+
+
+def _build_weight_schedule_from_scores(
+    scores: pd.DataFrame,
+    *,
+    target_count: int,
+    gross_exposure: float,
+    conviction_weighted: bool,
+    conviction_power: float,
+) -> pd.DataFrame:
+    if scores is None or scores.empty:
+        return pd.DataFrame()
+    cols = [str(c) for c in scores.columns]
+    out = pd.DataFrame(index=scores.index, columns=cols, dtype=float)
+    gross = float(max(0.0, gross_exposure))
+    if gross <= 0.0 or int(target_count) <= 0:
+        return out
+    for dt, row in scores.iterrows():
+        ranked = pd.to_numeric(row, errors="coerce").dropna().sort_values(ascending=False)
+        if ranked.empty:
+            continue
+        selected = list(ranked.head(int(target_count)).index)
+        weights = _build_selected_target_weights(
+            selected,
+            ranked,
+            conviction_weighted=bool(conviction_weighted),
+            conviction_power=float(conviction_power),
+        )
+        if not weights:
+            continue
+        for sym, wt in weights.items():
+            out.at[dt, str(sym)] = gross * float(wt)
+    return out
+
+
+def _build_allocator_target_schedule(
+    data: Mapping[str, pd.DataFrame],
+    cfg: Mapping[str, Any],
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series]:
+    sleeves = cfg.get("sleeves")
+    if not isinstance(sleeves, Mapping) or not sleeves:
+        raise ValueError("Allocator config requires non-empty 'sleeves'")
+
+    all_symbols: List[str] = []
+    sleeve_scores: Dict[str, pd.DataFrame] = {}
+    sleeve_weights: Dict[str, pd.DataFrame] = {}
+    close_frames: List[pd.DataFrame] = []
+    open_frames: List[pd.DataFrame] = []
+
+    for sleeve_name, sleeve_cfg_raw in sleeves.items():
+        sleeve_cfg = dict(sleeve_cfg_raw or {})
+        sleeve_symbols = _normalize_symbol_list(sleeve_cfg.get("symbols", []))
+        if not sleeve_symbols:
+            continue
+        close_px = _price_frame_from_data(data, sleeve_symbols, "close")
+        open_px = _price_frame_from_data(data, sleeve_symbols, "open")
+        if close_px.empty or open_px.empty:
+            continue
+        close_frames.append(close_px)
+        open_frames.append(open_px)
+        all_symbols.extend(sleeve_symbols)
+
+        merged_cfg = dict(cfg)
+        merged_cfg.update(sleeve_cfg)
+        scores = _build_rotation_scores(close_px, merged_cfg)
+        sleeve_scores[str(sleeve_name)] = scores
+        sleeve_weights[str(sleeve_name)] = _build_weight_schedule_from_scores(
+            scores,
+            target_count=int(sleeve_cfg.get("target_count", cfg.get("target_count", 1)) or 1),
+            gross_exposure=float(sleeve_cfg.get("gross_exposure", 1.0) or 1.0),
+            conviction_weighted=bool(sleeve_cfg.get("conviction_weighted", cfg.get("conviction_weighted", False))),
+            conviction_power=float(sleeve_cfg.get("conviction_power", cfg.get("conviction_power", 1.0)) or 1.0),
+        )
+
+    if not close_frames:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.Series(dtype=object)
+
+    union_symbols = _normalize_symbol_list(all_symbols)
+    close_union = _price_frame_from_data(data, union_symbols, "close")
+    open_union = _price_frame_from_data(data, union_symbols, "open").reindex(close_union.index)
+    global_data = {sym: frame for sym, frame in data.items() if sym not in union_symbols}
+    state = _build_allocator_state(close_union, global_data, cfg).reindex(close_union.index).ffill().fillna("neutral")
+
+    target_schedule = pd.DataFrame(index=close_union.index, columns=close_union.columns, dtype=float)
+    allocator = dict(cfg.get("allocator") or {})
+    sleeve_map = {
+        "risk_on": str(allocator.get("risk_on_sleeve", "aggressive") or "aggressive"),
+        "neutral": str(allocator.get("neutral_sleeve", "neutral") or "neutral"),
+        "risk_off": str(allocator.get("risk_off_sleeve", "defensive") or "defensive"),
+    }
+
+    for state_name, sleeve_name in sleeve_map.items():
+        w = sleeve_weights.get(sleeve_name)
+        if w is None or w.empty:
+            continue
+        mask = state == state_name
+        if not bool(mask.any()):
+            continue
+        aligned = w.reindex(index=target_schedule.index, columns=target_schedule.columns)
+        target_schedule.loc[mask] = aligned.loc[mask]
+
+    return close_union, open_union, target_schedule, state
+
+
 def _run_rotation_window(
     *,
     cfg: Mapping[str, Any],
@@ -329,7 +624,7 @@ def _run_rotation_window(
     win_open = open_px.reindex(win_close.index)
     win_scores = scores.reindex(win_close.index)
 
-    risk_scalar = _build_market_risk_scalar(global_data, win_close.index, cfg)
+    risk_scalar = _build_combined_risk_scalar(win_close, global_data, cfg)
     tx_bps = float(cfg.get("transaction_cost_bps", 0.0) or 0.0)
     tx_bps += float(cfg.get("entry_slippage_bps", 0.0) or 0.0)
     tx_bps += float(cfg.get("exit_slippage_bps", 0.0) or 0.0)
@@ -339,6 +634,47 @@ def _run_rotation_window(
         execution_prices=win_open,
         ranked_scores=win_scores,
         target_count=int(cfg.get("target_count", 1) or 1),
+        hold_buffer_mult=float(cfg.get("hold_buffer_mult", 1.0) or 1.0),
+        transaction_cost_bps=tx_bps,
+        start_cash=float(cfg.get("start_cash", 100000.0) or 100000.0),
+        rebalance_freq=str(cfg.get("rebalance_freq", "W") or "W"),
+        risk_scalar_by_date=risk_scalar,
+        hard_stop_pct=cfg.get("hard_stop_pct"),
+        trend_ma_days=cfg.get("trend_stop_ma_days"),
+        time_stop_days=cfg.get("time_stop_days"),
+        execution_lag_days=int(cfg.get("execution_lag_days", 1) or 1),
+        conviction_weighted=bool(cfg.get("conviction_weighted", False)),
+        conviction_power=float(cfg.get("conviction_power", 1.0) or 1.0),
+        position_cap=cfg.get("max_position_weight"),
+        turnover_budget=cfg.get("turnover_budget"),
+    )
+
+
+def _run_rotation_window_with_targets(
+    *,
+    cfg: Mapping[str, Any],
+    close_px: pd.DataFrame,
+    open_px: pd.DataFrame,
+    target_schedule: pd.DataFrame,
+    global_data: Mapping[str, pd.DataFrame],
+    start_date: str,
+    end_date: str,
+) -> Dict[str, Any]:
+    win_close = close_px.loc[(close_px.index >= pd.Timestamp(start_date)) & (close_px.index <= pd.Timestamp(end_date))]
+    win_open = open_px.reindex(win_close.index)
+    win_targets = target_schedule.reindex(win_close.index)
+
+    risk_scalar = _build_combined_risk_scalar(win_close, global_data, cfg)
+    tx_bps = float(cfg.get("transaction_cost_bps", 0.0) or 0.0)
+    tx_bps += float(cfg.get("entry_slippage_bps", 0.0) or 0.0)
+    tx_bps += float(cfg.get("exit_slippage_bps", 0.0) or 0.0)
+
+    return run_periodic_rebalance(
+        prices=win_close,
+        execution_prices=win_open,
+        ranked_scores=win_targets.fillna(0.0),
+        target_weights_by_date=win_targets,
+        target_count=max(1, int(cfg.get("target_count", 1) or 1)),
         hold_buffer_mult=float(cfg.get("hold_buffer_mult", 1.0) or 1.0),
         transaction_cost_bps=tx_bps,
         start_cash=float(cfg.get("start_cash", 100000.0) or 100000.0),
@@ -365,8 +701,13 @@ def _result_payload(
     loaded_symbols: Sequence[str],
     start_date: str,
     end_date: str,
+    allocator_state: Optional[pd.Series] = None,
 ) -> Dict[str, Any]:
     audit = full.get("audit_report") or {}
+    state_counts: Dict[str, int] = {}
+    if isinstance(allocator_state, pd.Series) and not allocator_state.empty:
+        counts = allocator_state.value_counts(dropna=False)
+        state_counts = {str(k): int(v) for k, v in counts.items()}
     return {
         "strategy_name": str(cfg.get("name", "") or "ETF Rotation"),
         "symbols": list(symbols),
@@ -388,6 +729,7 @@ def _result_payload(
             "max_gross_exposure_pct": float(_safe_float(audit.get("max_gross_exposure_pct"), 0.0)),
             "execution_lag_days": int(audit.get("execution_lag_days", cfg.get("execution_lag_days", 1)) or 1),
         },
+        "allocator_state_counts": state_counts,
     }
 
 
@@ -404,9 +746,17 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     cfg = _load_config(Path(args.config).expanduser().resolve())
-    symbols = _normalize_symbol_list(cfg.get("symbols", []))
+    sleeves = cfg.get("sleeves")
+    if isinstance(sleeves, Mapping) and sleeves:
+        sleeve_symbols: List[str] = []
+        for sleeve_cfg in sleeves.values():
+            if isinstance(sleeve_cfg, Mapping):
+                sleeve_symbols.extend(_normalize_symbol_list(sleeve_cfg.get("symbols", [])))
+        symbols = _normalize_symbol_list(sleeve_symbols)
+    else:
+        symbols = _normalize_symbol_list(cfg.get("symbols", []))
     if not symbols:
-        raise ValueError("Config must define a non-empty 'symbols' list")
+        raise ValueError("Config must define a non-empty 'symbols' list or allocator sleeves")
 
     globals_cfg = _normalize_symbol_list(cfg.get("global_symbols", ["SPY", "VIX", "HYG", "LQD"]))
     all_requested = list(dict.fromkeys(symbols + globals_cfg))
@@ -421,28 +771,45 @@ def main() -> None:
     print(f"loaded_symbols={len(loaded_symbols)}")
     if len(loaded_symbols) < max(2, int(cfg.get("min_rank_names", 2) or 2)):
         raise RuntimeError("Insufficient ETF history loaded for ranking")
-
-    close_px = _price_frame_from_data(data, loaded_symbols, "close")
-    open_px = _price_frame_from_data(data, loaded_symbols, "open").reindex(close_px.index)
-    if close_px.empty or open_px.empty:
-        raise RuntimeError("Failed to build ETF open/close matrices")
-
-    scores = _build_rotation_scores(close_px, cfg)
-    active = int(scores.notna().any(axis=0).sum())
-    print(f"active_scored_symbols={active}")
-    if active == 0:
-        raise RuntimeError("Rotation score builder produced no active ETFs")
-
     global_data = {sym: data[sym] for sym in globals_cfg if sym in data}
-    full = _run_rotation_window(
-        cfg=cfg,
-        close_px=close_px,
-        open_px=open_px,
-        scores=scores,
-        global_data=global_data,
-        start_date=str(args.start_date),
-        end_date=str(args.end_date),
-    )
+    allocator_state = None
+
+    if isinstance(sleeves, Mapping) and sleeves:
+        close_px, open_px, target_schedule, allocator_state = _build_allocator_target_schedule(data, cfg)
+        if close_px.empty or open_px.empty or target_schedule.empty:
+            raise RuntimeError("Failed to build ETF allocator matrices")
+        active = int(target_schedule.notna().any(axis=0).sum())
+        print(f"active_scored_symbols={active}")
+        full = _run_rotation_window_with_targets(
+            cfg=cfg,
+            close_px=close_px,
+            open_px=open_px,
+            target_schedule=target_schedule,
+            global_data=global_data,
+            start_date=str(args.start_date),
+            end_date=str(args.end_date),
+        )
+    else:
+        close_px = _price_frame_from_data(data, loaded_symbols, "close")
+        open_px = _price_frame_from_data(data, loaded_symbols, "open").reindex(close_px.index)
+        if close_px.empty or open_px.empty:
+            raise RuntimeError("Failed to build ETF open/close matrices")
+
+        scores = _build_rotation_scores(close_px, cfg)
+        active = int(scores.notna().any(axis=0).sum())
+        print(f"active_scored_symbols={active}")
+        if active == 0:
+            raise RuntimeError("Rotation score builder produced no active ETFs")
+
+        full = _run_rotation_window(
+            cfg=cfg,
+            close_px=close_px,
+            open_px=open_px,
+            scores=scores,
+            global_data=global_data,
+            start_date=str(args.start_date),
+            end_date=str(args.end_date),
+        )
 
     windows_24 = _build_test_windows(str(args.start_date), str(args.end_date), train_months=24, test_months=12)
     windows_60 = _build_test_windows(str(args.start_date), str(args.end_date), train_months=60, test_months=12)
@@ -458,6 +825,7 @@ def main() -> None:
         loaded_symbols=loaded_symbols,
         start_date=str(args.start_date),
         end_date=str(args.end_date),
+        allocator_state=allocator_state,
     )
     print(json.dumps(payload, indent=2))
 
