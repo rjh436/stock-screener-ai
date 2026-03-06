@@ -3,6 +3,7 @@ import unittest
 import pandas as pd
 
 from scripts.optimize_etf_rotation_local import (
+    _config_requested_symbols,
     _expand_universe_specs,
     _filter_symbols_by_history,
     _sample_combinations,
@@ -15,6 +16,21 @@ def _frame(start: str, periods: int = 5) -> pd.DataFrame:
 
 
 class OptimizeEtfRotationLocalTests(unittest.TestCase):
+    def test_config_requested_symbols_includes_defensive_and_globals(self) -> None:
+        cfg = {
+            "global_symbols": ["SPY", "VIX"],
+            "defensive_sleeve": {
+                "enabled": True,
+                "symbols": ["BIL", "GLD"],
+            },
+        }
+        symbols = _config_requested_symbols(cfg, ["growth_core5"], [])
+        self.assertIn("SPY", symbols)
+        self.assertIn("VIX", symbols)
+        self.assertIn("BIL", symbols)
+        self.assertIn("GLD", symbols)
+        self.assertIn("TQQQ", symbols)
+
     def test_filter_symbols_by_history_enforces_inception_lag(self) -> None:
         data = {
             "AAA": _frame("2011-01-03"),

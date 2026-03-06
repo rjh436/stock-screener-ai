@@ -19,11 +19,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.run_etf_rotation_walkforward import (
+    _build_allocator_target_schedule,
+    _build_residual_defensive_target_schedule,
     _build_rotation_scores,
     _download_yfinance_pack,
     _load_config,
+    _normalize_symbol_list,
     _price_frame_from_data,
     _run_rotation_window,
+    _run_rotation_window_with_targets,
 )
 from scripts.run_factor_walkforward import _build_test_windows, _pct_dd, _safe_float, _stitch_test_windows_warm
 
@@ -72,6 +76,23 @@ LOOKBACK_PRESETS: Dict[str, Dict[str, float]] = {
     "growth_balanced": {"21": 0.15, "63": 0.35, "126": 0.35, "252": 0.15},
     "broad_v2": {"21": 0.50, "63": 0.30, "126": 0.15, "252": 0.05},
 }
+
+
+def _config_requested_symbols(base_cfg: Mapping[str, Any], universe_names: Sequence[str], candidate_pool_names: Sequence[str]) -> List[str]:
+    requested = (
+        {sym for name in universe_names for sym in UNIVERSE_PRESETS.get(name, [])}
+        | {sym for name in candidate_pool_names for sym in POOL_PRESETS.get(name, [])}
+        | set(_normalize_symbol_list(base_cfg.get("global_symbols", ["SPY", "VIX", "HYG", "LQD"])))
+    )
+    defensive_cfg = dict(base_cfg.get("defensive_sleeve") or {})
+    if defensive_cfg and bool(defensive_cfg.get("enabled", False)):
+        requested |= set(_normalize_symbol_list(defensive_cfg.get("symbols", [])))
+    sleeves = base_cfg.get("sleeves")
+    if isinstance(sleeves, Mapping):
+        for sleeve_cfg in sleeves.values():
+            if isinstance(sleeve_cfg, Mapping):
+                requested |= set(_normalize_symbol_list(sleeve_cfg.get("symbols", [])))
+    return sorted(requested)
 
 
 def _parse_csv_list(raw: str, cast=int) -> List[Any]:
@@ -264,11 +285,7 @@ def main() -> None:
     if not vol_target_values:
         vol_target_values = [0.0]
 
-    requested_symbols = sorted(
-        {sym for name in universe_names for sym in UNIVERSE_PRESETS.get(name, [])}
-        | {sym for name in candidate_pool_names for sym in POOL_PRESETS.get(name, [])}
-        | {"SPY", "VIX", "HYG", "LQD"}
-    )
+    requested_symbols = _config_requested_symbols(base, universe_names, candidate_pool_names)
     data = _download_yfinance_pack(requested_symbols, start_date=str(args.start_date), end_date=str(args.end_date))
     windows24 = _build_test_windows(str(args.start_date), str(args.end_date), train_months=24, test_months=12)
     windows60 = _build_test_windows(str(args.start_date), str(args.end_date), train_months=60, test_months=12)
@@ -284,11 +301,15 @@ def main() -> None:
     )
 
     rows: List[Dict[str, Any]] = []
+    base_defensive_cfg = dict(base.get("defensive_sleeve") or {})
+    uses_allocator = isinstance(base.get("sleeves"), Mapping) and bool(base.get("sleeves"))
+    uses_residual_defensive = base_defensive_cfg and bool(base_defensive_cfg.get("enabled", False))
     for uname, symbols, candidate_pool in universe_specs:
         close = _price_frame_from_data(data, symbols, "close")
         open_px = _price_frame_from_data(data, symbols, "open").reindex(close.index)
-        global_data = {k: data[k] for k in ("SPY", "VIX", "HYG", "LQD") if k in data}
-        if close.empty or open_px.empty:
+        global_symbols = _normalize_symbol_list(base.get("global_symbols", ["SPY", "VIX", "HYG", "LQD"]))
+        global_data = {k: data[k] for k in global_symbols if k in data}
+        if not uses_allocator and not uses_residual_defensive and (close.empty or open_px.empty):
             continue
 
         for regime_name in regime_names:
@@ -316,6 +337,7 @@ def main() -> None:
                                                 if not lb_map:
                                                     continue
                                                 cfg["lookbacks"] = dict(lb_map)
+                                            cfg["symbols"] = list(symbols)
                                             exposure_cfg: Dict[str, Any] = {
                                                 "base_gross_exposure": float(base_gross),
                                                 "proxy_symbols": list(symbols),
@@ -326,16 +348,50 @@ def main() -> None:
                                                 exposure_cfg["vol_lookback_days"] = 21
                                                 exposure_cfg["min_gross_exposure"] = 0.20
                                             cfg["exposure_control"] = exposure_cfg
-                                            scores = _build_rotation_scores(close, cfg)
-                                            full = _run_rotation_window(
-                                                cfg=cfg,
-                                                close_px=close,
-                                                open_px=open_px,
-                                                scores=scores,
-                                                global_data=global_data,
-                                                start_date=str(args.start_date),
-                                                end_date=str(args.end_date),
-                                            )
+                                            if uses_allocator:
+                                                close_union, open_union, target_schedule, _ = _build_allocator_target_schedule(data, cfg)
+                                                if close_union.empty or open_union.empty or target_schedule.empty:
+                                                    continue
+                                                full = _run_rotation_window_with_targets(
+                                                    cfg=cfg,
+                                                    close_px=close_union,
+                                                    open_px=open_union,
+                                                    target_schedule=target_schedule,
+                                                    global_data=global_data,
+                                                    start_date=str(args.start_date),
+                                                    end_date=str(args.end_date),
+                                                )
+                                            elif uses_residual_defensive:
+                                                close_union, open_union, target_schedule = _build_residual_defensive_target_schedule(
+                                                    data,
+                                                    cfg,
+                                                    global_data,
+                                                )
+                                                if close_union.empty or open_union.empty or target_schedule.empty:
+                                                    continue
+                                                run_cfg = copy.deepcopy(cfg)
+                                                run_cfg["market_regime"] = {"enabled": False}
+                                                run_cfg["exposure_control"] = {}
+                                                full = _run_rotation_window_with_targets(
+                                                    cfg=run_cfg,
+                                                    close_px=close_union,
+                                                    open_px=open_union,
+                                                    target_schedule=target_schedule,
+                                                    global_data=global_data,
+                                                    start_date=str(args.start_date),
+                                                    end_date=str(args.end_date),
+                                                )
+                                            else:
+                                                scores = _build_rotation_scores(close, cfg)
+                                                full = _run_rotation_window(
+                                                    cfg=cfg,
+                                                    close_px=close,
+                                                    open_px=open_px,
+                                                    scores=scores,
+                                                    global_data=global_data,
+                                                    start_date=str(args.start_date),
+                                                    end_date=str(args.end_date),
+                                                )
                                             o24 = _stitch_test_windows_warm(full_run=full, windows=windows24, test_months=12)
                                             o60 = _stitch_test_windows_warm(full_run=full, windows=windows60, test_months=12)
                                             full_cagr = _safe_float(full.get("cagr"), 0.0) * 100.0
