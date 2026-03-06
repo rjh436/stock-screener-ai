@@ -7,9 +7,10 @@ import hashlib
 import math
 import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 import gc
+from pathlib import Path
 
 # Ensure project root is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +48,15 @@ CONFIG_PATH = "config/generated_strategies.json"
 BASELINE_CONFIG_PATH = os.path.join("config", "backtest_baselines.json")
 UNIVERSE_OPTIONS = ["SP500", "SP100", "SP1500", "NASDAQ100", "RUSSELL3000"]
 DEFAULT_UNIVERSE = "RUSSELL3000"
+ETF_FROZEN_BENCHMARKS = {
+    "Validated ETF Benchmark (Frozen)": os.path.join(
+        "config", "etf_rotation_growth_core5_residual_defensive_calmar_v1.json"
+    ),
+    "Higher Return ETF Benchmark": os.path.join(
+        "config", "etf_rotation_growth_core5_residual_defensive_top1_v1.json"
+    ),
+}
+ETF_FROZEN_DEFAULT_LABEL = "Validated ETF Benchmark (Frozen)"
 st.set_page_config(page_title="Apex Sniper AI", layout="wide", page_icon="🎯")
 
 
@@ -300,6 +310,206 @@ def normalize_equity_curve_df(equity_curve) -> pd.DataFrame:
     df_ec["Date"] = df_ec["Date"].dt.normalize()
     df_ec = df_ec.sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
     return df_ec[["Date", "Equity"]].reset_index(drop=True)
+
+
+def _load_etf_runner_helpers():
+    from scripts.run_etf_rotation_walkforward import (
+        _build_allocator_target_schedule,
+        _build_residual_defensive_target_schedule,
+        _build_rotation_scores,
+        _download_yfinance_pack,
+        _load_config,
+        _normalize_symbol_list,
+        _price_frame_from_data,
+        _run_rotation_window,
+        _run_rotation_window_with_targets,
+    )
+
+    return {
+        "build_allocator_target_schedule": _build_allocator_target_schedule,
+        "build_residual_defensive_target_schedule": _build_residual_defensive_target_schedule,
+        "build_rotation_scores": _build_rotation_scores,
+        "download_yfinance_pack": _download_yfinance_pack,
+        "load_config": _load_config,
+        "normalize_symbol_list": _normalize_symbol_list,
+        "price_frame_from_data": _price_frame_from_data,
+        "run_rotation_window": _run_rotation_window,
+        "run_rotation_window_with_targets": _run_rotation_window_with_targets,
+    }
+
+
+def _etf_window_metrics(run: Mapping[str, Any]) -> Dict[str, float | int]:
+    cagr_pct = float(_safe_float(run.get("cagr"), 0.0) * 100.0)
+    dd_pct = float(_safe_float(run.get("max_drawdown_pct"), 0.0) * 100.0)
+    audit = dict(run.get("audit_report") or {})
+    return {
+        "cagr_pct": cagr_pct,
+        "max_dd_pct": dd_pct,
+        "calmar": float(cagr_pct / dd_pct) if dd_pct > 0 else float("nan"),
+        "avg_annual_turnover_pct": float(_safe_float(run.get("avg_annual_turnover_pct"), float("nan"))),
+        "total_trades": int(run.get("total_trades", 0) or 0),
+        "final_value": float(_safe_float(run.get("final_value"), 0.0)),
+        "same_day_open_entries": int(audit.get("same_day_open_entries", 0) or 0),
+        "max_gross_exposure_pct": float(_safe_float(audit.get("max_gross_exposure_pct"), 0.0)),
+    }
+
+
+def _etf_config_symbols(
+    cfg: Mapping[str, Any],
+    normalize_symbol_list,
+) -> List[str]:
+    sleeves = cfg.get("sleeves")
+    defensive_cfg = dict(cfg.get("defensive_sleeve") or {})
+    if isinstance(sleeves, Mapping) and sleeves:
+        sleeve_symbols: List[str] = []
+        for sleeve_cfg in sleeves.values():
+            if isinstance(sleeve_cfg, Mapping):
+                sleeve_symbols.extend(normalize_symbol_list(sleeve_cfg.get("symbols", [])))
+        return normalize_symbol_list(sleeve_symbols)
+    if defensive_cfg and bool(defensive_cfg.get("enabled", False)):
+        return normalize_symbol_list(list(cfg.get("symbols", [])) + list(defensive_cfg.get("symbols", [])))
+    return normalize_symbol_list(cfg.get("symbols", []))
+
+
+def _run_etf_benchmark(
+    *,
+    config_path: str,
+    start_date: str,
+    end_date: str,
+    train_end_date: Optional[str] = None,
+    holdout_start_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    helpers = _load_etf_runner_helpers()
+    cfg = helpers["load_config"](Path(config_path).resolve())
+    symbols = _etf_config_symbols(cfg, helpers["normalize_symbol_list"])
+    global_symbols = helpers["normalize_symbol_list"](cfg.get("global_symbols", ["SPY", "VIX", "HYG", "LQD"]))
+    requested = helpers["normalize_symbol_list"](list(symbols) + list(global_symbols))
+    data = helpers["download_yfinance_pack"](requested, start_date=str(start_date), end_date=str(end_date))
+    global_data = {sym: data[sym] for sym in global_symbols if sym in data}
+
+    sleeves = cfg.get("sleeves")
+    defensive_cfg = dict(cfg.get("defensive_sleeve") or {})
+    uses_allocator = isinstance(sleeves, Mapping) and bool(sleeves)
+    uses_residual_defensive = defensive_cfg and bool(defensive_cfg.get("enabled", False))
+
+    if uses_allocator:
+        close_px, open_px, target_schedule, _ = helpers["build_allocator_target_schedule"](data, cfg)
+        full_run = helpers["run_rotation_window_with_targets"](
+            cfg=cfg,
+            close_px=close_px,
+            open_px=open_px,
+            target_schedule=target_schedule,
+            global_data=global_data,
+            start_date=str(start_date),
+            end_date=str(end_date),
+        )
+        run_cfg = cfg
+    elif uses_residual_defensive:
+        close_px, open_px, target_schedule = helpers["build_residual_defensive_target_schedule"](data, cfg, global_data)
+        run_cfg = dict(cfg)
+        run_cfg["market_regime"] = {"enabled": False}
+        run_cfg["exposure_control"] = {}
+        full_run = helpers["run_rotation_window_with_targets"](
+            cfg=run_cfg,
+            close_px=close_px,
+            open_px=open_px,
+            target_schedule=target_schedule,
+            global_data=global_data,
+            start_date=str(start_date),
+            end_date=str(end_date),
+        )
+    else:
+        close_px = helpers["price_frame_from_data"](data, symbols, "close")
+        open_px = helpers["price_frame_from_data"](data, symbols, "open").reindex(close_px.index)
+        scores = helpers["build_rotation_scores"](close_px, cfg)
+        full_run = helpers["run_rotation_window"](
+            cfg=cfg,
+            close_px=close_px,
+            open_px=open_px,
+            scores=scores,
+            global_data=global_data,
+            start_date=str(start_date),
+            end_date=str(end_date),
+        )
+        run_cfg = cfg
+
+    payload: Dict[str, Any] = {
+        "config_name": str(cfg.get("name", "") or os.path.basename(config_path)),
+        "config_path": str(Path(config_path).resolve()),
+        "start_date": str(start_date),
+        "end_date": str(end_date),
+        "symbols": list(symbols),
+        "loaded_symbols": [sym for sym in symbols if sym in data],
+        "full": _etf_window_metrics(full_run),
+        "full_run": full_run,
+    }
+
+    if train_end_date and holdout_start_date:
+        if uses_allocator:
+            train_run = helpers["run_rotation_window_with_targets"](
+                cfg=cfg,
+                close_px=close_px,
+                open_px=open_px,
+                target_schedule=target_schedule,
+                global_data=global_data,
+                start_date=str(start_date),
+                end_date=str(train_end_date),
+            )
+            holdout_run = helpers["run_rotation_window_with_targets"](
+                cfg=cfg,
+                close_px=close_px,
+                open_px=open_px,
+                target_schedule=target_schedule,
+                global_data=global_data,
+                start_date=str(holdout_start_date),
+                end_date=str(end_date),
+            )
+        elif uses_residual_defensive:
+            train_run = helpers["run_rotation_window_with_targets"](
+                cfg=run_cfg,
+                close_px=close_px,
+                open_px=open_px,
+                target_schedule=target_schedule,
+                global_data=global_data,
+                start_date=str(start_date),
+                end_date=str(train_end_date),
+            )
+            holdout_run = helpers["run_rotation_window_with_targets"](
+                cfg=run_cfg,
+                close_px=close_px,
+                open_px=open_px,
+                target_schedule=target_schedule,
+                global_data=global_data,
+                start_date=str(holdout_start_date),
+                end_date=str(end_date),
+            )
+        else:
+            train_run = helpers["run_rotation_window"](
+                cfg=cfg,
+                close_px=close_px,
+                open_px=open_px,
+                scores=scores,
+                global_data=global_data,
+                start_date=str(start_date),
+                end_date=str(train_end_date),
+            )
+            holdout_run = helpers["run_rotation_window"](
+                cfg=cfg,
+                close_px=close_px,
+                open_px=open_px,
+                scores=scores,
+                global_data=global_data,
+                start_date=str(holdout_start_date),
+                end_date=str(end_date),
+            )
+
+        payload["train_end_date"] = str(train_end_date)
+        payload["holdout_start_date"] = str(holdout_start_date)
+        payload["train"] = _etf_window_metrics(train_run)
+        payload["holdout"] = _etf_window_metrics(holdout_run)
+        payload["holdout_run"] = holdout_run
+
+    return payload
 
 
 def _is_market_open_et(now: datetime | None = None) -> bool:
@@ -874,6 +1084,10 @@ with st.sidebar:
 """
                     )
         st.caption(f"Selected strategies: {len(selected_strategies)}")
+        st.info(
+            "Frozen ETF benchmark is available in Backtest mode under `ETF Benchmark Lab`. "
+            "It is validated separately from the stock-strategy checkboxes."
+        )
     else:
         st.error("⚠️ No strategies found in config file!")
 
@@ -1434,6 +1648,163 @@ elif mode == "Backtest":
         f"Recent >= {thresholds_hint['min_recent_coverage']:.0%}, "
         f"Stale <= {thresholds_hint['max_stale_ratio']:.0%}"
     )
+
+    st.markdown("### 🏦 ETF Benchmark Lab")
+    st.caption(
+        "Run the frozen ETF benchmark outside the generic stock-strategy engine. "
+        "Use this path for longer and more robust benchmark validation."
+    )
+    bench_m1, bench_m2, bench_m3 = st.columns(3)
+    bench_m1.metric("Frozen Holdout CAGR", "22.04%")
+    bench_m2.metric("Frozen Holdout Max DD", "25.45%")
+    bench_m3.metric("Frozen Config", "Residual Defensive Calmar")
+
+    with st.container():
+        etf_profile_label = st.selectbox(
+            "ETF Benchmark Profile",
+            list(ETF_FROZEN_BENCHMARKS.keys()),
+            index=list(ETF_FROZEN_BENCHMARKS.keys()).index(ETF_FROZEN_DEFAULT_LABEL),
+            key="etf_benchmark_profile",
+        )
+        etf_eval_mode = st.radio(
+            "ETF Evaluation Mode",
+            ["Blind Holdout", "Full Sample"],
+            horizontal=True,
+            key="etf_benchmark_eval_mode",
+        )
+
+        if etf_eval_mode == "Blind Holdout":
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                etf_start = st.date_input(
+                    "ETF Start",
+                    value=pd.Timestamp("2011-01-01").date(),
+                    key="etf_holdout_start_base",
+                )
+            with c2:
+                etf_train_end = st.date_input(
+                    "Train End",
+                    value=pd.Timestamp("2020-12-31").date(),
+                    key="etf_holdout_train_end",
+                )
+            with c3:
+                etf_holdout_end = st.date_input(
+                    "Holdout End",
+                    value=pd.Timestamp(bt_end_date).date(),
+                    key="etf_holdout_end",
+                )
+            etf_holdout_start = (pd.Timestamp(etf_train_end) + pd.Timedelta(days=1)).date()
+            st.caption(f"Holdout starts automatically on `{etf_holdout_start.isoformat()}`.")
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                etf_start = st.date_input(
+                    "ETF Start",
+                    value=pd.Timestamp("2011-01-01").date(),
+                    key="etf_full_start",
+                )
+            with c2:
+                etf_holdout_end = st.date_input(
+                    "ETF End",
+                    value=pd.Timestamp(bt_end_date).date(),
+                    key="etf_full_end",
+                )
+            etf_train_end = None
+            etf_holdout_start = None
+
+        run_etf_benchmark_btn = st.button(
+            "Run ETF Benchmark",
+            type="primary",
+            key="run_etf_benchmark",
+        )
+
+        if run_etf_benchmark_btn:
+            try:
+                config_path = ETF_FROZEN_BENCHMARKS[etf_profile_label]
+                start_str = pd.Timestamp(etf_start).date().isoformat()
+                end_str = pd.Timestamp(etf_holdout_end).date().isoformat()
+                train_end_str = pd.Timestamp(etf_train_end).date().isoformat() if etf_train_end is not None else None
+                holdout_start_str = (
+                    pd.Timestamp(etf_holdout_start).date().isoformat() if etf_holdout_start is not None else None
+                )
+                if pd.Timestamp(start_str) >= pd.Timestamp(end_str):
+                    raise ValueError("ETF benchmark start date must be before end date.")
+                if train_end_str and holdout_start_str:
+                    if pd.Timestamp(start_str) > pd.Timestamp(train_end_str):
+                        raise ValueError("ETF benchmark train start must be on or before the train end date.")
+                    if pd.Timestamp(holdout_start_str) > pd.Timestamp(end_str):
+                        raise ValueError("ETF benchmark holdout start must be on or before the holdout end date.")
+                with st.spinner("Running ETF benchmark..."):
+                    etf_result = _run_etf_benchmark(
+                        config_path=config_path,
+                        start_date=start_str,
+                        end_date=end_str,
+                        train_end_date=train_end_str,
+                        holdout_start_date=holdout_start_str,
+                    )
+                etf_result["profile_label"] = etf_profile_label
+                etf_result["evaluation_mode"] = etf_eval_mode
+                st.session_state.etf_benchmark_result = etf_result
+            except Exception as e:
+                st.error(f"ETF benchmark run failed: {e}")
+
+        etf_result = st.session_state.get("etf_benchmark_result")
+        if isinstance(etf_result, dict):
+            st.markdown("---")
+            config_label = os.path.basename(str(etf_result.get("config_path", "")))
+            st.caption(
+                f"ETF benchmark result: `{etf_result.get('profile_label', ETF_FROZEN_DEFAULT_LABEL)}` "
+                f"using `{config_label}`"
+            )
+            if "holdout" in etf_result and "train" in etf_result:
+                train = dict(etf_result.get("train") or {})
+                holdout = dict(etf_result.get("holdout") or {})
+                col_train, col_hold = st.columns(2)
+                with col_train:
+                    st.subheader("Train")
+                    t1, t2, t3, t4 = st.columns(4)
+                    t1.metric("CAGR", f"{float(train.get('cagr_pct', 0.0)):.2f}%")
+                    t2.metric("Max DD", f"{float(train.get('max_dd_pct', 0.0)):.2f}%")
+                    t3.metric("Calmar", f"{float(train.get('calmar', float('nan'))):.2f}")
+                    t4.metric("Trades", int(train.get("total_trades", 0) or 0))
+                with col_hold:
+                    st.subheader("Holdout")
+                    h1, h2, h3, h4 = st.columns(4)
+                    h1.metric("CAGR", f"{float(holdout.get('cagr_pct', 0.0)):.2f}%")
+                    h2.metric("Max DD", f"{float(holdout.get('max_dd_pct', 0.0)):.2f}%")
+                    h3.metric("Calmar", f"{float(holdout.get('calmar', float('nan'))):.2f}")
+                    h4.metric("Trades", int(holdout.get("total_trades", 0) or 0))
+                    st.caption(
+                        f"Same-day open entries: {int(holdout.get('same_day_open_entries', 0) or 0)} | "
+                        f"Max gross: {float(holdout.get('max_gross_exposure_pct', 0.0) or 0.0):.1%}"
+                    )
+                holdout_curve = normalize_equity_curve_df((etf_result.get("holdout_run") or {}).get("equity_curve", []))
+                if not holdout_curve.empty:
+                    st.line_chart(holdout_curve.set_index("Date")["Equity"])
+            else:
+                full = dict(etf_result.get("full") or {})
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("CAGR", f"{float(full.get('cagr_pct', 0.0)):.2f}%")
+                m2.metric("Max DD", f"{float(full.get('max_dd_pct', 0.0)):.2f}%")
+                m3.metric("Calmar", f"{float(full.get('calmar', float('nan'))):.2f}")
+                m4.metric("Trades", int(full.get("total_trades", 0) or 0))
+                m5.metric("Turnover", f"{float(full.get('avg_annual_turnover_pct', float('nan'))):.1f}%")
+                st.caption(
+                    f"Same-day open entries: {int(full.get('same_day_open_entries', 0) or 0)} | "
+                    f"Max gross: {float(full.get('max_gross_exposure_pct', 0.0) or 0.0):.1%}"
+                )
+                full_curve = normalize_equity_curve_df((etf_result.get("full_run") or {}).get("equity_curve", []))
+                if not full_curve.empty:
+                    st.line_chart(full_curve.set_index("Date")["Equity"])
+
+            payload_json = json.dumps(etf_result, indent=2, default=str)
+            st.download_button(
+                label="📥 Export ETF Benchmark Result (JSON)",
+                data=payload_json.encode("utf-8"),
+                file_name="etf_benchmark_result.json",
+                mime="application/json",
+                key="dl_etf_benchmark_json",
+            )
 
     run_backtest_btn = st.button(
         "🚀 RUN BACKTEST",

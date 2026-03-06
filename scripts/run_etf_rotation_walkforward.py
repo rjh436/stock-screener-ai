@@ -36,7 +36,7 @@ except Exception:  # pragma: no cover - optional runtime dependency
     yf = None
 
 
-DEFAULT_CONFIG = ROOT / "config" / "etf_rotation_3x_growth_v1.json"
+DEFAULT_CONFIG = ROOT / "config" / "etf_rotation_growth_core5_residual_defensive_calmar_v1.json"
 
 
 def _load_config(path: Path) -> Dict[str, Any]:
