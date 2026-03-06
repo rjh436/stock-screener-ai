@@ -33,8 +33,8 @@ def _parse_args() -> argparse.Namespace:
         help="Comma-separated ETF config paths. Defaults to the current deployable leaders.",
     )
     parser.add_argument("--start-date", default="2011-01-01")
-    parser.add_argument("--train-end-date", default="2022-12-31")
-    parser.add_argument("--holdout-start-date", default="2023-01-01")
+    parser.add_argument("--train-end-date", default="2020-12-31")
+    parser.add_argument("--holdout-start-date", default="2021-01-01")
     parser.add_argument("--holdout-end-date", default="2025-12-31")
     parser.add_argument("--out", default="")
     return parser.parse_args()
@@ -79,6 +79,7 @@ def _requested_symbols(cfgs: Sequence[Mapping[str, Any]]) -> List[str]:
 def _window_metrics(run: Mapping[str, Any]) -> Dict[str, float | int]:
     cagr_pct = float(_safe_float(run.get("cagr"), 0.0) * 100.0)
     dd_pct = float(_pct_dd(run.get("max_drawdown_pct", 0.0)))
+    audit = dict(run.get("audit_report") or {})
     return {
         "cagr_pct": cagr_pct,
         "max_dd_pct": dd_pct,
@@ -86,6 +87,8 @@ def _window_metrics(run: Mapping[str, Any]) -> Dict[str, float | int]:
         "avg_annual_turnover_pct": float(_safe_float(run.get("avg_annual_turnover_pct"), float("nan"))),
         "total_trades": int(run.get("total_trades", 0) or 0),
         "final_value": float(_safe_float(run.get("final_value"), 0.0)),
+        "same_day_open_entries": int(audit.get("same_day_open_entries", 0) or 0),
+        "max_gross_exposure_pct": float(_safe_float(audit.get("max_gross_exposure_pct"), 0.0)),
     }
 
 
