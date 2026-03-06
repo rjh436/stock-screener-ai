@@ -66,6 +66,19 @@ EPS_CONCEPTS: Tuple[str, ...] = (
     "EarningsPerShareBasic",
 )
 
+SHARES_OUTSTANDING_INSTANT_CONCEPTS: Tuple[str, ...] = (
+    "CommonStockSharesOutstanding",
+    "EntityCommonStockSharesOutstanding",
+    "CommonSharesOutstanding",
+)
+
+SHARES_OUTSTANDING_DURATION_CONCEPTS: Tuple[str, ...] = (
+    "WeightedAverageNumberOfDilutedSharesOutstanding",
+    "WeightedAverageNumberOfSharesOutstandingDiluted",
+    "WeightedAverageNumberOfShareOutstandingBasicAndDiluted",
+    "WeightedAverageNumberOfSharesOutstandingBasic",
+)
+
 
 @dataclass(frozen=True)
 class LoaderConfig:
@@ -277,7 +290,13 @@ def _to_records(obj: Any) -> List[Dict[str, Any]]:
     return []
 
 
-def _query_concept_records(xbrl_obj: Any, concepts: Sequence[str]) -> List[Dict[str, Any]]:
+def _query_concept_records(
+    xbrl_obj: Any,
+    concepts: Sequence[str],
+    *,
+    statement_type: Optional[str] = "IncomeStatement",
+    period_type: Optional[str] = "duration",
+) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
 
     for concept in concepts:
@@ -285,10 +304,10 @@ def _query_concept_records(xbrl_obj: Any, concepts: Sequence[str]) -> List[Dict[
         if hasattr(xbrl_obj, "query"):
             try:
                 q = xbrl_obj.query()
-                if hasattr(q, "by_statement_type"):
-                    q = q.by_statement_type("IncomeStatement")
-                if hasattr(q, "by_period_type"):
-                    q = q.by_period_type("duration")
+                if statement_type and hasattr(q, "by_statement_type"):
+                    q = q.by_statement_type(statement_type)
+                if period_type and hasattr(q, "by_period_type"):
+                    q = q.by_period_type(period_type)
                 if hasattr(q, "by_concept"):
                     q = q.by_concept(concept)
                 part = _to_records(q)
@@ -412,12 +431,27 @@ def _extract_quarter_record(filing: Any, request_pause_sec: float) -> Optional[D
         rev_rows = _query_concept_records(xbrl_obj, REVENUE_CONCEPTS)
         ni_rows = _query_concept_records(xbrl_obj, NET_INCOME_CONCEPTS)
         eps_rows = _query_concept_records(xbrl_obj, EPS_CONCEPTS)
+        shares_duration_rows = _query_concept_records(
+            xbrl_obj,
+            SHARES_OUTSTANDING_DURATION_CONCEPTS,
+            statement_type=None,
+            period_type="duration",
+        )
+        shares_instant_rows = _query_concept_records(
+            xbrl_obj,
+            SHARES_OUTSTANDING_INSTANT_CONCEPTS,
+            statement_type=None,
+            period_type="instant",
+        )
 
         revenue, rev_end = _pick_fact_value(rev_rows, report_date)
         net_income, ni_end = _pick_fact_value(ni_rows, report_date)
         eps, eps_end = _pick_fact_value(eps_rows, report_date)
+        shares_outstanding, shares_end = _pick_fact_value(shares_duration_rows, report_date)
+        if shares_outstanding is None:
+            shares_outstanding, shares_end = _pick_fact_value(shares_instant_rows, report_date)
 
-        quarter_end = rev_end or ni_end or eps_end or report_date
+        quarter_end = rev_end or ni_end or eps_end or shares_end or report_date
         if quarter_end is None:
             return None
 
@@ -428,6 +462,7 @@ def _extract_quarter_record(filing: Any, request_pause_sec: float) -> Optional[D
             "revenue": revenue,
             "net_income": net_income,
             "eps": eps,
+            "shares_outstanding": shares_outstanding,
         }
 
         # Release XBRL objects aggressively to control process memory growth.
@@ -525,7 +560,7 @@ def _process_ticker(
             df = df.with_columns(pl.col("filing_date").cast(pl.Utf8, strict=False))
         if "form" in df.columns:
             df = df.with_columns(pl.col("form").cast(pl.Utf8, strict=False))
-        for metric in ("revenue", "net_income", "eps"):
+        for metric in ("revenue", "net_income", "eps", "shares_outstanding"):
             if metric not in df.columns:
                 df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias(metric))
             else:
@@ -667,7 +702,8 @@ def refresh_fundamentals(
         print(
             "[fundamental_loader] "
             f"tickers={len(normalized)} workers={workers} "
-            f"sec_rate_limit={config.sec_rate_limit}/s per_worker={per_worker_limit}/s"
+            f"sec_rate_limit={config.sec_rate_limit}/s per_worker={per_worker_limit}/s",
+            flush=True,
         )
 
     errors: Dict[str, str] = {}
@@ -739,7 +775,8 @@ def refresh_fundamentals(
                         if timeout_log_count < timeout_log_cap:
                             print(
                                 "[fundamental_loader] "
-                                f"timeout ticker={ticker} age={task_timeout_sec:.0f}s"
+                                f"timeout ticker={ticker} age={task_timeout_sec:.0f}s",
+                                flush=True,
                             )
                             timeout_log_count += 1
                         else:
@@ -775,12 +812,14 @@ def refresh_fundamentals(
                 print(
                     "[fundamental_loader] "
                     f"processed={processed}/{len(normalized)} written={written} "
-                    f"errors={len(errors)} rate={rate:.2f}/s elapsed={elapsed:.0f}s"
+                    f"errors={len(errors)} rate={rate:.2f}/s elapsed={elapsed:.0f}s",
+                    flush=True,
                 )
                 if timeout_suppressed > 0:
                     print(
                         "[fundamental_loader] "
-                        f"timeouts_suppressed={timeout_suppressed}"
+                        f"timeouts_suppressed={timeout_suppressed}",
+                        flush=True,
                     )
                     timeout_suppressed = 0
 
@@ -793,7 +832,7 @@ def refresh_fundamentals(
     }
 
     if config.verbose:
-        print(f"[fundamental_loader] done: {summary}")
+        print(f"[fundamental_loader] done: {summary}", flush=True)
     return summary
 
 
@@ -933,7 +972,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if already:
             tickers = [t for t in tickers if t not in already]
             if not bool(args.quiet):
-                print(f"[fundamental_loader] skip-existing filtered {len(already)} already-loaded tickers")
+                print(
+                    f"[fundamental_loader] skip-existing filtered {len(already)} already-loaded tickers",
+                    flush=True,
+                )
 
     shard_count = max(1, int(args.shard_count))
     shard_index = int(args.shard_index)
@@ -942,7 +984,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if shard_count > 1:
         tickers = [t for idx, t in enumerate(tickers) if (idx % shard_count) == shard_index]
         if not bool(args.quiet):
-            print(f"[fundamental_loader] shard {shard_index+1}/{shard_count} has {len(tickers)} tickers")
+            print(
+                f"[fundamental_loader] shard {shard_index+1}/{shard_count} has {len(tickers)} tickers",
+                flush=True,
+            )
 
     cfg = LoaderConfig(
         output_dir=output_dir,

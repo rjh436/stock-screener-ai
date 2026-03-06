@@ -8,6 +8,7 @@ from scripts.run_event_momentum_walkforward import (
     _build_available_event_mask,
     _build_event_momentum_scores,
     _build_fundamental_matrix,
+    _market_cap_coverage_stats,
 )
 
 
@@ -71,6 +72,30 @@ class EventMomentumWalkforwardTests(unittest.TestCase):
         self.assertFalse(mask[4, 0])
         self.assertTrue(mask[5, 0])  # 2024-01-08 from weekend event
         self.assertFalse(mask[:, 1].any())
+
+    def test_market_cap_coverage_stats_reports_band_counts(self) -> None:
+        close = np.array(
+            [
+                [10.0, 20.0, 30.0],
+                [10.0, 20.0, 30.0],
+            ],
+            dtype=np.float32,
+        )
+        shares_outstanding = np.array(
+            [
+                [50_000_000.0, 400_000_000.0, np.nan],
+                [50_000_000.0, 400_000_000.0, np.nan],
+            ],
+            dtype=np.float32,
+        )
+        stats = _market_cap_coverage_stats(
+            {"close": close, "shares_outstanding": shares_outstanding},
+            {"min_market_cap": 300_000_000.0, "max_market_cap": 5_000_000_000.0},
+        )
+        self.assertEqual(stats["share_nonnull_symbols"], 2)
+        self.assertEqual(stats["market_cap_band_symbols"], 1)
+        self.assertEqual(stats["max_daily_market_cap_band_count"], 1)
+        self.assertAlmostEqual(float(stats["avg_daily_market_cap_band_count"]), 1.0, places=6)
 
     def test_event_scores_require_explicit_event_mask_and_decay_forward(self) -> None:
         dates = pd.bdate_range("2024-01-01", periods=40)

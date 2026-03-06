@@ -190,6 +190,42 @@ def _base_valid_mask(features: Dict[str, Any], cfg: Dict[str, Any]) -> np.ndarra
     return valid
 
 
+def _market_cap_coverage_stats(features: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, float | int]:
+    close = np.asarray(features["close"], dtype=np.float32)
+    shares_outstanding = (
+        np.asarray(features["shares_outstanding"], dtype=np.float32)
+        if "shares_outstanding" in features
+        else np.full_like(close, np.nan, dtype=np.float32)
+    )
+    share_mask = np.isfinite(shares_outstanding) & (shares_outstanding > 0.0)
+    share_nonnull_symbols = int(np.sum(share_mask.any(axis=0)))
+
+    out: Dict[str, float | int] = {
+        "share_nonnull_symbols": share_nonnull_symbols,
+        "market_cap_band_symbols": 0,
+        "avg_daily_market_cap_band_count": 0.0,
+        "max_daily_market_cap_band_count": 0,
+    }
+
+    min_market_cap = float(cfg.get("min_market_cap", 0.0) or 0.0)
+    max_market_cap = float(cfg.get("max_market_cap", 0.0) or 0.0)
+    if min_market_cap <= 0 and max_market_cap <= 0:
+        return out
+
+    market_cap = close * shares_outstanding
+    band = np.isfinite(market_cap)
+    if min_market_cap > 0:
+        band &= market_cap >= min_market_cap
+    if max_market_cap > 0:
+        band &= market_cap <= max_market_cap
+
+    daily_counts = band.sum(axis=1).astype(np.float32)
+    out["market_cap_band_symbols"] = int(np.sum(band.any(axis=0)))
+    out["avg_daily_market_cap_band_count"] = float(np.nanmean(daily_counts)) if daily_counts.size else 0.0
+    out["max_daily_market_cap_band_count"] = int(np.nanmax(daily_counts)) if daily_counts.size else 0
+    return out
+
+
 def _build_available_event_mask(
     dates: Sequence[pd.Timestamp],
     symbols: Sequence[str],
@@ -485,11 +521,23 @@ def main() -> None:
         fundamentals,
         "shares_outstanding",
     )
+    coverage_stats = _market_cap_coverage_stats(features, cfg)
+    print(
+        "market-cap coverage: "
+        f"share_nonnull_symbols={coverage_stats['share_nonnull_symbols']} "
+        f"market_cap_band_symbols={coverage_stats['market_cap_band_symbols']} "
+        f"avg_daily_market_cap_band_count={coverage_stats['avg_daily_market_cap_band_count']:.2f}"
+    )
     scores = _build_event_momentum_scores(features, cfg)
     active_columns = list(scores.columns)
     print(f"active_scored_symbols={len(active_columns)}")
     if not active_columns:
-        raise RuntimeError("Event score builder produced no active symbols.")
+        raise RuntimeError(
+            "Event score builder produced no active symbols. "
+            f"share_nonnull_symbols={coverage_stats['share_nonnull_symbols']} "
+            f"market_cap_band_symbols={coverage_stats['market_cap_band_symbols']} "
+            f"avg_daily_market_cap_band_count={coverage_stats['avg_daily_market_cap_band_count']:.2f}"
+        )
 
     price_frames = _slice_prices(features, ["open", "close"], active_columns)
     full_run = _run_event_window(
