@@ -74,7 +74,7 @@ HYBRID_BENCHMARK_CANDIDATES = {
     },
 }
 HYBRID_BENCHMARK_DEFAULT_LABEL = "Balanced Hybrid Benchmark (50/50)"
-PRIMARY_STRATEGY_OPTIONS = ["ETF Benchmark", "Hybrid Benchmark Candidate", "Stock Benchmark Candidate", "Stock Research"]
+PRIMARY_STRATEGY_OPTIONS = ["ETF Benchmark", "Hybrid Benchmark", "Stock Benchmark", "Stock Research"]
 STOCK_RESEARCH_LEADERS = [
     "Superperformance Alpha B4",
     "Superperformance Practical Risk-Off Only",
@@ -318,6 +318,17 @@ def render_mode_header(title: str, subtitle: str) -> None:
     )
 
 
+def _display_profile_label(label: str) -> str:
+    mapping = {
+        ETF_FROZEN_DEFAULT_LABEL: "ETF Baseline",
+        "Higher Return ETF Benchmark": "ETF Higher Return",
+        HYBRID_BENCHMARK_DEFAULT_LABEL: "Hybrid 50/50",
+        STOCK_BENCHMARK_DEFAULT_LABEL: "Stock Leader",
+        "Broader Stock Benchmark Candidate": "Stock Broad",
+    }
+    return str(mapping.get(str(label), label))
+
+
 def normalize_equity_curve_df(equity_curve) -> pd.DataFrame:
     """Normalize equity rows to one tz-naive calendar date row for chart/export."""
     df_ec = pd.DataFrame(equity_curve or [])
@@ -398,6 +409,7 @@ def _etf_config_symbols(
     return normalize_symbol_list(cfg.get("symbols", []))
 
 
+@st.cache_data(ttl=900, show_spinner=False)
 def _run_etf_benchmark(
     *,
     config_path: str,
@@ -555,6 +567,7 @@ def _write_json_payload(path: str, payload: Any) -> None:
         json.dump(payload, f, indent=2, default=str)
 
 
+@st.cache_data(ttl=900, show_spinner=False)
 def _build_etf_live_snapshot(
     *,
     config_path: str,
@@ -712,7 +725,10 @@ def _render_etf_live_screener(etf_profile_label: str) -> None:
         "This path uses the same frozen ETF strategy family as Backtest and Simulator. "
         "Signals are built from end-of-day data and are intended for next-session execution only."
     )
+    st.caption("Use this view to review the latest target weights before the next trading session.")
     if st.button("Refresh ETF Snapshot", type="primary", key="refresh_etf_live_snapshot"):
+        _build_etf_live_snapshot.clear()
+        _build_hybrid_benchmark_live_snapshot.clear()
         st.session_state.pop("etf_live_snapshot", None)
 
     snapshot = st.session_state.get("etf_live_snapshot")
@@ -724,7 +740,7 @@ def _render_etf_live_screener(etf_profile_label: str) -> None:
         st.session_state.etf_live_snapshot_label = etf_profile_label
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("ETF Profile", etf_profile_label.replace(" (Frozen)", ""))
+    m1.metric("ETF Profile", _display_profile_label(etf_profile_label))
     m2.metric("Signal Date", str(snapshot.get("latest_signal_date", "-")))
     m3.metric("Gross Exposure", f"{float(snapshot.get('max_gross_exposure_pct', 0.0)):.1%}")
     m4.metric("Active ETFs", len(dict(snapshot.get("latest_target_weights") or {})))
@@ -770,7 +786,10 @@ def _render_etf_simulator(etf_profile_label: str) -> None:
     st.caption(
         "This simulator stores adopted target weights only. It does not run the stock paper-trader engine."
     )
+    st.caption("Use Adopt Latest only after reviewing the target and rebalance delta below.")
     if st.button("Refresh ETF Recommendation", type="primary", key="refresh_etf_sim_snapshot"):
+        _build_etf_live_snapshot.clear()
+        _build_hybrid_benchmark_live_snapshot.clear()
         st.session_state.pop("etf_sim_snapshot", None)
 
     snapshot = st.session_state.get("etf_sim_snapshot")
@@ -794,7 +813,7 @@ def _render_etf_simulator(etf_profile_label: str) -> None:
     }
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Stored Profile", str(state.get("profile_label") or ETF_FROZEN_DEFAULT_LABEL).replace(" (Frozen)", ""))
+    m1.metric("Stored Profile", _display_profile_label(str(state.get("profile_label") or ETF_FROZEN_DEFAULT_LABEL)))
     m2.metric("Adopted Signal", str(state.get("adopted_signal_date") or "None"))
     m3.metric("Current Gross", f"{sum(current_holdings.values()):.1%}")
     m4.metric("Target Gross", f"{sum(latest_weights.values()):.1%}")
@@ -897,12 +916,13 @@ def _render_etf_benchmark_lab(default_end_date: str, *, etf_profile_label: str) 
         "Run the frozen ETF benchmark outside the generic stock-strategy engine. "
         "This is the current validated winner and the clean benchmark path."
     )
+    st.caption("Blind Holdout is the validation view. Full Sample is the long-run context view.")
     bench_m1, bench_m2, bench_m3 = st.columns(3)
     bench_m1.metric("Frozen Holdout CAGR", "22.04%")
     bench_m2.metric("Frozen Holdout Max DD", "25.45%")
     bench_m3.metric("Frozen Config", "Residual Defensive Calmar")
 
-    st.info(f"Using ETF profile from the sidebar: **{etf_profile_label}**")
+    st.info(f"Using ETF profile from the sidebar: **{_display_profile_label(etf_profile_label)}**")
     etf_eval_mode = st.radio(
         "ETF Evaluation Mode",
         ["Blind Holdout", "Full Sample"],
@@ -1094,6 +1114,7 @@ def _stock_window_metrics(run: Mapping[str, Any]) -> Dict[str, float | int]:
     }
 
 
+@st.cache_data(ttl=900, show_spinner=False)
 def _run_stock_benchmark(
     *,
     config_path: str,
@@ -1219,6 +1240,7 @@ def _run_stock_benchmark(
     }
 
 
+@st.cache_data(ttl=900, show_spinner=False)
 def _load_hybrid_benchmark_helpers():
     from scripts.evaluate_hybrid_benchmark_holdout import _blend_equity_series, _metrics_from_equity
 
@@ -1321,6 +1343,7 @@ def _hybrid_window_summary(
     return out
 
 
+@st.cache_data(ttl=900, show_spinner=False)
 def _run_hybrid_benchmark(
     *,
     profile_label: str,
@@ -1400,6 +1423,7 @@ def _run_hybrid_benchmark(
     return payload
 
 
+@st.cache_data(ttl=900, show_spinner=False)
 def _build_stock_benchmark_live_snapshot(
     *,
     config_path: str,
@@ -1554,6 +1578,7 @@ def _save_stock_benchmark_paper_state(state: Mapping[str, Any]) -> None:
     _write_json_payload(STOCK_BENCHMARK_PAPER_STATE_FILE, payload)
 
 
+@st.cache_data(ttl=900, show_spinner=False)
 def _build_hybrid_benchmark_live_snapshot(*, profile_label: str) -> Dict[str, Any]:
     spec = _hybrid_profile_spec(profile_label)
     etf_profile_label = str(spec["etf_profile_label"])
@@ -1687,14 +1712,18 @@ def _save_hybrid_benchmark_paper_state(state: Mapping[str, Any]) -> None:
 
 def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
     render_mode_header(
-        "🧩 Hybrid Benchmark Candidate",
+        "🧩 Hybrid Benchmark",
         "Review the fixed 50/50 blend of the frozen ETF benchmark and corrected stock benchmark candidate.",
     )
     st.caption(
         "This path combines the current production ETF anchor with the current stock research leader. "
         "Signals remain close-to-next-day only."
     )
+    st.caption("Use this view to review the blended ETF and stock allocations before the next trading session.")
     if st.button("Refresh Hybrid Snapshot", type="primary", key="refresh_hybrid_live_snapshot"):
+        _build_etf_live_snapshot.clear()
+        _build_stock_benchmark_live_snapshot.clear()
+        _build_hybrid_benchmark_live_snapshot.clear()
         st.session_state.pop("hybrid_live_snapshot", None)
 
     snapshot = st.session_state.get("hybrid_live_snapshot")
@@ -1706,7 +1735,7 @@ def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
         st.session_state.hybrid_live_snapshot_label = hybrid_profile_label
 
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Hybrid Profile", hybrid_profile_label)
+    m1.metric("Hybrid Profile", _display_profile_label(hybrid_profile_label))
     m2.metric("Signal Date", str(snapshot.get("latest_signal_date", "-")))
     m3.metric("Gross Exposure", f"{float(snapshot.get('max_gross_exposure_pct', 0.0)):.1%}")
     m4.metric("Active ETFs", int(snapshot.get("active_etfs", 0) or 0))
@@ -1761,16 +1790,29 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
         "🎮 Hybrid Benchmark Paper Allocator",
         "Track the fixed 50/50 hybrid benchmark using the same target schedule as Live Screener and Backtest.",
     )
-    if st.button("Refresh Hybrid Recommendation", type="primary", key="refresh_hybrid_sim_snapshot"):
+    st.caption("Use Adopt Latest only after reviewing both ETF and stock sleeve changes below.")
+    refresh_requested = st.button("Refresh Hybrid Recommendation", type="primary", key="refresh_hybrid_sim_snapshot")
+    if refresh_requested:
+        _build_etf_live_snapshot.clear()
+        _build_stock_benchmark_live_snapshot.clear()
+        _build_hybrid_benchmark_live_snapshot.clear()
         st.session_state.pop("hybrid_sim_snapshot", None)
 
     snapshot = st.session_state.get("hybrid_sim_snapshot")
     cached_label = st.session_state.get("hybrid_sim_snapshot_label")
-    if snapshot is None or cached_label != hybrid_profile_label:
+    if (snapshot is None or cached_label != hybrid_profile_label) and refresh_requested:
         with st.spinner("Refreshing hybrid benchmark recommendation..."):
             snapshot = _build_hybrid_benchmark_live_snapshot(profile_label=hybrid_profile_label)
         st.session_state.hybrid_sim_snapshot = snapshot
         st.session_state.hybrid_sim_snapshot_label = hybrid_profile_label
+    elif snapshot is None or cached_label != hybrid_profile_label:
+        live_snapshot = st.session_state.get("hybrid_live_snapshot")
+        live_label = st.session_state.get("hybrid_live_snapshot_label")
+        if live_snapshot is not None and live_label == hybrid_profile_label:
+            snapshot = live_snapshot
+            st.session_state.hybrid_sim_snapshot = snapshot
+            st.session_state.hybrid_sim_snapshot_label = hybrid_profile_label
+    snapshot_payload = dict(snapshot or {})
 
     state = _load_hybrid_benchmark_paper_state()
     current_holdings = {
@@ -1780,23 +1822,34 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
     }
     latest_weights = {
         str(sym): float(weight)
-        for sym, weight in dict(snapshot.get("latest_target_weights") or {}).items()
+        for sym, weight in dict(snapshot_payload.get("latest_target_weights") or {}).items()
         if _safe_float(weight, 0.0) > 0.0
     }
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Stored Profile", str(state.get("profile_label") or HYBRID_BENCHMARK_DEFAULT_LABEL))
+    m1.metric("Stored Profile", _display_profile_label(str(state.get("profile_label") or HYBRID_BENCHMARK_DEFAULT_LABEL)))
     m2.metric("Adopted Signal", str(state.get("adopted_signal_date") or "None"))
     m3.metric("Current Gross", f"{sum(current_holdings.values()):.1%}")
     m4.metric("Target Gross", f"{sum(latest_weights.values()):.1%}")
 
+    if snapshot is None:
+        st.info(
+            "No hybrid recommendation is loaded yet. Click `Refresh Hybrid Recommendation` to build the latest blended target. "
+            "First-load refreshes can take up to a minute because both sleeves are rebuilt."
+        )
+
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Adopt Latest Hybrid Allocation", type="primary", key="adopt_latest_hybrid_alloc"):
+        if st.button(
+            "Adopt Latest Hybrid Allocation",
+            type="primary",
+            key="adopt_latest_hybrid_alloc",
+            disabled=not bool(latest_weights),
+        ):
             _save_hybrid_benchmark_paper_state(
                 {
                     "profile_label": hybrid_profile_label,
-                    "adopted_signal_date": snapshot.get("latest_signal_date"),
+                    "adopted_signal_date": snapshot_payload.get("latest_signal_date"),
                     "holdings": latest_weights,
                 }
             )
@@ -1858,7 +1911,7 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
                 column_config={"Weight %": st.column_config.NumberColumn(format="%.2f%%")},
             )
         else:
-            st.warning("Latest hybrid target is empty.")
+            st.info("No hybrid target allocation is loaded.")
 
     st.subheader("Required Rebalance")
     if not delta_df.empty:
@@ -1878,13 +1931,16 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
 
 def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
     render_mode_header(
-        "📘 Stock Benchmark Candidate",
+        "📘 Stock Benchmark",
         "Review the latest target allocation from the current SMID pullback research leader on a PIT Russell 3000 universe.",
     )
     st.caption(
         "This path is research-first. The frozen ETF benchmark remains the production baseline until the stock sleeve clears broader validation and stress tests."
     )
+    st.caption("Use this view to review the current stock list, coverage quality, and rebalance changes.")
     if st.button("Refresh Stock Snapshot", type="primary", key="refresh_stock_live_snapshot"):
+        _build_stock_benchmark_live_snapshot.clear()
+        _build_hybrid_benchmark_live_snapshot.clear()
         st.session_state.pop("stock_live_snapshot", None)
 
     snapshot = st.session_state.get("stock_live_snapshot")
@@ -1898,7 +1954,7 @@ def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
         st.session_state.stock_live_snapshot_label = stock_profile_label
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Stock Profile", stock_profile_label.replace(" Candidate", ""))
+    m1.metric("Stock Profile", _display_profile_label(stock_profile_label))
     m2.metric("Signal Date", str(snapshot.get("latest_signal_date", "-")))
     m3.metric("Gross Exposure", f"{float(snapshot.get('max_gross_exposure_pct', 0.0)):.1%}")
     m4.metric("Active Names", len(dict(snapshot.get("latest_target_weights") or {})))
@@ -1946,18 +2002,30 @@ def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
         "🎮 Stock Benchmark Paper Allocator",
         "Track the current SMID pullback candidate as a paper allocation book using the same target schedule as Live Screener and Backtest.",
     )
-    if st.button("Refresh Stock Recommendation", type="primary", key="refresh_stock_sim_snapshot"):
+    st.caption("Use this simulator for research paper trading only. The ETF baseline remains the production anchor.")
+    refresh_requested = st.button("Refresh Stock Recommendation", type="primary", key="refresh_stock_sim_snapshot")
+    if refresh_requested:
+        _build_stock_benchmark_live_snapshot.clear()
+        _build_hybrid_benchmark_live_snapshot.clear()
         st.session_state.pop("stock_sim_snapshot", None)
 
     snapshot = st.session_state.get("stock_sim_snapshot")
     cached_label = st.session_state.get("stock_sim_snapshot_label")
-    if snapshot is None or cached_label != stock_profile_label:
+    if (snapshot is None or cached_label != stock_profile_label) and refresh_requested:
         with st.spinner("Refreshing stock benchmark recommendation..."):
             snapshot = _build_stock_benchmark_live_snapshot(
                 config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label]
             )
         st.session_state.stock_sim_snapshot = snapshot
         st.session_state.stock_sim_snapshot_label = stock_profile_label
+    elif snapshot is None or cached_label != stock_profile_label:
+        live_snapshot = st.session_state.get("stock_live_snapshot")
+        live_label = st.session_state.get("stock_live_snapshot_label")
+        if live_snapshot is not None and live_label == stock_profile_label:
+            snapshot = live_snapshot
+            st.session_state.stock_sim_snapshot = snapshot
+            st.session_state.stock_sim_snapshot_label = stock_profile_label
+    snapshot_payload = dict(snapshot or {})
 
     state = _load_stock_benchmark_paper_state()
     current_holdings = {
@@ -1967,23 +2035,34 @@ def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
     }
     latest_weights = {
         str(sym): float(weight)
-        for sym, weight in dict(snapshot.get("latest_target_weights") or {}).items()
+        for sym, weight in dict(snapshot_payload.get("latest_target_weights") or {}).items()
         if _safe_float(weight, 0.0) > 0.0
     }
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Stored Profile", str(state.get("profile_label") or STOCK_BENCHMARK_DEFAULT_LABEL).replace(" Candidate", ""))
+    m1.metric("Stored Profile", _display_profile_label(str(state.get("profile_label") or STOCK_BENCHMARK_DEFAULT_LABEL)))
     m2.metric("Adopted Signal", str(state.get("adopted_signal_date") or "None"))
     m3.metric("Current Gross", f"{sum(current_holdings.values()):.1%}")
     m4.metric("Target Gross", f"{sum(latest_weights.values()):.1%}")
 
+    if snapshot is None:
+        st.info(
+            "No stock recommendation is loaded yet. Click `Refresh Stock Recommendation` to build the latest target list. "
+            "First-load refreshes can take up to a minute on the PIT Russell 3000 universe."
+        )
+
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Adopt Latest Stock Allocation", type="primary", key="adopt_latest_stock_alloc"):
+        if st.button(
+            "Adopt Latest Stock Allocation",
+            type="primary",
+            key="adopt_latest_stock_alloc",
+            disabled=not bool(latest_weights),
+        ):
             _save_stock_benchmark_paper_state(
                 {
                     "profile_label": stock_profile_label,
-                    "adopted_signal_date": snapshot.get("latest_signal_date"),
+                    "adopted_signal_date": snapshot_payload.get("latest_signal_date"),
                     "holdings": latest_weights,
                 }
             )
@@ -2045,7 +2124,7 @@ def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
                 column_config={"Weight %": st.column_config.NumberColumn(format="%.2f%%")},
             )
         else:
-            st.warning("Latest stock target is empty.")
+            st.info("No stock target allocation is loaded.")
 
     st.subheader("Required Rebalance")
     if not delta_df.empty:
@@ -2064,17 +2143,18 @@ def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
 
 
 def _render_stock_benchmark_lab(default_end_date: str, *, stock_profile_label: str) -> None:
-    st.markdown("### 📘 Stock Benchmark Candidate Lab")
+    st.markdown("### 📘 Stock Benchmark Lab")
     st.caption(
         "Run the current stock benchmark candidate outside the generic stock-strategy engine. "
         "This is the current research leader that beat the frozen ETF benchmark in the initial PIT Russell holdout."
     )
+    st.caption("Blind Holdout is the truth-testing view. Full Sample is descriptive only.")
     m1, m2, m3 = st.columns(3)
-    m1.metric("Research Holdout CAGR", "37.63%")
-    m2.metric("Research Holdout Max DD", "20.23%")
+    m1.metric("Corrected Holdout CAGR", "36.91%")
+    m2.metric("Corrected Holdout Max DD", "22.01%")
     m3.metric("Lead Config", "SMID Pullback R3000 TB006")
 
-    st.info(f"Using stock profile from the sidebar: **{stock_profile_label}**")
+    st.info(f"Using stock profile from the sidebar: **{_display_profile_label(stock_profile_label)}**")
     eval_mode = st.radio(
         "Stock Evaluation Mode",
         ["Blind Holdout", "Full Sample"],
@@ -2121,7 +2201,7 @@ def _render_stock_benchmark_lab(default_end_date: str, *, stock_profile_label: s
         stock_train_end = None
         stock_holdout_start = None
 
-    run_btn = st.button("Run Stock Benchmark Candidate", type="primary", key="run_stock_benchmark")
+    run_btn = st.button("Run Stock Benchmark", type="primary", key="run_stock_benchmark")
     if run_btn:
         try:
             config_path = STOCK_BENCHMARK_CANDIDATES[stock_profile_label]
@@ -2216,17 +2296,18 @@ def _render_stock_benchmark_lab(default_end_date: str, *, stock_profile_label: s
 
 
 def _render_hybrid_benchmark_lab(default_end_date: str, *, hybrid_profile_label: str) -> None:
-    st.markdown("### 🧩 Hybrid Benchmark Candidate Lab")
+    st.markdown("### 🧩 Hybrid Benchmark Lab")
     st.caption(
         "Run the fixed 50/50 hybrid benchmark outside the generic stock-strategy engine. "
         "This blends the frozen ETF baseline with the corrected stock benchmark candidate."
     )
+    st.caption("Blind Holdout is the validation view for the fixed blend. Full Sample is the long-run context view.")
     h1, h2, h3 = st.columns(3)
     h1.metric("Research Holdout CAGR", "31.16%")
     h2.metric("Research Holdout Max DD", "17.21%")
     h3.metric("Blend", "50% ETF / 50% Stock")
 
-    st.info(f"Using hybrid profile from the sidebar: **{hybrid_profile_label}**")
+    st.info(f"Using hybrid profile from the sidebar: **{_display_profile_label(hybrid_profile_label)}**")
     eval_mode = st.radio(
         "Hybrid Evaluation Mode",
         ["Blind Holdout", "Full Sample"],
@@ -2273,7 +2354,7 @@ def _render_hybrid_benchmark_lab(default_end_date: str, *, hybrid_profile_label:
         hybrid_train_end = None
         hybrid_holdout_start = None
 
-    run_btn = st.button("Run Hybrid Benchmark Candidate", type="primary", key="run_hybrid_benchmark")
+    run_btn = st.button("Run Hybrid Benchmark", type="primary", key="run_hybrid_benchmark")
     if run_btn:
         try:
             start_str = pd.Timestamp(hybrid_start).date().isoformat()
@@ -2857,15 +2938,15 @@ def _write_missing_symbols_report(
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🎯 Apex Sniper")
-    st.caption("Institutional Grade Algo System")
+    st.caption("Benchmark and research trading workspace")
     st.markdown("---")
-    st.success("🏆 APEX V9 MEDALLION: RAW ALPHA ACTIVE")
+    st.info("Benchmark suite active")
     mode = st.radio("Select Mode", ["Live Screener", "Backtest", "Simulator"])
     primary_strategy = st.radio(
         "Strategy Workspace",
         PRIMARY_STRATEGY_OPTIONS,
         index=0,
-        help="Keep Live Screener, Backtest, and Simulator aligned to the ETF baseline, the hybrid benchmark candidate, the stock benchmark candidate, or the broader stock research engine.",
+        help="Keep Live Screener, Backtest, and Simulator aligned to the ETF baseline, the hybrid benchmark, the stock benchmark, or the broader stock research engine.",
     )
 
     st.markdown("### ✅ Accuracy")
@@ -2896,16 +2977,16 @@ with st.sidebar:
             "- **Benchmark family:** Residual-defensive leveraged ETF rotation\n"
             "- **Validated baseline:** 22.04% CAGR / 25.45% DD blind holdout"
         )
-    elif primary_strategy == "Hybrid Benchmark Candidate":
+    elif primary_strategy == "Hybrid Benchmark":
         st.markdown(
-            "- **Workspace:** Hybrid Benchmark Candidate\n"
+            "- **Workspace:** Hybrid Benchmark\n"
             "- **Combined frontier:** Fixed 50/50 ETF + stock blend\n"
             "- **Research holdout:** 31.16% CAGR / 17.21% DD\n"
             "- **Status:** strongest combined benchmark; ETF remains the production anchor"
         )
-    elif primary_strategy == "Stock Benchmark Candidate":
+    elif primary_strategy == "Stock Benchmark":
         st.markdown(
-            "- **Workspace:** Stock Benchmark Candidate\n"
+            "- **Workspace:** Stock Benchmark\n"
             "- **Research leader:** SMID Pullback R3000 TB006 V1\n"
             "- **Corrected holdout:** 36.91% CAGR / 22.01% DD\n"
             "- **Status:** research-first; hybrid is now the strongest combined candidate"
@@ -2926,33 +3007,54 @@ with st.sidebar:
             "ETF Strategy",
             list(ETF_FROZEN_BENCHMARKS.keys()),
             index=list(ETF_FROZEN_BENCHMARKS.keys()).index(ETF_FROZEN_DEFAULT_LABEL),
+            format_func=_display_profile_label,
             key="sidebar_etf_profile",
         )
         st.caption(
             "This selection is shared by Live Screener, Backtest, and Simulator."
         )
-    elif primary_strategy == "Hybrid Benchmark Candidate":
+    elif primary_strategy == "Hybrid Benchmark":
         st.markdown("### 🧩 Hybrid Benchmark Profile")
         selected_hybrid_profile_label = st.selectbox(
             "Hybrid Benchmark",
             list(HYBRID_BENCHMARK_CANDIDATES.keys()),
             index=list(HYBRID_BENCHMARK_CANDIDATES.keys()).index(HYBRID_BENCHMARK_DEFAULT_LABEL),
+            format_func=_display_profile_label,
             key="sidebar_hybrid_benchmark_profile",
         )
         st.caption(
             "This fixed blend is shared by Live Screener, Backtest, and Simulator."
         )
-    elif primary_strategy == "Stock Benchmark Candidate":
+    elif primary_strategy == "Stock Benchmark":
         st.markdown("### 📘 Stock Benchmark Profile")
         selected_stock_benchmark_label = st.selectbox(
             "Stock Benchmark",
             list(STOCK_BENCHMARK_CANDIDATES.keys()),
             index=list(STOCK_BENCHMARK_CANDIDATES.keys()).index(STOCK_BENCHMARK_DEFAULT_LABEL),
+            format_func=_display_profile_label,
             key="sidebar_stock_benchmark_profile",
         )
         st.caption(
             "This selection is shared by Live Screener, Backtest, and Simulator."
         )
+
+    st.markdown("### 🧭 Quick Start")
+    if primary_strategy == "ETF Benchmark":
+        st.caption("1. Use Live Screener for today’s allocation.")
+        st.caption("2. Use Backtest for blind holdout or full-sample validation.")
+        st.caption("3. Use Simulator to adopt the current paper allocation.")
+    elif primary_strategy == "Hybrid Benchmark":
+        st.caption("1. Review the combined 50/50 allocation in Live Screener.")
+        st.caption("2. Validate the blend in Backtest before changing weights.")
+        st.caption("3. Use Simulator to mirror the hybrid target book.")
+    elif primary_strategy == "Stock Benchmark":
+        st.caption("1. Review the current stock target list in Live Screener.")
+        st.caption("2. Use Backtest for coverage-gated validation.")
+        st.caption("3. Treat Simulator as research paper trading, not production.")
+    else:
+        st.caption("1. Select stock strategies to include in the workspace.")
+        st.caption("2. Run scans/backtests only after confirming the PIT status.")
+        st.caption("3. Use Simulator for discretionary paper execution.")
 
     strategies_list = load_strategy_configs()
     strategies_map = {s['name']: s for s in strategies_list}
@@ -3069,10 +3171,10 @@ if mode == "Live Screener":
     if primary_strategy == "ETF Benchmark":
         _render_etf_live_screener(selected_etf_profile_label)
         st.stop()
-    if primary_strategy == "Hybrid Benchmark Candidate":
+    if primary_strategy == "Hybrid Benchmark":
         _render_hybrid_benchmark_live_screener(selected_hybrid_profile_label)
         st.stop()
-    if primary_strategy == "Stock Benchmark Candidate":
+    if primary_strategy == "Stock Benchmark":
         _render_stock_benchmark_live_screener(selected_stock_benchmark_label)
         st.stop()
     render_mode_header(
@@ -3563,10 +3665,10 @@ elif mode == "Backtest":
     if primary_strategy == "ETF Benchmark":
         _render_etf_benchmark_lab(bt_end_date, etf_profile_label=selected_etf_profile_label)
         st.stop()
-    if primary_strategy == "Hybrid Benchmark Candidate":
+    if primary_strategy == "Hybrid Benchmark":
         _render_hybrid_benchmark_lab(bt_end_date, hybrid_profile_label=selected_hybrid_profile_label)
         st.stop()
-    if primary_strategy == "Stock Benchmark Candidate":
+    if primary_strategy == "Stock Benchmark":
         _render_stock_benchmark_lab(bt_end_date, stock_profile_label=selected_stock_benchmark_label)
         st.stop()
     
@@ -4712,10 +4814,10 @@ elif mode == "Simulator":
     if primary_strategy == "ETF Benchmark":
         _render_etf_simulator(selected_etf_profile_label)
         st.stop()
-    if primary_strategy == "Hybrid Benchmark Candidate":
+    if primary_strategy == "Hybrid Benchmark":
         _render_hybrid_benchmark_simulator(selected_hybrid_profile_label)
         st.stop()
-    if primary_strategy == "Stock Benchmark Candidate":
+    if primary_strategy == "Stock Benchmark":
         _render_stock_benchmark_simulator(selected_stock_benchmark_label)
         st.stop()
     render_mode_header(

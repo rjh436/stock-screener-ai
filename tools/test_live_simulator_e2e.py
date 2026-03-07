@@ -21,23 +21,54 @@ from playwright.sync_api import sync_playwright
 
 
 def _click_mode(page, label: str) -> bool:
-    candidates = [
-        page.locator("label").filter(has_text=label).first,
-        page.get_by_text(label, exact=True).first,
-    ]
-    for loc in candidates:
-        try:
-            if loc.count() > 0:
-                loc.click(timeout=5000)
-                return True
-        except Exception:
-            pass
+    started = time.time()
+    while time.time() - started < 20:
+        candidates = [
+            page.locator('[data-testid="stSidebar"] label').filter(has_text=label).first,
+            page.locator('[data-testid="stSidebar"]').get_by_text(label, exact=True).first,
+            page.locator("label").filter(has_text=label).first,
+            page.get_by_text(label, exact=True).first,
+        ]
+        for loc in candidates:
+            try:
+                if loc.count() > 0:
+                    loc.click(timeout=5000)
+                    return True
+            except Exception:
+                pass
+        page.wait_for_timeout(500)
+    return False
+
+
+def _click_workspace(page, label: str) -> bool:
+    started = time.time()
+    while time.time() - started < 20:
+        candidates = [
+            page.locator('[data-testid="stSidebar"] label').filter(has_text=label).first,
+            page.locator('[data-testid="stSidebar"]').get_by_text(label, exact=True).first,
+            page.locator("label").filter(has_text=label).first,
+            page.get_by_text(label, exact=True).first,
+        ]
+        for loc in candidates:
+            try:
+                if loc.count() > 0:
+                    loc.click(timeout=5000)
+                    return True
+            except Exception:
+                pass
+        page.wait_for_timeout(500)
     return False
 
 
 def _select_universe(page, universe: str) -> bool:
     try:
-        select_root = page.locator('[data-baseweb="select"]').first
+        all_selects = page.locator('[data-baseweb="select"]')
+        sidebar_selects = page.locator('[data-testid="stSidebar"] [data-baseweb="select"]')
+        total = all_selects.count()
+        sidebar_total = sidebar_selects.count()
+        if total == 0:
+            return False
+        select_root = all_selects.nth(sidebar_total) if total > sidebar_total else all_selects.first
         if select_root.count() == 0:
             return False
         select_root.click(timeout=5000)
@@ -49,6 +80,30 @@ def _select_universe(page, universe: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _wait_for_button(page, pattern: str, timeout_ms: int = 20000) -> bool:
+    started = time.time()
+    while (time.time() - started) * 1000 < timeout_ms:
+        try:
+            if page.get_by_role("button", name=re.compile(pattern, re.I)).count() > 0:
+                return True
+        except Exception:
+            pass
+        page.wait_for_timeout(500)
+    return False
+
+
+def _wait_for_text(page, pattern: str, timeout_ms: int = 20000) -> bool:
+    started = time.time()
+    while (time.time() - started) * 1000 < timeout_ms:
+        try:
+            if page.get_by_text(re.compile(pattern, re.I)).count() > 0:
+                return True
+        except Exception:
+            pass
+        page.wait_for_timeout(500)
+    return False
 
 
 def run_smoke(base_url: str, universe: str, live_timeout_sec: int, out_dir: Path) -> dict:
@@ -91,7 +146,10 @@ def run_smoke(base_url: str, universe: str, live_timeout_sec: int, out_dir: Path
             "open_app",
             lambda: (
                 page.goto(base_url, wait_until="domcontentloaded", timeout=45000),
-                page.wait_for_timeout(1500),
+                (_ for _ in ()).throw(Exception("Streamlit shell loaded but the benchmark workspace did not render"))
+                if not _wait_for_text(page, r"Live Screener|Backtest|Simulator", timeout_ms=30000)
+                else None,
+                page.wait_for_timeout(1000),
                 save("live_sim_01_home.png"),
                 f"title={page.title()}",
             )[-1],
@@ -103,7 +161,12 @@ def run_smoke(base_url: str, universe: str, live_timeout_sec: int, out_dir: Path
                 (_ for _ in ()).throw(Exception("Live Screener mode click failed"))
                 if not _click_mode(page, "Live Screener")
                 else None,
-                page.wait_for_timeout(1500),
+                (_ for _ in ()).throw(Exception("Stock Research workspace click failed in Live Screener"))
+                if not _click_workspace(page, "Stock Research")
+                else None,
+                (_ for _ in ()).throw(Exception("RUN SCAN did not appear after switching to Stock Research"))
+                if not _wait_for_button(page, r"RUN SCAN", timeout_ms=20000)
+                else None,
                 save("live_sim_02_live.png"),
                 "live_mode_ready",
             )[-1],
@@ -141,7 +204,12 @@ def run_smoke(base_url: str, universe: str, live_timeout_sec: int, out_dir: Path
                 (_ for _ in ()).throw(Exception("Simulator mode click failed"))
                 if not _click_mode(page, "Simulator")
                 else None,
-                page.wait_for_timeout(1500),
+                (_ for _ in ()).throw(Exception("Stock Research workspace click failed in Simulator"))
+                if not _click_workspace(page, "Stock Research")
+                else None,
+                (_ for _ in ()).throw(Exception("Phase 1 scan button did not appear after switching to Stock Research"))
+                if not _wait_for_button(page, r"PHASE 1: Scan for New Entries", timeout_ms=20000)
+                else None,
                 save("live_sim_04_simulator.png"),
                 "simulator_mode_ready",
             )[-1],

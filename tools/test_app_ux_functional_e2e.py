@@ -4,9 +4,9 @@ Forensic UI + functional smoke test for Apex Sniper Streamlit app.
 
 Covers:
 - Mode switching (Live Screener, Backtest, Simulator)
-- Default universe assertions (expects RUSSELL3000 by default)
-- Core action triggers in each mode
-- Completion/error-state detection for Backtest
+- Benchmark workspace readiness (ETF / Hybrid / Stock)
+- Stock Research workspace universe defaults and core actions
+- Generic action triggers in research mode
 - Screenshot artifacts for visual review
 """
 
@@ -29,24 +29,43 @@ def _safe_text(page: Page, selector: str) -> str:
         return ""
 
 
-def _click_mode(page: Page, label: str) -> bool:
-    candidates = [
-        page.locator("label").filter(has_text=label).first,
-        page.get_by_text(label, exact=True).first,
-    ]
-    for loc in candidates:
-        try:
-            if loc.count() > 0:
-                loc.click(timeout=6000)
-                return True
-        except Exception:
-            pass
+def _click_option(page: Page, label: str) -> bool:
+    started = time.time()
+    while time.time() - started < 20:
+        candidates = [
+            page.locator('[data-testid="stSidebar"] label').filter(has_text=label).first,
+            page.locator('[data-testid="stSidebar"]').get_by_text(label, exact=True).first,
+            page.locator("label").filter(has_text=label).first,
+            page.get_by_text(label, exact=True).first,
+        ]
+        for loc in candidates:
+            try:
+                if loc.count() > 0:
+                    loc.click(timeout=6000)
+                    return True
+            except Exception:
+                pass
+        page.wait_for_timeout(500)
     return False
+
+
+def _click_mode(page: Page, label: str) -> bool:
+    return _click_option(page, label)
+
+
+def _click_workspace(page: Page, label: str) -> bool:
+    return _click_option(page, label)
 
 
 def _select_root_text(page: Page) -> str:
     try:
-        root = page.locator('[data-baseweb="select"]').first
+        all_selects = page.locator('[data-baseweb="select"]')
+        sidebar_selects = page.locator('[data-testid="stSidebar"] [data-baseweb="select"]')
+        total = all_selects.count()
+        sidebar_total = sidebar_selects.count()
+        if total == 0:
+            return ""
+        root = all_selects.nth(sidebar_total) if total > sidebar_total else all_selects.first
         if root.count() == 0:
             return ""
         return (root.inner_text() or "").strip()
@@ -63,6 +82,24 @@ def _wait_for_any(page: Page, patterns: list[str], timeout_sec: int) -> tuple[bo
             if re.search(pat, body, flags=re.I):
                 return True, pat
     return False, ""
+
+
+def _wait_for_button(page: Page, pattern: str, timeout_sec: int) -> bool:
+    started = time.time()
+    while time.time() - started < timeout_sec:
+        try:
+            btn = page.get_by_role("button", name=re.compile(pattern, re.I)).first
+            if btn.count() > 0:
+                return True
+        except Exception:
+            pass
+        page.wait_for_timeout(1000)
+    return False
+
+
+def _wait_for_workspace_ready(page: Page, patterns: list[str], timeout_sec: int) -> bool:
+    ok, _ = _wait_for_any(page, patterns, timeout_sec=timeout_sec)
+    return ok
 
 
 def run_audit(base_url: str, out_dir: Path) -> dict:
@@ -104,21 +141,77 @@ def run_audit(base_url: str, out_dir: Path) -> dict:
             "open_app",
             lambda: (
                 page.goto(base_url, wait_until="domcontentloaded", timeout=45000),
-                page.wait_for_timeout(1500),
+                (_ for _ in ()).throw(Exception("Streamlit shell loaded but benchmark workspace did not render"))
+                if not _wait_for_workspace_ready(page, [r"Apex Sniper", r"Select Mode", r"Strategy Workspace"], timeout_sec=30)
+                else None,
+                page.wait_for_timeout(1000),
                 snap("audit_01_home.png"),
                 f"title={page.title()}",
             )[-1],
         )
 
         check(
-            "live_mode_default_universe",
+            "live_etf_workspace_ready",
             lambda: (
                 (_ for _ in ()).throw(Exception("Unable to switch to Live Screener"))
                 if not _click_mode(page, "Live Screener")
                 else None,
-                page.wait_for_timeout(1200),
+                (_ for _ in ()).throw(Exception("Unable to select ETF Benchmark workspace"))
+                if not _click_workspace(page, "ETF Benchmark")
+                else None,
+                (_ for _ in ()).throw(Exception("ETF live workspace did not finish loading"))
+                if not _wait_for_button(page, r"Refresh ETF Snapshot", timeout_sec=20)
+                else None,
                 snap("audit_02_live_mode.png"),
-                (_ for _ in ()).throw(Exception(f"Unexpected default universe in Live: '{_select_root_text(page)}'"))
+                (_ for _ in ()).throw(Exception("ETF live workspace missing refresh action"))
+                if page.get_by_role("button", name=re.compile("Refresh ETF Snapshot", re.I)).count() == 0
+                else "etf_live_workspace_ready",
+            )[-1],
+        )
+
+        check(
+            "live_hybrid_workspace_ready",
+            lambda: (
+                (_ for _ in ()).throw(Exception("Unable to select Hybrid Benchmark workspace"))
+                if not _click_workspace(page, "Hybrid Benchmark")
+                else None,
+                (_ for _ in ()).throw(Exception("Hybrid live workspace did not finish loading"))
+                if not _wait_for_button(page, r"Refresh Hybrid Snapshot", timeout_sec=20)
+                else None,
+                (_ for _ in ()).throw(Exception("Hybrid live workspace missing refresh action"))
+                if page.get_by_role("button", name=re.compile("Refresh Hybrid Snapshot", re.I)).count() == 0
+                else "hybrid_live_workspace_ready",
+            )[-1],
+        )
+
+        check(
+            "live_stock_benchmark_workspace_ready",
+            lambda: (
+                (_ for _ in ()).throw(Exception("Unable to select Stock Benchmark workspace"))
+                if not _click_workspace(page, "Stock Benchmark")
+                else None,
+                (_ for _ in ()).throw(Exception("Stock benchmark live workspace did not finish loading"))
+                if not _wait_for_button(page, r"Refresh Stock Snapshot", timeout_sec=20)
+                else None,
+                (_ for _ in ()).throw(Exception("Stock benchmark live workspace missing refresh action"))
+                if page.get_by_role("button", name=re.compile("Refresh Stock Snapshot", re.I)).count() == 0
+                else "stock_benchmark_live_workspace_ready",
+            )[-1],
+        )
+
+        check(
+            "live_stock_research_default_universe",
+            lambda: (
+                (_ for _ in ()).throw(Exception("Unable to select Stock Research workspace"))
+                if not _click_workspace(page, "Stock Research")
+                else None,
+                (_ for _ in ()).throw(Exception("Live stock research workspace did not finish loading after retry"))
+                if not (
+                    _wait_for_workspace_ready(page, [r"RUN SCAN", r"Daily Opportunity Scanner"], timeout_sec=20)
+                    or (_click_workspace(page, "Stock Research") and _wait_for_workspace_ready(page, [r"RUN SCAN", r"Daily Opportunity Scanner"], timeout_sec=20))
+                )
+                else None,
+                (_ for _ in ()).throw(Exception(f"Unexpected default universe in Live research: '{_select_root_text(page)}'"))
                 if "RUSSELL3000" not in _select_root_text(page).upper()
                 else f"default_universe={_select_root_text(page)}",
             )[-1],
@@ -126,6 +219,10 @@ def run_audit(base_url: str, out_dir: Path) -> dict:
 
         def run_live_scan() -> str:
             run_btn = page.get_by_role("button", name=re.compile("RUN SCAN", re.I)).first
+            if run_btn.count() == 0:
+                _click_workspace(page, "Stock Research")
+                _wait_for_workspace_ready(page, [r"RUN SCAN", r"Daily Opportunity Scanner"], timeout_sec=20)
+                run_btn = page.get_by_role("button", name=re.compile("RUN SCAN", re.I)).first
             if run_btn.count() == 0:
                 raise Exception("RUN SCAN button not found")
             run_btn.click(timeout=8000)
@@ -147,14 +244,67 @@ def run_audit(base_url: str, out_dir: Path) -> dict:
         check("live_scan_progress", run_live_scan)
 
         check(
-            "backtest_mode_default_universe",
+            "backtest_etf_workspace_ready",
             lambda: (
                 (_ for _ in ()).throw(Exception("Unable to switch to Backtest"))
                 if not _click_mode(page, "Backtest")
                 else None,
+                (_ for _ in ()).throw(Exception("Unable to select ETF Benchmark workspace in Backtest"))
+                if not _click_workspace(page, "ETF Benchmark")
+                else None,
+                (_ for _ in ()).throw(Exception("ETF benchmark backtest view did not load"))
+                if not _wait_for_any(page, [r"ETF Benchmark Lab", r"Run ETF Benchmark"], timeout_sec=15)[0]
+                else None,
                 page.wait_for_timeout(1400),
                 snap("audit_04_backtest_mode.png"),
-                (_ for _ in ()).throw(Exception(f"Unexpected default universe in Backtest: '{_select_root_text(page)}'"))
+                (_ for _ in ()).throw(Exception("ETF benchmark backtest button not found"))
+                if page.get_by_role("button", name=re.compile("Run ETF Benchmark", re.I)).count() == 0
+                else "etf_backtest_ready",
+            )[-1],
+        )
+
+        check(
+            "backtest_hybrid_workspace_ready",
+            lambda: (
+                (_ for _ in ()).throw(Exception("Unable to select Hybrid Benchmark workspace in Backtest"))
+                if not _click_workspace(page, "Hybrid Benchmark")
+                else None,
+                (_ for _ in ()).throw(Exception("Hybrid benchmark backtest view did not load"))
+                if not _wait_for_any(page, [r"Hybrid Benchmark Lab", r"Run Hybrid Benchmark"], timeout_sec=15)[0]
+                else None,
+                page.wait_for_timeout(1200),
+                (_ for _ in ()).throw(Exception("Hybrid benchmark backtest button not found"))
+                if page.get_by_role("button", name=re.compile("Run Hybrid Benchmark", re.I)).count() == 0
+                else "hybrid_backtest_ready",
+            )[-1],
+        )
+
+        check(
+            "backtest_stock_benchmark_workspace_ready",
+            lambda: (
+                (_ for _ in ()).throw(Exception("Unable to select Stock Benchmark workspace in Backtest"))
+                if not _click_workspace(page, "Stock Benchmark")
+                else None,
+                (_ for _ in ()).throw(Exception("Stock benchmark backtest view did not load"))
+                if not _wait_for_any(page, [r"Stock Benchmark Lab", r"Run Stock Benchmark"], timeout_sec=15)[0]
+                else None,
+                page.wait_for_timeout(1200),
+                (_ for _ in ()).throw(Exception("Stock benchmark backtest button not found"))
+                if page.get_by_role("button", name=re.compile("Run Stock Benchmark", re.I)).count() == 0
+                else "stock_benchmark_backtest_ready",
+            )[-1],
+        )
+
+        check(
+            "backtest_stock_research_default_universe",
+            lambda: (
+                (_ for _ in ()).throw(Exception("Unable to select Stock Research workspace in Backtest"))
+                if not _click_workspace(page, "Stock Research")
+                else None,
+                (_ for _ in ()).throw(Exception("Backtest stock research workspace did not finish loading"))
+                if not _wait_for_workspace_ready(page, [r"RUN BACKTEST", r"Stock Strategy Research Lab"], timeout_sec=20)
+                else None,
+                (_ for _ in ()).throw(Exception(f"Unexpected default universe in Backtest research: '{_select_root_text(page)}'"))
                 if "RUSSELL3000" not in _select_root_text(page).upper()
                 else f"default_universe={_select_root_text(page)}",
             )[-1],
@@ -191,27 +341,95 @@ def run_audit(base_url: str, out_dir: Path) -> dict:
         check("backtest_run_state", run_backtest)
 
         check(
-            "simulator_mode_default_universe",
+            "simulator_etf_workspace_ready",
             lambda: (
                 (_ for _ in ()).throw(Exception("Unable to switch to Simulator"))
                 if not _click_mode(page, "Simulator")
                 else None,
+                (_ for _ in ()).throw(Exception("Unable to select ETF Benchmark workspace in Simulator"))
+                if not _click_workspace(page, "ETF Benchmark")
+                else None,
+                (_ for _ in ()).throw(Exception("ETF simulator view did not load"))
+                if not _wait_for_any(page, [r"ETF Paper Allocator", r"Refresh ETF Recommendation"], timeout_sec=15)[0]
+                else None,
                 page.wait_for_timeout(1400),
                 snap("audit_06_simulator_mode.png"),
-                (_ for _ in ()).throw(Exception(f"Unexpected default universe in Simulator: '{_select_root_text(page)}'"))
+                (_ for _ in ()).throw(Exception("ETF simulator adopt action not found after snapshot load"))
+                if not _wait_for_button(page, r"Adopt Latest ETF Allocation", timeout_sec=30)
+                else "etf_simulator_ready",
+            )[-1],
+        )
+
+        check(
+            "simulator_hybrid_workspace_ready",
+            lambda: (
+                (_ for _ in ()).throw(Exception("Unable to select Hybrid Benchmark workspace in Simulator"))
+                if not _click_workspace(page, "Hybrid Benchmark")
+                else None,
+                (_ for _ in ()).throw(Exception("Hybrid simulator view did not load"))
+                if not _wait_for_any(page, [r"Hybrid Benchmark Paper Allocator", r"Refresh Hybrid Recommendation"], timeout_sec=15)[0]
+                else None,
+                page.wait_for_timeout(1200),
+                (_ for _ in ()).throw(Exception("Hybrid simulator controls did not stabilize"))
+                if not _wait_for_workspace_ready(
+                    page,
+                    [r"Adopt Latest Hybrid Allocation", r"No hybrid recommendation is loaded yet"],
+                    timeout_sec=30,
+                )
+                else "hybrid_simulator_ready",
+            )[-1],
+        )
+
+        check(
+            "simulator_stock_benchmark_workspace_ready",
+            lambda: (
+                (_ for _ in ()).throw(Exception("Unable to select Stock Benchmark workspace in Simulator"))
+                if not _click_workspace(page, "Stock Benchmark")
+                else None,
+                (_ for _ in ()).throw(Exception("Stock benchmark simulator view did not load"))
+                if not _wait_for_any(page, [r"Stock Benchmark Paper Allocator", r"Refresh Stock Recommendation"], timeout_sec=15)[0]
+                else None,
+                page.wait_for_timeout(1200),
+                (_ for _ in ()).throw(Exception("Stock benchmark simulator controls did not stabilize"))
+                if not _wait_for_workspace_ready(
+                    page,
+                    [r"Adopt Latest Stock Allocation", r"No stock recommendation is loaded yet"],
+                    timeout_sec=30,
+                )
+                else "stock_benchmark_simulator_ready",
+            )[-1],
+        )
+
+        check(
+            "simulator_stock_research_default_universe",
+            lambda: (
+                (_ for _ in ()).throw(Exception("Unable to select Stock Research workspace in Simulator"))
+                if not _click_workspace(page, "Stock Research")
+                else None,
+                (_ for _ in ()).throw(Exception("Simulator stock research workspace did not finish loading"))
+                if not _wait_for_workspace_ready(page, [r"PHASE 1: Scan for New Entries", r"Paper Trader"], timeout_sec=20)
+                else None,
+                (_ for _ in ()).throw(Exception(f"Unexpected default universe in Simulator research: '{_select_root_text(page)}'"))
                 if "RUSSELL3000" not in _select_root_text(page).upper()
                 else f"default_universe={_select_root_text(page)}",
             )[-1],
         )
 
         def simulator_reset_guardrail() -> str:
-            reset_btn = page.get_by_role(
-                "button",
-                name=re.compile(r"Emergency System Reset", re.I),
-            ).first
+            page.mouse.wheel(0, 4000)
+            page.wait_for_timeout(1000)
+            if not _wait_for_workspace_ready(page, [r"Emergency System Reset", r"Paper Trader"], timeout_sec=20):
+                raise Exception("Simulator reset controls did not finish loading")
+            reset_btn = page.locator("button").filter(has_text=re.compile(r"Emergency System Reset", re.I)).first
+            if reset_btn.count() == 0:
+                reset_btn = page.get_by_text(re.compile(r"Emergency System Reset", re.I)).first
             if reset_btn.count() > 0:
+                try:
+                    reset_btn.scroll_into_view_if_needed(timeout=5000)
+                except Exception:
+                    pass
                 reset_btn.click(timeout=10000)
-            ok, _seen = _wait_for_any(page, [r"Confirm full simulator reset"], timeout_sec=8)
+            ok, _seen = _wait_for_any(page, [r"Confirm full simulator reset"], timeout_sec=20)
             if not ok:
                 if reset_btn.count() == 0:
                     raise Exception("Emergency reset button not found")
