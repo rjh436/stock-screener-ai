@@ -57,12 +57,22 @@ ETF_FROZEN_BENCHMARKS = {
     ),
 }
 ETF_FROZEN_DEFAULT_LABEL = "Validated ETF Benchmark (Frozen)"
-PRIMARY_STRATEGY_OPTIONS = ["ETF Benchmark", "Stock Research"]
+STOCK_BENCHMARK_CANDIDATES = {
+    "Validated Stock Benchmark Candidate": os.path.join(
+        "config", "smid_pullback_r3000_tb006_v1.json"
+    ),
+    "Broader Stock Benchmark Candidate": os.path.join(
+        "config", "smid_pullback_broad_v1.json"
+    ),
+}
+STOCK_BENCHMARK_DEFAULT_LABEL = "Validated Stock Benchmark Candidate"
+PRIMARY_STRATEGY_OPTIONS = ["ETF Benchmark", "Stock Benchmark Candidate", "Stock Research"]
 STOCK_RESEARCH_LEADERS = [
     "Superperformance Alpha B4",
     "Superperformance Practical Risk-Off Only",
 ]
 ETF_PAPER_STATE_FILE = os.path.join("data", "etf_paper_state.json")
+STOCK_BENCHMARK_PAPER_STATE_FILE = os.path.join("data", "stock_benchmark_paper_state.json")
 st.set_page_config(page_title="Apex Sniper AI", layout="wide", page_icon="🎯")
 
 
@@ -1027,6 +1037,672 @@ def _render_etf_benchmark_lab(default_end_date: str, *, etf_profile_label: str) 
     )
 
 
+def _load_stock_benchmark_helpers():
+    from scripts.evaluate_smid_pullback_holdout import (
+        DEFAULT_MIN_DAILY_MEMBERSHIP_COVERAGE,
+        DEFAULT_MIN_DAILY_MEMBERSHIP_COVERAGE_P10,
+        DEFAULT_MIN_UNIVERSE_COVERAGE,
+        _coverage_gate_failures,
+        _coverage_ratio,
+        build_smid_pullback_context,
+        evaluate_smid_pullback_configs_on_context,
+    )
+    from scripts.run_smid_pullback_walkforward import (
+        _build_smid_pullback_scores,
+        _load_config,
+        _run_window,
+        _slice_prices,
+    )
+
+    return {
+        "default_min_universe_coverage": DEFAULT_MIN_UNIVERSE_COVERAGE,
+        "default_min_daily_membership_coverage": DEFAULT_MIN_DAILY_MEMBERSHIP_COVERAGE,
+        "default_min_daily_membership_coverage_p10": DEFAULT_MIN_DAILY_MEMBERSHIP_COVERAGE_P10,
+        "coverage_gate_failures": _coverage_gate_failures,
+        "coverage_ratio": _coverage_ratio,
+        "build_context": build_smid_pullback_context,
+        "evaluate_on_context": evaluate_smid_pullback_configs_on_context,
+        "build_scores": _build_smid_pullback_scores,
+        "load_config": _load_config,
+        "run_window": _run_window,
+        "slice_prices": _slice_prices,
+    }
+
+
+def _stock_window_metrics(run: Mapping[str, Any]) -> Dict[str, float | int]:
+    cagr_pct = float(_safe_float(run.get("cagr"), 0.0) * 100.0)
+    dd_pct = float(_safe_float(run.get("max_drawdown_pct"), 0.0) * 100.0)
+    audit = dict(run.get("audit_report") or {})
+    return {
+        "cagr_pct": cagr_pct,
+        "max_dd_pct": dd_pct,
+        "calmar": float(cagr_pct / dd_pct) if dd_pct > 0 else float("nan"),
+        "avg_annual_turnover_pct": float(_safe_float(run.get("avg_annual_turnover_pct"), float("nan"))),
+        "total_trades": int(run.get("total_trades", 0) or 0),
+        "final_value": float(_safe_float(run.get("final_value"), 0.0)),
+        "same_day_open_entries": int(audit.get("same_day_open_entries", 0) or 0),
+        "max_gross_exposure_pct": float(_safe_float(audit.get("max_gross_exposure_pct"), 0.0)),
+    }
+
+
+def _run_stock_benchmark(
+    *,
+    config_path: str,
+    start_date: str,
+    end_date: str,
+    train_end_date: Optional[str] = None,
+    holdout_start_date: Optional[str] = None,
+    min_universe_coverage: Optional[float] = None,
+    min_daily_membership_coverage: Optional[float] = None,
+    min_daily_membership_coverage_p10: Optional[float] = None,
+) -> Dict[str, Any]:
+    helpers = _load_stock_benchmark_helpers()
+    start_ts = pd.Timestamp(start_date).normalize()
+    end_ts = pd.Timestamp(end_date).normalize()
+    days = max(900, int((end_ts - start_ts).days) + 320)
+    min_universe = float(
+        helpers["default_min_universe_coverage"]
+        if min_universe_coverage is None
+        else min_universe_coverage
+    )
+    min_daily = float(
+        helpers["default_min_daily_membership_coverage"]
+        if min_daily_membership_coverage is None
+        else min_daily_membership_coverage
+    )
+    min_daily_p10 = float(
+        helpers["default_min_daily_membership_coverage_p10"]
+        if min_daily_membership_coverage_p10 is None
+        else min_daily_membership_coverage_p10
+    )
+
+    context = helpers["build_context"](
+        universe="RUSSELL3000",
+        start_date=str(start_ts.date().isoformat()),
+        end_date=str(end_ts.date().isoformat()),
+        days=days,
+    )
+    coverage_ratio = helpers["coverage_ratio"](
+        list(context.get("requested_symbols") or []),
+        list(context.get("loaded_symbols") or []),
+    )
+    coverage_stats = dict(context.get("coverage_stats") or {})
+    coverage_failures = helpers["coverage_gate_failures"](
+        coverage_ratio=float(coverage_ratio),
+        coverage_stats=coverage_stats,
+        min_universe_coverage=min_universe,
+        min_daily_membership_coverage=min_daily,
+        min_daily_membership_coverage_p10=min_daily_p10,
+    )
+    if coverage_failures:
+        raise RuntimeError("Stock benchmark coverage gate failed: " + "; ".join(str(x) for x in coverage_failures))
+
+    if train_end_date and holdout_start_date:
+        payload = helpers["evaluate_on_context"](
+            context,
+            config_paths=[config_path],
+            universe="RUSSELL3000",
+            train_start_date=str(start_date),
+            train_end_date=str(train_end_date),
+            holdout_start_date=str(holdout_start_date),
+            holdout_end_date=str(end_date),
+            min_universe_coverage=min_universe,
+            min_daily_membership_coverage=min_daily,
+            min_daily_membership_coverage_p10=min_daily_p10,
+            include_runs=True,
+        )
+        if not payload.get("coverage_gate_passed", False):
+            raise RuntimeError("Stock benchmark coverage gate failed.")
+        reports = list(payload.get("reports") or [])
+        if not reports:
+            raise RuntimeError("Stock benchmark evaluator produced no reports.")
+        report = dict(reports[0])
+        return {
+            "config_name": str(report.get("strategy_name", "") or os.path.basename(config_path)),
+            "config_path": str(Path(config_path).resolve()),
+            "start_date": str(start_date),
+            "end_date": str(end_date),
+            "train_end_date": str(train_end_date),
+            "holdout_start_date": str(holdout_start_date),
+            "coverage_gate_passed": True,
+            "coverage_gate_failures": [],
+            "coverage_ratio": float(report.get("coverage_ratio", coverage_ratio)),
+            "daily_membership_price_coverage": report.get("daily_membership_price_coverage"),
+            "requested_symbols": int(report.get("requested_symbols", 0) or 0),
+            "loaded_symbols": int(report.get("loaded_symbols", 0) or 0),
+            "prepared_symbols": int(report.get("prepared_symbols", 0) or 0),
+            "active_scored_symbols": int(report.get("active_scored_symbols", 0) or 0),
+            "train": report.get("train"),
+            "holdout": report.get("holdout"),
+            "train_run": report.get("train_run"),
+            "holdout_run": report.get("holdout_run"),
+        }
+
+    cfg = helpers["load_config"](Path(config_path).resolve())
+    scores = helpers["build_scores"](context["features"], cfg)
+    if scores.empty:
+        raise RuntimeError("Stock benchmark score builder produced no active symbols.")
+    price_frames = helpers["slice_prices"](context["features"], ["open", "close"], list(scores.columns))
+    full_run = helpers["run_window"](
+        cfg=cfg,
+        prices_close=price_frames["close"],
+        prices_open=price_frames["open"],
+        scores=scores,
+        global_data=dict(context.get("global_data") or {}),
+        start_date=str(start_date),
+        end_date=str(end_date),
+    )
+    return {
+        "config_name": str(cfg.get("name", "") or os.path.basename(config_path)),
+        "config_path": str(Path(config_path).resolve()),
+        "start_date": str(start_date),
+        "end_date": str(end_date),
+        "coverage_gate_passed": True,
+        "coverage_gate_failures": [],
+        "coverage_ratio": float(coverage_ratio),
+        "daily_membership_price_coverage": coverage_stats,
+        "requested_symbols": int(len(list(context.get("requested_symbols") or []))),
+        "loaded_symbols": int(len(list(context.get("loaded_symbols") or []))),
+        "prepared_symbols": int(len(getattr(context.get("prepared"), "enriched", {}) or {})),
+        "active_scored_symbols": int(len(scores.columns)),
+        "full": _stock_window_metrics(full_run),
+        "full_run": full_run,
+    }
+
+
+def _build_stock_benchmark_live_snapshot(
+    *,
+    config_path: str,
+    end_date: Optional[str] = None,
+    lookback_days: int = 1200,
+) -> Dict[str, Any]:
+    helpers = _load_stock_benchmark_helpers()
+    end_ts = pd.Timestamp(end_date or pd.Timestamp.utcnow().tz_localize(None).date().isoformat()).normalize()
+    start_ts = (end_ts - pd.Timedelta(days=int(lookback_days))).normalize()
+    context = helpers["build_context"](
+        universe="RUSSELL3000",
+        start_date=start_ts.date().isoformat(),
+        end_date=end_ts.date().isoformat(),
+        days=int(lookback_days),
+    )
+    cfg = helpers["load_config"](Path(config_path).resolve())
+    scores = helpers["build_scores"](context["features"], cfg)
+    if scores.empty:
+        raise RuntimeError("Stock benchmark score builder produced no active symbols.")
+    price_frames = helpers["slice_prices"](context["features"], ["open", "close"], list(scores.columns))
+    full_run = helpers["run_window"](
+        cfg=cfg,
+        prices_close=price_frames["close"],
+        prices_open=price_frames["open"],
+        scores=scores,
+        global_data=dict(context.get("global_data") or {}),
+        start_date=start_ts.date().isoformat(),
+        end_date=end_ts.date().isoformat(),
+    )
+    rebalance_log = list(full_run.get("rebalance_log") or [])
+    if not rebalance_log:
+        raise RuntimeError("Stock benchmark produced no rebalance events.")
+    latest_log = dict(rebalance_log[-1])
+    previous_log = dict(rebalance_log[-2]) if len(rebalance_log) > 1 else {}
+    latest_signal_dt = pd.Timestamp(latest_log.get("signal_date") or latest_log.get("date")).tz_localize(None).normalize()
+    previous_signal_dt = (
+        pd.Timestamp(previous_log.get("signal_date") or previous_log.get("date")).tz_localize(None).normalize()
+        if previous_log
+        else None
+    )
+    latest_weights = {
+        str(sym): float(weight)
+        for sym, weight in dict(latest_log.get("weights") or {}).items()
+        if _safe_float(weight, 0.0) > 0.0
+    }
+    previous_weights = {
+        str(sym): float(weight)
+        for sym, weight in dict(previous_log.get("weights") or {}).items()
+        if _safe_float(weight, 0.0) > 0.0
+    }
+    if not latest_weights:
+        raise RuntimeError("Latest stock benchmark signal has no target weights.")
+
+    close_px = price_frames["close"]
+    latest_close_row = {}
+    if latest_signal_dt in close_px.index:
+        latest_close_row = pd.to_numeric(close_px.loc[latest_signal_dt], errors="coerce").dropna().to_dict()
+
+    coverage_stats = dict(context.get("coverage_stats") or {})
+    coverage_ratio = helpers["coverage_ratio"](
+        list(context.get("requested_symbols") or []),
+        list(context.get("loaded_symbols") or []),
+    )
+    coverage_failures = helpers["coverage_gate_failures"](
+        coverage_ratio=float(coverage_ratio),
+        coverage_stats=coverage_stats,
+        min_universe_coverage=float(helpers["default_min_universe_coverage"]),
+        min_daily_membership_coverage=float(helpers["default_min_daily_membership_coverage"]),
+        min_daily_membership_coverage_p10=float(helpers["default_min_daily_membership_coverage_p10"]),
+    )
+
+    target_rows: List[Dict[str, Any]] = []
+    rebalance_rows: List[Dict[str, Any]] = []
+    for sym in sorted(set(latest_weights.keys()) | set(previous_weights.keys())):
+        latest_wt = float(latest_weights.get(sym, 0.0) or 0.0)
+        prev_wt = float(previous_weights.get(sym, 0.0) or 0.0)
+        delta = latest_wt - prev_wt
+        last_close = latest_close_row.get(sym)
+        if latest_wt > 0.0:
+            target_rows.append(
+                {
+                    "Symbol": str(sym),
+                    "Target Weight": latest_wt,
+                    "Target %": latest_wt * 100.0,
+                    "Last Close": float(last_close) if last_close is not None else float("nan"),
+                    "Notional per $100k": latest_wt * 100000.0,
+                }
+            )
+        if abs(delta) > 1e-9:
+            rebalance_rows.append(
+                {
+                    "Symbol": str(sym),
+                    "Prev %": prev_wt * 100.0,
+                    "Target %": latest_wt * 100.0,
+                    "Delta %": delta * 100.0,
+                    "Action": "Buy / Increase" if delta > 0 else "Sell / Reduce",
+                }
+            )
+    target_df = pd.DataFrame(target_rows).sort_values("Target Weight", ascending=False)
+    rebalance_df = pd.DataFrame(rebalance_rows)
+    if not rebalance_df.empty:
+        rebalance_df = rebalance_df.sort_values("Delta %", ascending=False, key=lambda s: s.abs())
+
+    return {
+        "config_name": str(cfg.get("name", "") or os.path.basename(config_path)),
+        "config_path": str(Path(config_path).resolve()),
+        "latest_signal_date": latest_signal_dt.date().isoformat(),
+        "previous_signal_date": previous_signal_dt.date().isoformat() if previous_signal_dt is not None else None,
+        "latest_target_weights": latest_weights,
+        "previous_target_weights": previous_weights,
+        "target_df": target_df,
+        "rebalance_df": rebalance_df,
+        "signal_count": int(len(rebalance_log)),
+        "max_gross_exposure_pct": float(sum(float(v) for v in latest_weights.values())),
+        "requested_symbols": int(len(list(context.get("requested_symbols") or []))),
+        "loaded_symbols": int(len(list(context.get("loaded_symbols") or []))),
+        "active_scored_symbols": int(len(scores.columns)),
+        "coverage_ratio": float(coverage_ratio),
+        "daily_membership_price_coverage": coverage_stats,
+        "coverage_gate_failures": coverage_failures,
+    }
+
+
+def _load_stock_benchmark_paper_state() -> Dict[str, Any]:
+    default_state = {
+        "profile_label": STOCK_BENCHMARK_DEFAULT_LABEL,
+        "adopted_signal_date": None,
+        "holdings": {},
+        "updated_at_utc": None,
+    }
+    payload = _read_json_payload(STOCK_BENCHMARK_PAPER_STATE_FILE, default_state)
+    if not isinstance(payload, dict):
+        return dict(default_state)
+    state = dict(default_state)
+    state.update(payload)
+    if not isinstance(state.get("holdings"), dict):
+        state["holdings"] = {}
+    return state
+
+
+def _save_stock_benchmark_paper_state(state: Mapping[str, Any]) -> None:
+    payload = {
+        "profile_label": str(state.get("profile_label", STOCK_BENCHMARK_DEFAULT_LABEL) or STOCK_BENCHMARK_DEFAULT_LABEL),
+        "adopted_signal_date": state.get("adopted_signal_date"),
+        "holdings": {
+            str(sym): float(weight)
+            for sym, weight in dict(state.get("holdings") or {}).items()
+            if _safe_float(weight, 0.0) > 0.0
+        },
+        "updated_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    }
+    _write_json_payload(STOCK_BENCHMARK_PAPER_STATE_FILE, payload)
+
+
+def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
+    render_mode_header(
+        "📘 Stock Benchmark Candidate",
+        "Review the latest target allocation from the current SMID pullback research leader on a PIT Russell 3000 universe.",
+    )
+    st.caption(
+        "This path is research-first. The frozen ETF benchmark remains the production baseline until the stock sleeve clears broader validation and stress tests."
+    )
+    if st.button("Refresh Stock Snapshot", type="primary", key="refresh_stock_live_snapshot"):
+        st.session_state.pop("stock_live_snapshot", None)
+
+    snapshot = st.session_state.get("stock_live_snapshot")
+    cached_label = st.session_state.get("stock_live_snapshot_label")
+    if snapshot is None or cached_label != stock_profile_label:
+        with st.spinner("Building stock benchmark snapshot..."):
+            snapshot = _build_stock_benchmark_live_snapshot(
+                config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label]
+            )
+        st.session_state.stock_live_snapshot = snapshot
+        st.session_state.stock_live_snapshot_label = stock_profile_label
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Stock Profile", stock_profile_label.replace(" Candidate", ""))
+    m2.metric("Signal Date", str(snapshot.get("latest_signal_date", "-")))
+    m3.metric("Gross Exposure", f"{float(snapshot.get('max_gross_exposure_pct', 0.0)):.1%}")
+    m4.metric("Active Names", len(dict(snapshot.get("latest_target_weights") or {})))
+    st.caption(
+        f"Coverage: {float(snapshot.get('coverage_ratio', 0.0)):.1%} union | "
+        f"{float(dict(snapshot.get('daily_membership_price_coverage') or {}).get('mean', 0.0)):.1%} mean daily PIT"
+    )
+    coverage_failures = list(snapshot.get("coverage_gate_failures") or [])
+    if coverage_failures:
+        st.warning("Coverage gate warnings: " + "; ".join(str(x) for x in coverage_failures))
+
+    target_df = snapshot.get("target_df")
+    if isinstance(target_df, pd.DataFrame) and not target_df.empty:
+        st.subheader("Current Target Allocation")
+        st.dataframe(
+            target_df[["Symbol", "Target %", "Last Close", "Notional per $100k"]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Target %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Last Close": st.column_config.NumberColumn(format="$%.2f"),
+                "Notional per $100k": st.column_config.NumberColumn(format="$%.0f"),
+            },
+        )
+
+    rebalance_df = snapshot.get("rebalance_df")
+    if isinstance(rebalance_df, pd.DataFrame) and not rebalance_df.empty:
+        st.subheader("Rebalance Delta vs Previous Signal")
+        st.dataframe(
+            rebalance_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Prev %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Target %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Delta %": st.column_config.NumberColumn(format="%.2f%%"),
+            },
+        )
+    else:
+        st.info("No allocation changes vs the previous stock signal.")
+
+
+def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
+    render_mode_header(
+        "🎮 Stock Benchmark Paper Allocator",
+        "Track the current SMID pullback candidate as a paper allocation book using the same target schedule as Live Screener and Backtest.",
+    )
+    if st.button("Refresh Stock Recommendation", type="primary", key="refresh_stock_sim_snapshot"):
+        st.session_state.pop("stock_sim_snapshot", None)
+
+    snapshot = st.session_state.get("stock_sim_snapshot")
+    cached_label = st.session_state.get("stock_sim_snapshot_label")
+    if snapshot is None or cached_label != stock_profile_label:
+        with st.spinner("Refreshing stock benchmark recommendation..."):
+            snapshot = _build_stock_benchmark_live_snapshot(
+                config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label]
+            )
+        st.session_state.stock_sim_snapshot = snapshot
+        st.session_state.stock_sim_snapshot_label = stock_profile_label
+
+    state = _load_stock_benchmark_paper_state()
+    current_holdings = {
+        str(sym): float(weight)
+        for sym, weight in dict(state.get("holdings") or {}).items()
+        if _safe_float(weight, 0.0) > 0.0
+    }
+    latest_weights = {
+        str(sym): float(weight)
+        for sym, weight in dict(snapshot.get("latest_target_weights") or {}).items()
+        if _safe_float(weight, 0.0) > 0.0
+    }
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Stored Profile", str(state.get("profile_label") or STOCK_BENCHMARK_DEFAULT_LABEL).replace(" Candidate", ""))
+    m2.metric("Adopted Signal", str(state.get("adopted_signal_date") or "None"))
+    m3.metric("Current Gross", f"{sum(current_holdings.values()):.1%}")
+    m4.metric("Target Gross", f"{sum(latest_weights.values()):.1%}")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Adopt Latest Stock Allocation", type="primary", key="adopt_latest_stock_alloc"):
+            _save_stock_benchmark_paper_state(
+                {
+                    "profile_label": stock_profile_label,
+                    "adopted_signal_date": snapshot.get("latest_signal_date"),
+                    "holdings": latest_weights,
+                }
+            )
+            st.success("Stock benchmark simulator allocation updated.")
+            st.rerun()
+    with c2:
+        if st.button("Reset Stock Simulator State", key="reset_stock_sim_state"):
+            _save_stock_benchmark_paper_state(
+                {
+                    "profile_label": stock_profile_label,
+                    "adopted_signal_date": None,
+                    "holdings": {},
+                }
+            )
+            st.success("Stock benchmark simulator state reset.")
+            st.rerun()
+
+    current_rows = [{"Symbol": sym, "Weight %": float(weight) * 100.0} for sym, weight in sorted(current_holdings.items())]
+    target_rows = [{"Symbol": sym, "Weight %": float(weight) * 100.0} for sym, weight in sorted(latest_weights.items())]
+    delta_rows: List[Dict[str, Any]] = []
+    for sym in sorted(set(current_holdings.keys()) | set(latest_weights.keys())):
+        curr = float(current_holdings.get(sym, 0.0) or 0.0)
+        tgt = float(latest_weights.get(sym, 0.0) or 0.0)
+        delta = tgt - curr
+        if abs(delta) <= 1e-9:
+            continue
+        delta_rows.append(
+            {
+                "Symbol": sym,
+                "Current %": curr * 100.0,
+                "Target %": tgt * 100.0,
+                "Delta %": delta * 100.0,
+                "Action": "Buy / Increase" if delta > 0 else "Sell / Reduce",
+            }
+        )
+    delta_df = pd.DataFrame(delta_rows)
+    if not delta_df.empty:
+        delta_df = delta_df.sort_values("Delta %", ascending=False, key=lambda s: s.abs())
+
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Stored Stock Allocation")
+        if current_rows:
+            st.dataframe(
+                pd.DataFrame(current_rows),
+                use_container_width=True,
+                hide_index=True,
+                column_config={"Weight %": st.column_config.NumberColumn(format="%.2f%%")},
+            )
+        else:
+            st.info("No stock allocation stored yet.")
+    with right:
+        st.subheader("Latest Stock Target")
+        if target_rows:
+            st.dataframe(
+                pd.DataFrame(target_rows),
+                use_container_width=True,
+                hide_index=True,
+                column_config={"Weight %": st.column_config.NumberColumn(format="%.2f%%")},
+            )
+        else:
+            st.warning("Latest stock target is empty.")
+
+    st.subheader("Required Rebalance")
+    if not delta_df.empty:
+        st.dataframe(
+            delta_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Current %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Target %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Delta %": st.column_config.NumberColumn(format="%.2f%%"),
+            },
+        )
+    else:
+        st.success("Stored stock allocation already matches the latest target.")
+
+
+def _render_stock_benchmark_lab(default_end_date: str, *, stock_profile_label: str) -> None:
+    st.markdown("### 📘 Stock Benchmark Candidate Lab")
+    st.caption(
+        "Run the current stock benchmark candidate outside the generic stock-strategy engine. "
+        "This is the current research leader that beat the frozen ETF benchmark in the initial PIT Russell holdout."
+    )
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Research Holdout CAGR", "37.63%")
+    m2.metric("Research Holdout Max DD", "20.23%")
+    m3.metric("Lead Config", "SMID Pullback R3000 TB006")
+
+    st.info(f"Using stock profile from the sidebar: **{stock_profile_label}**")
+    eval_mode = st.radio(
+        "Stock Evaluation Mode",
+        ["Blind Holdout", "Full Sample"],
+        horizontal=True,
+        key="stock_benchmark_eval_mode",
+    )
+
+    if eval_mode == "Blind Holdout":
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            stock_start = st.date_input(
+                "Stock Start",
+                value=pd.Timestamp("2016-01-01").date(),
+                key="stock_holdout_start_base",
+            )
+        with c2:
+            stock_train_end = st.date_input(
+                "Train End",
+                value=pd.Timestamp("2020-12-31").date(),
+                key="stock_holdout_train_end",
+            )
+        with c3:
+            stock_holdout_end = st.date_input(
+                "Holdout End",
+                value=pd.Timestamp(default_end_date).date(),
+                key="stock_holdout_end",
+            )
+        stock_holdout_start = (pd.Timestamp(stock_train_end) + pd.Timedelta(days=1)).date()
+        st.caption(f"Holdout starts automatically on `{stock_holdout_start.isoformat()}`.")
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            stock_start = st.date_input(
+                "Stock Start",
+                value=pd.Timestamp("2016-01-01").date(),
+                key="stock_full_start",
+            )
+        with c2:
+            stock_holdout_end = st.date_input(
+                "Stock End",
+                value=pd.Timestamp(default_end_date).date(),
+                key="stock_full_end",
+            )
+        stock_train_end = None
+        stock_holdout_start = None
+
+    run_btn = st.button("Run Stock Benchmark Candidate", type="primary", key="run_stock_benchmark")
+    if run_btn:
+        try:
+            config_path = STOCK_BENCHMARK_CANDIDATES[stock_profile_label]
+            start_str = pd.Timestamp(stock_start).date().isoformat()
+            end_str = pd.Timestamp(stock_holdout_end).date().isoformat()
+            train_end_str = pd.Timestamp(stock_train_end).date().isoformat() if stock_train_end is not None else None
+            holdout_start_str = (
+                pd.Timestamp(stock_holdout_start).date().isoformat() if stock_holdout_start is not None else None
+            )
+            with st.spinner("Running stock benchmark candidate..."):
+                stock_result = _run_stock_benchmark(
+                    config_path=config_path,
+                    start_date=start_str,
+                    end_date=end_str,
+                    train_end_date=train_end_str,
+                    holdout_start_date=holdout_start_str,
+                )
+            stock_result["profile_label"] = stock_profile_label
+            stock_result["evaluation_mode"] = eval_mode
+            st.session_state.stock_benchmark_result = stock_result
+        except Exception as e:
+            st.error(f"Stock benchmark run failed: {e}")
+
+    result = st.session_state.get("stock_benchmark_result")
+    if not isinstance(result, dict):
+        return
+
+    st.markdown("---")
+    config_label = os.path.basename(str(result.get("config_path", "")))
+    st.caption(
+        f"Stock benchmark result: `{result.get('profile_label', STOCK_BENCHMARK_DEFAULT_LABEL)}` "
+        f"using `{config_label}`"
+    )
+    coverage = float(result.get("coverage_ratio", 0.0) or 0.0)
+    daily_cov = float(dict(result.get("daily_membership_price_coverage") or {}).get("mean", 0.0) or 0.0)
+    st.caption(
+        f"Union coverage: {coverage:.1%} | Daily PIT mean coverage: {daily_cov:.1%} | "
+        f"Requested: {int(result.get('requested_symbols', 0) or 0):,} | "
+        f"Loaded: {int(result.get('loaded_symbols', 0) or 0):,} | "
+        f"Active scored: {int(result.get('active_scored_symbols', 0) or 0):,}"
+    )
+
+    if "holdout" in result and "train" in result:
+        train = dict(result.get("train") or {})
+        holdout = dict(result.get("holdout") or {})
+        left, right = st.columns(2)
+        with left:
+            st.subheader("Train")
+            t1, t2, t3, t4 = st.columns(4)
+            t1.metric("CAGR", f"{float(train.get('cagr_pct', 0.0)):.2f}%")
+            t2.metric("Max DD", f"{float(train.get('max_dd_pct', 0.0)):.2f}%")
+            t3.metric("Calmar", f"{float(train.get('calmar', float('nan'))):.2f}")
+            t4.metric("Trades", int(train.get("total_trades", 0) or 0))
+        with right:
+            st.subheader("Holdout")
+            h1, h2, h3, h4 = st.columns(4)
+            h1.metric("CAGR", f"{float(holdout.get('cagr_pct', 0.0)):.2f}%")
+            h2.metric("Max DD", f"{float(holdout.get('max_dd_pct', 0.0)):.2f}%")
+            h3.metric("Calmar", f"{float(holdout.get('calmar', float('nan'))):.2f}")
+            h4.metric("Trades", int(holdout.get("total_trades", 0) or 0))
+            st.caption(
+                f"Same-day open entries: {int(holdout.get('same_day_open_entries', 0) or 0)} | "
+                f"Max gross: {float(holdout.get('max_gross_exposure_pct', 0.0) or 0.0):.1%}"
+            )
+        holdout_curve = normalize_equity_curve_df((result.get("holdout_run") or {}).get("equity_curve", []))
+        if not holdout_curve.empty:
+            st.line_chart(holdout_curve.set_index("Date")["Equity"])
+    else:
+        full = dict(result.get("full") or {})
+        f1, f2, f3, f4, f5 = st.columns(5)
+        f1.metric("CAGR", f"{float(full.get('cagr_pct', 0.0)):.2f}%")
+        f2.metric("Max DD", f"{float(full.get('max_dd_pct', 0.0)):.2f}%")
+        f3.metric("Calmar", f"{float(full.get('calmar', float('nan'))):.2f}")
+        f4.metric("Trades", int(full.get("total_trades", 0) or 0))
+        f5.metric("Turnover", f"{float(full.get('avg_annual_turnover_pct', float('nan'))):.1f}%")
+        st.caption(
+            f"Same-day open entries: {int(full.get('same_day_open_entries', 0) or 0)} | "
+            f"Max gross: {float(full.get('max_gross_exposure_pct', 0.0) or 0.0):.1%}"
+        )
+        full_curve = normalize_equity_curve_df((result.get("full_run") or {}).get("equity_curve", []))
+        if not full_curve.empty:
+            st.line_chart(full_curve.set_index("Date")["Equity"])
+
+    payload_json = json.dumps(result, indent=2, default=str)
+    st.download_button(
+        label="📥 Export Stock Benchmark Result (JSON)",
+        data=payload_json.encode("utf-8"),
+        file_name="stock_benchmark_result.json",
+        mime="application/json",
+        key="dl_stock_benchmark_json",
+    )
+
+
 def _is_market_open_et(now: datetime | None = None) -> bool:
     if now is None:
         now = datetime.now(ZoneInfo("America/New_York"))
@@ -1521,6 +2197,13 @@ with st.sidebar:
             "- **Benchmark family:** Residual-defensive leveraged ETF rotation\n"
             "- **Validated baseline:** 22.04% CAGR / 25.45% DD blind holdout"
         )
+    elif primary_strategy == "Stock Benchmark Candidate":
+        st.markdown(
+            "- **Workspace:** Stock Benchmark Candidate\n"
+            "- **Research leader:** SMID Pullback R3000 TB006 V1\n"
+            "- **Research holdout:** 37.63% CAGR / 20.23% DD\n"
+            "- **Status:** research-first; ETF remains production baseline"
+        )
     else:
         st.markdown(
             "- **Workspace:** Stock Research\n"
@@ -1529,6 +2212,7 @@ with st.sidebar:
         )
 
     selected_etf_profile_label = ETF_FROZEN_DEFAULT_LABEL
+    selected_stock_benchmark_label = STOCK_BENCHMARK_DEFAULT_LABEL
     if primary_strategy == "ETF Benchmark":
         st.markdown("### 🏦 ETF Benchmark Profile")
         selected_etf_profile_label = st.selectbox(
@@ -1536,6 +2220,17 @@ with st.sidebar:
             list(ETF_FROZEN_BENCHMARKS.keys()),
             index=list(ETF_FROZEN_BENCHMARKS.keys()).index(ETF_FROZEN_DEFAULT_LABEL),
             key="sidebar_etf_profile",
+        )
+        st.caption(
+            "This selection is shared by Live Screener, Backtest, and Simulator."
+        )
+    elif primary_strategy == "Stock Benchmark Candidate":
+        st.markdown("### 📘 Stock Benchmark Profile")
+        selected_stock_benchmark_label = st.selectbox(
+            "Stock Benchmark",
+            list(STOCK_BENCHMARK_CANDIDATES.keys()),
+            index=list(STOCK_BENCHMARK_CANDIDATES.keys()).index(STOCK_BENCHMARK_DEFAULT_LABEL),
+            key="sidebar_stock_benchmark_profile",
         )
         st.caption(
             "This selection is shared by Live Screener, Backtest, and Simulator."
@@ -1655,6 +2350,9 @@ with st.sidebar:
 if mode == "Live Screener":
     if primary_strategy == "ETF Benchmark":
         _render_etf_live_screener(selected_etf_profile_label)
+        st.stop()
+    if primary_strategy == "Stock Benchmark Candidate":
+        _render_stock_benchmark_live_screener(selected_stock_benchmark_label)
         st.stop()
     render_mode_header(
         "🚀 Daily Opportunity Scanner",
@@ -2143,6 +2841,9 @@ elif mode == "Backtest":
     bt_end_date = today.date().isoformat()
     if primary_strategy == "ETF Benchmark":
         _render_etf_benchmark_lab(bt_end_date, etf_profile_label=selected_etf_profile_label)
+        st.stop()
+    if primary_strategy == "Stock Benchmark Candidate":
+        _render_stock_benchmark_lab(bt_end_date, stock_profile_label=selected_stock_benchmark_label)
         st.stop()
     
     col_uni, col_dur = st.columns([1, 3])
@@ -3286,6 +3987,9 @@ elif mode == "Backtest":
 elif mode == "Simulator":
     if primary_strategy == "ETF Benchmark":
         _render_etf_simulator(selected_etf_profile_label)
+        st.stop()
+    if primary_strategy == "Stock Benchmark Candidate":
+        _render_stock_benchmark_simulator(selected_stock_benchmark_label)
         st.stop()
     render_mode_header(
         "🎮 Paper Trader (Pro)",
