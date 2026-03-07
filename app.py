@@ -5,6 +5,7 @@ import os
 import json
 import hashlib
 import math
+import pickle
 import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -82,6 +83,9 @@ STOCK_RESEARCH_LEADERS = [
 ETF_PAPER_STATE_FILE = os.path.join("data", "etf_paper_state.json")
 HYBRID_BENCHMARK_PAPER_STATE_FILE = os.path.join("data", "hybrid_benchmark_paper_state.json")
 STOCK_BENCHMARK_PAPER_STATE_FILE = os.path.join("data", "stock_benchmark_paper_state.json")
+ETF_LIVE_SNAPSHOT_FILE = os.path.join("data", "etf_live_snapshot.pkl")
+HYBRID_LIVE_SNAPSHOT_FILE = os.path.join("data", "hybrid_live_snapshot.pkl")
+STOCK_LIVE_SNAPSHOT_FILE = os.path.join("data", "stock_live_snapshot.pkl")
 st.set_page_config(page_title="Apex Sniper AI", layout="wide", page_icon="🎯")
 
 
@@ -453,6 +457,43 @@ def _render_snapshot_resolution_note(snapshot: Mapping[str, Any], *, label: str)
         st.caption(f"{label} live snapshot expanded its lookback window to find the latest valid signal.")
 
 
+def _resolve_live_snapshot(
+    *,
+    session_key: str,
+    session_label_key: str,
+    snapshot_file: str,
+    profile_label: str,
+    expected_end_date: str,
+    builder,
+    force_refresh: bool = False,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    if force_refresh:
+        st.session_state.pop(session_key, None)
+        st.session_state.pop(session_label_key, None)
+        _clear_pickle_payload(snapshot_file)
+
+    snapshot = st.session_state.get(session_key)
+    cached_label = st.session_state.get(session_label_key)
+    if cached_label == profile_label and _snapshot_is_current(snapshot, profile_label=profile_label, expected_end_date=expected_end_date):
+        return dict(snapshot), "session"
+
+    disk_snapshot = _read_pickle_payload(snapshot_file, None)
+    if _snapshot_is_current(disk_snapshot, profile_label=profile_label, expected_end_date=expected_end_date):
+        st.session_state[session_key] = disk_snapshot
+        st.session_state[session_label_key] = profile_label
+        return dict(disk_snapshot), "disk"
+
+    built = builder()
+    built = dict(built or {})
+    built["profile_label"] = profile_label
+    if "requested_end_date" not in built:
+        built["requested_end_date"] = expected_end_date
+    st.session_state[session_key] = built
+    st.session_state[session_label_key] = profile_label
+    _write_pickle_payload(snapshot_file, built)
+    return built, "built"
+
+
 def normalize_equity_curve_df(equity_curve) -> pd.DataFrame:
     """Normalize equity rows to one tz-naive calendar date row for chart/export."""
     df_ec = pd.DataFrame(equity_curve or [])
@@ -691,6 +732,80 @@ def _write_json_payload(path: str, payload: Any) -> None:
         json.dump(payload, f, indent=2, default=str)
 
 
+def _read_pickle_payload(path: str, default: Any) -> Any:
+    try:
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                return pickle.load(f)
+    except Exception:
+        pass
+    return default
+
+
+def _write_pickle_payload(path: str, payload: Any) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "wb") as f:
+        pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _clear_pickle_payload(path: str) -> None:
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
+def _latest_completed_market_session_date() -> str:
+    now_ts = pd.Timestamp.now(tz=ZoneInfo("America/New_York"))
+    try:
+        import pandas_market_calendars as mcal  # type: ignore
+
+        cal = mcal.get_calendar("NYSE")
+        sched = cal.schedule(
+            start_date=(now_ts - pd.Timedelta(days=14)).date().isoformat(),
+            end_date=now_ts.date().isoformat(),
+        )
+        if not sched.empty:
+            market_close = sched["market_close"]
+            eligible = market_close[market_close <= now_ts.tz_convert("UTC")]
+            if len(eligible) > 0:
+                return pd.Timestamp(eligible.index[-1]).tz_localize(None).date().isoformat()
+            return pd.Timestamp(sched.index[0]).tz_localize(None).date().isoformat()
+    except Exception:
+        pass
+
+    effective = now_ts.tz_localize(None).normalize()
+    if now_ts.weekday() >= 5:
+        while effective.weekday() >= 5:
+            effective = (effective - pd.Timedelta(days=1)).normalize()
+        return effective.date().isoformat()
+    if now_ts.hour < 16 or (now_ts.hour == 16 and now_ts.minute < 15):
+        effective = (effective - pd.tseries.offsets.BDay(1)).normalize()
+    return effective.date().isoformat()
+
+
+def _snapshot_is_current(
+    snapshot: Mapping[str, Any] | None,
+    *,
+    profile_label: str,
+    expected_end_date: str,
+) -> bool:
+    if not isinstance(snapshot, Mapping):
+        return False
+    cached_label = str(snapshot.get("profile_label") or snapshot.get("config_name") or "").strip()
+    if cached_label and cached_label != str(profile_label):
+        return False
+    requested_end = str(snapshot.get("requested_end_date") or "").strip()
+    if requested_end:
+        return requested_end == str(expected_end_date)
+    resolved_end = str(snapshot.get("resolved_end_date") or "").strip()
+    if resolved_end:
+        return resolved_end == str(expected_end_date)
+    latest_signal = str(snapshot.get("latest_signal_date") or "").strip()
+    return latest_signal == str(expected_end_date)
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def _build_etf_live_snapshot(
     *,
@@ -700,7 +815,8 @@ def _build_etf_live_snapshot(
 ) -> Dict[str, Any]:
     helpers = _load_etf_runner_helpers()
     cfg = helpers["load_config"](Path(config_path).resolve())
-    end_ts = pd.Timestamp(end_date or pd.Timestamp.utcnow().tz_localize(None).date().isoformat()).normalize()
+    requested_end_ts = pd.Timestamp(end_date or pd.Timestamp.utcnow().tz_localize(None).date().isoformat()).normalize()
+    end_ts = requested_end_ts
     start_ts = (end_ts - pd.Timedelta(days=int(lookback_days))).normalize()
 
     symbols = _etf_config_symbols(cfg, helpers["normalize_symbol_list"])
@@ -807,6 +923,9 @@ def _build_etf_live_snapshot(
         "allocator_state": allocator_state_value,
         "symbols": symbols,
         "loaded_symbols": [sym for sym in symbols if sym in data],
+        "requested_end_date": requested_end_ts.date().isoformat(),
+        "resolved_end_date": latest_signal_dt.date().isoformat(),
+        "built_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
     }
 
 
@@ -843,6 +962,7 @@ def _save_etf_paper_state(state: Mapping[str, Any]) -> None:
 
 def _render_etf_live_screener(etf_profile_label: str) -> None:
     planning_capital = _current_benchmark_planning_capital()
+    expected_end_date = _latest_completed_market_session_date()
     render_mode_header(
         "🏦 ETF Live Screener",
         "Review the latest frozen ETF allocation, current rebalance deltas, and next-session target weights.",
@@ -853,18 +973,29 @@ def _render_etf_live_screener(etf_profile_label: str) -> None:
     )
     st.caption("Use this view to review the latest target weights before the next trading session.")
     _render_benchmark_execution_note(planning_capital)
-    if st.button("Refresh ETF Snapshot", type="primary", key="refresh_etf_live_snapshot"):
+    refresh_requested = st.button("Refresh ETF Snapshot", type="primary", key="refresh_etf_live_snapshot")
+    if refresh_requested:
         _build_etf_live_snapshot.clear()
         _build_hybrid_benchmark_live_snapshot.clear()
-        st.session_state.pop("etf_live_snapshot", None)
-
-    snapshot = st.session_state.get("etf_live_snapshot")
-    cached_label = st.session_state.get("etf_live_snapshot_label")
-    if snapshot is None or cached_label != etf_profile_label:
+    try:
         with st.spinner("Building ETF live snapshot..."):
-            snapshot = _build_etf_live_snapshot(config_path=ETF_FROZEN_BENCHMARKS[etf_profile_label])
-        st.session_state.etf_live_snapshot = snapshot
-        st.session_state.etf_live_snapshot_label = etf_profile_label
+            snapshot, snapshot_source = _resolve_live_snapshot(
+                session_key="etf_live_snapshot",
+                session_label_key="etf_live_snapshot_label",
+                snapshot_file=ETF_LIVE_SNAPSHOT_FILE,
+                profile_label=etf_profile_label,
+                expected_end_date=expected_end_date,
+                builder=lambda: _build_etf_live_snapshot(
+                    config_path=ETF_FROZEN_BENCHMARKS[etf_profile_label],
+                    end_date=expected_end_date,
+                ),
+                force_refresh=refresh_requested,
+            )
+    except Exception as exc:
+        st.error(f"ETF benchmark snapshot unavailable: {exc}")
+        return
+    if snapshot_source in {"session", "disk"}:
+        st.caption(f"Loaded cached ETF snapshot for `{expected_end_date}`.")
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("ETF Profile", _display_profile_label(etf_profile_label))
@@ -901,6 +1032,7 @@ def _render_etf_live_screener(etf_profile_label: str) -> None:
 
 def _render_etf_simulator(etf_profile_label: str) -> None:
     planning_capital = _current_benchmark_planning_capital()
+    expected_end_date = _latest_completed_market_session_date()
     render_mode_header(
         "🎮 ETF Paper Allocator",
         "Track the frozen ETF strategy as a paper allocation book using the same target schedule as Live Screener and Backtest.",
@@ -910,18 +1042,27 @@ def _render_etf_simulator(etf_profile_label: str) -> None:
     )
     st.caption("Use Adopt Latest only after reviewing the target and rebalance delta below.")
     _render_benchmark_execution_note(planning_capital)
-    if st.button("Refresh ETF Recommendation", type="primary", key="refresh_etf_sim_snapshot"):
+    refresh_requested = st.button("Refresh ETF Recommendation", type="primary", key="refresh_etf_sim_snapshot")
+    if refresh_requested:
         _build_etf_live_snapshot.clear()
         _build_hybrid_benchmark_live_snapshot.clear()
-        st.session_state.pop("etf_sim_snapshot", None)
-
-    snapshot = st.session_state.get("etf_sim_snapshot")
-    cached_label = st.session_state.get("etf_sim_snapshot_label")
-    if snapshot is None or cached_label != etf_profile_label:
+    try:
         with st.spinner("Refreshing ETF simulator recommendation..."):
-            snapshot = _build_etf_live_snapshot(config_path=ETF_FROZEN_BENCHMARKS[etf_profile_label])
-        st.session_state.etf_sim_snapshot = snapshot
-        st.session_state.etf_sim_snapshot_label = etf_profile_label
+            snapshot, _ = _resolve_live_snapshot(
+                session_key="etf_sim_snapshot",
+                session_label_key="etf_sim_snapshot_label",
+                snapshot_file=ETF_LIVE_SNAPSHOT_FILE,
+                profile_label=etf_profile_label,
+                expected_end_date=expected_end_date,
+                builder=lambda: _build_etf_live_snapshot(
+                    config_path=ETF_FROZEN_BENCHMARKS[etf_profile_label],
+                    end_date=expected_end_date,
+                ),
+                force_refresh=refresh_requested,
+            )
+    except Exception as exc:
+        st.error(f"ETF benchmark recommendation unavailable: {exc}")
+        return
 
     state = _load_etf_paper_state()
     current_holdings = {
@@ -1716,6 +1857,7 @@ def _build_stock_benchmark_live_snapshot(
                 "resolved_end_date": end_ts.date().isoformat(),
                 "used_end_date_fallback": bool(day_back > 0),
                 "used_lookback_fallback": bool(window_days != int(lookback_days)),
+                "built_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
             }
 
     detail = "; ".join(attempt_errors[-6:]) if attempt_errors else "no fallback attempts recorded"
@@ -1754,15 +1896,23 @@ def _save_stock_benchmark_paper_state(state: Mapping[str, Any]) -> None:
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def _build_hybrid_benchmark_live_snapshot(*, profile_label: str) -> Dict[str, Any]:
+def _build_hybrid_benchmark_live_snapshot(*, profile_label: str, end_date: Optional[str] = None) -> Dict[str, Any]:
     spec = _hybrid_profile_spec(profile_label)
     etf_profile_label = str(spec["etf_profile_label"])
     stock_profile_label = str(spec["stock_profile_label"])
     etf_weight = float(spec["etf_weight"])
     stock_weight = float(spec["stock_weight"])
+    requested_end_date = str(end_date or _latest_completed_market_session_date())
 
-    etf_snapshot = _build_etf_live_snapshot(config_path=ETF_FROZEN_BENCHMARKS[etf_profile_label])
-    stock_snapshot = _build_stock_benchmark_live_snapshot(config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label])
+    stock_snapshot = _build_stock_benchmark_live_snapshot(
+        config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label],
+        end_date=requested_end_date,
+    )
+    sync_end_date = str(stock_snapshot.get("resolved_end_date") or requested_end_date)
+    etf_snapshot = _build_etf_live_snapshot(
+        config_path=ETF_FROZEN_BENCHMARKS[etf_profile_label],
+        end_date=sync_end_date,
+    )
 
     latest_weights = _blend_weight_maps(
         etf_snapshot.get("latest_target_weights") or {},
@@ -1852,6 +2002,9 @@ def _build_hybrid_benchmark_live_snapshot(*, profile_label: str) -> Dict[str, An
         "active_stocks": int(len(dict(stock_snapshot.get("latest_target_weights") or {}))),
         "etf_snapshot": etf_snapshot,
         "stock_snapshot": stock_snapshot,
+        "requested_end_date": requested_end_date,
+        "resolved_end_date": sync_end_date,
+        "built_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
     }
 
 
@@ -1888,6 +2041,7 @@ def _save_hybrid_benchmark_paper_state(state: Mapping[str, Any]) -> None:
 
 def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
     planning_capital = _current_benchmark_planning_capital()
+    expected_end_date = _latest_completed_market_session_date()
     render_mode_header(
         "🧩 Hybrid Benchmark",
         "Review the fixed 50/50 blend of the frozen ETF benchmark and corrected stock benchmark candidate.",
@@ -1903,26 +2057,30 @@ def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
         _build_etf_live_snapshot.clear()
         _build_stock_benchmark_live_snapshot.clear()
         _build_hybrid_benchmark_live_snapshot.clear()
-        st.session_state.pop("hybrid_live_snapshot", None)
-
-    snapshot = st.session_state.get("hybrid_live_snapshot")
-    cached_label = st.session_state.get("hybrid_live_snapshot_label")
-    if (snapshot is None or cached_label != hybrid_profile_label) and refresh_requested:
+    try:
         try:
             with st.spinner("Building hybrid benchmark snapshot..."):
-                snapshot = _build_hybrid_benchmark_live_snapshot(profile_label=hybrid_profile_label)
+                snapshot, snapshot_source = _resolve_live_snapshot(
+                    session_key="hybrid_live_snapshot",
+                    session_label_key="hybrid_live_snapshot_label",
+                    snapshot_file=HYBRID_LIVE_SNAPSHOT_FILE,
+                    profile_label=hybrid_profile_label,
+                    expected_end_date=expected_end_date,
+                    builder=lambda: _build_hybrid_benchmark_live_snapshot(
+                        profile_label=hybrid_profile_label,
+                        end_date=expected_end_date,
+                    ),
+                    force_refresh=refresh_requested,
+                )
         except Exception as exc:
             st.error(f"Hybrid benchmark snapshot unavailable: {exc}")
             st.info("Try Refresh again after market data updates, or open Stock Benchmark to inspect the stock sleeve directly.")
             return
-        st.session_state.hybrid_live_snapshot = snapshot
-        st.session_state.hybrid_live_snapshot_label = hybrid_profile_label
-    elif snapshot is None or cached_label != hybrid_profile_label:
-        st.info(
-            "No hybrid snapshot is loaded yet. Click `Refresh Hybrid Snapshot` to build the current 50/50 target book. "
-            "The first run can take a while because the stock sleeve is rebuilt on the PIT Russell 3000 universe."
-        )
+    except Exception as exc:
+        st.error(f"Hybrid benchmark snapshot unavailable: {exc}")
         return
+    if snapshot_source in {"session", "disk"}:
+        st.caption(f"Loaded cached hybrid snapshot for `{expected_end_date}`.")
 
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Hybrid Profile", _display_profile_label(hybrid_profile_label))
@@ -1972,6 +2130,7 @@ def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
 
 def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
     planning_capital = _current_benchmark_planning_capital()
+    expected_end_date = _latest_completed_market_session_date()
     render_mode_header(
         "🎮 Hybrid Benchmark Paper Allocator",
         "Track the fixed 50/50 hybrid benchmark using the same target schedule as Live Screener and Backtest.",
@@ -1983,27 +2142,28 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
         _build_etf_live_snapshot.clear()
         _build_stock_benchmark_live_snapshot.clear()
         _build_hybrid_benchmark_live_snapshot.clear()
-        st.session_state.pop("hybrid_sim_snapshot", None)
-
-    snapshot = st.session_state.get("hybrid_sim_snapshot")
-    cached_label = st.session_state.get("hybrid_sim_snapshot_label")
-    if (snapshot is None or cached_label != hybrid_profile_label) and refresh_requested:
+    try:
         try:
             with st.spinner("Refreshing hybrid benchmark recommendation..."):
-                snapshot = _build_hybrid_benchmark_live_snapshot(profile_label=hybrid_profile_label)
+                snapshot, _ = _resolve_live_snapshot(
+                    session_key="hybrid_sim_snapshot",
+                    session_label_key="hybrid_sim_snapshot_label",
+                    snapshot_file=HYBRID_LIVE_SNAPSHOT_FILE,
+                    profile_label=hybrid_profile_label,
+                    expected_end_date=expected_end_date,
+                    builder=lambda: _build_hybrid_benchmark_live_snapshot(
+                        profile_label=hybrid_profile_label,
+                        end_date=expected_end_date,
+                    ),
+                    force_refresh=refresh_requested,
+                )
         except Exception as exc:
             st.error(f"Hybrid benchmark recommendation unavailable: {exc}")
             st.info("Try Refresh again after market data updates, or inspect the ETF and stock benchmark workspaces separately.")
             return
-        st.session_state.hybrid_sim_snapshot = snapshot
-        st.session_state.hybrid_sim_snapshot_label = hybrid_profile_label
-    elif snapshot is None or cached_label != hybrid_profile_label:
-        live_snapshot = st.session_state.get("hybrid_live_snapshot")
-        live_label = st.session_state.get("hybrid_live_snapshot_label")
-        if live_snapshot is not None and live_label == hybrid_profile_label:
-            snapshot = live_snapshot
-            st.session_state.hybrid_sim_snapshot = snapshot
-            st.session_state.hybrid_sim_snapshot_label = hybrid_profile_label
+    except Exception as exc:
+        st.error(f"Hybrid benchmark recommendation unavailable: {exc}")
+        return
     snapshot_payload = dict(snapshot or {})
 
     state = _load_hybrid_benchmark_paper_state()
@@ -2024,13 +2184,7 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
     m3.metric("Current Gross", f"{sum(current_holdings.values()):.1%}")
     m4.metric("Target Gross", f"{sum(latest_weights.values()):.1%}")
 
-    if snapshot is None:
-        st.info(
-            "No hybrid recommendation is loaded yet. Click `Refresh Hybrid Recommendation` to build the latest blended target. "
-            "First-load refreshes can take up to a minute because both sleeves are rebuilt."
-        )
-    else:
-        _render_snapshot_resolution_note(dict(snapshot_payload.get("stock_snapshot") or {}), label="Stock sleeve")
+    _render_snapshot_resolution_note(dict(snapshot_payload.get("stock_snapshot") or {}), label="Stock sleeve")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -2142,6 +2296,7 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
 
 def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
     planning_capital = _current_benchmark_planning_capital()
+    expected_end_date = _latest_completed_market_session_date()
     render_mode_header(
         "📘 Stock Benchmark",
         "Review the latest target allocation from the current SMID pullback research leader on a PIT Russell 3000 universe.",
@@ -2155,28 +2310,30 @@ def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
     if refresh_requested:
         _build_stock_benchmark_live_snapshot.clear()
         _build_hybrid_benchmark_live_snapshot.clear()
-        st.session_state.pop("stock_live_snapshot", None)
-
-    snapshot = st.session_state.get("stock_live_snapshot")
-    cached_label = st.session_state.get("stock_live_snapshot_label")
-    if (snapshot is None or cached_label != stock_profile_label) and refresh_requested:
+    try:
         try:
             with st.spinner("Building stock benchmark snapshot..."):
-                snapshot = _build_stock_benchmark_live_snapshot(
-                    config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label]
+                snapshot, snapshot_source = _resolve_live_snapshot(
+                    session_key="stock_live_snapshot",
+                    session_label_key="stock_live_snapshot_label",
+                    snapshot_file=STOCK_LIVE_SNAPSHOT_FILE,
+                    profile_label=stock_profile_label,
+                    expected_end_date=expected_end_date,
+                    builder=lambda: _build_stock_benchmark_live_snapshot(
+                        config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label],
+                        end_date=expected_end_date,
+                    ),
+                    force_refresh=refresh_requested,
                 )
         except Exception as exc:
             st.error(f"Stock benchmark snapshot unavailable: {exc}")
             st.info("Try Refresh again after market data updates. If the issue persists, use Backtest to verify the benchmark on a fixed window.")
             return
-        st.session_state.stock_live_snapshot = snapshot
-        st.session_state.stock_live_snapshot_label = stock_profile_label
-    elif snapshot is None or cached_label != stock_profile_label:
-        st.info(
-            "No stock snapshot is loaded yet. Click `Refresh Stock Snapshot` to build the current target list. "
-            "The first run can take a while because the stock sleeve is rebuilt on the PIT Russell 3000 universe."
-        )
+    except Exception as exc:
+        st.error(f"Stock benchmark snapshot unavailable: {exc}")
         return
+    if snapshot_source in {"session", "disk"}:
+        st.caption(f"Loaded cached stock snapshot for `{expected_end_date}`.")
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Stock Profile", _display_profile_label(stock_profile_label))
@@ -2219,6 +2376,7 @@ def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
 
 def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
     planning_capital = _current_benchmark_planning_capital()
+    expected_end_date = _latest_completed_market_session_date()
     render_mode_header(
         "🎮 Stock Benchmark Paper Allocator",
         "Track the current SMID pullback candidate as a paper allocation book using the same target schedule as Live Screener and Backtest.",
@@ -2229,29 +2387,28 @@ def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
     if refresh_requested:
         _build_stock_benchmark_live_snapshot.clear()
         _build_hybrid_benchmark_live_snapshot.clear()
-        st.session_state.pop("stock_sim_snapshot", None)
-
-    snapshot = st.session_state.get("stock_sim_snapshot")
-    cached_label = st.session_state.get("stock_sim_snapshot_label")
-    if (snapshot is None or cached_label != stock_profile_label) and refresh_requested:
+    try:
         try:
             with st.spinner("Refreshing stock benchmark recommendation..."):
-                snapshot = _build_stock_benchmark_live_snapshot(
-                    config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label]
+                snapshot, _ = _resolve_live_snapshot(
+                    session_key="stock_sim_snapshot",
+                    session_label_key="stock_sim_snapshot_label",
+                    snapshot_file=STOCK_LIVE_SNAPSHOT_FILE,
+                    profile_label=stock_profile_label,
+                    expected_end_date=expected_end_date,
+                    builder=lambda: _build_stock_benchmark_live_snapshot(
+                        config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label],
+                        end_date=expected_end_date,
+                    ),
+                    force_refresh=refresh_requested,
                 )
         except Exception as exc:
             st.error(f"Stock benchmark recommendation unavailable: {exc}")
             st.info("Try Refresh again after market data updates, or use the Backtest workspace for a fixed historical run.")
             return
-        st.session_state.stock_sim_snapshot = snapshot
-        st.session_state.stock_sim_snapshot_label = stock_profile_label
-    elif snapshot is None or cached_label != stock_profile_label:
-        live_snapshot = st.session_state.get("stock_live_snapshot")
-        live_label = st.session_state.get("stock_live_snapshot_label")
-        if live_snapshot is not None and live_label == stock_profile_label:
-            snapshot = live_snapshot
-            st.session_state.stock_sim_snapshot = snapshot
-            st.session_state.stock_sim_snapshot_label = stock_profile_label
+    except Exception as exc:
+        st.error(f"Stock benchmark recommendation unavailable: {exc}")
+        return
     snapshot_payload = dict(snapshot or {})
 
     state = _load_stock_benchmark_paper_state()
@@ -2272,13 +2429,7 @@ def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
     m3.metric("Current Gross", f"{sum(current_holdings.values()):.1%}")
     m4.metric("Target Gross", f"{sum(latest_weights.values()):.1%}")
 
-    if snapshot is None:
-        st.info(
-            "No stock recommendation is loaded yet. Click `Refresh Stock Recommendation` to build the latest target list. "
-            "First-load refreshes can take up to a minute on the PIT Russell 3000 universe."
-        )
-    else:
-        _render_snapshot_resolution_note(snapshot_payload, label="Stock benchmark")
+    _render_snapshot_resolution_note(snapshot_payload, label="Stock benchmark")
 
     c1, c2 = st.columns(2)
     with c1:
