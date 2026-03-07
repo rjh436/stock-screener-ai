@@ -151,6 +151,19 @@ def run_audit(base_url: str, out_dir: Path) -> dict:
         )
 
         check(
+            "default_workspace_is_hybrid",
+            lambda: (
+                (_ for _ in ()).throw(Exception("Hybrid benchmark is not the default landing workspace"))
+                if not _wait_for_any(
+                    page,
+                    [r"Hybrid Benchmark", r"Refresh Hybrid Snapshot", r"Current Target Allocation"],
+                    timeout_sec=20,
+                )[0]
+                else "default_workspace=hybrid",
+            )[-1],
+        )
+
+        check(
             "live_etf_workspace_ready",
             lambda: (
                 (_ for _ in ()).throw(Exception("Unable to switch to Live Screener"))

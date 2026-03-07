@@ -156,6 +156,15 @@ def run_smoke(base_url: str, universe: str, live_timeout_sec: int, out_dir: Path
         )
 
         step(
+            "default_workspace_is_hybrid",
+            lambda: (
+                (_ for _ in ()).throw(Exception("Hybrid benchmark did not load as the default workspace"))
+                if not _wait_for_button(page, r"Refresh Hybrid Snapshot", timeout_ms=20000)
+                else "default_workspace=hybrid",
+            )[-1],
+        )
+
+        step(
             "switch_live_screener",
             lambda: (
                 (_ for _ in ()).throw(Exception("Live Screener mode click failed"))

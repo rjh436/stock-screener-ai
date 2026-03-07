@@ -74,7 +74,7 @@ HYBRID_BENCHMARK_CANDIDATES = {
     },
 }
 HYBRID_BENCHMARK_DEFAULT_LABEL = "Balanced Hybrid Benchmark (50/50)"
-PRIMARY_STRATEGY_OPTIONS = ["ETF Benchmark", "Hybrid Benchmark", "Stock Benchmark", "Stock Research"]
+PRIMARY_STRATEGY_OPTIONS = ["Hybrid Benchmark", "ETF Benchmark", "Stock Benchmark", "Stock Research"]
 STOCK_RESEARCH_LEADERS = [
     "Superperformance Alpha B4",
     "Superperformance Practical Risk-Off Only",
@@ -3179,7 +3179,7 @@ with st.sidebar:
     primary_strategy = st.radio(
         "Strategy Workspace",
         PRIMARY_STRATEGY_OPTIONS,
-        index=0,
+        index=PRIMARY_STRATEGY_OPTIONS.index("Hybrid Benchmark"),
         help="Keep Live Screener, Backtest, and Simulator aligned to the ETF baseline, the hybrid benchmark, the stock benchmark, or the broader stock research engine.",
     )
 
@@ -3216,7 +3216,7 @@ with st.sidebar:
             "- **Workspace:** Hybrid Benchmark\n"
             "- **Combined frontier:** Fixed 50/50 ETF + stock blend\n"
             "- **Research holdout:** 31.16% CAGR / 17.21% DD\n"
-            "- **Status:** strongest combined benchmark; ETF remains the production anchor"
+            "- **Status:** default recommended benchmark workspace; ETF remains the production anchor"
         )
     elif primary_strategy == "Stock Benchmark":
         st.markdown(
