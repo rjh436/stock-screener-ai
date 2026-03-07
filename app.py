@@ -444,6 +444,15 @@ def _render_benchmark_execution_note(planning_capital: float) -> None:
     )
 
 
+def _render_snapshot_resolution_note(snapshot: Mapping[str, Any], *, label: str) -> None:
+    requested_end = str(snapshot.get("requested_end_date") or "").strip()
+    resolved_end = str(snapshot.get("resolved_end_date") or "").strip()
+    if requested_end and resolved_end and requested_end != resolved_end:
+        st.caption(f"{label} live snapshot used the most recent valid market date: `{resolved_end}` (requested `{requested_end}`).")
+    elif snapshot.get("used_lookback_fallback"):
+        st.caption(f"{label} live snapshot expanded its lookback window to find the latest valid signal.")
+
+
 def normalize_equity_curve_df(equity_curve) -> pd.DataFrame:
     """Normalize equity rows to one tz-naive calendar date row for chart/export."""
     df_ec = pd.DataFrame(equity_curve or [])
@@ -1565,121 +1574,152 @@ def _build_stock_benchmark_live_snapshot(
     lookback_days: int = 1200,
 ) -> Dict[str, Any]:
     helpers = _load_stock_benchmark_helpers()
-    end_ts = pd.Timestamp(end_date or pd.Timestamp.utcnow().tz_localize(None).date().isoformat()).normalize()
-    start_ts = (end_ts - pd.Timedelta(days=int(lookback_days))).normalize()
-    context = helpers["build_context"](
-        universe="RUSSELL3000",
-        start_date=start_ts.date().isoformat(),
-        end_date=end_ts.date().isoformat(),
-        days=int(lookback_days),
-    )
     cfg = helpers["load_config"](Path(config_path).resolve())
-    scores = helpers["build_scores"](context["features"], cfg)
-    if scores.empty:
-        raise RuntimeError("Stock benchmark score builder produced no active symbols.")
-    price_frames = helpers["slice_prices"](context["features"], ["open", "close"], list(scores.columns))
-    full_run = helpers["run_window"](
-        cfg=cfg,
-        prices_close=price_frames["close"],
-        prices_open=price_frames["open"],
-        scores=scores,
-        global_data=dict(context.get("global_data") or {}),
-        start_date=start_ts.date().isoformat(),
-        end_date=end_ts.date().isoformat(),
-    )
-    rebalance_log = list(full_run.get("rebalance_log") or [])
-    if not rebalance_log:
-        raise RuntimeError("Stock benchmark produced no rebalance events.")
-    latest_log = dict(rebalance_log[-1])
-    previous_log = dict(rebalance_log[-2]) if len(rebalance_log) > 1 else {}
-    latest_signal_dt = pd.Timestamp(latest_log.get("signal_date") or latest_log.get("date")).tz_localize(None).normalize()
-    previous_signal_dt = (
-        pd.Timestamp(previous_log.get("signal_date") or previous_log.get("date")).tz_localize(None).normalize()
-        if previous_log
-        else None
-    )
-    latest_weights = {
-        str(sym): float(weight)
-        for sym, weight in dict(latest_log.get("weights") or {}).items()
-        if _safe_float(weight, 0.0) > 0.0
-    }
-    previous_weights = {
-        str(sym): float(weight)
-        for sym, weight in dict(previous_log.get("weights") or {}).items()
-        if _safe_float(weight, 0.0) > 0.0
-    }
-    if not latest_weights:
-        raise RuntimeError("Latest stock benchmark signal has no target weights.")
+    requested_end_ts = pd.Timestamp(end_date or pd.Timestamp.utcnow().tz_localize(None).date().isoformat()).normalize()
+    attempt_windows = [int(lookback_days)]
+    if int(lookback_days) < 1600:
+        attempt_windows.append(1600)
+    attempt_errors: List[str] = []
 
-    close_px = price_frames["close"]
-    latest_close_row = {}
-    if latest_signal_dt in close_px.index:
-        latest_close_row = pd.to_numeric(close_px.loc[latest_signal_dt], errors="coerce").dropna().to_dict()
-
-    coverage_stats = dict(context.get("coverage_stats") or {})
-    coverage_ratio = helpers["coverage_ratio"](
-        list(context.get("requested_symbols") or []),
-        list(context.get("loaded_symbols") or []),
-    )
-    coverage_failures = helpers["coverage_gate_failures"](
-        coverage_ratio=float(coverage_ratio),
-        coverage_stats=coverage_stats,
-        min_universe_coverage=float(helpers["default_min_universe_coverage"]),
-        min_daily_membership_coverage=float(helpers["default_min_daily_membership_coverage"]),
-        min_daily_membership_coverage_p10=float(helpers["default_min_daily_membership_coverage_p10"]),
-    )
-
-    target_rows: List[Dict[str, Any]] = []
-    rebalance_rows: List[Dict[str, Any]] = []
-    for sym in sorted(set(latest_weights.keys()) | set(previous_weights.keys())):
-        latest_wt = float(latest_weights.get(sym, 0.0) or 0.0)
-        prev_wt = float(previous_weights.get(sym, 0.0) or 0.0)
-        delta = latest_wt - prev_wt
-        last_close = latest_close_row.get(sym)
-        if latest_wt > 0.0:
-            target_rows.append(
-                {
-                    "Symbol": str(sym),
-                    "Target Weight": latest_wt,
-                    "Target %": latest_wt * 100.0,
-                    "Last Close": float(last_close) if last_close is not None else float("nan"),
-                    "Notional per $100k": latest_wt * 100000.0,
-                }
+    for window_days in attempt_windows:
+        for day_back in range(0, 8):
+            end_ts = (requested_end_ts - pd.Timedelta(days=int(day_back))).normalize()
+            start_ts = (end_ts - pd.Timedelta(days=int(window_days))).normalize()
+            context = helpers["build_context"](
+                universe="RUSSELL3000",
+                start_date=start_ts.date().isoformat(),
+                end_date=end_ts.date().isoformat(),
+                days=int(window_days),
             )
-        if abs(delta) > 1e-9:
-            rebalance_rows.append(
-                {
-                    "Symbol": str(sym),
-                    "Prev %": prev_wt * 100.0,
-                    "Target %": latest_wt * 100.0,
-                    "Delta %": delta * 100.0,
-                    "Action": "Buy / Increase" if delta > 0 else "Sell / Reduce",
-                    "Last Close": float(last_close) if last_close is not None else float("nan"),
-                }
-            )
-    target_df = pd.DataFrame(target_rows).sort_values("Target Weight", ascending=False)
-    rebalance_df = pd.DataFrame(rebalance_rows)
-    if not rebalance_df.empty:
-        rebalance_df = rebalance_df.sort_values("Delta %", ascending=False, key=lambda s: s.abs())
+            scores = helpers["build_scores"](context["features"], cfg)
+            if scores.empty:
+                attempt_errors.append(f"{end_ts.date().isoformat()}: no active scored symbols")
+                continue
 
-    return {
-        "config_name": str(cfg.get("name", "") or os.path.basename(config_path)),
-        "config_path": str(Path(config_path).resolve()),
-        "latest_signal_date": latest_signal_dt.date().isoformat(),
-        "previous_signal_date": previous_signal_dt.date().isoformat() if previous_signal_dt is not None else None,
-        "latest_target_weights": latest_weights,
-        "previous_target_weights": previous_weights,
-        "target_df": target_df,
-        "rebalance_df": rebalance_df,
-        "signal_count": int(len(rebalance_log)),
-        "max_gross_exposure_pct": float(sum(float(v) for v in latest_weights.values())),
-        "requested_symbols": int(len(list(context.get("requested_symbols") or []))),
-        "loaded_symbols": int(len(list(context.get("loaded_symbols") or []))),
-        "active_scored_symbols": int(len(scores.columns)),
-        "coverage_ratio": float(coverage_ratio),
-        "daily_membership_price_coverage": coverage_stats,
-        "coverage_gate_failures": coverage_failures,
-    }
+            price_frames = helpers["slice_prices"](context["features"], ["open", "close"], list(scores.columns))
+            full_run = helpers["run_window"](
+                cfg=cfg,
+                prices_close=price_frames["close"],
+                prices_open=price_frames["open"],
+                scores=scores,
+                global_data=dict(context.get("global_data") or {}),
+                start_date=start_ts.date().isoformat(),
+                end_date=end_ts.date().isoformat(),
+            )
+            rebalance_log = [dict(item) for item in list(full_run.get("rebalance_log") or [])]
+            if not rebalance_log:
+                attempt_errors.append(f"{end_ts.date().isoformat()}: no rebalance events")
+                continue
+
+            non_empty_indices = [
+                idx
+                for idx, entry in enumerate(rebalance_log)
+                if any(float(_safe_float(weight, 0.0)) > 0.0 for weight in dict(entry.get("weights") or {}).values())
+            ]
+            if not non_empty_indices:
+                attempt_errors.append(f"{end_ts.date().isoformat()}: rebalance log had no active target weights")
+                continue
+
+            latest_idx = int(non_empty_indices[-1])
+            previous_idx = int(non_empty_indices[-2]) if len(non_empty_indices) > 1 else -1
+            latest_log = rebalance_log[latest_idx]
+            previous_log = rebalance_log[previous_idx] if previous_idx >= 0 else {}
+            latest_signal_dt = pd.Timestamp(latest_log.get("signal_date") or latest_log.get("date")).tz_localize(None).normalize()
+            previous_signal_dt = (
+                pd.Timestamp(previous_log.get("signal_date") or previous_log.get("date")).tz_localize(None).normalize()
+                if previous_log
+                else None
+            )
+            latest_weights = {
+                str(sym): float(weight)
+                for sym, weight in dict(latest_log.get("weights") or {}).items()
+                if _safe_float(weight, 0.0) > 0.0
+            }
+            previous_weights = {
+                str(sym): float(weight)
+                for sym, weight in dict(previous_log.get("weights") or {}).items()
+                if _safe_float(weight, 0.0) > 0.0
+            }
+            if not latest_weights:
+                attempt_errors.append(f"{end_ts.date().isoformat()}: latest qualifying signal had no weights")
+                continue
+
+            close_px = price_frames["close"]
+            latest_close_row = {}
+            if latest_signal_dt in close_px.index:
+                latest_close_row = pd.to_numeric(close_px.loc[latest_signal_dt], errors="coerce").dropna().to_dict()
+
+            coverage_stats = dict(context.get("coverage_stats") or {})
+            coverage_ratio = helpers["coverage_ratio"](
+                list(context.get("requested_symbols") or []),
+                list(context.get("loaded_symbols") or []),
+            )
+            coverage_failures = helpers["coverage_gate_failures"](
+                coverage_ratio=float(coverage_ratio),
+                coverage_stats=coverage_stats,
+                min_universe_coverage=float(helpers["default_min_universe_coverage"]),
+                min_daily_membership_coverage=float(helpers["default_min_daily_membership_coverage"]),
+                min_daily_membership_coverage_p10=float(helpers["default_min_daily_membership_coverage_p10"]),
+            )
+
+            target_rows: List[Dict[str, Any]] = []
+            rebalance_rows: List[Dict[str, Any]] = []
+            for sym in sorted(set(latest_weights.keys()) | set(previous_weights.keys())):
+                latest_wt = float(latest_weights.get(sym, 0.0) or 0.0)
+                prev_wt = float(previous_weights.get(sym, 0.0) or 0.0)
+                delta = latest_wt - prev_wt
+                last_close = latest_close_row.get(sym)
+                if latest_wt > 0.0:
+                    target_rows.append(
+                        {
+                            "Symbol": str(sym),
+                            "Target Weight": latest_wt,
+                            "Target %": latest_wt * 100.0,
+                            "Last Close": float(last_close) if last_close is not None else float("nan"),
+                            "Notional per $100k": latest_wt * 100000.0,
+                        }
+                    )
+                if abs(delta) > 1e-9:
+                    rebalance_rows.append(
+                        {
+                            "Symbol": str(sym),
+                            "Prev %": prev_wt * 100.0,
+                            "Target %": latest_wt * 100.0,
+                            "Delta %": delta * 100.0,
+                            "Action": "Buy / Increase" if delta > 0 else "Sell / Reduce",
+                            "Last Close": float(last_close) if last_close is not None else float("nan"),
+                        }
+                    )
+            target_df = pd.DataFrame(target_rows).sort_values("Target Weight", ascending=False)
+            rebalance_df = pd.DataFrame(rebalance_rows)
+            if not rebalance_df.empty:
+                rebalance_df = rebalance_df.sort_values("Delta %", ascending=False, key=lambda s: s.abs())
+
+            return {
+                "config_name": str(cfg.get("name", "") or os.path.basename(config_path)),
+                "config_path": str(Path(config_path).resolve()),
+                "latest_signal_date": latest_signal_dt.date().isoformat(),
+                "previous_signal_date": previous_signal_dt.date().isoformat() if previous_signal_dt is not None else None,
+                "latest_target_weights": latest_weights,
+                "previous_target_weights": previous_weights,
+                "target_df": target_df,
+                "rebalance_df": rebalance_df,
+                "signal_count": int(len(rebalance_log)),
+                "max_gross_exposure_pct": float(sum(float(v) for v in latest_weights.values())),
+                "requested_symbols": int(len(list(context.get("requested_symbols") or []))),
+                "loaded_symbols": int(len(list(context.get("loaded_symbols") or []))),
+                "active_scored_symbols": int(len(scores.columns)),
+                "coverage_ratio": float(coverage_ratio),
+                "daily_membership_price_coverage": coverage_stats,
+                "coverage_gate_failures": coverage_failures,
+                "requested_end_date": requested_end_ts.date().isoformat(),
+                "resolved_end_date": end_ts.date().isoformat(),
+                "used_end_date_fallback": bool(day_back > 0),
+                "used_lookback_fallback": bool(window_days != int(lookback_days)),
+            }
+
+    detail = "; ".join(attempt_errors[-6:]) if attempt_errors else "no fallback attempts recorded"
+    raise RuntimeError("Stock benchmark live snapshot unavailable. " + detail)
 
 
 def _load_stock_benchmark_paper_state() -> Dict[str, Any]:
@@ -1867,8 +1907,13 @@ def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
     snapshot = st.session_state.get("hybrid_live_snapshot")
     cached_label = st.session_state.get("hybrid_live_snapshot_label")
     if snapshot is None or cached_label != hybrid_profile_label:
-        with st.spinner("Building hybrid benchmark snapshot..."):
-            snapshot = _build_hybrid_benchmark_live_snapshot(profile_label=hybrid_profile_label)
+        try:
+            with st.spinner("Building hybrid benchmark snapshot..."):
+                snapshot = _build_hybrid_benchmark_live_snapshot(profile_label=hybrid_profile_label)
+        except Exception as exc:
+            st.error(f"Hybrid benchmark snapshot unavailable: {exc}")
+            st.info("Try Refresh again after market data updates, or open Stock Benchmark to inspect the stock sleeve directly.")
+            return
         st.session_state.hybrid_live_snapshot = snapshot
         st.session_state.hybrid_live_snapshot_label = hybrid_profile_label
 
@@ -1884,6 +1929,7 @@ def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
         f"ETF `{snapshot.get('etf_profile_label')}` | "
         f"Stock `{snapshot.get('stock_profile_label')}`"
     )
+    _render_snapshot_resolution_note(dict(snapshot.get("stock_snapshot") or {}), label="Stock sleeve")
 
     stock_cov = dict(dict(snapshot.get("stock_snapshot") or {}).get("daily_membership_price_coverage") or {})
     st.caption(
@@ -1935,8 +1981,13 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
     snapshot = st.session_state.get("hybrid_sim_snapshot")
     cached_label = st.session_state.get("hybrid_sim_snapshot_label")
     if (snapshot is None or cached_label != hybrid_profile_label) and refresh_requested:
-        with st.spinner("Refreshing hybrid benchmark recommendation..."):
-            snapshot = _build_hybrid_benchmark_live_snapshot(profile_label=hybrid_profile_label)
+        try:
+            with st.spinner("Refreshing hybrid benchmark recommendation..."):
+                snapshot = _build_hybrid_benchmark_live_snapshot(profile_label=hybrid_profile_label)
+        except Exception as exc:
+            st.error(f"Hybrid benchmark recommendation unavailable: {exc}")
+            st.info("Try Refresh again after market data updates, or inspect the ETF and stock benchmark workspaces separately.")
+            return
         st.session_state.hybrid_sim_snapshot = snapshot
         st.session_state.hybrid_sim_snapshot_label = hybrid_profile_label
     elif snapshot is None or cached_label != hybrid_profile_label:
@@ -1971,6 +2022,8 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
             "No hybrid recommendation is loaded yet. Click `Refresh Hybrid Recommendation` to build the latest blended target. "
             "First-load refreshes can take up to a minute because both sleeves are rebuilt."
         )
+    else:
+        _render_snapshot_resolution_note(dict(snapshot_payload.get("stock_snapshot") or {}), label="Stock sleeve")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -2099,10 +2152,15 @@ def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
     snapshot = st.session_state.get("stock_live_snapshot")
     cached_label = st.session_state.get("stock_live_snapshot_label")
     if snapshot is None or cached_label != stock_profile_label:
-        with st.spinner("Building stock benchmark snapshot..."):
-            snapshot = _build_stock_benchmark_live_snapshot(
-                config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label]
-            )
+        try:
+            with st.spinner("Building stock benchmark snapshot..."):
+                snapshot = _build_stock_benchmark_live_snapshot(
+                    config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label]
+                )
+        except Exception as exc:
+            st.error(f"Stock benchmark snapshot unavailable: {exc}")
+            st.info("Try Refresh again after market data updates. If the issue persists, use Backtest to verify the benchmark on a fixed window.")
+            return
         st.session_state.stock_live_snapshot = snapshot
         st.session_state.stock_live_snapshot_label = stock_profile_label
 
@@ -2115,6 +2173,7 @@ def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
         f"Coverage: {float(snapshot.get('coverage_ratio', 0.0)):.1%} union | "
         f"{float(dict(snapshot.get('daily_membership_price_coverage') or {}).get('mean', 0.0)):.1%} mean daily PIT"
     )
+    _render_snapshot_resolution_note(snapshot, label="Stock benchmark")
     coverage_failures = list(snapshot.get("coverage_gate_failures") or [])
     if coverage_failures:
         st.warning("Coverage gate warnings: " + "; ".join(str(x) for x in coverage_failures))
@@ -2161,10 +2220,15 @@ def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
     snapshot = st.session_state.get("stock_sim_snapshot")
     cached_label = st.session_state.get("stock_sim_snapshot_label")
     if (snapshot is None or cached_label != stock_profile_label) and refresh_requested:
-        with st.spinner("Refreshing stock benchmark recommendation..."):
-            snapshot = _build_stock_benchmark_live_snapshot(
-                config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label]
-            )
+        try:
+            with st.spinner("Refreshing stock benchmark recommendation..."):
+                snapshot = _build_stock_benchmark_live_snapshot(
+                    config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label]
+                )
+        except Exception as exc:
+            st.error(f"Stock benchmark recommendation unavailable: {exc}")
+            st.info("Try Refresh again after market data updates, or use the Backtest workspace for a fixed historical run.")
+            return
         st.session_state.stock_sim_snapshot = snapshot
         st.session_state.stock_sim_snapshot_label = stock_profile_label
     elif snapshot is None or cached_label != stock_profile_label:
@@ -2199,6 +2263,8 @@ def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
             "No stock recommendation is loaded yet. Click `Refresh Stock Recommendation` to build the latest target list. "
             "First-load refreshes can take up to a minute on the PIT Russell 3000 universe."
         )
+    else:
+        _render_snapshot_resolution_note(snapshot_payload, label="Stock benchmark")
 
     c1, c2 = st.columns(2)
     with c1:
