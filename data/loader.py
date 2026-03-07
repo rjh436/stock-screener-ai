@@ -204,6 +204,11 @@ def clean_dataframe(df: pd.DataFrame) -> Optional[pd.DataFrame]:
             df.index = df.index.tz_localize(None)
 
         df = df.sort_index()
+        # Daily US equity history should not contain weekend bars. Some fallback
+        # sources and cached artifacts can duplicate a Friday bar onto Sunday.
+        # Drop those rows at ingest so prepared calendars stay trade-date only.
+        if isinstance(df.index, pd.DatetimeIndex):
+            df = df[df.index.dayofweek < 5]
         for c in ["open", "high", "low", "close", "volume"]:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")

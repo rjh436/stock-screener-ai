@@ -23,6 +23,7 @@ from scripts.run_factor_walkforward import (
     _build_market_risk_scalar,
     _build_test_windows,
     _cross_section_rank_matrix,
+    _daily_membership_price_coverage,
     _pct_dd,
     _safe_float,
     _stitch_test_windows_warm,
@@ -287,9 +288,15 @@ def main() -> None:
     if not symbols:
         raise ValueError("No symbols resolved for smid pullback run.")
     membership_by_day = None
+    quality_report: Dict[str, Any] = {}
 
     print(f"smid-pullback run: requested_symbols={len(symbols)}")
-    data = fetch_data_pack(symbols, days=int(args.days), backtest_mode=True) or {}
+    data = fetch_data_pack(
+        symbols,
+        days=int(args.days),
+        backtest_mode=True,
+        quality_report=quality_report,
+    ) or {}
     loaded_symbols = sorted(data.keys())
     print(f"loaded_symbols={len(loaded_symbols)}")
     global_data = fetch_data_pack(["SPY", "VIX", "HYG", "LQD"], days=int(args.days), backtest_mode=True) or {}
@@ -302,6 +309,9 @@ def main() -> None:
             raise RuntimeError(f"Failed to build Russell 3000 PIT membership timeline (source={membership_source}).")
         universe_source = str(membership_source)
     features = _extract_feature_arrays(prepared, membership_by_day=membership_by_day)
+    coverage_stats = _daily_membership_price_coverage(features)
+    if np.isfinite(float(coverage_stats.get("mean", float("nan")))):
+        print(f"daily_pit_price_coverage_mean={float(coverage_stats['mean']):.1%}")
     scores = _build_smid_pullback_scores(features, cfg)
     active_columns = list(scores.columns)
     print(f"active_scored_symbols={len(active_columns)}")
@@ -331,6 +341,12 @@ def main() -> None:
         "loaded_symbols": int(len(loaded_symbols)),
         "prepared_symbols": int(len(prepared.enriched)),
         "active_scored_symbols": int(len(active_columns)),
+        "data_quality": {
+            "missing_symbols": int(quality_report.get("missing", 0) or 0),
+            "incomplete_history": int(quality_report.get("incomplete_history", 0) or 0),
+            "stale": int(quality_report.get("stale", 0) or 0),
+        },
+        "daily_membership_price_coverage": coverage_stats,
         "universe": str(args.universe),
         "universe_source": universe_source,
         "start_date": str(args.start_date),

@@ -4,7 +4,7 @@ import concurrent.futures
 import json
 import operator
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, fields as dataclass_fields
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -150,6 +150,7 @@ def _normalize_daily_dataframe_index(df: pd.DataFrame) -> pd.DataFrame:
         idx = idx.tz_localize(None)
     out = df.copy()
     out.index = idx.normalize()
+    out = out[out.index.dayofweek < 5]
     if out.index.has_duplicates:
         out = out[~out.index.duplicated(keep="last")]
     return out.sort_index()
@@ -169,7 +170,13 @@ def _normalize_prepared_calendar(prepared: "PreparedBacktestData") -> "PreparedB
     if has_tz:
         all_dates_idx = all_dates_idx.tz_localize(None)
     normalized = all_dates_idx.normalize()
-    needs_full_normalization = has_tz or (not all_dates_idx.equals(normalized)) or normalized.has_duplicates
+    normalized = normalized[normalized.dayofweek < 5]
+    needs_full_normalization = (
+        has_tz
+        or (not all_dates_idx.equals(normalized))
+        or normalized.has_duplicates
+        or bool(np.any(all_dates_idx.dayofweek >= 5))
+    )
     if not needs_full_normalization:
         return prepared
     all_dates_idx = normalized[~normalized.duplicated(keep="last")].sort_values()
@@ -180,13 +187,29 @@ def _normalize_prepared_calendar(prepared: "PreparedBacktestData") -> "PreparedB
         return prepared
 
     max_idx = len(all_dates) - 1
-    for sym_data in prepared.enriched.values():
+    remove_symbols: List[str] = []
+    for sym, sym_data in prepared.enriched.items():
         sym_idx_raw = pd.to_datetime(sym_data.index, errors="coerce")
         sym_idx = pd.DatetimeIndex(sym_idx_raw)
         if sym_idx.tz is not None:
             sym_idx = sym_idx.tz_localize(None)
-        if sym_idx.isna().any():
+        valid_mask = ~sym_idx.isna()
+        weekday_mask = sym_idx.dayofweek < 5
+        row_keep = np.asarray(valid_mask & weekday_mask, dtype=bool)
+        if not np.any(row_keep):
+            remove_symbols.append(sym)
             continue
+        if not bool(np.all(row_keep)):
+            row_count = len(sym_idx)
+            if isinstance(sym_data.df, pd.DataFrame) and len(sym_data.df) == row_count:
+                sym_data.df = sym_data.df.iloc[row_keep].copy()
+            for field in dataclass_fields(_SymbolArrays):
+                if field.name in {"df", "index", "gidx"}:
+                    continue
+                arr = getattr(sym_data, field.name)
+                if isinstance(arr, np.ndarray) and arr.ndim >= 1 and arr.shape[0] == row_count:
+                    setattr(sym_data, field.name, arr[row_keep])
+            sym_idx = sym_idx[row_keep]
         sym_idx = sym_idx.normalize()
         sym_index_arr = sym_idx.values.astype("datetime64[ns]")
         sym_data.index = sym_index_arr
@@ -196,6 +219,8 @@ def _normalize_prepared_calendar(prepared: "PreparedBacktestData") -> "PreparedB
         gidx = np.searchsorted(all_dates, sym_index_arr, side="left")
         gidx = np.clip(gidx, 0, max_idx)
         sym_data.gidx = gidx.astype(np.int32, copy=False)
+    for sym in remove_symbols:
+        prepared.enriched.pop(sym, None)
     return prepared
 
 

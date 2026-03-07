@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
 from data.loader import fetch_data_pack
 from data.universe import build_russell3000_membership_by_day, get_universe_symbols_pit_window_with_meta
 from execution.engine import prepare_backtest_data
-from scripts.run_factor_walkforward import _pct_dd, _safe_float
+from scripts.run_factor_walkforward import _daily_membership_price_coverage, _pct_dd, _safe_float
 from scripts.run_smid_pullback_walkforward import (
     _build_smid_pullback_scores,
     _extract_feature_arrays,
@@ -69,7 +69,13 @@ def main() -> None:
     requested_symbols, symbol_source = _resolve_symbols(args.universe, args.train_start_date, args.holdout_end_date)
     print(f"smid holdout eval: requested_symbols={len(requested_symbols)} universe={args.universe} source={symbol_source}")
 
-    data = fetch_data_pack(requested_symbols, days=int(args.days), backtest_mode=True) or {}
+    quality_report: Dict[str, Any] = {}
+    data = fetch_data_pack(
+        requested_symbols,
+        days=int(args.days),
+        backtest_mode=True,
+        quality_report=quality_report,
+    ) or {}
     loaded_symbols = sorted(data.keys())
     print(f"loaded_symbols={len(loaded_symbols)}")
     global_data = fetch_data_pack(["SPY", "VIX", "HYG", "LQD"], days=int(args.days), backtest_mode=True) or {}
@@ -78,6 +84,9 @@ def main() -> None:
     if not membership_by_day or len(membership_by_day) != len(prepared.all_dates):
         raise RuntimeError(f"Failed to build Russell 3000 PIT membership timeline (source={membership_source}).")
     features = _extract_feature_arrays(prepared, membership_by_day=membership_by_day)
+    coverage_stats = _daily_membership_price_coverage(features)
+    if coverage_stats.get("mean") == coverage_stats.get("mean"):
+        print(f"daily_pit_price_coverage_mean={float(coverage_stats['mean']):.1%}")
 
     reports: List[Dict[str, Any]] = []
     for cfg_path in args.configs:
@@ -123,6 +132,12 @@ def main() -> None:
                 "universe": str(args.universe),
                 "universe_source": symbol_source,
                 "membership_source": membership_source,
+                "data_quality": {
+                    "missing_symbols": int(quality_report.get("missing", 0) or 0),
+                    "incomplete_history": int(quality_report.get("incomplete_history", 0) or 0),
+                    "stale": int(quality_report.get("stale", 0) or 0),
+                },
+                "daily_membership_price_coverage": coverage_stats,
                 "train": _window_metrics(train_run),
                 "holdout": _window_metrics(holdout_run),
             }
