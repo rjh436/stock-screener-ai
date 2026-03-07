@@ -66,12 +66,21 @@ STOCK_BENCHMARK_CANDIDATES = {
     ),
 }
 STOCK_BENCHMARK_DEFAULT_LABEL = "Validated Stock Benchmark Candidate"
-PRIMARY_STRATEGY_OPTIONS = ["ETF Benchmark", "Stock Benchmark Candidate", "Stock Research"]
+HYBRID_BENCHMARK_CANDIDATES = {
+    "Balanced Hybrid Benchmark (50/50)": {
+        "etf_profile_label": ETF_FROZEN_DEFAULT_LABEL,
+        "stock_profile_label": STOCK_BENCHMARK_DEFAULT_LABEL,
+        "etf_weight": 0.50,
+    },
+}
+HYBRID_BENCHMARK_DEFAULT_LABEL = "Balanced Hybrid Benchmark (50/50)"
+PRIMARY_STRATEGY_OPTIONS = ["ETF Benchmark", "Hybrid Benchmark Candidate", "Stock Benchmark Candidate", "Stock Research"]
 STOCK_RESEARCH_LEADERS = [
     "Superperformance Alpha B4",
     "Superperformance Practical Risk-Off Only",
 ]
 ETF_PAPER_STATE_FILE = os.path.join("data", "etf_paper_state.json")
+HYBRID_BENCHMARK_PAPER_STATE_FILE = os.path.join("data", "hybrid_benchmark_paper_state.json")
 STOCK_BENCHMARK_PAPER_STATE_FILE = os.path.join("data", "stock_benchmark_paper_state.json")
 st.set_page_config(page_title="Apex Sniper AI", layout="wide", page_icon="🎯")
 
@@ -1210,6 +1219,187 @@ def _run_stock_benchmark(
     }
 
 
+def _load_hybrid_benchmark_helpers():
+    from scripts.evaluate_hybrid_benchmark_holdout import _blend_equity_series, _metrics_from_equity
+
+    return {
+        "blend_equity_series": _blend_equity_series,
+        "metrics_from_equity": _metrics_from_equity,
+    }
+
+
+def _hybrid_profile_spec(profile_label: str) -> Dict[str, Any]:
+    raw = dict(HYBRID_BENCHMARK_CANDIDATES[profile_label])
+    etf_weight = float(raw.get("etf_weight", 0.5) or 0.5)
+    etf_weight = max(0.0, min(etf_weight, 1.0))
+    raw["etf_weight"] = etf_weight
+    raw["stock_weight"] = float(1.0 - etf_weight)
+    return raw
+
+
+def _equity_curve_series(run: Mapping[str, Any]) -> pd.Series:
+    equity_curve = normalize_equity_curve_df((run or {}).get("equity_curve", []))
+    if equity_curve.empty:
+        return pd.Series(dtype="float64")
+    idx = pd.to_datetime(equity_curve["Date"], errors="coerce")
+    vals = pd.to_numeric(equity_curve["Equity"], errors="coerce")
+    ser = pd.Series(vals.values, index=idx, dtype="float64").dropna()
+    ser = ser[~ser.index.duplicated(keep="last")].sort_index()
+    return ser
+
+
+def _series_to_equity_curve(ser: pd.Series) -> List[Dict[str, Any]]:
+    if ser.empty:
+        return []
+    out: List[Dict[str, Any]] = []
+    for dt, val in ser.items():
+        ts = pd.Timestamp(dt).tz_localize(None)
+        if pd.isna(ts) or pd.isna(val):
+            continue
+        out.append({"Date": ts.date().isoformat(), "Equity": float(val)})
+    return out
+
+
+def _blend_weight_maps(
+    etf_weights: Mapping[str, Any],
+    stock_weights: Mapping[str, Any],
+    *,
+    etf_weight: float,
+) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    stock_weight = float(1.0 - etf_weight)
+    for sym, weight in dict(etf_weights or {}).items():
+        val = float(etf_weight) * float(_safe_float(weight, 0.0))
+        if val > 0.0:
+            out[str(sym)] = out.get(str(sym), 0.0) + val
+    for sym, weight in dict(stock_weights or {}).items():
+        val = stock_weight * float(_safe_float(weight, 0.0))
+        if val > 0.0:
+            out[str(sym)] = out.get(str(sym), 0.0) + val
+    return {sym: float(weight) for sym, weight in out.items() if float(weight) > 0.0}
+
+
+def _describe_signal_pair(etf_signal_date: Any, stock_signal_date: Any) -> str:
+    etf_str = str(etf_signal_date or "")
+    stock_str = str(stock_signal_date or "")
+    if etf_str and stock_str and etf_str == stock_str:
+        return etf_str
+    if etf_str and stock_str:
+        return f"ETF {etf_str} | Stock {stock_str}"
+    return etf_str or stock_str or "-"
+
+
+def _hybrid_window_summary(
+    *,
+    metrics: Mapping[str, Any],
+    etf_metrics: Mapping[str, Any],
+    stock_metrics: Mapping[str, Any],
+    etf_weight: float,
+) -> Dict[str, Any]:
+    etf_turn = float(_safe_float(etf_metrics.get("avg_annual_turnover_pct"), float("nan")))
+    stock_turn = float(_safe_float(stock_metrics.get("avg_annual_turnover_pct"), float("nan")))
+    if math.isnan(etf_turn) and math.isnan(stock_turn):
+        blended_turn = float("nan")
+    elif math.isnan(etf_turn):
+        blended_turn = float(1.0 - etf_weight) * stock_turn
+    elif math.isnan(stock_turn):
+        blended_turn = float(etf_weight) * etf_turn
+    else:
+        blended_turn = float(etf_weight) * etf_turn + float(1.0 - etf_weight) * stock_turn
+
+    etf_gross = float(_safe_float(etf_metrics.get("max_gross_exposure_pct"), 1.0))
+    stock_gross = float(_safe_float(stock_metrics.get("max_gross_exposure_pct"), 1.0))
+    blended_gross = min(1.0, float(etf_weight) * etf_gross + float(1.0 - etf_weight) * stock_gross)
+
+    out = dict(metrics or {})
+    out["avg_annual_turnover_pct"] = float(blended_turn)
+    out["total_trades"] = int(etf_metrics.get("total_trades", 0) or 0) + int(stock_metrics.get("total_trades", 0) or 0)
+    out["same_day_open_entries"] = int(etf_metrics.get("same_day_open_entries", 0) or 0) + int(
+        stock_metrics.get("same_day_open_entries", 0) or 0
+    )
+    out["max_gross_exposure_pct"] = float(blended_gross)
+    return out
+
+
+def _run_hybrid_benchmark(
+    *,
+    profile_label: str,
+    start_date: str,
+    end_date: str,
+    train_end_date: Optional[str] = None,
+    holdout_start_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    spec = _hybrid_profile_spec(profile_label)
+    helpers = _load_hybrid_benchmark_helpers()
+    etf_profile_label = str(spec["etf_profile_label"])
+    stock_profile_label = str(spec["stock_profile_label"])
+    etf_weight = float(spec["etf_weight"])
+
+    etf_result = _run_etf_benchmark(
+        config_path=ETF_FROZEN_BENCHMARKS[etf_profile_label],
+        start_date=str(start_date),
+        end_date=str(end_date),
+        train_end_date=train_end_date,
+        holdout_start_date=holdout_start_date,
+    )
+    stock_result = _run_stock_benchmark(
+        config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label],
+        start_date=str(start_date),
+        end_date=str(end_date),
+        train_end_date=train_end_date,
+        holdout_start_date=holdout_start_date,
+    )
+
+    payload: Dict[str, Any] = {
+        "profile_label": profile_label,
+        "etf_profile_label": etf_profile_label,
+        "stock_profile_label": stock_profile_label,
+        "etf_weight": float(etf_weight),
+        "stock_weight": float(spec["stock_weight"]),
+        "start_date": str(start_date),
+        "end_date": str(end_date),
+        "etf": etf_result,
+        "stock": stock_result,
+    }
+
+    if train_end_date and holdout_start_date:
+        etf_train_eq = _equity_curve_series(etf_result.get("train_run") or {})
+        etf_holdout_eq = _equity_curve_series(etf_result.get("holdout_run") or {})
+        stock_train_eq = _equity_curve_series(stock_result.get("train_run") or {})
+        stock_holdout_eq = _equity_curve_series(stock_result.get("holdout_run") or {})
+        hybrid_train_eq = helpers["blend_equity_series"](etf_train_eq, stock_train_eq, etf_weight=etf_weight)
+        hybrid_holdout_eq = helpers["blend_equity_series"](etf_holdout_eq, stock_holdout_eq, etf_weight=etf_weight)
+        payload["train_end_date"] = str(train_end_date)
+        payload["holdout_start_date"] = str(holdout_start_date)
+        payload["train"] = _hybrid_window_summary(
+            metrics=helpers["metrics_from_equity"](hybrid_train_eq),
+            etf_metrics=dict(etf_result.get("train") or {}),
+            stock_metrics=dict(stock_result.get("train") or {}),
+            etf_weight=etf_weight,
+        )
+        payload["holdout"] = _hybrid_window_summary(
+            metrics=helpers["metrics_from_equity"](hybrid_holdout_eq),
+            etf_metrics=dict(etf_result.get("holdout") or {}),
+            stock_metrics=dict(stock_result.get("holdout") or {}),
+            etf_weight=etf_weight,
+        )
+        payload["train_run"] = {"equity_curve": _series_to_equity_curve(hybrid_train_eq)}
+        payload["holdout_run"] = {"equity_curve": _series_to_equity_curve(hybrid_holdout_eq)}
+        return payload
+
+    etf_full_eq = _equity_curve_series(etf_result.get("full_run") or {})
+    stock_full_eq = _equity_curve_series(stock_result.get("full_run") or {})
+    hybrid_full_eq = helpers["blend_equity_series"](etf_full_eq, stock_full_eq, etf_weight=etf_weight)
+    payload["full"] = _hybrid_window_summary(
+        metrics=helpers["metrics_from_equity"](hybrid_full_eq),
+        etf_metrics=dict(etf_result.get("full") or {}),
+        stock_metrics=dict(stock_result.get("full") or {}),
+        etf_weight=etf_weight,
+    )
+    payload["full_run"] = {"equity_curve": _series_to_equity_curve(hybrid_full_eq)}
+    return payload
+
+
 def _build_stock_benchmark_live_snapshot(
     *,
     config_path: str,
@@ -1362,6 +1552,328 @@ def _save_stock_benchmark_paper_state(state: Mapping[str, Any]) -> None:
         "updated_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
     }
     _write_json_payload(STOCK_BENCHMARK_PAPER_STATE_FILE, payload)
+
+
+def _build_hybrid_benchmark_live_snapshot(*, profile_label: str) -> Dict[str, Any]:
+    spec = _hybrid_profile_spec(profile_label)
+    etf_profile_label = str(spec["etf_profile_label"])
+    stock_profile_label = str(spec["stock_profile_label"])
+    etf_weight = float(spec["etf_weight"])
+    stock_weight = float(spec["stock_weight"])
+
+    etf_snapshot = _build_etf_live_snapshot(config_path=ETF_FROZEN_BENCHMARKS[etf_profile_label])
+    stock_snapshot = _build_stock_benchmark_live_snapshot(config_path=STOCK_BENCHMARK_CANDIDATES[stock_profile_label])
+
+    latest_weights = _blend_weight_maps(
+        etf_snapshot.get("latest_target_weights") or {},
+        stock_snapshot.get("latest_target_weights") or {},
+        etf_weight=etf_weight,
+    )
+    previous_weights = _blend_weight_maps(
+        etf_snapshot.get("previous_target_weights") or {},
+        stock_snapshot.get("previous_target_weights") or {},
+        etf_weight=etf_weight,
+    )
+
+    close_map: Dict[str, float] = {}
+    for df in (etf_snapshot.get("target_df"), stock_snapshot.get("target_df")):
+        if isinstance(df, pd.DataFrame) and not df.empty and {"Symbol", "Last Close"}.issubset(df.columns):
+            for row in df[["Symbol", "Last Close"]].to_dict("records"):
+                close_map[str(row["Symbol"])] = float(_safe_float(row.get("Last Close"), float("nan")))
+
+    target_rows: List[Dict[str, Any]] = []
+    rebalance_rows: List[Dict[str, Any]] = []
+    for source_name, source_label, source_weight, current_weights, previous_source_weights in (
+        ("ETF", etf_profile_label, etf_weight, dict(etf_snapshot.get("latest_target_weights") or {}), dict(etf_snapshot.get("previous_target_weights") or {})),
+        (
+            "Stock",
+            stock_profile_label,
+            stock_weight,
+            dict(stock_snapshot.get("latest_target_weights") or {}),
+            dict(stock_snapshot.get("previous_target_weights") or {}),
+        ),
+    ):
+        symbols = sorted(set(current_weights.keys()) | set(previous_source_weights.keys()))
+        for sym in symbols:
+            target_wt = float(source_weight) * float(_safe_float(current_weights.get(sym), 0.0))
+            prev_wt = float(source_weight) * float(_safe_float(previous_source_weights.get(sym), 0.0))
+            delta = target_wt - prev_wt
+            if target_wt > 0.0:
+                target_rows.append(
+                    {
+                        "Sleeve": source_name,
+                        "Source Profile": source_label,
+                        "Symbol": str(sym),
+                        "Target Weight": target_wt,
+                        "Target %": target_wt * 100.0,
+                        "Last Close": float(close_map.get(str(sym), float("nan"))),
+                        "Notional per $100k": target_wt * 100000.0,
+                    }
+                )
+            if abs(delta) > 1e-9:
+                rebalance_rows.append(
+                    {
+                        "Sleeve": source_name,
+                        "Source Profile": source_label,
+                        "Symbol": str(sym),
+                        "Prev %": prev_wt * 100.0,
+                        "Target %": target_wt * 100.0,
+                        "Delta %": delta * 100.0,
+                        "Action": "Buy / Increase" if delta > 0 else "Sell / Reduce",
+                    }
+                )
+
+    target_df = pd.DataFrame(target_rows).sort_values(["Sleeve", "Target Weight"], ascending=[True, False])
+    rebalance_df = pd.DataFrame(rebalance_rows)
+    if not rebalance_df.empty:
+        rebalance_df = rebalance_df.sort_values("Delta %", ascending=False, key=lambda s: s.abs())
+
+    return {
+        "profile_label": profile_label,
+        "etf_profile_label": etf_profile_label,
+        "stock_profile_label": stock_profile_label,
+        "etf_weight": float(etf_weight),
+        "stock_weight": float(stock_weight),
+        "latest_signal_date": _describe_signal_pair(
+            etf_snapshot.get("latest_signal_date"),
+            stock_snapshot.get("latest_signal_date"),
+        ),
+        "previous_signal_date": _describe_signal_pair(
+            etf_snapshot.get("previous_signal_date"),
+            stock_snapshot.get("previous_signal_date"),
+        ),
+        "latest_target_weights": latest_weights,
+        "previous_target_weights": previous_weights,
+        "target_df": target_df,
+        "rebalance_df": rebalance_df,
+        "max_gross_exposure_pct": float(sum(float(v) for v in latest_weights.values())),
+        "active_etfs": int(len(dict(etf_snapshot.get("latest_target_weights") or {}))),
+        "active_stocks": int(len(dict(stock_snapshot.get("latest_target_weights") or {}))),
+        "etf_snapshot": etf_snapshot,
+        "stock_snapshot": stock_snapshot,
+    }
+
+
+def _load_hybrid_benchmark_paper_state() -> Dict[str, Any]:
+    default_state = {
+        "profile_label": HYBRID_BENCHMARK_DEFAULT_LABEL,
+        "adopted_signal_date": None,
+        "holdings": {},
+        "updated_at_utc": None,
+    }
+    payload = _read_json_payload(HYBRID_BENCHMARK_PAPER_STATE_FILE, default_state)
+    if not isinstance(payload, dict):
+        return dict(default_state)
+    state = dict(default_state)
+    state.update(payload)
+    if not isinstance(state.get("holdings"), dict):
+        state["holdings"] = {}
+    return state
+
+
+def _save_hybrid_benchmark_paper_state(state: Mapping[str, Any]) -> None:
+    payload = {
+        "profile_label": str(state.get("profile_label", HYBRID_BENCHMARK_DEFAULT_LABEL) or HYBRID_BENCHMARK_DEFAULT_LABEL),
+        "adopted_signal_date": state.get("adopted_signal_date"),
+        "holdings": {
+            str(sym): float(weight)
+            for sym, weight in dict(state.get("holdings") or {}).items()
+            if _safe_float(weight, 0.0) > 0.0
+        },
+        "updated_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    }
+    _write_json_payload(HYBRID_BENCHMARK_PAPER_STATE_FILE, payload)
+
+
+def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
+    render_mode_header(
+        "🧩 Hybrid Benchmark Candidate",
+        "Review the fixed 50/50 blend of the frozen ETF benchmark and corrected stock benchmark candidate.",
+    )
+    st.caption(
+        "This path combines the current production ETF anchor with the current stock research leader. "
+        "Signals remain close-to-next-day only."
+    )
+    if st.button("Refresh Hybrid Snapshot", type="primary", key="refresh_hybrid_live_snapshot"):
+        st.session_state.pop("hybrid_live_snapshot", None)
+
+    snapshot = st.session_state.get("hybrid_live_snapshot")
+    cached_label = st.session_state.get("hybrid_live_snapshot_label")
+    if snapshot is None or cached_label != hybrid_profile_label:
+        with st.spinner("Building hybrid benchmark snapshot..."):
+            snapshot = _build_hybrid_benchmark_live_snapshot(profile_label=hybrid_profile_label)
+        st.session_state.hybrid_live_snapshot = snapshot
+        st.session_state.hybrid_live_snapshot_label = hybrid_profile_label
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Hybrid Profile", hybrid_profile_label)
+    m2.metric("Signal Date", str(snapshot.get("latest_signal_date", "-")))
+    m3.metric("Gross Exposure", f"{float(snapshot.get('max_gross_exposure_pct', 0.0)):.1%}")
+    m4.metric("Active ETFs", int(snapshot.get("active_etfs", 0) or 0))
+    m5.metric("Active Stocks", int(snapshot.get("active_stocks", 0) or 0))
+    st.caption(
+        f"Blend: {float(snapshot.get('etf_weight', 0.0)):.0%} ETF / "
+        f"{float(snapshot.get('stock_weight', 0.0)):.0%} Stock | "
+        f"ETF `{snapshot.get('etf_profile_label')}` | "
+        f"Stock `{snapshot.get('stock_profile_label')}`"
+    )
+
+    stock_cov = dict(dict(snapshot.get("stock_snapshot") or {}).get("daily_membership_price_coverage") or {})
+    st.caption(
+        f"Stock coverage inside hybrid: "
+        f"{float(dict(snapshot.get('stock_snapshot') or {}).get('coverage_ratio', 0.0)):.1%} union | "
+        f"{float(stock_cov.get('mean', 0.0)):.1%} mean daily PIT"
+    )
+
+    target_df = snapshot.get("target_df")
+    if isinstance(target_df, pd.DataFrame) and not target_df.empty:
+        st.subheader("Current Target Allocation")
+        st.dataframe(
+            target_df[["Sleeve", "Symbol", "Target %", "Last Close", "Notional per $100k"]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Target %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Last Close": st.column_config.NumberColumn(format="$%.2f"),
+                "Notional per $100k": st.column_config.NumberColumn(format="$%.0f"),
+            },
+        )
+
+    rebalance_df = snapshot.get("rebalance_df")
+    if isinstance(rebalance_df, pd.DataFrame) and not rebalance_df.empty:
+        st.subheader("Rebalance Delta vs Previous Signal")
+        st.dataframe(
+            rebalance_df[["Sleeve", "Symbol", "Prev %", "Target %", "Delta %", "Action"]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Prev %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Target %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Delta %": st.column_config.NumberColumn(format="%.2f%%"),
+            },
+        )
+    else:
+        st.info("No allocation changes vs the previous hybrid signal.")
+
+
+def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
+    render_mode_header(
+        "🎮 Hybrid Benchmark Paper Allocator",
+        "Track the fixed 50/50 hybrid benchmark using the same target schedule as Live Screener and Backtest.",
+    )
+    if st.button("Refresh Hybrid Recommendation", type="primary", key="refresh_hybrid_sim_snapshot"):
+        st.session_state.pop("hybrid_sim_snapshot", None)
+
+    snapshot = st.session_state.get("hybrid_sim_snapshot")
+    cached_label = st.session_state.get("hybrid_sim_snapshot_label")
+    if snapshot is None or cached_label != hybrid_profile_label:
+        with st.spinner("Refreshing hybrid benchmark recommendation..."):
+            snapshot = _build_hybrid_benchmark_live_snapshot(profile_label=hybrid_profile_label)
+        st.session_state.hybrid_sim_snapshot = snapshot
+        st.session_state.hybrid_sim_snapshot_label = hybrid_profile_label
+
+    state = _load_hybrid_benchmark_paper_state()
+    current_holdings = {
+        str(sym): float(weight)
+        for sym, weight in dict(state.get("holdings") or {}).items()
+        if _safe_float(weight, 0.0) > 0.0
+    }
+    latest_weights = {
+        str(sym): float(weight)
+        for sym, weight in dict(snapshot.get("latest_target_weights") or {}).items()
+        if _safe_float(weight, 0.0) > 0.0
+    }
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Stored Profile", str(state.get("profile_label") or HYBRID_BENCHMARK_DEFAULT_LABEL))
+    m2.metric("Adopted Signal", str(state.get("adopted_signal_date") or "None"))
+    m3.metric("Current Gross", f"{sum(current_holdings.values()):.1%}")
+    m4.metric("Target Gross", f"{sum(latest_weights.values()):.1%}")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Adopt Latest Hybrid Allocation", type="primary", key="adopt_latest_hybrid_alloc"):
+            _save_hybrid_benchmark_paper_state(
+                {
+                    "profile_label": hybrid_profile_label,
+                    "adopted_signal_date": snapshot.get("latest_signal_date"),
+                    "holdings": latest_weights,
+                }
+            )
+            st.success("Hybrid benchmark simulator allocation updated.")
+            st.rerun()
+    with c2:
+        if st.button("Reset Hybrid Simulator State", key="reset_hybrid_sim_state"):
+            _save_hybrid_benchmark_paper_state(
+                {
+                    "profile_label": hybrid_profile_label,
+                    "adopted_signal_date": None,
+                    "holdings": {},
+                }
+            )
+            st.success("Hybrid simulator state reset.")
+            st.rerun()
+
+    current_rows = [{"Symbol": sym, "Weight %": float(weight) * 100.0} for sym, weight in sorted(current_holdings.items())]
+    target_rows = [{"Symbol": sym, "Weight %": float(weight) * 100.0} for sym, weight in sorted(latest_weights.items())]
+    delta_rows: List[Dict[str, Any]] = []
+    for sym in sorted(set(current_holdings.keys()) | set(latest_weights.keys())):
+        curr = float(current_holdings.get(sym, 0.0) or 0.0)
+        tgt = float(latest_weights.get(sym, 0.0) or 0.0)
+        delta = tgt - curr
+        if abs(delta) <= 1e-9:
+            continue
+        delta_rows.append(
+            {
+                "Symbol": sym,
+                "Current %": curr * 100.0,
+                "Target %": tgt * 100.0,
+                "Delta %": delta * 100.0,
+                "Action": "Buy / Increase" if delta > 0 else "Sell / Reduce",
+            }
+        )
+    delta_df = pd.DataFrame(delta_rows)
+    if not delta_df.empty:
+        delta_df = delta_df.sort_values("Delta %", ascending=False, key=lambda s: s.abs())
+
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Stored Hybrid Allocation")
+        if current_rows:
+            st.dataframe(
+                pd.DataFrame(current_rows),
+                use_container_width=True,
+                hide_index=True,
+                column_config={"Weight %": st.column_config.NumberColumn(format="%.2f%%")},
+            )
+        else:
+            st.info("No hybrid allocation stored yet.")
+    with right:
+        st.subheader("Latest Hybrid Target")
+        if target_rows:
+            st.dataframe(
+                pd.DataFrame(target_rows),
+                use_container_width=True,
+                hide_index=True,
+                column_config={"Weight %": st.column_config.NumberColumn(format="%.2f%%")},
+            )
+        else:
+            st.warning("Latest hybrid target is empty.")
+
+    st.subheader("Required Rebalance")
+    if not delta_df.empty:
+        st.dataframe(
+            delta_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Current %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Target %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Delta %": st.column_config.NumberColumn(format="%.2f%%"),
+            },
+        )
+    else:
+        st.success("Stored hybrid allocation already matches the latest target.")
 
 
 def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
@@ -1700,6 +2212,193 @@ def _render_stock_benchmark_lab(default_end_date: str, *, stock_profile_label: s
         file_name="stock_benchmark_result.json",
         mime="application/json",
         key="dl_stock_benchmark_json",
+    )
+
+
+def _render_hybrid_benchmark_lab(default_end_date: str, *, hybrid_profile_label: str) -> None:
+    st.markdown("### 🧩 Hybrid Benchmark Candidate Lab")
+    st.caption(
+        "Run the fixed 50/50 hybrid benchmark outside the generic stock-strategy engine. "
+        "This blends the frozen ETF baseline with the corrected stock benchmark candidate."
+    )
+    h1, h2, h3 = st.columns(3)
+    h1.metric("Research Holdout CAGR", "31.16%")
+    h2.metric("Research Holdout Max DD", "17.21%")
+    h3.metric("Blend", "50% ETF / 50% Stock")
+
+    st.info(f"Using hybrid profile from the sidebar: **{hybrid_profile_label}**")
+    eval_mode = st.radio(
+        "Hybrid Evaluation Mode",
+        ["Blind Holdout", "Full Sample"],
+        horizontal=True,
+        key="hybrid_benchmark_eval_mode",
+    )
+
+    if eval_mode == "Blind Holdout":
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            hybrid_start = st.date_input(
+                "Hybrid Start",
+                value=pd.Timestamp("2016-01-01").date(),
+                key="hybrid_holdout_start_base",
+            )
+        with c2:
+            hybrid_train_end = st.date_input(
+                "Train End",
+                value=pd.Timestamp("2020-12-31").date(),
+                key="hybrid_holdout_train_end",
+            )
+        with c3:
+            hybrid_holdout_end = st.date_input(
+                "Holdout End",
+                value=pd.Timestamp(default_end_date).date(),
+                key="hybrid_holdout_end",
+            )
+        hybrid_holdout_start = (pd.Timestamp(hybrid_train_end) + pd.Timedelta(days=1)).date()
+        st.caption(f"Holdout starts automatically on `{hybrid_holdout_start.isoformat()}`.")
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            hybrid_start = st.date_input(
+                "Hybrid Start",
+                value=pd.Timestamp("2016-01-01").date(),
+                key="hybrid_full_start",
+            )
+        with c2:
+            hybrid_holdout_end = st.date_input(
+                "Hybrid End",
+                value=pd.Timestamp(default_end_date).date(),
+                key="hybrid_full_end",
+            )
+        hybrid_train_end = None
+        hybrid_holdout_start = None
+
+    run_btn = st.button("Run Hybrid Benchmark Candidate", type="primary", key="run_hybrid_benchmark")
+    if run_btn:
+        try:
+            start_str = pd.Timestamp(hybrid_start).date().isoformat()
+            end_str = pd.Timestamp(hybrid_holdout_end).date().isoformat()
+            train_end_str = pd.Timestamp(hybrid_train_end).date().isoformat() if hybrid_train_end is not None else None
+            holdout_start_str = (
+                pd.Timestamp(hybrid_holdout_start).date().isoformat() if hybrid_holdout_start is not None else None
+            )
+            with st.spinner("Running hybrid benchmark candidate..."):
+                hybrid_result = _run_hybrid_benchmark(
+                    profile_label=hybrid_profile_label,
+                    start_date=start_str,
+                    end_date=end_str,
+                    train_end_date=train_end_str,
+                    holdout_start_date=holdout_start_str,
+                )
+            hybrid_result["evaluation_mode"] = eval_mode
+            st.session_state.hybrid_benchmark_result = hybrid_result
+        except Exception as e:
+            st.error(f"Hybrid benchmark run failed: {e}")
+
+    result = st.session_state.get("hybrid_benchmark_result")
+    if not isinstance(result, dict):
+        return
+
+    st.markdown("---")
+    st.caption(
+        f"Hybrid benchmark result: `{result.get('profile_label', HYBRID_BENCHMARK_DEFAULT_LABEL)}` | "
+        f"ETF `{result.get('etf_profile_label', ETF_FROZEN_DEFAULT_LABEL)}` | "
+        f"Stock `{result.get('stock_profile_label', STOCK_BENCHMARK_DEFAULT_LABEL)}`"
+    )
+    st.caption(
+        f"Blend weights: {float(result.get('etf_weight', 0.0)):.0%} ETF / "
+        f"{float(result.get('stock_weight', 0.0)):.0%} Stock"
+    )
+
+    if "holdout" in result and "train" in result:
+        train = dict(result.get("train") or {})
+        holdout = dict(result.get("holdout") or {})
+        left, right = st.columns(2)
+        with left:
+            st.subheader("Train")
+            t1, t2, t3, t4 = st.columns(4)
+            t1.metric("CAGR", f"{float(train.get('cagr_pct', 0.0)):.2f}%")
+            t2.metric("Max DD", f"{float(train.get('max_dd_pct', 0.0)):.2f}%")
+            t3.metric("Calmar", f"{float(train.get('calmar', float('nan'))):.2f}")
+            t4.metric("Approx Trades", int(train.get("total_trades", 0) or 0))
+        with right:
+            st.subheader("Holdout")
+            h1, h2, h3, h4 = st.columns(4)
+            h1.metric("CAGR", f"{float(holdout.get('cagr_pct', 0.0)):.2f}%")
+            h2.metric("Max DD", f"{float(holdout.get('max_dd_pct', 0.0)):.2f}%")
+            h3.metric("Calmar", f"{float(holdout.get('calmar', float('nan'))):.2f}")
+            h4.metric("Approx Trades", int(holdout.get("total_trades", 0) or 0))
+            st.caption(
+                f"Approx turnover: {float(holdout.get('avg_annual_turnover_pct', float('nan'))):.1f}% | "
+                f"Same-day open entries: {int(holdout.get('same_day_open_entries', 0) or 0)}"
+            )
+        holdout_curve = normalize_equity_curve_df((result.get("holdout_run") or {}).get("equity_curve", []))
+        if not holdout_curve.empty:
+            st.line_chart(holdout_curve.set_index("Date")["Equity"])
+    else:
+        full = dict(result.get("full") or {})
+        f1, f2, f3, f4, f5 = st.columns(5)
+        f1.metric("CAGR", f"{float(full.get('cagr_pct', 0.0)):.2f}%")
+        f2.metric("Max DD", f"{float(full.get('max_dd_pct', 0.0)):.2f}%")
+        f3.metric("Calmar", f"{float(full.get('calmar', float('nan'))):.2f}")
+        f4.metric("Approx Trades", int(full.get("total_trades", 0) or 0))
+        f5.metric("Approx Turnover", f"{float(full.get('avg_annual_turnover_pct', float('nan'))):.1f}%")
+        st.caption(f"Same-day open entries: {int(full.get('same_day_open_entries', 0) or 0)}")
+        full_curve = normalize_equity_curve_df((result.get("full_run") or {}).get("equity_curve", []))
+        if not full_curve.empty:
+            st.line_chart(full_curve.set_index("Date")["Equity"])
+
+    comp_train = pd.DataFrame(
+        [
+            {"Sleeve": "ETF", **dict(result.get("etf", {}).get("train") or {})},
+            {"Sleeve": "Stock", **dict(result.get("stock", {}).get("train") or {})},
+        ]
+    )
+    comp_holdout = pd.DataFrame(
+        [
+            {"Sleeve": "ETF", **dict(result.get("etf", {}).get("holdout") or {})},
+            {"Sleeve": "Stock", **dict(result.get("stock", {}).get("holdout") or {})},
+        ]
+    )
+    if "holdout" in result and not comp_holdout.empty:
+        st.subheader("Component Comparison")
+        comp_df = pd.DataFrame(
+            [
+                {
+                    "Sleeve": "ETF",
+                    "Train CAGR %": float(dict(result.get("etf", {}).get("train") or {}).get("cagr_pct", float("nan"))),
+                    "Train Max DD %": float(dict(result.get("etf", {}).get("train") or {}).get("max_dd_pct", float("nan"))),
+                    "Holdout CAGR %": float(dict(result.get("etf", {}).get("holdout") or {}).get("cagr_pct", float("nan"))),
+                    "Holdout Max DD %": float(dict(result.get("etf", {}).get("holdout") or {}).get("max_dd_pct", float("nan"))),
+                },
+                {
+                    "Sleeve": "Stock",
+                    "Train CAGR %": float(dict(result.get("stock", {}).get("train") or {}).get("cagr_pct", float("nan"))),
+                    "Train Max DD %": float(dict(result.get("stock", {}).get("train") or {}).get("max_dd_pct", float("nan"))),
+                    "Holdout CAGR %": float(dict(result.get("stock", {}).get("holdout") or {}).get("cagr_pct", float("nan"))),
+                    "Holdout Max DD %": float(dict(result.get("stock", {}).get("holdout") or {}).get("max_dd_pct", float("nan"))),
+                },
+            ]
+        )
+        st.dataframe(
+            comp_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Train CAGR %": st.column_config.NumberColumn(format="%.2f"),
+                "Train Max DD %": st.column_config.NumberColumn(format="%.2f"),
+                "Holdout CAGR %": st.column_config.NumberColumn(format="%.2f"),
+                "Holdout Max DD %": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+
+    payload_json = json.dumps(result, indent=2, default=str)
+    st.download_button(
+        label="📥 Export Hybrid Benchmark Result (JSON)",
+        data=payload_json.encode("utf-8"),
+        file_name="hybrid_benchmark_result.json",
+        mime="application/json",
+        key="dl_hybrid_benchmark_json",
     )
 
 
@@ -2166,7 +2865,7 @@ with st.sidebar:
         "Strategy Workspace",
         PRIMARY_STRATEGY_OPTIONS,
         index=0,
-        help="Keep Live Screener, Backtest, and Simulator aligned to either the frozen ETF benchmark or the stock research engine.",
+        help="Keep Live Screener, Backtest, and Simulator aligned to the ETF baseline, the hybrid benchmark candidate, the stock benchmark candidate, or the broader stock research engine.",
     )
 
     st.markdown("### ✅ Accuracy")
@@ -2197,12 +2896,19 @@ with st.sidebar:
             "- **Benchmark family:** Residual-defensive leveraged ETF rotation\n"
             "- **Validated baseline:** 22.04% CAGR / 25.45% DD blind holdout"
         )
+    elif primary_strategy == "Hybrid Benchmark Candidate":
+        st.markdown(
+            "- **Workspace:** Hybrid Benchmark Candidate\n"
+            "- **Combined frontier:** Fixed 50/50 ETF + stock blend\n"
+            "- **Research holdout:** 31.16% CAGR / 17.21% DD\n"
+            "- **Status:** strongest combined benchmark; ETF remains the production anchor"
+        )
     elif primary_strategy == "Stock Benchmark Candidate":
         st.markdown(
             "- **Workspace:** Stock Benchmark Candidate\n"
             "- **Research leader:** SMID Pullback R3000 TB006 V1\n"
-            "- **Research holdout:** 37.63% CAGR / 20.23% DD\n"
-            "- **Status:** research-first; ETF remains production baseline"
+            "- **Corrected holdout:** 36.91% CAGR / 22.01% DD\n"
+            "- **Status:** research-first; hybrid is now the strongest combined candidate"
         )
     else:
         st.markdown(
@@ -2212,6 +2918,7 @@ with st.sidebar:
         )
 
     selected_etf_profile_label = ETF_FROZEN_DEFAULT_LABEL
+    selected_hybrid_profile_label = HYBRID_BENCHMARK_DEFAULT_LABEL
     selected_stock_benchmark_label = STOCK_BENCHMARK_DEFAULT_LABEL
     if primary_strategy == "ETF Benchmark":
         st.markdown("### 🏦 ETF Benchmark Profile")
@@ -2223,6 +2930,17 @@ with st.sidebar:
         )
         st.caption(
             "This selection is shared by Live Screener, Backtest, and Simulator."
+        )
+    elif primary_strategy == "Hybrid Benchmark Candidate":
+        st.markdown("### 🧩 Hybrid Benchmark Profile")
+        selected_hybrid_profile_label = st.selectbox(
+            "Hybrid Benchmark",
+            list(HYBRID_BENCHMARK_CANDIDATES.keys()),
+            index=list(HYBRID_BENCHMARK_CANDIDATES.keys()).index(HYBRID_BENCHMARK_DEFAULT_LABEL),
+            key="sidebar_hybrid_benchmark_profile",
+        )
+        st.caption(
+            "This fixed blend is shared by Live Screener, Backtest, and Simulator."
         )
     elif primary_strategy == "Stock Benchmark Candidate":
         st.markdown("### 📘 Stock Benchmark Profile")
@@ -2350,6 +3068,9 @@ with st.sidebar:
 if mode == "Live Screener":
     if primary_strategy == "ETF Benchmark":
         _render_etf_live_screener(selected_etf_profile_label)
+        st.stop()
+    if primary_strategy == "Hybrid Benchmark Candidate":
+        _render_hybrid_benchmark_live_screener(selected_hybrid_profile_label)
         st.stop()
     if primary_strategy == "Stock Benchmark Candidate":
         _render_stock_benchmark_live_screener(selected_stock_benchmark_label)
@@ -2841,6 +3562,9 @@ elif mode == "Backtest":
     bt_end_date = today.date().isoformat()
     if primary_strategy == "ETF Benchmark":
         _render_etf_benchmark_lab(bt_end_date, etf_profile_label=selected_etf_profile_label)
+        st.stop()
+    if primary_strategy == "Hybrid Benchmark Candidate":
+        _render_hybrid_benchmark_lab(bt_end_date, hybrid_profile_label=selected_hybrid_profile_label)
         st.stop()
     if primary_strategy == "Stock Benchmark Candidate":
         _render_stock_benchmark_lab(bt_end_date, stock_profile_label=selected_stock_benchmark_label)
@@ -3987,6 +4711,9 @@ elif mode == "Backtest":
 elif mode == "Simulator":
     if primary_strategy == "ETF Benchmark":
         _render_etf_simulator(selected_etf_profile_label)
+        st.stop()
+    if primary_strategy == "Hybrid Benchmark Candidate":
+        _render_hybrid_benchmark_simulator(selected_hybrid_profile_label)
         st.stop()
     if primary_strategy == "Stock Benchmark Candidate":
         _render_stock_benchmark_simulator(selected_stock_benchmark_label)
