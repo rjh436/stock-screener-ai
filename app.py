@@ -1898,7 +1898,8 @@ def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
     )
     st.caption("Use this view to review the blended ETF and stock allocations before the next trading session.")
     _render_benchmark_execution_note(planning_capital)
-    if st.button("Refresh Hybrid Snapshot", type="primary", key="refresh_hybrid_live_snapshot"):
+    refresh_requested = st.button("Refresh Hybrid Snapshot", type="primary", key="refresh_hybrid_live_snapshot")
+    if refresh_requested:
         _build_etf_live_snapshot.clear()
         _build_stock_benchmark_live_snapshot.clear()
         _build_hybrid_benchmark_live_snapshot.clear()
@@ -1906,7 +1907,7 @@ def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
 
     snapshot = st.session_state.get("hybrid_live_snapshot")
     cached_label = st.session_state.get("hybrid_live_snapshot_label")
-    if snapshot is None or cached_label != hybrid_profile_label:
+    if (snapshot is None or cached_label != hybrid_profile_label) and refresh_requested:
         try:
             with st.spinner("Building hybrid benchmark snapshot..."):
                 snapshot = _build_hybrid_benchmark_live_snapshot(profile_label=hybrid_profile_label)
@@ -1916,6 +1917,12 @@ def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
             return
         st.session_state.hybrid_live_snapshot = snapshot
         st.session_state.hybrid_live_snapshot_label = hybrid_profile_label
+    elif snapshot is None or cached_label != hybrid_profile_label:
+        st.info(
+            "No hybrid snapshot is loaded yet. Click `Refresh Hybrid Snapshot` to build the current 50/50 target book. "
+            "The first run can take a while because the stock sleeve is rebuilt on the PIT Russell 3000 universe."
+        )
+        return
 
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Hybrid Profile", _display_profile_label(hybrid_profile_label))
@@ -2144,14 +2151,15 @@ def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
     )
     st.caption("Use this view to review the current stock list, coverage quality, and rebalance changes.")
     _render_benchmark_execution_note(planning_capital)
-    if st.button("Refresh Stock Snapshot", type="primary", key="refresh_stock_live_snapshot"):
+    refresh_requested = st.button("Refresh Stock Snapshot", type="primary", key="refresh_stock_live_snapshot")
+    if refresh_requested:
         _build_stock_benchmark_live_snapshot.clear()
         _build_hybrid_benchmark_live_snapshot.clear()
         st.session_state.pop("stock_live_snapshot", None)
 
     snapshot = st.session_state.get("stock_live_snapshot")
     cached_label = st.session_state.get("stock_live_snapshot_label")
-    if snapshot is None or cached_label != stock_profile_label:
+    if (snapshot is None or cached_label != stock_profile_label) and refresh_requested:
         try:
             with st.spinner("Building stock benchmark snapshot..."):
                 snapshot = _build_stock_benchmark_live_snapshot(
@@ -2163,6 +2171,12 @@ def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
             return
         st.session_state.stock_live_snapshot = snapshot
         st.session_state.stock_live_snapshot_label = stock_profile_label
+    elif snapshot is None or cached_label != stock_profile_label:
+        st.info(
+            "No stock snapshot is loaded yet. Click `Refresh Stock Snapshot` to build the current target list. "
+            "The first run can take a while because the stock sleeve is rebuilt on the PIT Russell 3000 universe."
+        )
+        return
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Stock Profile", _display_profile_label(stock_profile_label))
