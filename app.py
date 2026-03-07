@@ -483,7 +483,17 @@ def _resolve_live_snapshot(
         st.session_state[session_label_key] = profile_label
         return dict(disk_snapshot), "disk"
 
-    built = builder()
+    try:
+        built = builder()
+    except Exception:
+        if cached_label == profile_label and isinstance(snapshot, Mapping):
+            return dict(snapshot), "stale-session"
+        disk_label = str((disk_snapshot or {}).get("profile_label") or (disk_snapshot or {}).get("config_name") or "").strip()
+        if isinstance(disk_snapshot, Mapping) and (not disk_label or disk_label == str(profile_label)):
+            st.session_state[session_key] = disk_snapshot
+            st.session_state[session_label_key] = profile_label
+            return dict(disk_snapshot), "stale-disk"
+        raise
     built = dict(built or {})
     built["profile_label"] = profile_label
     if "requested_end_date" not in built:
@@ -996,6 +1006,9 @@ def _render_etf_live_screener(etf_profile_label: str) -> None:
         return
     if snapshot_source in {"session", "disk"}:
         st.caption(f"Loaded cached ETF snapshot for `{expected_end_date}`.")
+    elif snapshot_source in {"stale-session", "stale-disk"}:
+        resolved = str(snapshot.get("resolved_end_date") or snapshot.get("latest_signal_date") or "latest available")
+        st.warning(f"Using the last successful ETF snapshot from `{resolved}` while a fresh rebuild is unavailable.")
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("ETF Profile", _display_profile_label(etf_profile_label))
@@ -1361,11 +1374,13 @@ def _load_stock_benchmark_helpers():
         evaluate_smid_pullback_configs_on_context,
     )
     from scripts.run_smid_pullback_walkforward import (
+        _extract_feature_arrays,
         _build_smid_pullback_scores,
         _load_config,
         _run_window,
         _slice_prices,
     )
+    from scripts.run_factor_walkforward import _daily_membership_price_coverage
 
     return {
         "default_min_universe_coverage": DEFAULT_MIN_UNIVERSE_COVERAGE,
@@ -1375,10 +1390,12 @@ def _load_stock_benchmark_helpers():
         "coverage_ratio": _coverage_ratio,
         "build_context": build_smid_pullback_context,
         "evaluate_on_context": evaluate_smid_pullback_configs_on_context,
+        "extract_features": _extract_feature_arrays,
         "build_scores": _build_smid_pullback_scores,
         "load_config": _load_config,
         "run_window": _run_window,
         "slice_prices": _slice_prices,
+        "daily_membership_coverage": _daily_membership_price_coverage,
     }
 
 
@@ -1707,30 +1724,90 @@ def _run_hybrid_benchmark(
     return payload
 
 
+def _build_stock_benchmark_live_context(
+    *,
+    helpers: Mapping[str, Any],
+    cfg: Mapping[str, Any],
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    window_days: int,
+    membership_union_days: int = 45,
+) -> Dict[str, Any]:
+    # The live screener only needs the recent PIT Russell membership set,
+    # not the full historical union used by walk-forward research.
+    recent_start_ts = max(start_ts, (end_ts - pd.Timedelta(days=int(membership_union_days))).normalize())
+    requested_symbols, symbol_source = get_universe_symbols_pit_window_with_meta(
+        "RUSSELL3000",
+        recent_start_ts.date().isoformat(),
+        end_ts.date().isoformat(),
+    )
+    quality_report: Dict[str, Any] = {}
+    data = fetch_data_pack(
+        list(requested_symbols),
+        days=int(window_days),
+        backtest_mode=True,
+        quality_report=quality_report,
+    ) or {}
+    loaded_symbols = sorted(data.keys())
+    global_data = fetch_data_pack(["SPY", "VIX", "HYG", "LQD"], days=int(window_days), backtest_mode=True) or {}
+    prepared = prepare_backtest_data(
+        data,
+        loaded_symbols,
+        start_date=start_ts.date().isoformat(),
+        global_data=global_data,
+    )
+    membership_by_day, membership_source = build_russell3000_membership_by_day(
+        list(prepared.all_dates),
+        allow_missing_days=False,
+    )
+    if not membership_by_day or len(membership_by_day) != len(prepared.all_dates):
+        raise RuntimeError(f"Failed to build Russell 3000 PIT membership timeline (source={membership_source}).")
+    features = helpers["extract_features"](
+        prepared,
+        membership_by_day=membership_by_day,
+        cfg={"price_filter_mode": str(cfg.get("price_filter_mode", "adjusted") or "adjusted")},
+    )
+    coverage_stats = helpers["daily_membership_coverage"](features)
+    return {
+        "requested_symbols": list(requested_symbols),
+        "symbol_source": str(symbol_source),
+        "data": data,
+        "loaded_symbols": list(loaded_symbols),
+        "global_data": global_data,
+        "prepared": prepared,
+        "membership_source": str(membership_source),
+        "features": features,
+        "coverage_stats": coverage_stats,
+        "quality_report": quality_report,
+        "recent_membership_start_date": recent_start_ts.date().isoformat(),
+    }
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def _build_stock_benchmark_live_snapshot(
     *,
     config_path: str,
     end_date: Optional[str] = None,
-    lookback_days: int = 1200,
+    lookback_days: int = 520,
 ) -> Dict[str, Any]:
     helpers = _load_stock_benchmark_helpers()
     cfg = helpers["load_config"](Path(config_path).resolve())
     requested_end_ts = pd.Timestamp(end_date or pd.Timestamp.utcnow().tz_localize(None).date().isoformat()).normalize()
     attempt_windows = [int(lookback_days)]
-    if int(lookback_days) < 1600:
-        attempt_windows.append(1600)
+    if int(lookback_days) < 720:
+        attempt_windows.append(720)
     attempt_errors: List[str] = []
 
     for window_days in attempt_windows:
         for day_back in range(0, 8):
             end_ts = (requested_end_ts - pd.Timedelta(days=int(day_back))).normalize()
             start_ts = (end_ts - pd.Timedelta(days=int(window_days))).normalize()
-            context = helpers["build_context"](
-                universe="RUSSELL3000",
-                start_date=start_ts.date().isoformat(),
-                end_date=end_ts.date().isoformat(),
-                days=int(window_days),
+            context = _build_stock_benchmark_live_context(
+                helpers=helpers,
+                cfg=cfg,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                window_days=int(window_days),
             )
             scores = helpers["build_scores"](context["features"], cfg)
             if scores.empty:
@@ -1853,6 +1930,9 @@ def _build_stock_benchmark_live_snapshot(
                 "coverage_ratio": float(coverage_ratio),
                 "daily_membership_price_coverage": coverage_stats,
                 "coverage_gate_failures": coverage_failures,
+                "symbol_source": str(context.get("symbol_source", "")),
+                "membership_source": str(context.get("membership_source", "")),
+                "recent_membership_start_date": str(context.get("recent_membership_start_date", "")),
                 "requested_end_date": requested_end_ts.date().isoformat(),
                 "resolved_end_date": end_ts.date().isoformat(),
                 "used_end_date_fallback": bool(day_back > 0),
@@ -2081,6 +2161,9 @@ def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
         return
     if snapshot_source in {"session", "disk"}:
         st.caption(f"Loaded cached hybrid snapshot for `{expected_end_date}`.")
+    elif snapshot_source in {"stale-session", "stale-disk"}:
+        resolved = str(snapshot.get("resolved_end_date") or snapshot.get("latest_signal_date") or "latest available")
+        st.warning(f"Using the last successful hybrid snapshot from `{resolved}` while a fresh rebuild is unavailable.")
 
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Hybrid Profile", _display_profile_label(hybrid_profile_label))
@@ -2334,6 +2417,9 @@ def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
         return
     if snapshot_source in {"session", "disk"}:
         st.caption(f"Loaded cached stock snapshot for `{expected_end_date}`.")
+    elif snapshot_source in {"stale-session", "stale-disk"}:
+        resolved = str(snapshot.get("resolved_end_date") or snapshot.get("latest_signal_date") or "latest available")
+        st.warning(f"Using the last successful stock snapshot from `{resolved}` while a fresh rebuild is unavailable.")
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Stock Profile", _display_profile_label(stock_profile_label))

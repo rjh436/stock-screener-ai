@@ -108,6 +108,7 @@ _archive/
 tools/_archive/
 data/cache/
 data/cache_indices/
+data/*_live_snapshot.pkl
 optimizer_checkpoint_*.pkl
 optimizer_checkpoint.pkl
 apex_v3.db
