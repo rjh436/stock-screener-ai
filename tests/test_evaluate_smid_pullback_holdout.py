@@ -1,10 +1,17 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest import mock
+
+import pandas as pd
 
 from scripts.evaluate_smid_pullback_holdout import (
     _apply_friction_stress,
     _coverage_gate_failures,
     _coverage_ratio,
+    _feature_config_for_paths,
     _window_metrics,
+    build_smid_pullback_context,
 )
 from scripts.evaluate_smid_pullback_validation_matrix import _scenario_bounds
 
@@ -76,6 +83,53 @@ class EvaluateSmidPullbackHoldoutTests(unittest.TestCase):
         )
         self.assertEqual(start, "2016-01-01")
         self.assertEqual(end, "2025-12-31")
+
+    def test_feature_config_for_paths_promotes_nominal_mode(self) -> None:
+        with TemporaryDirectory() as tmp:
+            nominal_path = Path(tmp) / "nominal.json"
+            nominal_path.write_text('{"price_filter_mode": "nominal"}', encoding="utf-8")
+            adjusted_path = Path(tmp) / "adjusted.json"
+            adjusted_path.write_text("{}", encoding="utf-8")
+            feature_cfg = _feature_config_for_paths([adjusted_path, nominal_path])
+        self.assertEqual(feature_cfg, {"price_filter_mode": "nominal"})
+
+    def test_build_context_passes_feature_cfg_to_extract_arrays(self) -> None:
+        with TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "nominal.json"
+            cfg_path.write_text('{"price_filter_mode": "nominal"}', encoding="utf-8")
+
+            fake_prepared = mock.Mock()
+            fake_prepared.all_dates = [pd.Timestamp("2021-01-04")]
+            fake_prepared.enriched = {}
+
+            with mock.patch(
+                "scripts.evaluate_smid_pullback_holdout._resolve_symbols",
+                return_value=(["AAA"], "test-source"),
+            ), mock.patch(
+                "scripts.evaluate_smid_pullback_holdout.fetch_data_pack",
+                side_effect=[{"AAA": object()}, {}],
+            ), mock.patch(
+                "scripts.evaluate_smid_pullback_holdout.prepare_backtest_data",
+                return_value=fake_prepared,
+            ), mock.patch(
+                "scripts.evaluate_smid_pullback_holdout.build_russell3000_membership_by_day",
+                return_value=([set()], "membership-source"),
+            ), mock.patch(
+                "scripts.evaluate_smid_pullback_holdout._extract_feature_arrays",
+                return_value={"dates": [], "symbols": [], "membership_mask": []},
+            ) as extract_mock, mock.patch(
+                "scripts.evaluate_smid_pullback_holdout._daily_membership_price_coverage",
+                return_value={"mean": 1.0, "p10": 1.0, "min": 1.0},
+            ):
+                build_smid_pullback_context(
+                    universe="RUSSELL3000",
+                    start_date="2021-01-01",
+                    end_date="2021-12-31",
+                    days=100,
+                    config_paths=[cfg_path],
+                )
+
+        self.assertEqual(extract_mock.call_args.kwargs.get("cfg"), {"price_filter_mode": "nominal"})
 
 
 if __name__ == "__main__":

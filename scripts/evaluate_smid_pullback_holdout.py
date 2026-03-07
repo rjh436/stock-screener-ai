@@ -56,6 +56,21 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _feature_config_for_paths(config_paths: Sequence[str | Path] | None) -> Dict[str, Any]:
+    modes: set[str] = set()
+    for cfg_path in config_paths or []:
+        try:
+            cfg = _load_config(cfg_path)
+        except Exception:
+            continue
+        mode = str(cfg.get("price_filter_mode", "adjusted") or "adjusted").strip().lower()
+        if mode:
+            modes.add(mode)
+    if any(mode in {"raw", "nominal", "unadjusted"} for mode in modes):
+        return {"price_filter_mode": "nominal"}
+    return {"price_filter_mode": "adjusted"}
+
+
 def _window_metrics(run: Dict[str, Any]) -> Dict[str, float | int]:
     audit = dict(run.get("audit_report") or {})
     cagr_pct = float(_safe_float(run.get("cagr"), 0.0) * 100.0)
@@ -145,6 +160,7 @@ def build_smid_pullback_context(
     start_date: str,
     end_date: str,
     days: int,
+    config_paths: Sequence[str | Path] | None = None,
 ) -> Dict[str, Any]:
     requested_symbols, symbol_source = _resolve_symbols(universe, start_date, end_date)
     quality_report: Dict[str, Any] = {}
@@ -163,7 +179,8 @@ def build_smid_pullback_context(
     )
     if not membership_by_day or len(membership_by_day) != len(prepared.all_dates):
         raise RuntimeError(f"Failed to build Russell 3000 PIT membership timeline (source={membership_source}).")
-    features = _extract_feature_arrays(prepared, membership_by_day=membership_by_day)
+    feature_cfg = _feature_config_for_paths(config_paths)
+    features = _extract_feature_arrays(prepared, membership_by_day=membership_by_day, cfg=feature_cfg)
     coverage_stats = _daily_membership_price_coverage(features)
     return {
         "requested_symbols": list(requested_symbols),
@@ -173,6 +190,7 @@ def build_smid_pullback_context(
         "global_data": global_data,
         "prepared": prepared,
         "membership_source": str(membership_source),
+        "feature_cfg": dict(feature_cfg),
         "features": features,
         "coverage_stats": coverage_stats,
         "quality_report": quality_report,
@@ -204,6 +222,10 @@ def evaluate_smid_pullback_configs_on_context(
     global_data = dict(context.get("global_data") or {})
     features = context.get("features")
     coverage_stats = dict(context.get("coverage_stats") or {})
+    nominal_price_proxy_symbols = int(context.get("features", {}).get("nominal_price_proxy_symbols", 0) or 0)
+    nominal_price_proxy_missing_symbols = int(
+        context.get("features", {}).get("nominal_price_proxy_missing_symbols", 0) or 0
+    )
     quality_report = dict(context.get("quality_report") or {})
     symbol_source = str(context.get("symbol_source", ""))
     membership_source = str(context.get("membership_source", ""))
@@ -271,6 +293,8 @@ def evaluate_smid_pullback_configs_on_context(
                 "prepared_symbols": int(len(getattr(prepared, "enriched", {}) or {})),
                 "active_scored_symbols": int(len(scores.columns)),
                 "coverage_ratio": float(coverage_ratio),
+                "nominal_price_proxy_symbols": int(nominal_price_proxy_symbols),
+                "nominal_price_proxy_missing_symbols": int(nominal_price_proxy_missing_symbols),
                 "universe": str(universe),
                 "universe_source": symbol_source,
                 "membership_source": membership_source,
@@ -315,6 +339,7 @@ def main() -> None:
         start_date=str(args.train_start_date),
         end_date=str(args.holdout_end_date),
         days=int(args.days),
+        config_paths=args.configs,
     )
     requested_symbols = list(context.get("requested_symbols") or [])
     loaded_symbols = list(context.get("loaded_symbols") or [])

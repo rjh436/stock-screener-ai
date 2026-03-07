@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data.custom_universe import list_cached_symbols, load_symbol_file
+from data.corporate_actions import build_nominal_price_frame
 from data.loader import fetch_data_pack
 from data.universe import build_russell3000_membership_by_day, get_universe_symbols_pit_window_with_meta
 from execution.engine import prepare_backtest_data
@@ -87,14 +88,21 @@ def _build_membership_mask(
     return mask
 
 
-def _extract_feature_arrays(prepared, membership_by_day: Sequence[Sequence[str] | frozenset[str] | None] | None = None) -> Dict[str, Any]:
+def _extract_feature_arrays(
+    prepared,
+    membership_by_day: Sequence[Sequence[str] | frozenset[str] | None] | None = None,
+    cfg: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
     dates = pd.DatetimeIndex(pd.to_datetime(list(getattr(prepared, "all_dates", []))))
     symbols = sorted(list(getattr(prepared, "enriched", {}).keys()))
     n_days = len(dates)
     n_syms = len(symbols)
+    price_filter_mode = str((cfg or {}).get("price_filter_mode", "adjusted") or "adjusted").strip().lower()
+    use_nominal_price = price_filter_mode in {"raw", "nominal", "unadjusted"}
     fields = (
         "open",
         "close",
+        "raw_close",
         "vol_ma20",
         "sma20",
         "sma50",
@@ -106,6 +114,8 @@ def _extract_feature_arrays(prepared, membership_by_day: Sequence[Sequence[str] 
         "rs_rating",
     )
     arrays = {name: np.full((n_days, n_syms), np.nan, dtype=np.float32) for name in fields}
+    nominal_price_proxy_symbols = 0
+    nominal_price_proxy_missing_symbols = 0
 
     for j, sym in enumerate(symbols):
         sd = prepared.enriched.get(sym)
@@ -118,6 +128,26 @@ def _extract_feature_arrays(prepared, membership_by_day: Sequence[Sequence[str] 
         df = sd.df
         arrays["open"][idx, j] = sd.open[valid].astype(np.float32)
         arrays["close"][idx, j] = sd.close[valid].astype(np.float32)
+        if use_nominal_price:
+            raw_close = None
+            if "raw_close" in df.columns:
+                raw_close = pd.to_numeric(df["raw_close"], errors="coerce").to_numpy(dtype=np.float32)
+            else:
+                raw_frame = build_nominal_price_frame(
+                    df.loc[:, [c for c in ("open", "high", "low", "close") if c in df.columns]],
+                    symbol=sym,
+                    allow_fetch=False,
+                )
+                if "raw_close" in raw_frame.columns:
+                    raw_close = pd.to_numeric(raw_frame["raw_close"], errors="coerce").to_numpy(dtype=np.float32)
+            if raw_close is not None:
+                arrays["raw_close"][idx, j] = raw_close[valid]
+                if np.isfinite(arrays["raw_close"][idx, j]).any():
+                    nominal_price_proxy_symbols += 1
+                else:
+                    nominal_price_proxy_missing_symbols += 1
+            else:
+                nominal_price_proxy_missing_symbols += 1
 
         for key, col, alt in (
             ("vol_ma20", "vol_ma20", "vol_ma30"),
@@ -138,25 +168,37 @@ def _extract_feature_arrays(prepared, membership_by_day: Sequence[Sequence[str] 
         membership_mask = _build_membership_mask(dates, symbols, membership_by_day)
     else:
         membership_mask = np.isfinite(arrays["close"]) & (arrays["close"] > 0.0)
-    return {"dates": dates, "symbols": symbols, "membership_mask": membership_mask, **arrays}
+    return {
+        "dates": dates,
+        "symbols": symbols,
+        "membership_mask": membership_mask,
+        "nominal_price_proxy_symbols": int(nominal_price_proxy_symbols),
+        "nominal_price_proxy_missing_symbols": int(nominal_price_proxy_missing_symbols),
+        **arrays,
+    }
 
 
 def _base_valid_mask(features: Dict[str, Any], cfg: Mapping[str, Any]) -> np.ndarray:
     close = np.asarray(features["close"], dtype=np.float32)
+    raw_close = np.asarray(features.get("raw_close"), dtype=np.float32) if "raw_close" in features else close
     vol_ma20 = np.asarray(features["vol_ma20"], dtype=np.float32)
     membership_mask = np.asarray(features["membership_mask"], dtype=bool)
+    price_filter_mode = str(cfg.get("price_filter_mode", "adjusted") or "adjusted").strip().lower()
+    price_ref = raw_close if price_filter_mode in {"raw", "nominal", "unadjusted"} else close
     with np.errstate(invalid="ignore", divide="ignore"):
-        adv20 = close * vol_ma20
+        adv20 = price_ref * vol_ma20
     min_price = float(cfg.get("min_price", 2.0) or 2.0)
-    max_price = float(cfg.get("max_price", 80.0) or 80.0)
+    # Daily bars are back-adjusted for splits in the cached history, so an
+    # absolute max-price screen is only meaningful when explicitly configured.
+    max_price = float(cfg.get("max_price", 0.0) or 0.0)
     min_adv20 = float(cfg.get("min_adv20", 1_000_000.0) or 1_000_000.0)
     max_adv20 = float(cfg.get("max_adv20", 0.0) or 0.0)
     min_history = int(cfg.get("min_history_bars", 252) or 252)
 
-    valid = membership_mask & np.isfinite(close) & np.isfinite(adv20)
-    valid &= close >= min_price
+    valid = membership_mask & np.isfinite(price_ref) & np.isfinite(adv20)
+    valid &= price_ref >= min_price
     if max_price > 0:
-        valid &= close <= max_price
+        valid &= price_ref <= max_price
     valid &= adv20 >= min_adv20
     if max_adv20 > 0:
         valid &= adv20 <= max_adv20
@@ -308,7 +350,7 @@ def main() -> None:
         if not membership_by_day or len(membership_by_day) != len(prepared.all_dates):
             raise RuntimeError(f"Failed to build Russell 3000 PIT membership timeline (source={membership_source}).")
         universe_source = str(membership_source)
-    features = _extract_feature_arrays(prepared, membership_by_day=membership_by_day)
+    features = _extract_feature_arrays(prepared, membership_by_day=membership_by_day, cfg=cfg)
     coverage_stats = _daily_membership_price_coverage(features)
     if np.isfinite(float(coverage_stats.get("mean", float("nan")))):
         print(f"daily_pit_price_coverage_mean={float(coverage_stats['mean']):.1%}")
@@ -347,6 +389,8 @@ def main() -> None:
             "stale": int(quality_report.get("stale", 0) or 0),
         },
         "daily_membership_price_coverage": coverage_stats,
+        "nominal_price_proxy_symbols": int(features.get("nominal_price_proxy_symbols", 0) or 0),
+        "nominal_price_proxy_missing_symbols": int(features.get("nominal_price_proxy_missing_symbols", 0) or 0),
         "universe": str(args.universe),
         "universe_source": universe_source,
         "start_date": str(args.start_date),

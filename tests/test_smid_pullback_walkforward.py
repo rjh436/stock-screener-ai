@@ -31,6 +31,49 @@ class SmidPullbackWalkforwardTests(unittest.TestCase):
         self.assertFalse(bool(valid[0, 1]))
         self.assertTrue(bool(valid[0, 2]))
 
+    def test_base_valid_mask_skips_max_price_when_disabled(self) -> None:
+        close = np.array([[120.0, 10.0]], dtype=np.float32)
+        vol_ma20 = np.array([[20_000.0, 200_000.0]], dtype=np.float32)
+        membership_mask = np.ones_like(close, dtype=bool)
+        features = {
+            "close": close,
+            "vol_ma20": vol_ma20,
+            "membership_mask": membership_mask,
+        }
+        cfg = {
+            "min_price": 2.0,
+            "max_price": 0.0,
+            "min_adv20": 1_000_000.0,
+            "max_adv20": 0.0,
+            "min_history_bars": 1,
+        }
+        valid = _base_valid_mask(features, cfg)
+        self.assertTrue(bool(valid[0, 0]))
+        self.assertTrue(bool(valid[0, 1]))
+
+    def test_base_valid_mask_uses_nominal_price_proxy_when_requested(self) -> None:
+        close = np.array([[60.0, 60.0]], dtype=np.float32)
+        raw_close = np.array([[120.0, 60.0]], dtype=np.float32)
+        vol_ma20 = np.array([[20_000.0, 20_000.0]], dtype=np.float32)
+        membership_mask = np.ones_like(close, dtype=bool)
+        features = {
+            "close": close,
+            "raw_close": raw_close,
+            "vol_ma20": vol_ma20,
+            "membership_mask": membership_mask,
+        }
+        cfg = {
+            "min_price": 2.0,
+            "max_price": 80.0,
+            "min_adv20": 1_000_000.0,
+            "max_adv20": 0.0,
+            "min_history_bars": 1,
+            "price_filter_mode": "nominal",
+        }
+        valid = _base_valid_mask(features, cfg)
+        self.assertFalse(bool(valid[0, 0]))
+        self.assertTrue(bool(valid[0, 1]))
+
     def test_scores_prefer_stronger_pullback_candidate(self) -> None:
         dates = pd.bdate_range("2024-01-01", periods=3)
         symbols = ["AAA", "BBB", "CCC"]

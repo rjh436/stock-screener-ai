@@ -100,6 +100,7 @@ def _evaluate_config(
     train_end_date: str,
     holdout_start_date: str,
     holdout_end_date: str,
+    include_runs: bool = False,
 ) -> Dict[str, Any]:
     symbols = _config_symbols(cfg)
     global_symbols = _normalize_symbol_list(cfg.get("global_symbols", ["SPY", "VIX", "HYG", "LQD"]))
@@ -182,7 +183,7 @@ def _evaluate_config(
 
     train_metrics = _window_metrics(train_run)
     holdout_metrics = _window_metrics(holdout_run)
-    return {
+    result = {
         "config_name": str(cfg.get("name", "") or Path(str(cfg.get("_config_path", "config"))).stem),
         "config_path": str(cfg.get("_config_path", "")),
         "symbols": symbols,
@@ -194,6 +195,10 @@ def _evaluate_config(
         "train": train_metrics,
         "holdout": holdout_metrics,
     }
+    if include_runs:
+        result["train_run"] = train_run
+        result["holdout_run"] = holdout_run
+    return result
 
 
 def main() -> None:

@@ -98,6 +98,7 @@ def main() -> None:
         start_date=start_date,
         end_date=end_date,
         days=int(args.days),
+        config_paths=args.configs,
     )
 
     results: List[Dict[str, Any]] = []
