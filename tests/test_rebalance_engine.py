@@ -386,6 +386,71 @@ class RebalanceEngineTests(unittest.TestCase):
         audit = out.get("audit_report", {}) or {}
         self.assertLessEqual(float(audit.get("max_gross_exposure_pct", 1.0)), 0.60)
 
+    def test_min_score_filters_lower_ranked_names(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=66, freq="B")
+        prices = pd.DataFrame(
+            {
+                "AAA": [100.0 + (i * 0.1) for i in range(len(dates))],
+                "BBB": [100.0 + (i * 0.1) for i in range(len(dates))],
+            },
+            index=dates,
+        )
+        ranks = pd.DataFrame(
+            {
+                "AAA": [95.0] * len(dates),
+                "BBB": [70.0] * len(dates),
+            },
+            index=dates,
+        )
+        out = run_periodic_rebalance(
+            prices,
+            ranks,
+            rebalance_freq="M",
+            target_count=2,
+            transaction_cost_bps=0.0,
+            turnover_budget=1.0,
+            start_cash=100000.0,
+            min_score=80.0,
+        )
+        first_weights = out.get("rebalance_log", [])[0].get("weights", {})
+        self.assertIn("AAA", first_weights)
+        self.assertNotIn("BBB", first_weights)
+
+    def test_prune_weight_floor_drops_tiny_non_target_positions(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=66, freq="B")
+        prices = pd.DataFrame(
+            {
+                "AAA": [100.0] * len(dates),
+                "BBB": [100.0] * len(dates),
+                "CCC": [100.0] * len(dates),
+            },
+            index=dates,
+        )
+        ranks = pd.DataFrame(
+            {
+                "AAA": [95.0] * 22 + [40.0] * (len(dates) - 22),
+                "BBB": [90.0] * len(dates),
+                "CCC": [85.0] * len(dates),
+            },
+            index=dates,
+        )
+        out = run_periodic_rebalance(
+            prices,
+            ranks,
+            rebalance_freq="M",
+            target_count=2,
+            transaction_cost_bps=0.0,
+            turnover_budget=0.10,
+            start_cash=100000.0,
+            prune_weight_floor=0.03,
+        )
+        logs = out.get("rebalance_log", [])
+        self.assertGreaterEqual(len(logs), 2)
+        later_weights = logs[-1].get("weights", {})
+        self.assertNotIn("AAA", later_weights)
+        self.assertIn("BBB", later_weights)
+        self.assertIn("CCC", later_weights)
+
 
 if __name__ == "__main__":
     unittest.main()

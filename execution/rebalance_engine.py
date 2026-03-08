@@ -206,6 +206,26 @@ def _turnover(prev_weights: Mapping[str, float], next_weights: Mapping[str, floa
     return 0.5 * sum(abs(float(next_weights.get(k, 0.0)) - float(prev_weights.get(k, 0.0))) for k in keys)
 
 
+def _prune_small_non_targets(
+    weights: Mapping[str, float],
+    *,
+    selected_symbols: Iterable[str] | None,
+    min_weight: float,
+) -> Dict[str, float]:
+    clean = _sanitize_target_weights(weights)
+    floor = float(min_weight)
+    if not clean or not np.isfinite(floor) or floor <= 0.0:
+        return clean
+
+    selected = {str(sym) for sym in (selected_symbols or []) if str(sym)}
+    pruned = {
+        sym: wt
+        for sym, wt in clean.items()
+        if sym in selected or float(wt) >= floor
+    }
+    return _sanitize_target_weights(pruned)
+
+
 def _portfolio_state(
     positions: Mapping[str, int],
     cash: float,
@@ -366,6 +386,8 @@ def run_periodic_rebalance(
     max_stale_price_days: Optional[int] = 5,
     conviction_weighted: bool = False,
     conviction_power: float = 1.0,
+    min_score: Optional[float] = None,
+    prune_weight_floor: float = 0.0,
 ) -> Dict[str, object]:
     if prices is None or prices.empty:
         return {
@@ -587,6 +609,13 @@ def run_periodic_rebalance(
                     ranked = ranked.dropna()
                     ranked = ranked.loc[ranked.index.intersection(signal_prices.index)]
                     ranked = ranked.loc[pd.to_numeric(signal_prices[ranked.index], errors="coerce") > 0]
+                    if min_score is not None:
+                        try:
+                            score_floor = float(min_score)
+                        except Exception:
+                            score_floor = float("nan")
+                        if np.isfinite(score_floor):
+                            ranked = ranked.loc[ranked >= score_floor]
 
                     selected = select_target_portfolio(
                         ranked,
@@ -630,6 +659,11 @@ def run_periodic_rebalance(
                     target_weights = {k: (v * risk_scalar) for k, v in target_weights.items()}
 
             target_weights = enforce_turnover_budget(actual_prev_weights, target_weights, float(turnover_budget))
+            target_weights = _prune_small_non_targets(
+                target_weights,
+                selected_symbols=selected,
+                min_weight=float(prune_weight_floor or 0.0),
+            )
             target_turnover_val = float(_turnover(actual_prev_weights, target_weights))
 
             execution_price_map = tradable_exec_prices if tradable_exec_prices else (tradable_prices if tradable_prices else last_prices)

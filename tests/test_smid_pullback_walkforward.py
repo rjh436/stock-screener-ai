@@ -175,6 +175,53 @@ class SmidPullbackWalkforwardTests(unittest.TestCase):
         self.assertGreater(float(last["AAA"]), float(last["BBB"]))
         self.assertNotIn("CCC", last.index)
 
+    def test_scores_respect_min_entry_score_floor(self) -> None:
+        dates = pd.bdate_range("2024-01-01", periods=2)
+        symbols = ["AAA", "BBB"]
+        shape = (len(dates), len(symbols))
+        features = {
+            "dates": pd.DatetimeIndex(dates),
+            "symbols": symbols,
+            "open": np.full(shape, 20.0, dtype=np.float32),
+            "close": np.full(shape, 20.0, dtype=np.float32),
+            "vol_ma20": np.full(shape, 100_000.0, dtype=np.float32),
+            "sma20": np.array([[19.4, 19.0], [19.5, 19.2]], dtype=np.float32),
+            "sma50": np.full(shape, 18.0, dtype=np.float32),
+            "sma200": np.full(shape, 15.0, dtype=np.float32),
+            "high52w": np.full(shape, 23.0, dtype=np.float32),
+            "ret_3m": np.array([[45.0, 35.0], [46.0, 36.0]], dtype=np.float32),
+            "ret_6m": np.array([[60.0, 50.0], [61.0, 51.0]], dtype=np.float32),
+            "adr_pct": np.array([[4.5, 3.2], [4.6, 3.3]], dtype=np.float32),
+            "rs_rating": np.array([[97.0, 90.0], [97.5, 90.5]], dtype=np.float32),
+            "membership_mask": np.ones(shape, dtype=bool),
+        }
+        cfg = {
+            "min_price": 2.0,
+            "max_price": 80.0,
+            "min_adv20": 1.0,
+            "max_adv20": 0.0,
+            "min_history_bars": 1,
+            "min_rank_names": 2,
+            "min_rs_rating": 90.0,
+            "min_ret_3m": 35.0,
+            "min_ret_6m": 50.0,
+            "min_pct_off_high": -0.18,
+            "max_pct_off_high": -0.03,
+            "min_dist_sma20": -0.04,
+            "max_dist_sma20": 0.10,
+            "min_adr_pct": 3.0,
+            "rs_weight": 1.0,
+            "ret_3m_weight": 0.8,
+            "ret_6m_weight": 0.5,
+            "dist_sma20_weight": 0.7,
+            "pct_off_high_weight": 0.4,
+            "adr_weight": 0.2,
+            "min_entry_score": 80.0,
+        }
+        scores = _build_smid_pullback_scores(features, cfg)
+        self.assertIn("AAA", scores.columns)
+        self.assertNotIn("BBB", scores.columns)
+
 
 if __name__ == "__main__":
     unittest.main()

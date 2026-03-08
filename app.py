@@ -404,6 +404,83 @@ def _prepare_target_order_table(
     return out[order_cols], column_config
 
 
+def _target_weight_fraction_series(df: pd.DataFrame) -> pd.Series:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.Series(dtype="float64")
+    if "Target Weight" in df.columns:
+        return pd.to_numeric(df["Target Weight"], errors="coerce").fillna(0.0)
+    if "Weight %" in df.columns:
+        return pd.to_numeric(df["Weight %"], errors="coerce").fillna(0.0) / 100.0
+    if "Target %" in df.columns:
+        return pd.to_numeric(df["Target %"], errors="coerce").fillna(0.0) / 100.0
+    return pd.Series(dtype="float64")
+
+
+def _render_target_allocation_with_tail_controls(
+    *,
+    title: str,
+    df: pd.DataFrame,
+    planning_capital: float,
+    key_prefix: str,
+    default_min_display_pct: float = 0.5,
+) -> None:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return
+
+    weights = _target_weight_fraction_series(df)
+    if weights.empty:
+        order_df, column_config = _prepare_target_order_table(df, planning_capital=planning_capital)
+        st.subheader(title)
+        st.dataframe(order_df, use_container_width=True, hide_index=True, column_config=column_config)
+        return
+
+    st.subheader(title)
+    min_display_pct = st.slider(
+        "Hide allocations smaller than (%)",
+        min_value=0.0,
+        max_value=2.0,
+        value=float(default_min_display_pct),
+        step=0.1,
+        key=f"{key_prefix}_min_display_pct",
+        help="Use this to collapse phased-in or phased-out dust positions created by turnover budgeting.",
+    )
+    min_display_weight = float(min_display_pct) / 100.0
+    keep_mask = weights >= min_display_weight
+    primary_df = df.loc[keep_mask].copy()
+    tail_df = df.loc[~keep_mask].copy()
+
+    total_positions = int((weights > 0).sum())
+    displayed_positions = int(keep_mask.sum())
+    dust_positions = int((~keep_mask).sum())
+    displayed_gross = float(weights.loc[keep_mask].sum()) if displayed_positions else 0.0
+    dust_gross = float(weights.loc[~keep_mask].sum()) if dust_positions else 0.0
+    meaningful_1pct = int((weights >= 0.01).sum())
+    meaningful_2pct = int((weights >= 0.02).sum())
+    top5_gross = float(weights.sort_values(ascending=False).head(5).sum()) if total_positions else 0.0
+    st.caption(
+        f"Configured view: {displayed_positions}/{total_positions} rows shown at >= {min_display_pct:.1f}% each. "
+        f"Displayed gross {displayed_gross:.1%}; hidden dust gross {dust_gross:.1%}."
+    )
+    st.caption(
+        f"Concentration snapshot: {meaningful_1pct} names >= 1%, {meaningful_2pct} names >= 2%, "
+        f"top 5 gross {top5_gross:.1%}."
+    )
+
+    if dust_positions > 0:
+        st.info(
+            "Tiny rows are usually phased exits/entries from turnover budgeting. "
+            "They do not mean the strategy is intentionally targeting that many equal-conviction names."
+        )
+
+    order_df, column_config = _prepare_target_order_table(primary_df, planning_capital=planning_capital)
+    st.dataframe(order_df, use_container_width=True, hide_index=True, column_config=column_config)
+
+    if dust_positions > 0:
+        with st.expander(f"Show hidden small allocations ({dust_positions} rows, {dust_gross:.1%} gross)"):
+            dust_order_df, dust_column_config = _prepare_target_order_table(tail_df, planning_capital=planning_capital)
+            st.dataframe(dust_order_df, use_container_width=True, hide_index=True, column_config=dust_column_config)
+
+
 def _prepare_rebalance_order_table(
     df: pd.DataFrame,
     *,
@@ -1020,13 +1097,11 @@ def _render_etf_live_screener(etf_profile_label: str) -> None:
 
     target_df = snapshot.get("target_df")
     if isinstance(target_df, pd.DataFrame) and not target_df.empty:
-        st.subheader("Current Target Allocation")
-        order_df, column_config = _prepare_target_order_table(target_df, planning_capital=planning_capital)
-        st.dataframe(
-            order_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config=column_config,
+        _render_target_allocation_with_tail_controls(
+            title="Current Target Allocation",
+            df=target_df,
+            planning_capital=planning_capital,
+            key_prefix="hybrid_live_target",
         )
 
     rebalance_df = snapshot.get("rebalance_df")
@@ -2347,19 +2422,12 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
         else:
             st.info("No hybrid allocation stored yet.")
     with right:
-        st.subheader("Latest Hybrid Target")
         if target_rows:
-            target_df, _ = _prepare_target_order_table(pd.DataFrame(target_rows), planning_capital=planning_capital)
-            st.dataframe(
-                target_df[["Symbol", "Weight %", "Model Fill", "Planning Px", target_df.columns[-2], target_df.columns[-1]]],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Weight %": st.column_config.NumberColumn(format="%.2f%%"),
-                    "Planning Px": st.column_config.NumberColumn(format="$%.2f"),
-                    target_df.columns[-2]: st.column_config.NumberColumn(format="$%.0f"),
-                    target_df.columns[-1]: st.column_config.NumberColumn(format="%.1f"),
-                },
+            _render_target_allocation_with_tail_controls(
+                title="Latest Hybrid Target",
+                df=pd.DataFrame(target_rows),
+                planning_capital=planning_capital,
+                key_prefix="hybrid_sim_target",
             )
         else:
             st.info("No hybrid target allocation is loaded.")
@@ -2388,6 +2456,10 @@ def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
         "This path is research-first. The frozen ETF benchmark remains the production baseline until the stock sleeve clears broader validation and stress tests."
     )
     st.caption("Use this view to review the current stock list, coverage quality, and rebalance changes.")
+    st.caption(
+        "The stock sleeve targets a concentrated book, but turnover budgeting phases entries and exits. "
+        "Use the concentration snapshot above the table to judge effective holdings rather than raw row count."
+    )
     _render_benchmark_execution_note(planning_capital)
     refresh_requested = st.button("Refresh Stock Snapshot", type="primary", key="refresh_stock_live_snapshot")
     if refresh_requested:
@@ -2437,13 +2509,11 @@ def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
 
     target_df = snapshot.get("target_df")
     if isinstance(target_df, pd.DataFrame) and not target_df.empty:
-        st.subheader("Current Target Allocation")
-        order_df, column_config = _prepare_target_order_table(target_df, planning_capital=planning_capital)
-        st.dataframe(
-            order_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config=column_config,
+        _render_target_allocation_with_tail_controls(
+            title="Current Target Allocation",
+            df=target_df,
+            planning_capital=planning_capital,
+            key_prefix="stock_live_target",
         )
 
     rebalance_df = snapshot.get("rebalance_df")
@@ -2468,6 +2538,10 @@ def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
         "Track the current SMID pullback candidate as a paper allocation book using the same target schedule as Live Screener and Backtest.",
     )
     st.caption("Use this simulator for research paper trading only. The ETF baseline remains the production anchor.")
+    st.caption(
+        "Position counts can temporarily exceed the configured target while older names are being phased out. "
+        "The latest target panel highlights meaningful exposure versus dust positions."
+    )
     _render_benchmark_execution_note(planning_capital)
     refresh_requested = st.button("Refresh Stock Recommendation", type="primary", key="refresh_stock_sim_snapshot")
     if refresh_requested:
@@ -2595,19 +2669,12 @@ def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
         else:
             st.info("No stock allocation stored yet.")
     with right:
-        st.subheader("Latest Stock Target")
         if target_rows:
-            target_df, _ = _prepare_target_order_table(pd.DataFrame(target_rows), planning_capital=planning_capital)
-            st.dataframe(
-                target_df[["Symbol", "Weight %", "Model Fill", "Planning Px", target_df.columns[-2], target_df.columns[-1]]],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Weight %": st.column_config.NumberColumn(format="%.2f%%"),
-                    "Planning Px": st.column_config.NumberColumn(format="$%.2f"),
-                    target_df.columns[-2]: st.column_config.NumberColumn(format="$%.0f"),
-                    target_df.columns[-1]: st.column_config.NumberColumn(format="%.1f"),
-                },
+            _render_target_allocation_with_tail_controls(
+                title="Latest Stock Target",
+                df=pd.DataFrame(target_rows),
+                planning_capital=planning_capital,
+                key_prefix="stock_sim_target",
             )
         else:
             st.info("No stock target allocation is loaded.")

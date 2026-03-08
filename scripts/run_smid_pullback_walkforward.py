@@ -268,6 +268,9 @@ def _build_smid_pullback_scores(features: Dict[str, Any], cfg: Mapping[str, Any]
     with np.errstate(invalid="ignore", divide="ignore"):
         scores = numer / denom
     scores[~pullback_mask] = np.nan
+    min_entry_score = float(cfg.get("min_entry_score", 0.0) or 0.0)
+    if np.isfinite(min_entry_score) and min_entry_score > 0.0:
+        scores[scores < min_entry_score] = np.nan
     active_cols = np.isfinite(scores).any(axis=0)
     if not np.any(active_cols):
         return pd.DataFrame(index=dates)
@@ -318,6 +321,8 @@ def _run_window(
         execution_lag_days=int(cfg.get("execution_lag_days", 1) or 1),
         conviction_weighted=bool(cfg.get("conviction_weighted", True)),
         conviction_power=float(cfg.get("conviction_power", 1.25) or 1.25),
+        min_score=float(cfg.get("min_entry_score", 0.0) or 0.0),
+        prune_weight_floor=float(cfg.get("prune_weight_floor", 0.0) or 0.0),
     )
 
 
