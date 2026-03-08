@@ -472,7 +472,25 @@ def _render_target_allocation_with_tail_controls(
             "They do not mean the strategy is intentionally targeting that many equal-conviction names."
         )
 
-    order_df, column_config = _prepare_target_order_table(primary_df, planning_capital=planning_capital)
+    display_df = primary_df.copy()
+    if dust_positions > 0:
+        summary_row: Dict[str, Any] = {}
+        if "Sleeve" in display_df.columns:
+            summary_row["Sleeve"] = "Residual"
+        if "Source Profile" in display_df.columns:
+            summary_row["Source Profile"] = "Phased residuals"
+        summary_row["Symbol"] = f"Residual tail ({dust_positions} names)"
+        if "Target Weight" in display_df.columns:
+            summary_row["Target Weight"] = float(dust_gross)
+        if "Target %" in display_df.columns:
+            summary_row["Target %"] = float(dust_gross) * 100.0
+        if "Weight %" in display_df.columns:
+            summary_row["Weight %"] = float(dust_gross) * 100.0
+        if "Last Close" in display_df.columns:
+            summary_row["Last Close"] = float("nan")
+        display_df = pd.concat([display_df, pd.DataFrame([summary_row])], ignore_index=True)
+
+    order_df, column_config = _prepare_target_order_table(display_df, planning_capital=planning_capital)
     st.dataframe(order_df, use_container_width=True, hide_index=True, column_config=column_config)
 
     if dust_positions > 0:
@@ -1102,6 +1120,7 @@ def _render_etf_live_screener(etf_profile_label: str) -> None:
             df=target_df,
             planning_capital=planning_capital,
             key_prefix="hybrid_live_target",
+            default_min_display_pct=1.0,
         )
 
     rebalance_df = snapshot.get("rebalance_df")
@@ -2428,6 +2447,7 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
                 df=pd.DataFrame(target_rows),
                 planning_capital=planning_capital,
                 key_prefix="hybrid_sim_target",
+                default_min_display_pct=1.0,
             )
         else:
             st.info("No hybrid target allocation is loaded.")
@@ -2514,6 +2534,7 @@ def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
             df=target_df,
             planning_capital=planning_capital,
             key_prefix="stock_live_target",
+            default_min_display_pct=1.0,
         )
 
     rebalance_df = snapshot.get("rebalance_df")
@@ -2675,6 +2696,7 @@ def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
                 df=pd.DataFrame(target_rows),
                 planning_capital=planning_capital,
                 key_prefix="stock_sim_target",
+                default_min_display_pct=1.0,
             )
         else:
             st.info("No stock target allocation is loaded.")
