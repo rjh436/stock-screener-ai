@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Playwright smoke test for Streamlit Live Screener and Simulator flows.
+Playwright smoke test for benchmark-focused Streamlit Live Screener and Simulator flows.
 
 Usage:
   ./.venv/bin/python tools/test_live_simulator_e2e.py \
       --base-url http://localhost:8501 \
+      --workspace "Hybrid Benchmark" \
       --universe RUSSELL3000
 """
 
@@ -106,12 +107,27 @@ def _wait_for_text(page, pattern: str, timeout_ms: int = 20000) -> bool:
     return False
 
 
-def run_smoke(base_url: str, universe: str, live_timeout_sec: int, out_dir: Path) -> dict:
+def _workspace_refresh_pattern(workspace: str, mode: str) -> str:
+    workspace_name = str(workspace or "").strip().lower()
+    mode_name = str(mode or "").strip().lower()
+    if workspace_name == "etf benchmark":
+        return r"Refresh ETF (Snapshot|Recommendation)"
+    if workspace_name == "hybrid benchmark":
+        return r"Refresh Hybrid (Snapshot|Recommendation)"
+    if workspace_name == "stock benchmark":
+        return r"Refresh Stock (Snapshot|Recommendation)"
+    if mode_name == "live screener":
+        return r"RUN SCAN"
+    return r"PHASE 1: Scan for New Entries"
+
+
+def run_smoke(base_url: str, universe: str, live_timeout_sec: int, out_dir: Path, workspace: str) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     report = {
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "base_url": base_url,
         "universe": universe,
+        "workspace": workspace,
         "steps": [],
         "console_errors": [],
         "page_errors": [],
@@ -170,11 +186,11 @@ def run_smoke(base_url: str, universe: str, live_timeout_sec: int, out_dir: Path
                 (_ for _ in ()).throw(Exception("Live Screener mode click failed"))
                 if not _click_mode(page, "Live Screener")
                 else None,
-                (_ for _ in ()).throw(Exception("Stock Research workspace click failed in Live Screener"))
-                if not _click_workspace(page, "Stock Research")
+                (_ for _ in ()).throw(Exception(f"{workspace} workspace click failed in Live Screener"))
+                if not _click_workspace(page, workspace)
                 else None,
-                (_ for _ in ()).throw(Exception("RUN SCAN did not appear after switching to Stock Research"))
-                if not _wait_for_button(page, r"RUN SCAN", timeout_ms=20000)
+                (_ for _ in ()).throw(Exception(f"Expected control did not appear after switching to {workspace}"))
+                if not _wait_for_button(page, _workspace_refresh_pattern(workspace, "live screener"), timeout_ms=20000)
                 else None,
                 save("live_sim_02_live.png"),
                 "live_mode_ready",
@@ -182,6 +198,12 @@ def run_smoke(base_url: str, universe: str, live_timeout_sec: int, out_dir: Path
         )
 
         def live_scan_step():
+            if workspace != "Stock Research":
+                body = page.text_content("body") or ""
+                save("live_sim_03_live_after_scan.png")
+                if re.search(r"Loaded cached|Current Target Allocation|Current Target|Rebalance Delta|No allocation changes", body, flags=re.I):
+                    return "benchmark_live_ready"
+                return "benchmark_live_loaded"
             if not _select_universe(page, universe):
                 raise Exception(f"Could not select {universe} in Live Screener")
             run_btn = page.get_by_role("button", name=re.compile("RUN SCAN", re.I)).first
@@ -213,11 +235,11 @@ def run_smoke(base_url: str, universe: str, live_timeout_sec: int, out_dir: Path
                 (_ for _ in ()).throw(Exception("Simulator mode click failed"))
                 if not _click_mode(page, "Simulator")
                 else None,
-                (_ for _ in ()).throw(Exception("Stock Research workspace click failed in Simulator"))
-                if not _click_workspace(page, "Stock Research")
+                (_ for _ in ()).throw(Exception(f"{workspace} workspace click failed in Simulator"))
+                if not _click_workspace(page, workspace)
                 else None,
-                (_ for _ in ()).throw(Exception("Phase 1 scan button did not appear after switching to Stock Research"))
-                if not _wait_for_button(page, r"PHASE 1: Scan for New Entries", timeout_ms=20000)
+                (_ for _ in ()).throw(Exception(f"Expected simulator control did not appear after switching to {workspace}"))
+                if not _wait_for_button(page, _workspace_refresh_pattern(workspace, "simulator"), timeout_ms=20000)
                 else None,
                 save("live_sim_04_simulator.png"),
                 "simulator_mode_ready",
@@ -225,6 +247,12 @@ def run_smoke(base_url: str, universe: str, live_timeout_sec: int, out_dir: Path
         )
 
         def simulator_step():
+            if workspace != "Stock Research":
+                body = page.text_content("body") or ""
+                save("live_sim_05_simulator_after_phase1.png")
+                if re.search(r"Adopt Latest|Stored .* Allocation|Latest .* Target|Required Rebalance", body, flags=re.I):
+                    return "benchmark_simulator_ready"
+                return "benchmark_simulator_loaded"
             if not _select_universe(page, universe):
                 raise Exception(f"Could not select {universe} in Simulator")
             phase1_btn = page.get_by_role(
@@ -258,6 +286,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Live Screener + Simulator smoke test")
     parser.add_argument("--base-url", default="http://localhost:8501", help="Streamlit URL")
     parser.add_argument("--universe", default="RUSSELL3000", help="Universe to select")
+    parser.add_argument(
+        "--workspace",
+        default="Hybrid Benchmark",
+        choices=["Hybrid Benchmark", "ETF Benchmark", "Stock Benchmark", "Stock Research"],
+        help="Workspace to exercise in Live Screener and Simulator.",
+    )
     parser.add_argument("--live-timeout-sec", type=int, default=150, help="Live scan wait timeout")
     parser.add_argument(
         "--out-dir",
@@ -272,6 +306,7 @@ def main() -> int:
         universe=args.universe,
         live_timeout_sec=max(30, int(args.live_timeout_sec)),
         out_dir=out_dir,
+        workspace=args.workspace,
     )
 
     report_path = out_dir / "live_simulator_smoke_report.json"

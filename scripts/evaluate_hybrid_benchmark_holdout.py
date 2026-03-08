@@ -26,7 +26,7 @@ from scripts.run_etf_rotation_walkforward import _download_yfinance_pack
 
 
 DEFAULT_ETF_CONFIG = ROOT / "config" / "etf_rotation_growth_core5_residual_defensive_calmar_v1.json"
-DEFAULT_STOCK_CONFIG = ROOT / "config" / "smid_pullback_r3000_tb006_v1.json"
+DEFAULT_STOCK_CONFIG = ROOT / "config" / "smid_pullback_r3000_tc4_tb003_v1.json"
 DEFAULT_WEIGHTS = [0.25, 0.4, 0.5, 0.6, 0.75]
 
 

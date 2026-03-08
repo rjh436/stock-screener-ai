@@ -29,7 +29,7 @@ from scripts.run_smid_pullback_walkforward import (
 )
 
 
-DEFAULT_CONFIG = ROOT / "config" / "smid_pullback_r3000_tb006_v1.json"
+DEFAULT_CONFIG = ROOT / "config" / "smid_pullback_r3000_tc4_tb003_v1.json"
 
 
 def _parse_csv_numbers(raw: str, cast):
@@ -114,6 +114,7 @@ def _mutate_cfg(
     turnover_budget: float,
     min_entry_score: float,
     prune_weight_floor: float,
+    friction_multiplier: float,
 ) -> Dict[str, Any]:
     cfg = copy.deepcopy(dict(base_cfg))
     cfg["target_count"] = int(target_count)
@@ -130,9 +131,9 @@ def _mutate_cfg(
     )
     if "friction" in cfg and isinstance(cfg["friction"], Mapping):
         friction = dict(cfg["friction"])
-        mult = float(max(0.0, 1.0 * 1.0))
+        mult = float(max(0.0, friction_multiplier))
         for key in ("transaction_cost_bps", "entry_slippage_bps", "exit_slippage_bps"):
-            friction[key] = float(friction.get(key, 0.0) or 0.0)
+            friction[key] = float(friction.get(key, 0.0) or 0.0) * mult
         cfg["friction"] = friction
     return cfg
 
@@ -183,6 +184,7 @@ def main() -> None:
                         turnover_budget=turnover_budget,
                         min_entry_score=min_entry_score,
                         prune_weight_floor=prune_weight_floor,
+                        friction_multiplier=float(args.friction_multiplier),
                     )
                     scores = _build_smid_pullback_scores(features, cfg)
                     if scores.empty:
@@ -192,6 +194,7 @@ def main() -> None:
                                 "turnover_budget": float(turnover_budget),
                                 "min_entry_score": float(min_entry_score),
                                 "prune_weight_floor": float(prune_weight_floor),
+                                "friction_multiplier": float(args.friction_multiplier),
                                 "error": "no_scores",
                             }
                         )
@@ -223,6 +226,7 @@ def main() -> None:
                             "turnover_budget": float(turnover_budget),
                             "min_entry_score": float(min_entry_score),
                             "prune_weight_floor": float(prune_weight_floor),
+                            "friction_multiplier": float(args.friction_multiplier),
                             "max_position_weight": float(cfg.get("max_position_weight", 0.0) or 0.0),
                             "train": _window_metrics(train_run),
                             "holdout": _window_metrics(holdout_run),

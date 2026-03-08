@@ -59,22 +59,27 @@ ETF_FROZEN_BENCHMARKS = {
 }
 ETF_FROZEN_DEFAULT_LABEL = "Validated ETF Benchmark (Frozen)"
 STOCK_BENCHMARK_CANDIDATES = {
-    "Validated Stock Benchmark Candidate": os.path.join(
+    "Validated Stock Benchmark (Risk-Adjusted)": os.path.join(
+        "config", "smid_pullback_r3000_tc4_tb003_v1.json"
+    ),
+    "Higher Return Stock Benchmark": os.path.join(
         "config", "smid_pullback_r3000_tb006_v1.json"
     ),
-    "Broader Stock Benchmark Candidate": os.path.join(
-        "config", "smid_pullback_broad_v1.json"
-    ),
 }
-STOCK_BENCHMARK_DEFAULT_LABEL = "Validated Stock Benchmark Candidate"
+STOCK_BENCHMARK_DEFAULT_LABEL = "Validated Stock Benchmark (Risk-Adjusted)"
 HYBRID_BENCHMARK_CANDIDATES = {
+    "Validated Hybrid Benchmark (25/75)": {
+        "etf_profile_label": ETF_FROZEN_DEFAULT_LABEL,
+        "stock_profile_label": STOCK_BENCHMARK_DEFAULT_LABEL,
+        "etf_weight": 0.25,
+    },
     "Balanced Hybrid Benchmark (50/50)": {
         "etf_profile_label": ETF_FROZEN_DEFAULT_LABEL,
         "stock_profile_label": STOCK_BENCHMARK_DEFAULT_LABEL,
         "etf_weight": 0.50,
     },
 }
-HYBRID_BENCHMARK_DEFAULT_LABEL = "Balanced Hybrid Benchmark (50/50)"
+HYBRID_BENCHMARK_DEFAULT_LABEL = "Validated Hybrid Benchmark (25/75)"
 PRIMARY_STRATEGY_OPTIONS = ["Hybrid Benchmark", "ETF Benchmark", "Stock Benchmark", "Stock Research"]
 STOCK_RESEARCH_LEADERS = [
     "Superperformance Alpha B4",
@@ -326,9 +331,10 @@ def _display_profile_label(label: str) -> str:
     mapping = {
         ETF_FROZEN_DEFAULT_LABEL: "ETF Baseline",
         "Higher Return ETF Benchmark": "ETF Higher Return",
-        HYBRID_BENCHMARK_DEFAULT_LABEL: "Hybrid 50/50",
+        HYBRID_BENCHMARK_DEFAULT_LABEL: "Hybrid 25/75",
+        "Balanced Hybrid Benchmark (50/50)": "Hybrid 50/50",
         STOCK_BENCHMARK_DEFAULT_LABEL: "Stock Leader",
-        "Broader Stock Benchmark Candidate": "Stock Broad",
+        "Higher Return Stock Benchmark": "Stock Higher Return",
     }
     return str(mapping.get(str(label), label))
 
@@ -499,6 +505,82 @@ def _render_target_allocation_with_tail_controls(
             st.dataframe(dust_order_df, use_container_width=True, hide_index=True, column_config=dust_column_config)
 
 
+def _render_rebalance_with_tail_controls(
+    *,
+    title: str,
+    df: pd.DataFrame,
+    planning_capital: float,
+    key_prefix: str,
+    default_min_delta_pct: float = 0.5,
+) -> None:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return
+
+    delta_weights = pd.to_numeric(df.get("Delta %"), errors="coerce").fillna(0.0).abs() / 100.0
+    if delta_weights.empty:
+        order_df, column_config = _prepare_rebalance_order_table(df, planning_capital=planning_capital)
+        st.subheader(title)
+        st.dataframe(order_df, use_container_width=True, hide_index=True, column_config=column_config)
+        return
+
+    st.subheader(title)
+    min_delta_pct = st.slider(
+        "Hide rebalance deltas smaller than (%)",
+        min_value=0.0,
+        max_value=2.0,
+        value=float(default_min_delta_pct),
+        step=0.1,
+        key=f"{key_prefix}_min_delta_pct",
+        help="Collapse tiny rebalance legs that come from phased turnover budgeting rather than a fresh high-conviction decision.",
+    )
+    min_delta_weight = float(min_delta_pct) / 100.0
+    keep_mask = delta_weights >= min_delta_weight
+    primary_df = df.loc[keep_mask].copy()
+    tail_df = df.loc[~keep_mask].copy()
+
+    total_rows = int((delta_weights > 0).sum())
+    displayed_rows = int(keep_mask.sum())
+    hidden_rows = int((~keep_mask).sum())
+    displayed_gross = float(delta_weights.loc[keep_mask].sum()) if displayed_rows else 0.0
+    hidden_gross = float(delta_weights.loc[~keep_mask].sum()) if hidden_rows else 0.0
+    st.caption(
+        f"Configured view: {displayed_rows}/{total_rows} rebalance rows shown at >= {min_delta_pct:.1f}% each. "
+        f"Displayed rebalance gross {displayed_gross:.1%}; hidden tail gross {hidden_gross:.1%}."
+    )
+    if hidden_rows > 0:
+        st.info(
+            "Tiny rebalance rows are usually phased trims/adds from the turnover budget, not new full-conviction entries."
+        )
+
+    display_df = primary_df.copy()
+    if hidden_rows > 0:
+        summary_row: Dict[str, Any] = {}
+        if "Sleeve" in display_df.columns:
+            summary_row["Sleeve"] = "Residual"
+        if "Source Profile" in display_df.columns:
+            summary_row["Source Profile"] = "Phased residuals"
+        summary_row["Symbol"] = f"Residual rebalance tail ({hidden_rows} rows)"
+        if "Current %" in display_df.columns:
+            summary_row["Current %"] = float("nan")
+        if "Prev %" in display_df.columns:
+            summary_row["Prev %"] = float("nan")
+        if "Target %" in display_df.columns:
+            summary_row["Target %"] = float("nan")
+        summary_row["Delta %"] = float(hidden_gross) * 100.0
+        summary_row["Action"] = "Mixed phased rebalance"
+        if "Last Close" in display_df.columns:
+            summary_row["Last Close"] = float("nan")
+        display_df = pd.concat([display_df, pd.DataFrame([summary_row])], ignore_index=True)
+
+    order_df, column_config = _prepare_rebalance_order_table(display_df, planning_capital=planning_capital)
+    st.dataframe(order_df, use_container_width=True, hide_index=True, column_config=column_config)
+
+    if hidden_rows > 0:
+        with st.expander(f"Show hidden rebalance tail ({hidden_rows} rows, {hidden_gross:.1%} gross)"):
+            dust_order_df, dust_column_config = _prepare_rebalance_order_table(tail_df, planning_capital=planning_capital)
+            st.dataframe(dust_order_df, use_container_width=True, hide_index=True, column_config=dust_column_config)
+
+
 def _prepare_rebalance_order_table(
     df: pd.DataFrame,
     *,
@@ -522,9 +604,10 @@ def _prepare_rebalance_order_table(
         for notional, price in zip(out[order_notional_col], out["Planning Px"])
     ]
 
-    order_cols = [col for col in ("Sleeve", "Source Profile", "Symbol", "Prev %", "Target %", "Delta %", "Action") if col in out.columns]
+    order_cols = [col for col in ("Sleeve", "Source Profile", "Symbol", "Current %", "Prev %", "Target %", "Delta %", "Action") if col in out.columns]
     order_cols.extend(["Model Fill", "Planning Px", order_notional_col, est_shares_col])
     column_config = {
+        "Current %": st.column_config.NumberColumn(format="%.2f%%"),
         "Prev %": st.column_config.NumberColumn(format="%.2f%%"),
         "Target %": st.column_config.NumberColumn(format="%.2f%%"),
         "Delta %": st.column_config.NumberColumn(format="%.2f%%"),
@@ -1048,6 +1131,8 @@ def _load_etf_paper_state() -> Dict[str, Any]:
     state.update(payload)
     if not isinstance(state.get("holdings"), dict):
         state["holdings"] = {}
+    if str(state.get("profile_label") or "") not in ETF_FROZEN_BENCHMARKS:
+        state["profile_label"] = ETF_FROZEN_DEFAULT_LABEL
     return state
 
 
@@ -1119,19 +1204,18 @@ def _render_etf_live_screener(etf_profile_label: str) -> None:
             title="Current Target Allocation",
             df=target_df,
             planning_capital=planning_capital,
-            key_prefix="hybrid_live_target",
+            key_prefix="etf_live_target",
             default_min_display_pct=1.0,
         )
 
     rebalance_df = snapshot.get("rebalance_df")
     if isinstance(rebalance_df, pd.DataFrame) and not rebalance_df.empty:
-        st.subheader("Rebalance Delta vs Previous Signal")
-        order_df, column_config = _prepare_rebalance_order_table(rebalance_df, planning_capital=planning_capital)
-        st.dataframe(
-            order_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config=column_config,
+        _render_rebalance_with_tail_controls(
+            title="Rebalance Delta vs Previous Signal",
+            df=rebalance_df,
+            planning_capital=planning_capital,
+            key_prefix="etf_live_rebalance",
+            default_min_delta_pct=0.5,
         )
     else:
         st.info("No allocation changes vs the previous ETF signal.")
@@ -1251,52 +1335,40 @@ def _render_etf_simulator(etf_profile_label: str) -> None:
 
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("Stored ETF Allocation")
         if current_rows:
-            current_df, _ = _prepare_target_order_table(pd.DataFrame(current_rows), planning_capital=planning_capital)
-            st.dataframe(
-                current_df[["Symbol", "Weight %", "Model Fill", "Planning Px", current_df.columns[-2], current_df.columns[-1]]]
-                if "Weight %" in current_df.columns else current_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Weight %": st.column_config.NumberColumn(format="%.2f%%"),
-                    "Planning Px": st.column_config.NumberColumn(format="$%.2f"),
-                    current_df.columns[-2]: st.column_config.NumberColumn(format="$%.0f"),
-                    current_df.columns[-1]: st.column_config.NumberColumn(format="%.1f"),
-                },
+            _render_target_allocation_with_tail_controls(
+                title="Stored ETF Allocation",
+                df=pd.DataFrame(current_rows),
+                planning_capital=planning_capital,
+                key_prefix="etf_sim_current",
+                default_min_display_pct=1.0,
             )
         else:
+            st.subheader("Stored ETF Allocation")
             st.info("No ETF allocation stored yet.")
     with c2:
-        st.subheader("Latest ETF Target")
         if target_rows:
-            target_df, _ = _prepare_target_order_table(pd.DataFrame(target_rows), planning_capital=planning_capital)
-            st.dataframe(
-                target_df[["Symbol", "Weight %", "Model Fill", "Planning Px", target_df.columns[-2], target_df.columns[-1]]]
-                if "Weight %" in target_df.columns else target_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Weight %": st.column_config.NumberColumn(format="%.2f%%"),
-                    "Planning Px": st.column_config.NumberColumn(format="$%.2f"),
-                    target_df.columns[-2]: st.column_config.NumberColumn(format="$%.0f"),
-                    target_df.columns[-1]: st.column_config.NumberColumn(format="%.1f"),
-                },
+            _render_target_allocation_with_tail_controls(
+                title="Latest ETF Target",
+                df=pd.DataFrame(target_rows),
+                planning_capital=planning_capital,
+                key_prefix="etf_sim_target",
+                default_min_display_pct=1.0,
             )
         else:
+            st.subheader("Latest ETF Target")
             st.warning("Latest ETF target is empty.")
 
-    st.subheader("Required Rebalance")
     if not delta_df.empty:
-        order_df, column_config = _prepare_rebalance_order_table(delta_df, planning_capital=planning_capital)
-        st.dataframe(
-            order_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config=column_config,
+        _render_rebalance_with_tail_controls(
+            title="Required Rebalance",
+            df=delta_df,
+            planning_capital=planning_capital,
+            key_prefix="etf_sim_rebalance",
+            default_min_delta_pct=0.5,
         )
     else:
+        st.subheader("Required Rebalance")
         st.success("Stored ETF allocation already matches the latest target.")
 
 
@@ -2010,6 +2082,9 @@ def _build_stock_benchmark_live_snapshot(
             return {
                 "config_name": str(cfg.get("name", "") or os.path.basename(config_path)),
                 "config_path": str(Path(config_path).resolve()),
+                "configured_target_count": int(cfg.get("target_count", 0) or 0),
+                "configured_turnover_budget": float(_safe_float(cfg.get("turnover_budget"), 0.0)),
+                "configured_max_position_weight": float(_safe_float(cfg.get("max_position_weight"), 0.0)),
                 "latest_signal_date": latest_signal_dt.date().isoformat(),
                 "previous_signal_date": previous_signal_dt.date().isoformat() if previous_signal_dt is not None else None,
                 "latest_target_weights": latest_weights,
@@ -2052,6 +2127,8 @@ def _load_stock_benchmark_paper_state() -> Dict[str, Any]:
     state.update(payload)
     if not isinstance(state.get("holdings"), dict):
         state["holdings"] = {}
+    if str(state.get("profile_label") or "") not in STOCK_BENCHMARK_CANDIDATES:
+        state["profile_label"] = STOCK_BENCHMARK_DEFAULT_LABEL
     return state
 
 
@@ -2086,6 +2163,14 @@ def _build_hybrid_benchmark_live_snapshot(*, profile_label: str, end_date: Optio
     etf_snapshot = _build_etf_live_snapshot(
         config_path=ETF_FROZEN_BENCHMARKS[etf_profile_label],
         end_date=sync_end_date,
+    )
+    latest_signal_detail = _describe_signal_pair(
+        etf_snapshot.get("latest_signal_date"),
+        stock_snapshot.get("latest_signal_date"),
+    )
+    previous_signal_detail = _describe_signal_pair(
+        etf_snapshot.get("previous_signal_date"),
+        stock_snapshot.get("previous_signal_date"),
     )
 
     latest_weights = _blend_weight_maps(
@@ -2159,14 +2244,10 @@ def _build_hybrid_benchmark_live_snapshot(*, profile_label: str, end_date: Optio
         "stock_profile_label": stock_profile_label,
         "etf_weight": float(etf_weight),
         "stock_weight": float(stock_weight),
-        "latest_signal_date": _describe_signal_pair(
-            etf_snapshot.get("latest_signal_date"),
-            stock_snapshot.get("latest_signal_date"),
-        ),
-        "previous_signal_date": _describe_signal_pair(
-            etf_snapshot.get("previous_signal_date"),
-            stock_snapshot.get("previous_signal_date"),
-        ),
+        "latest_signal_date": sync_end_date,
+        "previous_signal_date": str(stock_snapshot.get("previous_signal_date") or etf_snapshot.get("previous_signal_date") or ""),
+        "latest_signal_detail": latest_signal_detail,
+        "previous_signal_detail": previous_signal_detail,
         "latest_target_weights": latest_weights,
         "previous_target_weights": previous_weights,
         "target_df": target_df,
@@ -2196,6 +2277,8 @@ def _load_hybrid_benchmark_paper_state() -> Dict[str, Any]:
     state.update(payload)
     if not isinstance(state.get("holdings"), dict):
         state["holdings"] = {}
+    if str(state.get("profile_label") or "") not in HYBRID_BENCHMARK_CANDIDATES:
+        state["profile_label"] = HYBRID_BENCHMARK_DEFAULT_LABEL
     return state
 
 
@@ -2218,10 +2301,10 @@ def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
     expected_end_date = _latest_completed_market_session_date()
     render_mode_header(
         "🧩 Hybrid Benchmark",
-        "Review the fixed 50/50 blend of the frozen ETF benchmark and corrected stock benchmark candidate.",
+        "Review the selected fixed blend of the ETF anchor and the validated stock benchmark candidate.",
     )
     st.caption(
-        "This path combines the current production ETF anchor with the current stock research leader. "
+        "This path combines the production ETF anchor with the validated stock benchmark candidate. "
         "Signals remain close-to-next-day only."
     )
     st.caption("Use this view to review the blended ETF and stock allocations before the next trading session.")
@@ -2259,18 +2342,37 @@ def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
         resolved = str(snapshot.get("resolved_end_date") or snapshot.get("latest_signal_date") or "latest available")
         st.warning(f"Using the last successful hybrid snapshot from `{resolved}` while a fresh rebuild is unavailable.")
 
+    effective_signal_date = str(snapshot.get("resolved_end_date") or snapshot.get("latest_signal_date", "-"))
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Hybrid Profile", _display_profile_label(hybrid_profile_label))
-    m2.metric("Signal Date", str(snapshot.get("latest_signal_date", "-")))
+    m2.metric("Signal Date", effective_signal_date)
     m3.metric("Gross Exposure", f"{float(snapshot.get('max_gross_exposure_pct', 0.0)):.1%}")
-    m4.metric("Active ETFs", int(snapshot.get("active_etfs", 0) or 0))
-    m5.metric("Active Stocks", int(snapshot.get("active_stocks", 0) or 0))
+    etf_live_weights = {
+        str(sym): float(weight)
+        for sym, weight in dict(dict(snapshot.get("etf_snapshot") or {}).get("latest_target_weights") or {}).items()
+        if _safe_float(weight, 0.0) > 0.0
+    }
+    stock_live_weights = {
+        str(sym): float(weight)
+        for sym, weight in dict(dict(snapshot.get("stock_snapshot") or {}).get("latest_target_weights") or {}).items()
+        if _safe_float(weight, 0.0) > 0.0
+    }
+    m4.metric("ETF Names", sum(1 for weight in etf_live_weights.values() if float(weight) >= 0.01))
+    m5.metric("Stock Names >=2%", sum(1 for weight in stock_live_weights.values() if float(weight) >= 0.02))
     st.caption(
         f"Blend: {float(snapshot.get('etf_weight', 0.0)):.0%} ETF / "
         f"{float(snapshot.get('stock_weight', 0.0)):.0%} Stock | "
         f"ETF `{snapshot.get('etf_profile_label')}` | "
         f"Stock `{snapshot.get('stock_profile_label')}`"
     )
+    st.caption(
+        f"Stock sleeve config: target count {int(dict(snapshot.get('stock_snapshot') or {}).get('configured_target_count', 0) or 0)} | "
+        f"turnover budget {float(dict(snapshot.get('stock_snapshot') or {}).get('configured_turnover_budget', 0.0) or 0.0):.1%} | "
+        f"max position {float(dict(snapshot.get('stock_snapshot') or {}).get('configured_max_position_weight', 0.0) or 0.0):.1%}"
+    )
+    signal_detail = str(snapshot.get("latest_signal_detail") or "").strip()
+    if signal_detail and signal_detail != effective_signal_date:
+        st.caption(f"Signal detail: {signal_detail}")
     _render_snapshot_resolution_note(dict(snapshot.get("stock_snapshot") or {}), label="Stock sleeve")
 
     stock_cov = dict(dict(snapshot.get("stock_snapshot") or {}).get("daily_membership_price_coverage") or {})
@@ -2282,24 +2384,22 @@ def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
 
     target_df = snapshot.get("target_df")
     if isinstance(target_df, pd.DataFrame) and not target_df.empty:
-        st.subheader("Current Target Allocation")
-        order_df, column_config = _prepare_target_order_table(target_df, planning_capital=planning_capital)
-        st.dataframe(
-            order_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config=column_config,
+        _render_target_allocation_with_tail_controls(
+            title="Current Target Allocation",
+            df=target_df,
+            planning_capital=planning_capital,
+            key_prefix="hybrid_live_target",
+            default_min_display_pct=2.0,
         )
 
     rebalance_df = snapshot.get("rebalance_df")
     if isinstance(rebalance_df, pd.DataFrame) and not rebalance_df.empty:
-        st.subheader("Rebalance Delta vs Previous Signal")
-        order_df, column_config = _prepare_rebalance_order_table(rebalance_df, planning_capital=planning_capital)
-        st.dataframe(
-            order_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config=column_config,
+        _render_rebalance_with_tail_controls(
+            title="Rebalance Delta vs Previous Signal",
+            df=rebalance_df,
+            planning_capital=planning_capital,
+            key_prefix="hybrid_live_rebalance",
+            default_min_delta_pct=0.5,
         )
     else:
         st.info("No allocation changes vs the previous hybrid signal.")
@@ -2310,7 +2410,7 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
     expected_end_date = _latest_completed_market_session_date()
     render_mode_header(
         "🎮 Hybrid Benchmark Paper Allocator",
-        "Track the fixed 50/50 hybrid benchmark using the same target schedule as Live Screener and Backtest.",
+        "Track the selected hybrid benchmark using the same target schedule as Live Screener and Backtest.",
     )
     st.caption("Use Adopt Latest only after reviewing both ETF and stock sleeve changes below.")
     _render_benchmark_execution_note(planning_capital)
@@ -2355,6 +2455,7 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
         if _safe_float(weight, 0.0) > 0.0
     }
 
+    effective_signal_date = str(snapshot_payload.get("resolved_end_date") or snapshot_payload.get("latest_signal_date") or "None")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Stored Profile", _display_profile_label(str(state.get("profile_label") or HYBRID_BENCHMARK_DEFAULT_LABEL)))
     m2.metric("Adopted Signal", str(state.get("adopted_signal_date") or "None"))
@@ -2362,6 +2463,9 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
     m4.metric("Target Gross", f"{sum(latest_weights.values()):.1%}")
 
     _render_snapshot_resolution_note(dict(snapshot_payload.get("stock_snapshot") or {}), label="Stock sleeve")
+    signal_detail = str(snapshot_payload.get("latest_signal_detail") or "").strip()
+    if signal_detail and signal_detail != effective_signal_date:
+        st.caption(f"Signal detail: {signal_detail}")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -2374,7 +2478,7 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
             _save_hybrid_benchmark_paper_state(
                 {
                     "profile_label": hybrid_profile_label,
-                    "adopted_signal_date": snapshot_payload.get("latest_signal_date"),
+                    "adopted_signal_date": effective_signal_date,
                     "holdings": latest_weights,
                 }
             )
@@ -2426,17 +2530,12 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
     with left:
         st.subheader("Stored Hybrid Allocation")
         if current_rows:
-            current_df, _ = _prepare_target_order_table(pd.DataFrame(current_rows), planning_capital=planning_capital)
-            st.dataframe(
-                current_df[["Symbol", "Weight %", "Model Fill", "Planning Px", current_df.columns[-2], current_df.columns[-1]]],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Weight %": st.column_config.NumberColumn(format="%.2f%%"),
-                    "Planning Px": st.column_config.NumberColumn(format="$%.2f"),
-                    current_df.columns[-2]: st.column_config.NumberColumn(format="$%.0f"),
-                    current_df.columns[-1]: st.column_config.NumberColumn(format="%.1f"),
-                },
+            _render_target_allocation_with_tail_controls(
+                title="Stored Hybrid Allocation",
+                df=pd.DataFrame(current_rows),
+                planning_capital=planning_capital,
+                key_prefix="hybrid_sim_current",
+                default_min_display_pct=2.0,
             )
         else:
             st.info("No hybrid allocation stored yet.")
@@ -2447,21 +2546,21 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
                 df=pd.DataFrame(target_rows),
                 planning_capital=planning_capital,
                 key_prefix="hybrid_sim_target",
-                default_min_display_pct=1.0,
+                default_min_display_pct=2.0,
             )
         else:
             st.info("No hybrid target allocation is loaded.")
 
-    st.subheader("Required Rebalance")
     if not delta_df.empty:
-        order_df, column_config = _prepare_rebalance_order_table(delta_df, planning_capital=planning_capital)
-        st.dataframe(
-            order_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config=column_config,
+        _render_rebalance_with_tail_controls(
+            title="Required Rebalance",
+            df=delta_df,
+            planning_capital=planning_capital,
+            key_prefix="hybrid_sim_rebalance",
+            default_min_delta_pct=0.5,
         )
     else:
+        st.subheader("Required Rebalance")
         st.success("Stored hybrid allocation already matches the latest target.")
 
 
@@ -2517,7 +2616,17 @@ def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
     m1.metric("Stock Profile", _display_profile_label(stock_profile_label))
     m2.metric("Signal Date", str(snapshot.get("latest_signal_date", "-")))
     m3.metric("Gross Exposure", f"{float(snapshot.get('max_gross_exposure_pct', 0.0)):.1%}")
-    m4.metric("Active Names", len(dict(snapshot.get("latest_target_weights") or {})))
+    latest_weights = {
+        str(sym): float(weight)
+        for sym, weight in dict(snapshot.get("latest_target_weights") or {}).items()
+        if _safe_float(weight, 0.0) > 0.0
+    }
+    m4.metric("Core Names >=2%", sum(1 for weight in latest_weights.values() if float(weight) >= 0.02))
+    st.caption(
+        f"Configured core book: target count {int(snapshot.get('configured_target_count', 0) or 0)} | "
+        f"turnover budget {float(snapshot.get('configured_turnover_budget', 0.0) or 0.0):.1%} | "
+        f"max position {float(snapshot.get('configured_max_position_weight', 0.0) or 0.0):.1%}"
+    )
     st.caption(
         f"Coverage: {float(snapshot.get('coverage_ratio', 0.0)):.1%} union | "
         f"{float(dict(snapshot.get('daily_membership_price_coverage') or {}).get('mean', 0.0)):.1%} mean daily PIT"
@@ -2534,18 +2643,17 @@ def _render_stock_benchmark_live_screener(stock_profile_label: str) -> None:
             df=target_df,
             planning_capital=planning_capital,
             key_prefix="stock_live_target",
-            default_min_display_pct=1.0,
+            default_min_display_pct=2.0,
         )
 
     rebalance_df = snapshot.get("rebalance_df")
     if isinstance(rebalance_df, pd.DataFrame) and not rebalance_df.empty:
-        st.subheader("Rebalance Delta vs Previous Signal")
-        order_df, column_config = _prepare_rebalance_order_table(rebalance_df, planning_capital=planning_capital)
-        st.dataframe(
-            order_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config=column_config,
+        _render_rebalance_with_tail_controls(
+            title="Rebalance Delta vs Previous Signal",
+            df=rebalance_df,
+            planning_capital=planning_capital,
+            key_prefix="stock_live_rebalance",
+            default_min_delta_pct=0.5,
         )
     else:
         st.info("No allocation changes vs the previous stock signal.")
@@ -2675,17 +2783,12 @@ def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
     with left:
         st.subheader("Stored Stock Allocation")
         if current_rows:
-            current_df, _ = _prepare_target_order_table(pd.DataFrame(current_rows), planning_capital=planning_capital)
-            st.dataframe(
-                current_df[["Symbol", "Weight %", "Model Fill", "Planning Px", current_df.columns[-2], current_df.columns[-1]]],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Weight %": st.column_config.NumberColumn(format="%.2f%%"),
-                    "Planning Px": st.column_config.NumberColumn(format="$%.2f"),
-                    current_df.columns[-2]: st.column_config.NumberColumn(format="$%.0f"),
-                    current_df.columns[-1]: st.column_config.NumberColumn(format="%.1f"),
-                },
+            _render_target_allocation_with_tail_controls(
+                title="Stored Stock Allocation",
+                df=pd.DataFrame(current_rows),
+                planning_capital=planning_capital,
+                key_prefix="stock_sim_current",
+                default_min_display_pct=2.0,
             )
         else:
             st.info("No stock allocation stored yet.")
@@ -2696,36 +2799,36 @@ def _render_stock_benchmark_simulator(stock_profile_label: str) -> None:
                 df=pd.DataFrame(target_rows),
                 planning_capital=planning_capital,
                 key_prefix="stock_sim_target",
-                default_min_display_pct=1.0,
+                default_min_display_pct=2.0,
             )
         else:
             st.info("No stock target allocation is loaded.")
 
-    st.subheader("Required Rebalance")
     if not delta_df.empty:
-        order_df, column_config = _prepare_rebalance_order_table(delta_df, planning_capital=planning_capital)
-        st.dataframe(
-            order_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config=column_config,
+        _render_rebalance_with_tail_controls(
+            title="Required Rebalance",
+            df=delta_df,
+            planning_capital=planning_capital,
+            key_prefix="stock_sim_rebalance",
+            default_min_delta_pct=0.5,
         )
     else:
+        st.subheader("Required Rebalance")
         st.success("Stored stock allocation already matches the latest target.")
 
 
 def _render_stock_benchmark_lab(default_end_date: str, *, stock_profile_label: str) -> None:
     st.markdown("### 📘 Stock Benchmark Lab")
     st.caption(
-        "Run the current stock benchmark candidate outside the generic stock-strategy engine. "
-        "This is the current research leader that beat the frozen ETF benchmark in the initial PIT Russell holdout."
+        "Run the current stock benchmark candidates outside the generic stock-strategy engine. "
+        "This is the concentrated SMID pullback lane that beat the frozen ETF benchmark in PIT Russell holdout testing."
     )
     st.caption("Blind Holdout is the truth-testing view. Full Sample is descriptive only.")
     _render_benchmark_execution_note(_current_benchmark_planning_capital())
     m1, m2, m3 = st.columns(3)
-    m1.metric("Corrected Holdout CAGR", "36.91%")
-    m2.metric("Corrected Holdout Max DD", "22.01%")
-    m3.metric("Lead Config", "SMID Pullback R3000 TB006")
+    m1.metric("Validated Holdout CAGR", "36.00%")
+    m2.metric("Validated Holdout Max DD", "17.05%")
+    m3.metric("Lead Config", "SMID Pullback R3000 TC4 TB003")
 
     st.info(f"Using stock profile from the sidebar: **{_display_profile_label(stock_profile_label)}**")
     eval_mode = st.radio(
@@ -2871,15 +2974,15 @@ def _render_stock_benchmark_lab(default_end_date: str, *, stock_profile_label: s
 def _render_hybrid_benchmark_lab(default_end_date: str, *, hybrid_profile_label: str) -> None:
     st.markdown("### 🧩 Hybrid Benchmark Lab")
     st.caption(
-        "Run the fixed 50/50 hybrid benchmark outside the generic stock-strategy engine. "
-        "This blends the frozen ETF baseline with the corrected stock benchmark candidate."
+        "Run the fixed ETF + stock benchmark blends outside the generic stock-strategy engine. "
+        "This is the current recommended combined frontier."
     )
     st.caption("Blind Holdout is the validation view for the fixed blend. Full Sample is the long-run context view.")
     _render_benchmark_execution_note(_current_benchmark_planning_capital())
     h1, h2, h3 = st.columns(3)
-    h1.metric("Research Holdout CAGR", "31.16%")
-    h2.metric("Research Holdout Max DD", "17.21%")
-    h3.metric("Blend", "50% ETF / 50% Stock")
+    h1.metric("Validated Holdout CAGR", "33.71%")
+    h2.metric("Validated Holdout Max DD", "14.92%")
+    h3.metric("Default Blend", "25% ETF / 75% Stock")
 
     st.info(f"Using hybrid profile from the sidebar: **{_display_profile_label(hybrid_profile_label)}**")
     eval_mode = st.radio(
@@ -3554,16 +3657,16 @@ with st.sidebar:
     elif primary_strategy == "Hybrid Benchmark":
         st.markdown(
             "- **Workspace:** Hybrid Benchmark\n"
-            "- **Combined frontier:** Fixed 50/50 ETF + stock blend\n"
-            "- **Research holdout:** 31.16% CAGR / 17.21% DD\n"
-            "- **Status:** default recommended benchmark workspace; ETF remains the production anchor"
+            "- **Combined frontier:** Fixed ETF + stock benchmark blends\n"
+            "- **Validated default holdout:** 33.71% CAGR / 14.92% DD\n"
+            "- **Status:** default recommended workspace; ETF remains the production anchor"
         )
     elif primary_strategy == "Stock Benchmark":
         st.markdown(
             "- **Workspace:** Stock Benchmark\n"
-            "- **Research leader:** SMID Pullback R3000 TB006 V1\n"
-            "- **Corrected holdout:** 36.91% CAGR / 22.01% DD\n"
-            "- **Status:** research-first; hybrid is now the strongest combined candidate"
+            "- **Research leader:** SMID Pullback R3000 TC4 TB003 V1\n"
+            "- **Validated holdout:** 36.00% CAGR / 17.05% DD\n"
+            "- **Status:** research-first; hybrid is the strongest combined candidate"
         )
     else:
         st.markdown(
@@ -3631,13 +3734,13 @@ with st.sidebar:
         st.caption("3. Use Simulator to adopt the current paper allocation.")
         st.caption("4. Benchmark orders are modeled at the next open; planning tables convert weights into estimated dollars and shares.")
     elif primary_strategy == "Hybrid Benchmark":
-        st.caption("1. Review the combined 50/50 allocation in Live Screener.")
-        st.caption("2. Validate the blend in Backtest before changing weights.")
+        st.caption("1. Review the selected hybrid allocation in Live Screener.")
+        st.caption("2. Validate the selected blend in Backtest before changing weights.")
         st.caption("3. Use Simulator to mirror the hybrid target book.")
         st.caption("4. Planning tables show estimated dollars and shares at the latest close for next-open execution.")
     elif primary_strategy == "Stock Benchmark":
         st.caption("1. Review the current stock target list in Live Screener.")
-        st.caption("2. Use Backtest for coverage-gated validation.")
+        st.caption("2. Use Backtest for coverage-gated validation across the concentrated stock candidates.")
         st.caption("3. Treat Simulator as research paper trading, not production.")
         st.caption("4. Planning tables show estimated dollars and shares using the selected benchmark planning capital.")
     else:

@@ -28,7 +28,7 @@ from scripts.run_smid_pullback_walkforward import (
 
 
 DEFAULT_CONFIGS = [
-    ROOT / "config" / "smid_pullback_broad_v1.json",
+    ROOT / "config" / "smid_pullback_r3000_tc4_tb003_v1.json",
     ROOT / "config" / "smid_pullback_r3000_tb006_v1.json",
 ]
 DEFAULT_MIN_UNIVERSE_COVERAGE = 0.60

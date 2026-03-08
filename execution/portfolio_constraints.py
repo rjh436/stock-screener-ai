@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Mapping
+from typing import Dict, Iterable, Mapping
 
 import numpy as np
 
@@ -160,6 +160,10 @@ def enforce_turnover_budget(
     prev_weights: Mapping[str, float],
     target_weights: Mapping[str, float],
     turnover_budget: float,
+    *,
+    mode: str = "blend",
+    priority_symbols: Iterable[str] | None = None,
+    cleanup_weight_floor: float = 0.0,
 ) -> Dict[str, float]:
     def _clean_abs(weights: Mapping[str, float]) -> Dict[str, float]:
         out: Dict[str, float] = {}
@@ -190,6 +194,112 @@ def enforce_turnover_budget(
     keys = sorted(set(prev.keys()) | set(target.keys()))
     if not keys:
         return {}
+
+    mode_name = str(mode or "blend").strip().lower()
+    if mode_name in {"priority", "concentrated"}:
+        current = dict(prev)
+        priority_list = [str(sym) for sym in (priority_symbols or []) if str(sym)]
+        priority_set = set(priority_list)
+        cleanup_floor = float(cleanup_weight_floor or 0.0)
+
+        def _purge_tiny(weights: Dict[str, float]) -> Dict[str, float]:
+            return {k: float(v) for k, v in weights.items() if np.isfinite(v) and float(v) > 1e-12}
+
+        # Stage 0: sell tiny obsolete names first. This improves concentration at low turnover cost.
+        if np.isfinite(cleanup_floor) and cleanup_floor > 0.0:
+            small_non_targets = sorted(
+                (
+                    (sym, float(wt))
+                    for sym, wt in current.items()
+                    if sym not in priority_set and float(wt) <= cleanup_floor + 1e-12
+                ),
+                key=lambda item: float(item[1]),
+            )
+            for sym, wt in small_non_targets:
+                cost = float(wt) / 2.0
+                if cost > budget + 1e-12:
+                    break
+                budget -= cost
+                current.pop(sym, None)
+            current = _purge_tiny(current)
+
+        def _ordered_deficits(weights: Mapping[str, float]) -> list[tuple[str, float]]:
+            rows = []
+            seen = set()
+            # Buy the highest target weights first.
+            preferred = sorted(
+                ((sym, float(target.get(sym, 0.0))) for sym in priority_list if float(target.get(sym, 0.0)) > 0.0),
+                key=lambda item: float(item[1]),
+                reverse=True,
+            )
+            for sym, _ in preferred:
+                deficit = float(target.get(sym, 0.0)) - float(weights.get(sym, 0.0))
+                if deficit > 1e-12:
+                    rows.append((sym, deficit))
+                    seen.add(sym)
+            for sym, tgt in sorted(target.items(), key=lambda item: float(item[1]), reverse=True):
+                if sym in seen:
+                    continue
+                deficit = float(tgt) - float(weights.get(sym, 0.0))
+                if deficit > 1e-12:
+                    rows.append((sym, deficit))
+            return rows
+
+        def _ordered_excesses(weights: Mapping[str, float]) -> list[tuple[str, float]]:
+            non_target = []
+            target_over = []
+            for sym, wt in weights.items():
+                excess = float(wt) - float(target.get(sym, 0.0))
+                if excess <= 1e-12:
+                    continue
+                if sym in priority_set:
+                    target_over.append((sym, excess))
+                else:
+                    non_target.append((sym, excess))
+            # Exit obsolete names first; largest weights first aligns the book faster.
+            non_target.sort(key=lambda item: float(item[1]), reverse=True)
+            target_over.sort(key=lambda item: float(item[1]), reverse=True)
+            return non_target + target_over
+
+        while budget > 1e-12:
+            deficits = _ordered_deficits(current)
+            excesses = _ordered_excesses(current)
+
+            if deficits and excesses:
+                sell_sym, sell_amt = excesses[0]
+                buy_sym, buy_amt = deficits[0]
+                transfer = min(float(sell_amt), float(buy_amt), float(budget))
+                if transfer <= 1e-12:
+                    break
+                current[sell_sym] = float(current.get(sell_sym, 0.0)) - transfer
+                current[buy_sym] = float(current.get(buy_sym, 0.0)) + transfer
+                budget -= transfer
+                current = _purge_tiny(current)
+                continue
+
+            if deficits:
+                buy_sym, buy_amt = deficits[0]
+                transfer = min(float(buy_amt), float(budget) * 2.0)
+                if transfer <= 1e-12:
+                    break
+                current[buy_sym] = float(current.get(buy_sym, 0.0)) + transfer
+                budget -= transfer / 2.0
+                current = _purge_tiny(current)
+                continue
+
+            if excesses:
+                sell_sym, sell_amt = excesses[0]
+                transfer = min(float(sell_amt), float(budget) * 2.0)
+                if transfer <= 1e-12:
+                    break
+                current[sell_sym] = float(current.get(sell_sym, 0.0)) - transfer
+                budget -= transfer / 2.0
+                current = _purge_tiny(current)
+                continue
+
+            break
+
+        return _clean_abs(current)
 
     turnover = 0.5 * sum(abs(target.get(k, 0.0) - prev.get(k, 0.0)) for k in keys)
     if turnover <= budget + 1e-12:

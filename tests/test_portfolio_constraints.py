@@ -37,6 +37,35 @@ class PortfolioConstraintsTests(unittest.TestCase):
         self.assertLessEqual(turnover, 0.20 + 1e-8)
         self.assertGreater(constrained.get("AAA", 0.0), next_w["AAA"])
 
+    def test_turnover_budget_priority_cleans_obsolete_tail(self) -> None:
+        prev_w = {"AAA": 0.02, "BBB": 0.49, "CCC": 0.49}
+        next_w = {"BBB": 0.50, "CCC": 0.50}
+        constrained = enforce_turnover_budget(
+            prev_w,
+            next_w,
+            turnover_budget=0.02,
+            mode="priority",
+            priority_symbols=["BBB", "CCC"],
+            cleanup_weight_floor=0.03,
+        )
+
+        self.assertNotIn("AAA", constrained)
+        turnover = 0.5 * sum(abs(constrained.get(k, 0.0) - prev_w.get(k, 0.0)) for k in {"AAA", "BBB", "CCC"})
+        self.assertLessEqual(turnover, 0.02 + 1e-8)
+
+    def test_turnover_budget_priority_prefers_targets_over_legacy_names(self) -> None:
+        prev_w = {"AAA": 0.50, "BBB": 0.50}
+        next_w = {"BBB": 0.50, "CCC": 0.50}
+        constrained = enforce_turnover_budget(
+            prev_w,
+            next_w,
+            turnover_budget=0.10,
+            mode="priority",
+            priority_symbols=["BBB", "CCC"],
+        )
+        self.assertGreater(constrained.get("CCC", 0.0), 0.0)
+        self.assertLess(constrained.get("AAA", 0.0), 0.50)
+
 
 if __name__ == "__main__":
     unittest.main()

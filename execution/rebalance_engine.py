@@ -388,6 +388,7 @@ def run_periodic_rebalance(
     conviction_power: float = 1.0,
     min_score: Optional[float] = None,
     prune_weight_floor: float = 0.0,
+    turnover_mode: str = "blend",
 ) -> Dict[str, object]:
     if prices is None or prices.empty:
         return {
@@ -658,11 +659,13 @@ def run_periodic_rebalance(
                 elif risk_scalar < 1.0:
                     target_weights = {k: (v * risk_scalar) for k, v in target_weights.items()}
 
-            target_weights = enforce_turnover_budget(actual_prev_weights, target_weights, float(turnover_budget))
-            target_weights = _prune_small_non_targets(
+            target_weights = enforce_turnover_budget(
+                actual_prev_weights,
                 target_weights,
-                selected_symbols=selected,
-                min_weight=float(prune_weight_floor or 0.0),
+                float(turnover_budget),
+                mode=str(turnover_mode or "blend"),
+                priority_symbols=selected,
+                cleanup_weight_floor=float(prune_weight_floor or 0.0),
             )
             target_turnover_val = float(_turnover(actual_prev_weights, target_weights))
 

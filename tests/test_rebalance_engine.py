@@ -443,6 +443,7 @@ class RebalanceEngineTests(unittest.TestCase):
             turnover_budget=0.10,
             start_cash=100000.0,
             prune_weight_floor=0.03,
+            turnover_mode="priority",
         )
         logs = out.get("rebalance_log", [])
         self.assertGreaterEqual(len(logs), 2)
