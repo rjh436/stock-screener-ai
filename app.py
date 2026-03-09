@@ -1618,6 +1618,7 @@ def _run_stock_benchmark(
         start_date=str(start_ts.date().isoformat()),
         end_date=str(end_ts.date().isoformat()),
         days=days,
+        config_paths=[config_path],
     )
     coverage_ratio = helpers["coverage_ratio"](
         list(context.get("requested_symbols") or []),
