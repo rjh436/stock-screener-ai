@@ -389,6 +389,7 @@ def run_periodic_rebalance(
     min_score: Optional[float] = None,
     prune_weight_floor: float = 0.0,
     turnover_mode: str = "blend",
+    min_hold_days: Optional[int] = None,
 ) -> Dict[str, object]:
     if prices is None or prices.empty:
         return {
@@ -451,6 +452,14 @@ def run_periodic_rebalance(
                 stale_limit_days = sd
         except Exception:
             stale_limit_days = None
+    minimum_hold_days: Optional[int] = None
+    if min_hold_days is not None:
+        try:
+            md = int(min_hold_days)
+            if md > 0:
+                minimum_hold_days = md
+        except Exception:
+            minimum_hold_days = None
 
     # Restrict to dates with available prices; score snapshots are pulled on or before date.
     trade_dates = list(pd.Index(px.index).unique())
@@ -595,6 +604,7 @@ def run_periodic_rebalance(
             signal_dt = rebalance_events[dt]
             if signal_dt == dt:
                 same_day_signal_exec += 1
+            mode_name = str(turnover_mode or "blend").strip().lower()
             if target_schedule is not None:
                 target_weights = _coerce_weight_row(target_schedule, signal_dt)
                 selected = sorted(target_weights.keys())
@@ -624,6 +634,41 @@ def run_periodic_rebalance(
                         existing_symbols=positions.keys(),
                         hold_buffer_mult=float(hold_buffer_mult),
                     )
+                    if mode_name in {"hard_rotate", "discrete"} and minimum_hold_days is not None and minimum_hold_days > 0:
+                        locked: List[str] = []
+                        for sym in positions.keys():
+                            meta = position_meta.get(str(sym), {})
+                            entry_dt = meta.get("entry_date")
+                            if not isinstance(entry_dt, pd.Timestamp):
+                                continue
+                            held_days = int((signal_dt - entry_dt).days)
+                            if held_days >= int(minimum_hold_days):
+                                continue
+                            price_val = signal_prices.get(sym)
+                            if price_val is None or not np.isfinite(price_val) or float(price_val) <= 0:
+                                continue
+                            locked.append(str(sym))
+
+                        if locked:
+                            ranked_lookup = pd.to_numeric(ranked, errors="coerce")
+                            locked = sorted(
+                                list(dict.fromkeys(locked)),
+                                key=lambda sym: float(ranked_lookup.get(sym, float("-inf"))),
+                                reverse=True,
+                            )
+                            merged: List[str] = []
+                            for sym in locked[: int(target_count)]:
+                                if sym not in merged:
+                                    merged.append(sym)
+                            remaining_slots = max(0, int(target_count) - len(merged))
+                            for sym in selected:
+                                if sym in merged:
+                                    continue
+                                if remaining_slots <= 0:
+                                    break
+                                merged.append(sym)
+                                remaining_slots -= 1
+                            selected = merged[: int(target_count)]
 
                     if selected:
                         target_weights = _build_selected_target_weights(
@@ -659,14 +704,15 @@ def run_periodic_rebalance(
                 elif risk_scalar < 1.0:
                     target_weights = {k: (v * risk_scalar) for k, v in target_weights.items()}
 
-            target_weights = enforce_turnover_budget(
-                actual_prev_weights,
-                target_weights,
-                float(turnover_budget),
-                mode=str(turnover_mode or "blend"),
-                priority_symbols=selected,
-                cleanup_weight_floor=float(prune_weight_floor or 0.0),
-            )
+            if mode_name not in {"hard_rotate", "discrete"}:
+                target_weights = enforce_turnover_budget(
+                    actual_prev_weights,
+                    target_weights,
+                    float(turnover_budget),
+                    mode=mode_name,
+                    priority_symbols=selected,
+                    cleanup_weight_floor=float(prune_weight_floor or 0.0),
+                )
             target_turnover_val = float(_turnover(actual_prev_weights, target_weights))
 
             execution_price_map = tradable_exec_prices if tradable_exec_prices else (tradable_prices if tradable_prices else last_prices)

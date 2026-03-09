@@ -452,6 +452,78 @@ class RebalanceEngineTests(unittest.TestCase):
         self.assertIn("BBB", later_weights)
         self.assertIn("CCC", later_weights)
 
+    def test_hard_rotate_mode_avoids_partial_weight_transitions(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=30, freq="B")
+        prices = pd.DataFrame(
+            {
+                "AAA": [100.0 + i for i in range(len(dates))],
+                "BBB": [90.0 + i for i in range(len(dates))],
+            },
+            index=dates,
+        )
+        ranks = pd.DataFrame(
+            {
+                "AAA": [100.0] * 10 + [50.0] * (len(dates) - 10),
+                "BBB": [50.0] * 10 + [100.0] * (len(dates) - 10),
+            },
+            index=dates,
+        )
+
+        out = run_periodic_rebalance(
+            prices,
+            ranks,
+            rebalance_freq="W",
+            target_count=1,
+            hold_buffer_mult=1.0,
+            transaction_cost_bps=0.0,
+            turnover_budget=0.03,
+            start_cash=100000.0,
+            turnover_mode="hard_rotate",
+        )
+
+        logs = list(out.get("rebalance_log", []))
+        self.assertGreaterEqual(len(logs), 3)
+        first_weights = logs[0].get("weights", {})
+        self.assertEqual(set(first_weights.keys()), {"AAA"})
+        self.assertAlmostEqual(float(first_weights.get("AAA", 0.0)), 1.0, places=6)
+        later_weights = logs[-1].get("weights", {})
+        self.assertEqual(set(later_weights.keys()), {"BBB"})
+        self.assertAlmostEqual(float(later_weights.get("BBB", 0.0)), 1.0, places=6)
+
+    def test_hard_rotate_min_hold_days_keeps_recent_entry(self) -> None:
+        dates = pd.date_range("2024-01-01", periods=15, freq="B")
+        prices = pd.DataFrame(
+            {
+                "AAA": [100.0 + i for i in range(len(dates))],
+                "BBB": [80.0 + i for i in range(len(dates))],
+            },
+            index=dates,
+        )
+        ranks = pd.DataFrame(
+            {
+                "AAA": [100.0] * 5 + [50.0] * 10,
+                "BBB": [50.0] * 5 + [100.0] * 10,
+            },
+            index=dates,
+        )
+
+        out = run_periodic_rebalance(
+            prices,
+            ranks,
+            rebalance_freq="W",
+            target_count=1,
+            transaction_cost_bps=0.0,
+            turnover_budget=1.0,
+            start_cash=100000.0,
+            turnover_mode="hard_rotate",
+            min_hold_days=14,
+        )
+
+        logs = list(out.get("rebalance_log", []))
+        self.assertGreaterEqual(len(logs), 2)
+        second_weights = logs[1].get("weights", {})
+        self.assertEqual(set(second_weights.keys()), {"AAA"})
+
 
 if __name__ == "__main__":
     unittest.main()

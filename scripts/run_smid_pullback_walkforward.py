@@ -324,6 +324,7 @@ def _run_window(
         min_score=float(cfg.get("min_entry_score", 0.0) or 0.0),
         prune_weight_floor=float(cfg.get("prune_weight_floor", 0.0) or 0.0),
         turnover_mode=str(cfg.get("turnover_mode", "blend") or "blend"),
+        min_hold_days=int(cfg.get("min_hold_days", 0) or 0),
     )
 
 
