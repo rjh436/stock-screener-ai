@@ -3,6 +3,7 @@ from typing import List, Dict, Optional
 from .minervini_sepa import MinerviniSEPAStrategy
 from .superperformance import SuperperformanceStrategy
 from .apex_fusion import ApexFusionStrategy
+from .qullamaggie import QullamaggieStrategy
 from .cross_sectional_momentum import CrossSectionalMomentumStrategy
 from .low_volatility import LowVolatilityStrategy
 from .separate_value_momentum import SeparateValueMomentumStrategy
@@ -18,6 +19,8 @@ STRATEGY_CLASSES = {
     "Minervini SEPA (Daily)": MinerviniSEPAStrategy,
     "Apex Fusion": ApexFusionStrategy,
     "Apex Fusion (Practical)": ApexFusionStrategy,
+    "Qullamaggie Breakout": QullamaggieStrategy,
+    "Qullamaggie Breakout (Practical)": QullamaggieStrategy,
 }
 
 def _resolve_strategy_class(config: Dict) -> Optional[type]:
@@ -35,6 +38,8 @@ def _resolve_strategy_class(config: Dict) -> Optional[type]:
         return MinerviniSEPAStrategy
     if strategy_type in {"apex_fusion", "apexfusion", "apex"}:
         return ApexFusionStrategy
+    if strategy_type in {"qullamaggie", "qmg", "qulla"}:
+        return QullamaggieStrategy
     return STRATEGY_CLASSES.get(name)
 
 def load_strategies(configs: List[Dict]) -> List[object]:
