@@ -5,7 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.evaluate_low_turnover_alpha_frontier import _apply_realistic_costs, _load_frontier_rows, _score
+from scripts.evaluate_low_turnover_alpha_frontier import (
+    _apply_realistic_costs,
+    _load_frontier_rows,
+    _resolve_config_args,
+    _score,
+)
 
 
 class EvaluateLowTurnoverAlphaFrontierTests(unittest.TestCase):
@@ -50,6 +55,12 @@ class EvaluateLowTurnoverAlphaFrontierTests(unittest.TestCase):
             "metrics_10y": {"cagr_pct": 20.0, "max_dd_pct": 25.0, "trades_per_year": 220.0, "same_day_open_entries": 0},
         }
         self.assertGreater(_score(base, 150.0), _score(high_turnover, 150.0))
+
+    def test_resolve_config_args_uses_defaults_only_when_empty(self) -> None:
+        self.assertEqual(["a.json"], _resolve_config_args(["a.json"]))
+        resolved = _resolve_config_args([])
+        self.assertGreaterEqual(len(resolved), 1)
+        self.assertIn("config/superperformance_alpha_b4.json", resolved)
 
 
 if __name__ == "__main__":

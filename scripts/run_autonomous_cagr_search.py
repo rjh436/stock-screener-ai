@@ -35,12 +35,17 @@ DEFAULT_FRONTIER_LOGS = [
 ]
 
 
+def _resolve_args(values: list[str] | None, defaults: list[str]) -> list[str]:
+    out = [str(v) for v in (values or []) if str(v).strip()]
+    return out if out else list(defaults)
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Autonomous frontier search for realistic high-CAGR moderate-turnover strategies."
     )
-    parser.add_argument("--config", action="append", default=list(DEFAULT_BASE_CONFIGS))
-    parser.add_argument("--frontier-log", action="append", default=list(DEFAULT_FRONTIER_LOGS))
+    parser.add_argument("--config", action="append", default=[])
+    parser.add_argument("--frontier-log", action="append", default=[])
     parser.add_argument("--frontier-limit", type=int, default=12)
     parser.add_argument("--cache", default=str(ROOT / "data" / "cache_indicators.pkl"))
     parser.add_argument("--start-5y", default="2021-03-02")
@@ -123,10 +128,10 @@ def _apply_realistic_costs(cfg: Dict[str, Any], args: argparse.Namespace) -> Dic
 
 def _candidate_pool(args: argparse.Namespace) -> List[Dict[str, Any]]:
     configs: List[Dict[str, Any]] = []
-    for rel in args.config:
+    for rel in _resolve_args(args.config, DEFAULT_BASE_CONFIGS):
         configs.append(_load_json((ROOT / rel).resolve()))
     configs.append(_inject_fast_pyr_candidate())
-    for rel in args.frontier_log:
+    for rel in _resolve_args(args.frontier_log, DEFAULT_FRONTIER_LOGS):
         path = (ROOT / rel).resolve()
         if path.exists():
             configs.extend(_load_frontier_candidates(path, args.frontier_limit))

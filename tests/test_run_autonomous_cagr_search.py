@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.run_autonomous_cagr_search import _dedupe_configs, _load_frontier_candidates
+from scripts.run_autonomous_cagr_search import _dedupe_configs, _load_frontier_candidates, _resolve_args
 
 
 class RunAutonomousCagrSearchTests(unittest.TestCase):
@@ -32,6 +32,10 @@ class RunAutonomousCagrSearchTests(unittest.TestCase):
             out = _load_frontier_candidates(path, 5)
             self.assertEqual("A", out[0]["name"])
             self.assertEqual("B", out[1]["name"])
+
+    def test_resolve_args_uses_defaults_only_when_empty(self) -> None:
+        self.assertEqual(["x"], _resolve_args(["x"], ["a", "b"]))
+        self.assertEqual(["a", "b"], _resolve_args([], ["a", "b"]))
 
 
 if __name__ == "__main__":

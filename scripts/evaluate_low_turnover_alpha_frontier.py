@@ -61,6 +61,11 @@ def _pack_metrics(result: Dict[str, Any], start_date: str, end_date: str) -> Dic
     }
 
 
+def _resolve_config_args(values: list[str] | None) -> list[str]:
+    out = [str(v) for v in (values or []) if str(v).strip()]
+    return out if out else list(DEFAULT_CONFIGS)
+
+
 def _score(row: Dict[str, Any], max_trades_per_year: float) -> float:
     m5 = row.get("metrics_5y", {})
     m10 = row.get("metrics_10y", {})
@@ -102,7 +107,7 @@ def _candidate_configs(args: argparse.Namespace) -> List[Dict[str, Any]]:
         seen.add(raw)
         out.append(cfg)
 
-    for rel_path in args.config:
+    for rel_path in _resolve_config_args(args.config):
         path = (ROOT / rel_path).resolve()
         cfg = json.loads(path.read_text(encoding="utf-8"))
         _append_cfg(cfg)
@@ -153,7 +158,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate low-turnover Alpha candidates on cache-backed PIT Russell 3000 windows."
     )
-    parser.add_argument("--config", action="append", default=list(DEFAULT_CONFIGS))
+    parser.add_argument("--config", action="append", default=[])
     parser.add_argument("--frontier-log", default="")
     parser.add_argument("--frontier-limit", type=int, default=5)
     parser.add_argument("--cache", default=str(ROOT / "data" / "cache_indicators.pkl"))
@@ -200,6 +205,18 @@ def main() -> None:
             "config": cfg,
         }
         row["score"] = _score(row, args.max_trades_per_year)
+        m5 = row["metrics_5y"]
+        m10 = row["metrics_10y"]
+        print(
+            f"  => 5Y CAGR={float(m5.get('cagr_pct', 0.0) or 0.0):.2f}% "
+            f"DD={float(m5.get('max_dd_pct', 0.0) or 0.0):.2f}% "
+            f"TPY={float(m5.get('trades_per_year', 0.0) or 0.0):.1f} | "
+            f"10Y CAGR={float(m10.get('cagr_pct', 0.0) or 0.0):.2f}% "
+            f"DD={float(m10.get('max_dd_pct', 0.0) or 0.0):.2f}% "
+            f"TPY={float(m10.get('trades_per_year', 0.0) or 0.0):.1f} | "
+            f"Score={row['score']:.2f}",
+            flush=True,
+        )
         rows.append(row)
 
     rows.sort(key=lambda item: item.get("score", -1_000_000.0), reverse=True)
