@@ -41,6 +41,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--holdout-start-date", default="2021-01-01")
     parser.add_argument("--holdout-end-date", default="2025-12-31")
     parser.add_argument("--days", type=int, default=3200)
+    parser.add_argument("--rebalance-freqs", default="D,W,M")
+    parser.add_argument("--target-counts", default="4,5,6")
+    parser.add_argument("--hold-buffers", default="1.2,1.4,1.6,2.0,2.5")
+    parser.add_argument("--min-holds", default="3,5,10,15")
+    parser.add_argument("--min-entry-scores", default="0,55,65")
+    parser.add_argument("--trade-target-per-year", type=float, default=150.0)
     parser.add_argument("--out", default="")
     return parser.parse_args()
 
@@ -54,13 +60,23 @@ def _variant_name(cfg: Dict[str, Any]) -> str:
     )
 
 
-def _build_variants(base_cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _parse_csv(raw: str, cast: Any) -> List[Any]:
+    out: List[Any] = []
+    for item in (raw or "").split(","):
+        item = str(item).strip()
+        if not item:
+            continue
+        out.append(cast(item))
+    return out
+
+
+def _build_variants(base_cfg: Dict[str, Any], args: argparse.Namespace) -> List[Dict[str, Any]]:
     variants: List[Dict[str, Any]] = []
-    for freq in ("W", "M"):
-        for target_count in (4, 5, 6):
-            for hold_buffer in (1.2, 1.4, 1.6):
-                for min_hold in (5, 10, 15):
-                    for min_score in (0.0, 55.0, 65.0):
+    for freq in _parse_csv(args.rebalance_freqs, str):
+        for target_count in _parse_csv(args.target_counts, int):
+            for hold_buffer in _parse_csv(args.hold_buffers, float):
+                for min_hold in _parse_csv(args.min_holds, int):
+                    for min_score in _parse_csv(args.min_entry_scores, float):
                         cfg = copy.deepcopy(base_cfg)
                         cfg["rebalance_freq"] = freq
                         cfg["target_count"] = int(target_count)
@@ -167,14 +183,17 @@ def main() -> None:
             holdout_start_date=args.holdout_start_date,
             holdout_end_date=args.holdout_end_date,
         )
-        for cfg in _build_variants(base_cfg)
+        for cfg in _build_variants(base_cfg, args)
     ]
     ok_reports = [row for row in reports if row.get("status") == "ok"]
     ok_reports.sort(
         key=lambda row: (
-            float(row.get("holdout_trades_per_year", float("inf"))) > 150.0,
-            -(float(row.get("holdout_cagr_pct", float("-inf")))),
-            float(row.get("holdout_max_dd_pct", float("inf"))),
+            -(
+                float(row.get("holdout_cagr_pct", float("-inf")))
+                - (0.35 * float(row.get("holdout_max_dd_pct", float("inf"))))
+                - (0.03 * max(0.0, float(row.get("holdout_trades_per_year", float("inf"))) - float(args.trade_target_per_year)))
+            ),
+            float(row.get("holdout_trades_per_year", float("inf"))),
         )
     )
     payload = {
