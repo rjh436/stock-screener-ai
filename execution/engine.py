@@ -880,7 +880,22 @@ def _evaluate_exit_state_machine(
         if params.get("use_trailing_stop", True):
             pos["stop_price"] = float(new_stop)
 
+    confirm_bars_raw = params.get("strategy_exit_confirm_bars", 1)
+    try:
+        confirm_bars = int(confirm_bars_raw) if confirm_bars_raw is not None else 1
+    except Exception:
+        confirm_bars = 1
+    if confirm_bars < 1:
+        confirm_bars = 1
+
     if strat_exit:
+        # Hard stops and target exits are handled immediately. For softer strategy exits,
+        # require repeated closes before arming the next-day exit to reduce whipsaw churn.
+        if confirm_bars > 1 and target_px is None:
+            streak = int(pos.get("strategy_exit_signal_streak", 0) or 0) + 1
+            pos["strategy_exit_signal_streak"] = streak
+            if streak < confirm_bars:
+                return False, current_close, None, cash
         if target_px is not None:
             exit_px = float(target_px)
         elif current_low <= float(pos.get("stop_price", 0.0) or 0.0):
@@ -888,6 +903,8 @@ def _evaluate_exit_state_machine(
         else:
             exit_px = current_close
         return True, exit_px, "STRATEGY_EXIT", cash
+
+    pos["strategy_exit_signal_streak"] = 0
 
     return False, current_close, None, cash
 
@@ -3523,6 +3540,7 @@ def _legacy_run_backtest(
                         "partial_taken": False,
                         "pyramids": 0,
                         "pyramid_pending": False,
+                        "strategy_exit_signal_streak": 0,
                         "exit_pending": False,
                         "exit_pending_day": None,
                         "exit_reason": "",
