@@ -167,8 +167,18 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--soft-trades-per-year", type=float, default=150.0)
     p.add_argument("--five-year-floor", type=float, default=30.0)
     p.add_argument("--top-k", type=int, default=3)
+    p.add_argument("--progress", default="")
     p.add_argument("--out", default="tmp/alpha_targeted_grid_latest.json")
     return p.parse_args()
+
+
+def _write_checkpoint(path: Path | None, payload: Dict[str, Any], rows: List[Dict[str, Any]]) -> None:
+    if path is None:
+        return
+    checkpoint = dict(payload)
+    checkpoint["rows"] = sorted(rows, key=lambda item: item.get("score", -1_000_000.0), reverse=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(checkpoint, indent=2) + "\n", encoding="utf-8")
 
 
 def main() -> None:
@@ -202,6 +212,17 @@ def main() -> None:
             candidates.append(child)
 
     rows: List[Dict[str, Any]] = []
+    out_path = (ROOT / args.out).resolve()
+    progress_path = (ROOT / args.progress).resolve() if args.progress else None
+    base_payload = {
+        "membership_source": membership_source,
+        "soft_trades_per_year": float(args.soft_trades_per_year),
+        "realistic_costs": {
+            "transaction_cost_bps": args.transaction_cost_bps,
+            "entry_slippage_bps": args.entry_slippage_bps,
+            "exit_slippage_bps": args.exit_slippage_bps,
+        },
+    }
     for idx, cfg in enumerate(candidates, start=1):
         name = str(cfg.get("name", f"Candidate {idx}"))
         print(f"[{idx}/{len(candidates)}] {name}", flush=True)
@@ -281,19 +302,14 @@ def main() -> None:
             f"Score={row['score']:.2f}",
             flush=True,
         )
+        _write_checkpoint(progress_path, base_payload, rows)
+        _write_checkpoint(out_path, base_payload, rows)
 
     ranked = sorted(rows, key=lambda item: item.get("score", -1_000_000.0), reverse=True)
     out = {
-        "membership_source": membership_source,
-        "soft_trades_per_year": float(args.soft_trades_per_year),
-        "realistic_costs": {
-            "transaction_cost_bps": args.transaction_cost_bps,
-            "entry_slippage_bps": args.entry_slippage_bps,
-            "exit_slippage_bps": args.exit_slippage_bps,
-        },
+        **base_payload,
         "rows": ranked,
     }
-    out_path = (ROOT / args.out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
     print(out_path)

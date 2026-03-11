@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from scripts.evaluate_alpha_targeted_grid import _normalize, _one_step_neighbors, _resolve_seed_args
+from scripts.evaluate_alpha_targeted_grid import _normalize, _one_step_neighbors, _resolve_seed_args, _write_checkpoint
 
 
 class EvaluateAlphaTargetedGridTests(unittest.TestCase):
@@ -50,6 +53,14 @@ class EvaluateAlphaTargetedGridTests(unittest.TestCase):
         self.assertEqual("exposure", cfg["market_exposure_mode"])
         self.assertEqual(0.0, cfg["max_total_exposure_pct_bear"])
         self.assertEqual(0, cfg["bear_max_positions"])
+
+    def test_write_checkpoint_sorts_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "checkpoint.json"
+            _write_checkpoint(path, {"membership_source": "pit"}, [{"name": "b", "score": 1}, {"name": "a", "score": 2}])
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual("a", payload["rows"][0]["name"])
+            self.assertEqual("pit", payload["membership_source"])
 
 
 if __name__ == "__main__":

@@ -82,6 +82,29 @@ def _score(row: Dict[str, Any], max_trades_per_year: float) -> float:
     return float(score)
 
 
+def _write_partial_out(
+    out_path: Path | None,
+    membership_source: str,
+    transaction_cost_bps: float,
+    entry_slippage_bps: float,
+    exit_slippage_bps: float,
+    rows: List[Dict[str, Any]],
+) -> None:
+    if out_path is None:
+        return
+    payload = {
+        "membership_source": membership_source,
+        "realistic_costs": {
+            "transaction_cost_bps": transaction_cost_bps,
+            "entry_slippage_bps": entry_slippage_bps,
+            "exit_slippage_bps": exit_slippage_bps,
+        },
+        "rows": sorted(rows, key=lambda item: item.get("score", -1_000_000.0), reverse=True),
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
 def _load_frontier_rows(frontier_path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     with frontier_path.open("r", encoding="utf-8") as handle:
@@ -186,6 +209,7 @@ def main() -> None:
     global_data = fetch_data_pack(["SPY", "VIX"], days=int(args.trading_days), backtest_mode=True) or {}
 
     rows: List[Dict[str, Any]] = []
+    out_path = (ROOT / args.out).resolve() if args.out else None
     for raw_cfg in _candidate_configs(args):
         cfg = _apply_realistic_costs(raw_cfg, args)
         name = str(cfg.get("name", "Unnamed"))
@@ -218,6 +242,14 @@ def main() -> None:
             flush=True,
         )
         rows.append(row)
+        _write_partial_out(
+            out_path,
+            membership_source,
+            args.transaction_cost_bps,
+            args.entry_slippage_bps,
+            args.exit_slippage_bps,
+            rows,
+        )
 
     rows.sort(key=lambda item: item.get("score", -1_000_000.0), reverse=True)
     out = {
@@ -230,8 +262,7 @@ def main() -> None:
         "rows": rows,
     }
     print(json.dumps(out, indent=2))
-    if args.out:
-        out_path = (ROOT / args.out).resolve()
+    if out_path is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
         print(f"saved {out_path}")

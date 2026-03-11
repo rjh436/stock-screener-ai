@@ -10,6 +10,7 @@ from scripts.evaluate_low_turnover_alpha_frontier import (
     _load_frontier_rows,
     _resolve_config_args,
     _score,
+    _write_partial_out,
 )
 
 
@@ -61,6 +62,24 @@ class EvaluateLowTurnoverAlphaFrontierTests(unittest.TestCase):
         resolved = _resolve_config_args([])
         self.assertGreaterEqual(len(resolved), 1)
         self.assertIn("config/superperformance_alpha_b4.json", resolved)
+
+    def test_write_partial_out_sorts_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = Path(tmp_dir) / "partial.json"
+            _write_partial_out(
+                out_path,
+                "pit",
+                2.0,
+                10.0,
+                10.0,
+                [
+                    {"name": "B", "score": 2.0},
+                    {"name": "A", "score": 3.0},
+                ],
+            )
+            payload = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual("A", payload["rows"][0]["name"])
+            self.assertEqual("pit", payload["membership_source"])
 
 
 if __name__ == "__main__":
