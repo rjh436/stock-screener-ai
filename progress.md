@@ -2,6 +2,7 @@
 
 ## 2026-03-16
 - Fixed `tests/test_superperformance_vcp_extension.py` so it adds the repo root to `sys.path`, matching the rest of the direct-run test files.
+- Attempted a `tests/sitecustomize.py` bootstrap, confirmed it was not loaded for direct file execution here, and replaced it with explicit repo-root bootstrapping in the older direct-run test modules.
 - Verified direct test execution with `./.venv/bin/python` for:
   - `tests/test_optimizer_fitness.py`
   - `tests/test_robustness.py`

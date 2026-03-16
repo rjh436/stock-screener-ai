@@ -1,9 +1,12 @@
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data.universe import (
     build_russell3000_membership_by_day,

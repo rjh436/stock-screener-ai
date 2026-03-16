@@ -1,8 +1,12 @@
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 import pandas as pd
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data.fundamental_loader import _extract_quarter_record
 from scripts.refresh_missing_fundamental_shares import find_tickers_missing_shares

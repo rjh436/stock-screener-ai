@@ -1,6 +1,10 @@
+import os
+import sys
 import unittest
 
 import pandas as pd
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from strategies.cross_sectional_momentum import CrossSectionalMomentumStrategy
 from strategies.separate_value_momentum import SeparateValueMomentumStrategy
