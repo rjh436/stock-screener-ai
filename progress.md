@@ -17,3 +17,8 @@
   - Current B4 sample: `-0.94%` CAGR, `6.18%` max DD, `5` trades, `0.86` trades/year, stitched OOS CAGR `-1.51%`.
   - Gate forensics on `217,037` checked rows showed `trend_gate`, `adr_gate`, `runup_gate`, and `liquidity` as the largest rejection buckets, but a controlled `classic` trend / lower-ADR probe did not improve realized sample performance.
 - Reverted the unvalidated Alpha B4 config relaxation after the controlled sample remained negative; kept the code-level bug fix and tests only.
+- Traced the realized-trade bottleneck for Alpha B4 on the same PIT sample and found that `40` accepted VCP setups were collapsing to `5` next-day fills, with `35` rejected only because the next open gapped above the `3%` stop-limit band.
+- Benchmarked the VCP entry-path variants and promoted `vcp_entry_mode="same_day_close"` with `vcp_close_extension_max_pct=0.08` for Alpha B4 after it outperformed the current B4 config and the archived frontier/practical configs on the same 10-year sampled PIT window.
+- Rechecked the promoted Alpha B4 config on the sampled `2016-03-02` to `2026-03-02` PIT window:
+  - Promoted B4 sample: `0.97%` CAGR, `11.84%` max DD, `12` trades, `1.2` trades/year, stitched OOS CAGR `1.13%`.
+  - Previous B4 sample on the same window: `0.83%` CAGR, `10.97%` max DD, `8` trades, `0.8` trades/year, stitched OOS CAGR `0.91%`.

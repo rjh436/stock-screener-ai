@@ -678,6 +678,16 @@ class SuperperformanceStrategy(BaseStrategy):
                 self._last_vcp_failure_reason = "setup_volume_not_dry"
                 return None
 
+        close_px = _as_float(row.get("close"), 0.0)
+        vcp_close_extension_max_pct = float(
+            self.params.get("vcp_close_extension_max_pct", 0.0) or 0.0
+        )
+        if (not use_setup_trigger) and trigger_px > 0.0 and vcp_close_extension_max_pct > 0.0:
+            breakout_ext_pct = (close_px - trigger_px) / trigger_px
+            if breakout_ext_pct > vcp_close_extension_max_pct:
+                self._last_vcp_failure_reason = "breakout_close_too_extended"
+                return None
+
         low_px = _as_float(row.get("low"), 0.0)
         max_stop_pct = float(self.params.get("max_stop_pct", 0.06) or 0.06)
         stop_floor = trigger_px * (1.0 - max_stop_pct)
@@ -701,7 +711,6 @@ class SuperperformanceStrategy(BaseStrategy):
 
         entry_timing = "next_day"
         signal_mode = "after_close"
-        close_px = _as_float(row.get("close"), 0.0)
         natr = _as_float(row.get("natr"), float("nan"))
         if vcp_entry_mode in {"same_day", "same_day_close", "close"}:
             entry_timing = "same_day_close"
