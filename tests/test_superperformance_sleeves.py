@@ -372,6 +372,85 @@ class SuperperformanceSleeveTests(unittest.TestCase):
         self.assertIsNotNone(decision_adaptive)
         self.assertEqual(decision_adaptive["entry_type"], "ep")
 
+    def test_adaptive_green_adv50_floor_relaxes_liquidity_gate(self) -> None:
+        base_params = {
+            "multi_sleeve_enabled": False,
+            "warmup_bars": 1,
+            "entry_mode": "ep",
+            "rs_gate_min": 70,
+            "prior_runup_min_pct": 15,
+            "adr_min_pct": 2.5,
+            "fundamental_growth_min_pct": 20,
+            "min_avg_dollar_volume_50": 15000000,
+            "ep_gap_pct": 6,
+            "ep_vol_mult": 3.0,
+            "ep_close_near_high_min": 0.7,
+            "ep_entry_mode": "close",
+            "ep_force_next_day": True,
+        }
+        rows = [
+            {
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "volume": 100000.0,
+                "vol_ma50": 100000.0,
+                "sma10": 99.0,
+                "sma20": 98.0,
+                "sma50": 95.0,
+                "sma150": 90.0,
+                "sma200": 85.0,
+                "ret_1m": 20.0,
+                "ret_3m": 20.0,
+                "rs_percentile": 75.0,
+                "adr_pct": 2.8,
+                "eps_growth_yoy": 30.0,
+                "sales_growth_yoy": 25.0,
+                "spy_close": 500.0,
+                "spy_sma200": 450.0,
+            },
+            {
+                "open": 108.0,
+                "high": 110.0,
+                "low": 106.0,
+                "close": 109.0,
+                "volume": 400000.0,
+                "vol_ma50": 100000.0,
+                "sma10": 105.0,
+                "sma20": 103.0,
+                "sma50": 100.0,
+                "sma150": 95.0,
+                "sma200": 90.0,
+                "ret_1m": 20.0,
+                "ret_3m": 20.0,
+                "rs_percentile": 75.0,
+                "adr_pct": 2.8,
+                "eps_growth_yoy": 30.0,
+                "sales_growth_yoy": 25.0,
+                "spy_close": 505.0,
+                "spy_sma200": 451.0,
+            },
+        ]
+        df = pd.DataFrame(rows)
+
+        strat_static = SuperperformanceStrategy(dict(base_params))
+        decision_static = strat_static.check_setup(df, 1)
+        self.assertIsNone(decision_static)
+        self.assertIn("adv50", strat_static._last_reject_reason)
+
+        adaptive_params = dict(base_params)
+        adaptive_params.update(
+            {
+                "adaptive_breakout_gates_enabled": True,
+                "adaptive_green_min_avg_dollar_volume_50": 5000000,
+            }
+        )
+        strat_adaptive = SuperperformanceStrategy(adaptive_params)
+        decision_adaptive = strat_adaptive.check_setup(df, 1)
+        self.assertIsNotNone(decision_adaptive)
+        self.assertEqual(decision_adaptive["entry_type"], "ep")
+
 
 if __name__ == "__main__":
     unittest.main()

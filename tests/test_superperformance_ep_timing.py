@@ -18,6 +18,14 @@ class SuperperformanceEPEntryTimingTests(unittest.TestCase):
             ]
         )
 
+    def _low_gap_sample_df(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 100000.0, "vol_ma50": 100000.0},
+                {"open": 106.5, "high": 110.0, "low": 105.5, "close": 109.5, "volume": 450000.0, "vol_ma50": 100000.0},
+            ]
+        )
+
     def test_ep_force_next_day_overrides_close_mode(self) -> None:
         strategy = SuperperformanceStrategy(
             {
@@ -47,6 +55,21 @@ class SuperperformanceEPEntryTimingTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision["entry_timing"], "next_day")
         self.assertEqual(decision["signal_mode"], "after_close")
+
+    def test_ep_gap_pct_below_default_is_respected(self) -> None:
+        strategy = SuperperformanceStrategy(
+            {
+                "ep_gap_pct": 6.0,
+                "ep_vol_mult": 3.0,
+                "ep_close_near_high_min": 0.7,
+                "ep_entry_mode": "close",
+                "ep_force_next_day": True,
+                "ep_max_stop_pct": 0.2,
+            }
+        )
+        decision = strategy._ep_candidate(self._low_gap_sample_df(), 1)
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision["entry_timing"], "next_day")
 
 
 if __name__ == "__main__":

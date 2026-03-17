@@ -445,7 +445,7 @@ class SuperperformanceStrategy(BaseStrategy):
             return None
 
         gap_pct = ((open_px - prev_close) / prev_close) * 100.0
-        ep_gap_min = _as_percent_threshold(self.params.get("ep_gap_pct", 8.0), 8.0)
+        ep_gap_min = _as_percent_threshold(self.params.get("ep_gap_pct", 8.0), 0.0)
         ep_vol_mult = max(3.0, float(self.params.get("ep_vol_mult", 3.0) or 3.0))
         close_near_high_min = float(self.params.get("ep_close_near_high_min", 0.80) or 0.80)
         ep_entry_mode = str(self.params.get("ep_entry_mode", "close") or "close").lower()
@@ -522,7 +522,7 @@ class SuperperformanceStrategy(BaseStrategy):
             return "ep:invalid_ohlc"
 
         gap_pct = ((open_px - prev_close) / prev_close) * 100.0
-        ep_gap_min = _as_percent_threshold(self.params.get("ep_gap_pct", 8.0), 8.0)
+        ep_gap_min = _as_percent_threshold(self.params.get("ep_gap_pct", 8.0), 0.0)
         ep_vol_mult = max(3.0, float(self.params.get("ep_vol_mult", 3.0) or 3.0))
         close_near_high_min = float(self.params.get("ep_close_near_high_min", 0.80) or 0.80)
         ep_entry_mode = str(self.params.get("ep_entry_mode", "close") or "close").lower()
@@ -623,7 +623,7 @@ class SuperperformanceStrategy(BaseStrategy):
                 return None
 
             rs_percentile = self._resolve_rs_percentile(row)
-            elite_rs_min = _as_percent_threshold(self.params.get("vcp_elite_rs_override_min", 95.0), 85.0)
+            elite_rs_min = _as_percent_threshold(self.params.get("vcp_elite_rs_override_min", 95.0), 0.0)
             close_px = _as_float(row.get("close"), 0.0)
             high_52w = _first_finite(
                 [
@@ -779,11 +779,20 @@ class SuperperformanceStrategy(BaseStrategy):
         if close_px < min_price:
             return self._reject(f"min_price close={close_px:.2f} < {min_price:.2f}")
 
+        market_green = self._is_adaptive_market_green(row)
+
         min_avg_volume = float(self.params.get("min_avg_volume_30", 0.0) or 0.0)
         vol_ma30 = _as_float(row.get("vol_ma30"), float("nan"))
         if min_avg_volume > 0 and math.isfinite(vol_ma30) and vol_ma30 < min_avg_volume:
             return self._reject(f"liquidity vol_ma30={vol_ma30:.0f} < {min_avg_volume:.0f}")
         min_avg_dollar_volume_50 = float(self.params.get("min_avg_dollar_volume_50", 0.0) or 0.0)
+        if market_green:
+            adaptive_adv50_min = self.params.get("adaptive_green_min_avg_dollar_volume_50")
+            if adaptive_adv50_min is not None:
+                min_avg_dollar_volume_50 = min(
+                    min_avg_dollar_volume_50,
+                    float(adaptive_adv50_min or 0.0),
+                )
         if min_avg_dollar_volume_50 > 0:
             vol_ma50 = _as_float(row.get("vol_ma50"), float("nan"))
             if (not math.isfinite(vol_ma50)) or vol_ma50 <= 0:
@@ -802,7 +811,6 @@ class SuperperformanceStrategy(BaseStrategy):
             ),
             0.0,
         )
-        market_green = self._is_adaptive_market_green(row)
         if market_green:
             adaptive_adr_min = self.params.get("adaptive_green_adr_min_pct")
             if adaptive_adr_min is not None:
@@ -848,7 +856,7 @@ class SuperperformanceStrategy(BaseStrategy):
                 "rs_percentile_min",
                 self.params.get("rs_gate_min", 85.0),
             ),
-            85.0,
+            0.0,
         )
         if market_green:
             adaptive_rs_min = self.params.get("adaptive_green_rs_min")
@@ -878,7 +886,7 @@ class SuperperformanceStrategy(BaseStrategy):
             default=float("nan"),
         )
 
-        growth_min = _as_percent_threshold(self.params.get("fundamental_growth_min_pct", 20.0), 20.0)
+        growth_min = _as_percent_threshold(self.params.get("fundamental_growth_min_pct", 20.0), 0.0)
         # Edgar point-in-time fundamentals can contain denominator artifacts
         # (e.g., extreme negative YoY values around near-zero prior quarters).
         # Treat implausible outliers as unavailable and allow price-action override.
@@ -891,9 +899,9 @@ class SuperperformanceStrategy(BaseStrategy):
         if eps_available and eps_yoy > eps_artifact_guard:
             if (not sales_available) or (sales_yoy < sales_confirm_floor):
                 eps_available = False
-        htf_override = _as_percent_threshold(self.params.get("high_tight_flag_override_pct", 95.0), 95.0)
+        htf_override = _as_percent_threshold(self.params.get("high_tight_flag_override_pct", 95.0), 0.0)
         price_action_pct = self._resolve_price_action_percentile(row, rs_percentile)
-        strong_rs_override_min = _as_percent_threshold(self.params.get("fundamental_override_rs_min", 95.0), 85.0)
+        strong_rs_override_min = _as_percent_threshold(self.params.get("fundamental_override_rs_min", 95.0), 0.0)
         strong_price_override = (
             price_action_pct >= htf_override and rs_percentile >= strong_rs_override_min
         )
