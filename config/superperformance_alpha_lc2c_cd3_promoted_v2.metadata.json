@@ -1,0 +1,34 @@
+{
+  "promoted_at": "2026-03-20 12:28:51 EDT",
+  "promoted_from": "config/superperformance_alpha_lc2c_cd3_vts2.json",
+  "previous_promoted": "config/superperformance_alpha_lc2c_cd3_promoted_v1.json",
+  "artifacts": {
+    "leader_grid": "tmp/alpha_lc2c_vcp_time_stop_grid_leaderb17seed_20260320.json",
+    "full_cache": "tmp/alpha_lc2c_vts2_fullcache_20260320.json"
+  },
+  "constraints": {
+    "allow_margin": false,
+    "signal_mode": "after_close",
+    "next_day_execution_only": true
+  },
+  "metrics_5y": {
+    "cagr_pct": 47.77425109557334,
+    "max_dd_pct": 28.97924715707057,
+    "trades_per_year": 24.603368017524645,
+    "stitched_oos_cagr_pct": 59.931338804113096
+  },
+  "metrics_10y": {
+    "cagr_pct": 28.947383363297874,
+    "max_dd_pct": 29.004619041742973,
+    "trades_per_year": 27.70379244249726,
+    "stitched_oos_cagr_pct": 36.28299205545633,
+    "worst_12m_return_pct": -21.34782872160672
+  },
+  "delta_vs_promoted_v1_10y": {
+    "cagr_pct": 1.3699770287481713,
+    "max_dd_pct": -0.19835959031758688,
+    "trades_per_year": 1.2001642935377905,
+    "stitched_oos_cagr_pct": -0.1070468604463136
+  },
+  "branch_summary": "Sleeve-specific loser recycling on weaker VCP/low-cheat positions improved full-cache 10Y CAGR materially without leverage and kept max drawdown under 30%."
+}

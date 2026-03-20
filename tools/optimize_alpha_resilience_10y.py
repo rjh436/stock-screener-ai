@@ -22,6 +22,8 @@ if str(ROOT) not in sys.path:
 from data.loader import fetch_data_pack
 from data.universe import build_russell3000_membership_by_day, get_universe_symbols_pit_window_with_meta
 from execution.engine import prepare_backtest_data, run_backtest
+from optimization.robustness import baseline_promotion_status, pack_result_metrics, promotion_gate_status, rejection_score
+from optimization.walkforward import promotion_walkforward_status
 from strategies.superperformance import SuperperformanceStrategy
 
 
@@ -62,6 +64,21 @@ def _profit_factor(trades_list: list[dict[str, Any]]) -> float:
     if gross_losses <= 0.0:
         return 3.0 if gross_wins > 0 else 0.0
     return gross_wins / gross_losses
+
+
+def _parse_friction_values(raw: str) -> list[float]:
+    values: list[float] = []
+    for part in str(raw or "").split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            value = float(text)
+        except Exception:
+            continue
+        if value >= 0.0:
+            values.append(float(value))
+    return values or [10.0]
 
 
 def _prepare_context(start: str, end: str) -> Context:
@@ -197,6 +214,48 @@ def _candidate_tweaks(candidate_set: str) -> list[tuple[str, dict[str, Any]]]:
                 },
             ),
             (
+                "ADAPTIVE_GREEN_GATES",
+                {
+                    "adaptive_breakout_gates_enabled": True,
+                    "adaptive_green_rs_min": 80,
+                    "adaptive_green_runup_min_pct": 20,
+                    "adaptive_green_adr_min_pct": 2.5,
+                    "adaptive_green_min_avg_dollar_volume_50": 5000000,
+                },
+            ),
+            (
+                "ADAPTIVE_GREEN_CONC",
+                {
+                    "adaptive_breakout_gates_enabled": True,
+                    "adaptive_green_rs_min": 80,
+                    "adaptive_green_runup_min_pct": 20,
+                    "adaptive_green_adr_min_pct": 2.5,
+                    "adaptive_green_min_avg_dollar_volume_50": 5000000,
+                    "max_positions": 2,
+                    "max_pos_size_pct": 0.5,
+                    "vcp_max_pos_size_pct": 0.5,
+                    "ep_max_pos_size_pct": 0.5,
+                },
+            ),
+            (
+                "ADAPTIVE_GREEN_HOLD_LONGER_CONC",
+                {
+                    "adaptive_breakout_gates_enabled": True,
+                    "adaptive_green_rs_min": 80,
+                    "adaptive_green_runup_min_pct": 20,
+                    "adaptive_green_adr_min_pct": 2.5,
+                    "adaptive_green_min_avg_dollar_volume_50": 5000000,
+                    "time_stop_days": 10,
+                    "ep_time_stop_days": 6,
+                    "vcp_time_stop_days": 15,
+                    "vcp_dead_money_profit_pct": 0.01,
+                    "max_positions": 2,
+                    "max_pos_size_pct": 0.5,
+                    "vcp_max_pos_size_pct": 0.5,
+                    "ep_max_pos_size_pct": 0.5,
+                },
+            ),
+            (
                 "HOLD_LONGER",
                 {
                     "time_stop_days": 10,
@@ -302,12 +361,9 @@ def _candidate_tweaks(candidate_set: str) -> list[tuple[str, dict[str, Any]]]:
 
 
 def _base_score(row: dict[str, Any]) -> float:
-    same_day_open = int(_safe_float(row.get("same_day_open_entries"), 0))
-    max_gross = _safe_float(row.get("max_gross_exposure_pct"), 0.0)
-    if same_day_open > 0:
-        return -1_000_000.0 - same_day_open
-    if max_gross > 1.001:
-        return -900_000.0 - (max_gross * 1000.0)
+    ok, code, _ = promotion_gate_status(row, metrics_5y=row, metrics_10y={}, max_drawdown_gate_pct=30.0)
+    if not ok:
+        return rejection_score(code or 999)
 
     full_cagr = _safe_float(row.get("full_cagr_pct"), 0.0)
     full_dd = _safe_float(row.get("full_max_drawdown_pct"), 0.0)
@@ -379,6 +435,8 @@ def _parse_args() -> argparse.Namespace:
         help="Candidate family to evaluate.",
     )
     parser.add_argument("--apply-best", action="store_true")
+    parser.add_argument("--skip-walkforward-gate", action="store_true")
+    parser.add_argument("--walkforward-frictions", default="10")
     return parser.parse_args()
 
 
@@ -414,6 +472,7 @@ def main() -> int:
         audit = result.get("audit_report") if isinstance(result.get("audit_report"), dict) else {}
         pf = _profit_factor(result.get("trades_list") or [])
         ec = _equity_df(result.get("equity_curve") or [])
+        packed = pack_result_metrics(result, start_date=args.start, end_date=args.end)
 
         early = _window_metrics(ec, early_start, early_end)
         bear = _window_metrics(ec, bear_start, bear_end)
@@ -421,15 +480,13 @@ def main() -> int:
         row = {
             "label": label,
             "tweaks": tweaks,
-            "full_cagr_pct": _safe_float(result.get("cagr"), 0.0) * 100.0,
-            "full_max_drawdown_pct": _safe_float(result.get("max_drawdown_pct"), 0.0) * 100.0,
-            "final_value": _safe_float(result.get("final_value"), 0.0),
-            "total_trades": int(_safe_float(result.get("total_trades"), 0.0)),
-            "hit_rate_pct": _safe_float(result.get("hit_rate"), 0.0),
+            **packed,
+            "full_cagr_pct": packed["cagr_pct"],
+            "full_max_drawdown_pct": packed["max_dd_pct"],
             "profit_factor": pf,
-            "same_day_open_entries": int(_safe_float(audit.get("same_day_open_entries"), 0.0)),
+            "same_day_open_entries": int(_safe_float(audit.get("same_day_open_entries"), packed["same_day_open_entries"])),
             "stale_position_days": int(_safe_float(audit.get("stale_position_days"), 0.0)),
-            "max_gross_exposure_pct": _safe_float(audit.get("max_gross_exposure_pct"), 0.0),
+            "max_gross_exposure_pct": _safe_float(audit.get("max_gross_exposure_pct"), packed["max_gross_exposure_pct"]),
             "early_cagr_pct": early["cagr_pct"],
             "early_max_drawdown_pct": early["max_drawdown_pct"],
             "bear_cagr_pct": bear["cagr_pct"],
@@ -471,6 +528,7 @@ def main() -> int:
         row["final_score"] = _finalize_score(row)
     ranked = sorted(ranked, key=lambda r: float(r["final_score"]), reverse=True)
     champion = ranked[0]
+    baseline = next((row for row in ranked if row["label"] == "BASELINE"), None)
     print(
         "\n[champion] "
         f"{champion['label']} | 10Y CAGR={champion['full_cagr_pct']:.2f}% "
@@ -496,15 +554,66 @@ def main() -> int:
         "symbols_requested": ctx.symbols_requested,
         "symbols_loaded": ctx.symbols_loaded,
         "champion": champion,
+        "baseline": baseline,
         "ranked": ranked,
     }
-    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(f"[saved] {report_path}")
 
     if args.apply_best:
-        cfgs[target_idx].update(champion["tweaks"])
-        generated_path.write_text(json.dumps(cfgs, indent=2), encoding="utf-8")
-        print(f"[apply] Updated {args.strategy_name} in config/generated_strategies.json")
+        should_apply, reason = baseline_promotion_status(
+            champion,
+            baseline,
+            score_key="final_score",
+            max_drawdown_gate_pct=30.0,
+        )
+        promotion: dict[str, Any] = {
+            "baseline_gate_passed": bool(should_apply),
+            "reason": reason,
+        }
+        if should_apply and not args.skip_walkforward_gate:
+            candidate_cfg = copy.deepcopy(base_cfg)
+            candidate_cfg.update(champion["tweaks"])
+            print(
+                f"[walkforward] validating {champion['label']} "
+                f"{args.start} -> {args.end} frictions={args.walkforward_frictions}"
+            )
+            wf_ok, wf_reason, wf_summary, wf_report = promotion_walkforward_status(
+                candidate_cfg,
+                start_date=str(args.start),
+                end_date=str(args.end),
+                transaction_cost_bps=_safe_float(candidate_cfg.get("transaction_cost_bps"), 2.0),
+                friction_values=_parse_friction_values(args.walkforward_frictions),
+                config_path=f"AlphaRes10Y::{champion['label']}",
+            )
+            wf_path = exports_dir / f"alpha_resilience_10y_walkforward_{stamp}.json"
+            wf_path.write_text(json.dumps(wf_report, indent=2), encoding="utf-8")
+            promotion["walkforward"] = {
+                "ok": bool(wf_ok),
+                "reason": wf_reason,
+                "summary": wf_summary,
+                "report_path": str(wf_path),
+            }
+            print(
+                f"[walkforward] 36/12={wf_summary['stitched_36_12_cagr_pct']:.2f}% "
+                f"60/12={wf_summary['stitched_60_12_cagr_pct']:.2f}% "
+                f"DD={wf_summary['full_max_dd_pct']:.2f}%"
+            )
+            if not wf_ok:
+                should_apply = False
+                reason = wf_reason
+        elif should_apply:
+            promotion["walkforward"] = {"skipped": True}
+        if should_apply:
+            cfgs[target_idx].update(champion["tweaks"])
+            generated_path.write_text(json.dumps(cfgs, indent=2), encoding="utf-8")
+            print(f"[apply] Updated {args.strategy_name} in config/generated_strategies.json")
+        else:
+            print(f"[apply] Skipped promotion: {reason}")
+        promotion["applied"] = bool(should_apply)
+        promotion["reason"] = reason
+        report["promotion"] = promotion
+
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(f"[saved] {report_path}")
 
     return 0
 

@@ -15,6 +15,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from optimization.robustness import build_summary_metrics, promotion_gate_status, years_between
+
 OPTIMIZER = os.path.join(ROOT, "optimize_superperformance.py")
 WINNER_FILE = os.path.join(ROOT, "config", "superperformance_winner.json")
 GOLDEN_FILE = os.path.join(ROOT, "config", "GOLDEN_GENOME.json")
@@ -87,12 +89,37 @@ def _fitness_tuple(metrics: dict) -> tuple[float, float, float, float, float, in
     return (cagr, calmar, pf, win_loss_ratio, -dd, -abs(trades - 450))
 
 
+def _optimizer_sample_years() -> float:
+    start = str(os.getenv("APEX_START_DATE", "") or "").strip()
+    end = str(os.getenv("APEX_END_DATE", "") or "").strip()
+    if start and end:
+        try:
+            return max(0.25, float(years_between(start, end)))
+        except Exception:
+            pass
+    return 20.0
+
+
+def _promotion_snapshot(metrics: dict) -> dict:
+    return build_summary_metrics(
+        cagr_pct=float(metrics.get("cagr", 0.0) or 0.0),
+        max_dd_pct=float(metrics.get("dd", 999.0) or 999.0),
+        total_trades=int(metrics.get("trades", 0) or 0),
+        sample_years=_optimizer_sample_years(),
+        final_value=0.0,
+        max_gross_exposure_pct=1.0,
+    )
+
+
 def _is_promotable(metrics: dict) -> bool:
     trades = int(metrics.get("trades", 0) or 0)
     cagr = float(metrics.get("cagr", 0.0) or 0.0)
     dd = float(metrics.get("dd", 999.0) or 999.0)
     pf = float(metrics.get("pf", 0.0) or 0.0)
     win_loss_ratio = float(metrics.get("win_loss_ratio", 0.0) or 0.0)
+    gate_ok, _, _ = promotion_gate_status(_promotion_snapshot(metrics), max_drawdown_gate_pct=30.0)
+    if not gate_ok:
+        return False
     objective_profile = _objective_profile()
     if objective_profile == "superperformance":
         min_promote_cagr = float(os.getenv("APEX_MIN_CAGR_PROMOTE_SUPER", "25.0") or 25.0)

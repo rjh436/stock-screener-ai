@@ -55,6 +55,11 @@ class VCPDetectionResult:
     volume_contraction_1: float
     volume_contraction_2: float
     breakout_volume_multiple: float
+    base_low_price: float = float("nan")
+    base_high_price: float = float("nan")
+    last_contraction_low_price: float = float("nan")
+    base_depth_pct: float = float("nan")
+    base_span_bars: int = 0
 
 
 def detect_vcp_breakout(
@@ -185,6 +190,21 @@ def detect_vcp_breakout(
         c1 = c2 * 1.05
         v1 = float("nan")
 
+    base_start_idx = int(legs[-min(len(legs), max(1, min_contractions))][2])
+    base_slice = slice(base_start_idx, len(window))
+    base_high_price = float(np.nanmax(highs[base_slice])) if highs[base_slice].size > 0 else float("nan")
+    base_low_price = float(np.nanmin(lows[base_slice])) if lows[base_slice].size > 0 else float("nan")
+    if not math.isfinite(base_high_price):
+        base_high_price = float(hi_px_last)
+    if not math.isfinite(base_low_price):
+        base_low_price = float(lows[lo_idx_last]) if np.isfinite(lows[lo_idx_last]) else float("nan")
+    base_depth_pct = (
+        ((base_high_price - base_low_price) / base_high_price) * 100.0
+        if math.isfinite(base_high_price) and math.isfinite(base_low_price) and base_high_price > 0 and base_low_price > 0
+        else float("nan")
+    )
+    last_contraction_low_price = float(lows[lo_idx_last]) if np.isfinite(lows[lo_idx_last]) else float("nan")
+
     # Use the high that started the final contraction as the breakout pivot.
     # This is less brittle than selecting the last generic local high.
     pivot_price = float(hi_px_last)
@@ -213,6 +233,11 @@ def detect_vcp_breakout(
             volume_contraction_1=float(v1) if math.isfinite(v1) else float("nan"),
             volume_contraction_2=float(v2) if math.isfinite(v2) else float("nan"),
             breakout_volume_multiple=volume_multiple,
+            base_low_price=base_low_price,
+            base_high_price=base_high_price,
+            last_contraction_low_price=last_contraction_low_price,
+            base_depth_pct=base_depth_pct,
+            base_span_bars=max(0, len(window) - base_start_idx),
         ),
         "ok",
     )
@@ -323,6 +348,11 @@ def detect_micro_vcp_breakout(
             volume_contraction_1=float(v1) if math.isfinite(v1) else float("nan"),
             volume_contraction_2=float(v2) if math.isfinite(v2) else float("nan"),
             breakout_volume_multiple=volume_multiple,
+            base_low_price=float(trough_price),
+            base_high_price=float(pivot_price),
+            last_contraction_low_price=float(trough_price),
+            base_depth_pct=float(contraction_pct),
+            base_span_bars=int(seg_high.size),
         ),
         "ok_micro",
     )
@@ -347,6 +377,14 @@ class SuperperformanceStrategy(BaseStrategy):
         self._name = self.params.get("name", "Superperformance")
         self._last_reject_reason = ""
         self._last_vcp_failure_reason = ""
+        self._last_low_cheat_failure_reason = ""
+        self._last_ep_failure_reason = ""
+        self._gate_counts = {
+            "ep_reject_clv": 0,
+            "ep_reject_gap_retention": 0,
+            "ep_reject_close_below_open": 0,
+            "ep_reject_prior_high_clearance": 0,
+        }
         super().__init__(self.params)
 
     @property
@@ -360,6 +398,106 @@ class SuperperformanceStrategy(BaseStrategy):
     def _reject(self, reason: str) -> Optional[Dict]:
         self._last_reject_reason = reason
         return None
+
+    def _ep_reject(self, reason: str, gate_key: Optional[str] = None) -> Optional[Dict]:
+        self._last_ep_failure_reason = reason
+        if gate_key:
+            self._gate_counts[gate_key] = int(self._gate_counts.get(gate_key, 0)) + 1
+        return None
+
+    def _ep_close_gate_state(self, row: pd.Series, prev_row: pd.Series) -> Dict[str, float | str | bool | Optional[str]]:
+        prev_close = _as_float(prev_row.get("close"), 0.0)
+        prev_high = _as_float(prev_row.get("high"), 0.0)
+        open_px = _as_float(row.get("open"), 0.0)
+        high_px = _as_float(row.get("high"), 0.0)
+        low_px = _as_float(row.get("low"), 0.0)
+        close_px = _as_float(row.get("close"), 0.0)
+        vol = _as_float(row.get("volume"), 0.0)
+        vol_ma50 = _as_float(row.get("vol_ma50"), 0.0)
+        if prev_close <= 0 or open_px <= 0 or high_px <= 0 or low_px <= 0 or close_px <= 0:
+            return {"reason": "ep:invalid_ohlc", "gate_key": None}
+
+        gap_pct = ((open_px - prev_close) / prev_close) * 100.0
+        ep_gap_min = _as_percent_threshold(self.params.get("ep_gap_pct", 8.0), 0.0)
+        ep_vol_mult = max(3.0, float(self.params.get("ep_vol_mult", 3.0) or 3.0))
+        close_near_high_min = float(self.params.get("ep_close_near_high_min", 0.80) or 0.80)
+        ep_min_clv = max(0.0, min(1.0, _as_float(self.params.get("ep_min_clv"), 0.0)))
+        ep_min_gap_retention = max(0.0, min(1.0, _as_float(self.params.get("ep_min_gap_retention"), 0.0)))
+        ep_require_close_above_open = bool(self.params.get("ep_require_close_above_open", False))
+        raw_prior_high_clearance = self.params.get("ep_min_close_above_prior_high_pct", None)
+        enforce_prior_high_clearance = raw_prior_high_clearance is not None
+        ep_min_close_above_prior_high_pct = max(0.0, _as_float(raw_prior_high_clearance, 0.0))
+
+        day_range = high_px - low_px
+        clv = _as_float(row.get("clv"), float("nan"))
+        if not math.isfinite(clv):
+            clv = ((close_px - low_px) / day_range) if day_range > 0 else 0.0
+        vol_multiple = (vol / vol_ma50) if vol_ma50 > 0 else 0.0
+        opening_gap = open_px - prev_close
+        retained_gap = close_px - prev_close
+        gap_retention = retained_gap / max(opening_gap, 1e-9)
+        prior_high_threshold = (
+            prev_high * (1.0 + ep_min_close_above_prior_high_pct)
+            if prev_high > 0
+            else float("nan")
+        )
+
+        state: Dict[str, float | str | bool | Optional[str]] = {
+            "reason": None,
+            "gate_key": None,
+            "gap_pct": gap_pct,
+            "ep_gap_min": ep_gap_min,
+            "vol_multiple": vol_multiple,
+            "ep_vol_mult": ep_vol_mult,
+            "clv": clv,
+            "close_near_high_min": close_near_high_min,
+            "gap_retention": gap_retention,
+            "ep_min_clv": ep_min_clv,
+            "ep_min_gap_retention": ep_min_gap_retention,
+            "ep_require_close_above_open": ep_require_close_above_open,
+            "open_px": open_px,
+            "close_px": close_px,
+            "prev_high": prev_high,
+            "enforce_prior_high_clearance": enforce_prior_high_clearance,
+            "ep_min_close_above_prior_high_pct": ep_min_close_above_prior_high_pct,
+            "prior_high_threshold": prior_high_threshold,
+            "vol_ma50": vol_ma50,
+        }
+
+        if gap_pct < ep_gap_min:
+            state["reason"] = f"ep:gap_pct={gap_pct:.2f}<{ep_gap_min:.2f}"
+            return state
+        if vol_ma50 <= 0:
+            state["reason"] = "ep:vol_ma50<=0"
+            return state
+        if vol_multiple < ep_vol_mult:
+            state["reason"] = f"ep:vol_mult={vol_multiple:.2f}<{ep_vol_mult:.2f}"
+            return state
+        if clv < close_near_high_min:
+            state["reason"] = f"ep:close_near_high={clv:.2f}<{close_near_high_min:.2f}"
+            return state
+        if ep_min_clv > 0.0 and clv < ep_min_clv:
+            state["reason"] = f"ep:clv={clv:.2f}<{ep_min_clv:.2f}"
+            state["gate_key"] = "ep_reject_clv"
+            return state
+        if ep_min_gap_retention > 0.0 and gap_retention < ep_min_gap_retention:
+            state["reason"] = f"ep:gap_retention={gap_retention:.2f}<{ep_min_gap_retention:.2f}"
+            state["gate_key"] = "ep_reject_gap_retention"
+            return state
+        if ep_require_close_above_open and close_px < open_px:
+            state["reason"] = f"ep:close_below_open close={close_px:.2f}<open={open_px:.2f}"
+            state["gate_key"] = "ep_reject_close_below_open"
+            return state
+        if enforce_prior_high_clearance:
+            if prev_high <= 0 or not math.isfinite(prior_high_threshold):
+                state["reason"] = "ep:prior_high_invalid"
+                state["gate_key"] = "ep_reject_prior_high_clearance"
+                return state
+            if close_px < prior_high_threshold:
+                state["reason"] = f"ep:prior_high_clearance={close_px:.2f}<{prior_high_threshold:.2f}"
+                state["gate_key"] = "ep_reject_prior_high_clearance"
+                return state
+        return state
 
     def _resolve_rs_percentile(self, row: pd.Series) -> float:
         candidates = [
@@ -426,10 +564,83 @@ class SuperperformanceStrategy(BaseStrategy):
             and spy_close > spy_sma200
         )
 
+    def _trend_gate_reason(
+        self,
+        df: pd.DataFrame,
+        i: int,
+        *,
+        mode: str,
+        prefix: str = "trend_gate",
+    ) -> str:
+        row = df.iloc[i]
+        close_px = _as_float(row.get("close"), 0.0)
+        sma10 = _as_float(row.get("sma10"), 0.0)
+        sma20 = _as_float(row.get("sma20"), 0.0)
+        sma50 = _as_float(row.get("sma50"), 0.0)
+        sma150 = _as_float(row.get("sma150"), 0.0)
+        sma200 = _as_float(row.get("sma200"), 0.0)
+        mode_norm = str(mode or "strict").strip().lower()
+
+        if mode_norm in {"", "inherit", "default"}:
+            mode_norm = str(self.params.get("trend_template_mode", "strict") or "strict").strip().lower()
+
+        if mode_norm in {"none", "off", "disabled", "rs_only", "epd2", "full_decoupling"}:
+            return ""
+
+        if mode_norm in {"classic", "minervini", "sepa"}:
+            sma200_lookback = int(self.params.get("sma200_rising_lookback_bars", 20) or 20)
+            sma200_prev = float("nan")
+            if (i - sma200_lookback) >= 0:
+                sma200_prev = _as_float(df.iloc[i - sma200_lookback].get("sma200"), float("nan"))
+            sma200_rising = math.isfinite(sma200_prev) and sma200 > sma200_prev
+            if close_px > sma50 > sma150 > sma200 and sma200_rising:
+                return ""
+            return (
+                f"{prefix} classic close={close_px:.2f} sma50={sma50:.2f} "
+                f"sma150={sma150:.2f} sma200={sma200:.2f} sma200_prev={sma200_prev:.2f}"
+            )
+
+        if mode_norm in {"strict"}:
+            if close_px > sma10 > sma20 > sma50 > sma150 > sma200:
+                return ""
+            return (
+                f"{prefix} strict close={close_px:.2f} sma10={sma10:.2f} sma20={sma20:.2f} "
+                f"sma50={sma50:.2f} sma150={sma150:.2f} sma200={sma200:.2f}"
+            )
+
+        if mode_norm in {
+            "price_above_sma50",
+            "sma50",
+            "epd1",
+            "strict_decoupling",
+            "ep_relaxed_sma50",
+        }:
+            if close_px > sma50:
+                return ""
+            return f"{prefix} ep_sma50 close={close_px:.2f} sma50={sma50:.2f}"
+
+        if mode_norm in {
+            "price_above_sma50_sma150",
+            "sma50_sma150",
+            "epd3",
+            "bounded_decoupling",
+            "ep_early_repair",
+        }:
+            if close_px > sma50 > sma150:
+                return ""
+            return (
+                f"{prefix} ep_sma50_sma150 close={close_px:.2f} "
+                f"sma50={sma50:.2f} sma150={sma150:.2f}"
+            )
+
+        # Unknown values fall back to the current strict/classic template for safety.
+        return self._trend_gate_reason(df, i, mode="classic", prefix=prefix)
+
     def _ep_candidate(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
         if i < 1:
             return None
 
+        self._last_ep_failure_reason = ""
         row = df.iloc[i]
         prev_row = df.iloc[i - 1]
 
@@ -455,31 +666,25 @@ class SuperperformanceStrategy(BaseStrategy):
         if ep_entry_mode == "open":
             # Open-mode EP must use only information available before/at the open.
             if gap_pct < ep_gap_min:
-                return None
+                return self._ep_reject(f"ep:gap_pct={gap_pct:.2f}<{ep_gap_min:.2f}")
             trigger_px = open_px
             stop_px = trigger_px * (1.0 - ep_max_stop_pct)
         else:
-            day_range = high_px - low_px
-            clv = _as_float(row.get("clv"), float("nan"))
-            if not math.isfinite(clv):
-                clv = ((close_px - low_px) / day_range) if day_range > 0 else 0.0
-            vol_multiple = (vol / vol_ma50) if vol_ma50 > 0 else 0.0
-            if (
-                gap_pct < ep_gap_min
-                or vol_ma50 <= 0
-                or vol_multiple < ep_vol_mult
-                or clv < close_near_high_min
-            ):
-                return None
+            gate_state = self._ep_close_gate_state(row, prev_row)
+            failure_reason = str(gate_state.get("reason") or "")
+            if failure_reason:
+                gate_key = gate_state.get("gate_key")
+                return self._ep_reject(failure_reason, str(gate_key) if gate_key else None)
+            vol_multiple = float(gate_state.get("vol_multiple") or 0.0)
             trigger_px = close_px
             stop_px = low_px
 
         if trigger_px <= 0 or stop_px <= 0 or stop_px >= trigger_px:
-            return None
+            return self._ep_reject("ep:invalid_stop")
 
         stop_width = (trigger_px - stop_px) / trigger_px
         if (stop_width - ep_max_stop_pct) > _STOP_WIDTH_TOL:
-            return None
+            return self._ep_reject(f"ep:stop_width={stop_width:.3f}>{ep_max_stop_pct:.3f}")
 
         force_next_day = bool(self.params.get("ep_force_next_day", False))
         if force_next_day:
@@ -508,6 +713,8 @@ class SuperperformanceStrategy(BaseStrategy):
     def _ep_failure_reason(self, df: pd.DataFrame, i: int) -> str:
         if i < 1:
             return "ep:no_prev_bar"
+        if self._last_ep_failure_reason:
+            return self._last_ep_failure_reason
 
         row = df.iloc[i]
         prev_row = df.iloc[i - 1]
@@ -535,18 +742,10 @@ class SuperperformanceStrategy(BaseStrategy):
             trigger_px = open_px
             stop_px = trigger_px * (1.0 - ep_max_stop_pct)
         else:
-            day_range = high_px - low_px
-            clv = _as_float(row.get("clv"), float("nan"))
-            if not math.isfinite(clv):
-                clv = ((close_px - low_px) / day_range) if day_range > 0 else 0.0
-            vol_multiple = (vol / vol_ma50) if vol_ma50 > 0 else 0.0
-
-            if vol_ma50 <= 0:
-                return "ep:vol_ma50<=0"
-            if vol_multiple < ep_vol_mult:
-                return f"ep:vol_mult={vol_multiple:.2f}<{ep_vol_mult:.2f}"
-            if clv < close_near_high_min:
-                return f"ep:close_near_high={clv:.2f}<{close_near_high_min:.2f}"
+            gate_state = self._ep_close_gate_state(row, prev_row)
+            failure_reason = str(gate_state.get("reason") or "")
+            if failure_reason:
+                return failure_reason
             trigger_px = close_px
             stop_px = low_px
 
@@ -745,9 +944,195 @@ class SuperperformanceStrategy(BaseStrategy):
             "signal_strength": strength,
         }
 
+    def _low_cheat_candidate(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
+        self._last_low_cheat_failure_reason = ""
+        if i < 5:
+            self._last_low_cheat_failure_reason = "low_cheat_warmup"
+            return None
+
+        row = df.iloc[i]
+        close_px = _as_float(row.get("close"), 0.0)
+        high_px = _as_float(row.get("high"), 0.0)
+        low_px = _as_float(row.get("low"), 0.0)
+        if close_px <= 0 or high_px <= 0 or low_px <= 0:
+            self._last_low_cheat_failure_reason = "low_cheat_invalid_ohlc"
+            return None
+
+        lookback = int(self.params.get("low_cheat_lookback_bars", self.params.get("vcp_lookback_bars", 80)) or 80)
+        extrema_order = int(self.params.get("low_cheat_extrema_order", self.params.get("vcp_extrema_order", 3)) or 3)
+        breakout_buffer = float(self.params.get("breakout_buffer", 0.001) or 0.001)
+        damping_ratio = float(self.params.get("vcp_damping_ratio", _DEFAULT_VCP_DAMPING_RATIO) or _DEFAULT_VCP_DAMPING_RATIO)
+        volume_dryup_mult = float(
+            self.params.get("vcp_volume_dryup_mult", _DEFAULT_VCP_VOLUME_DRYUP_MULT)
+            or _DEFAULT_VCP_VOLUME_DRYUP_MULT
+        )
+        low_cheat, reason = detect_vcp_breakout(
+            df,
+            i,
+            lookback=lookback,
+            extrema_order=max(1, extrema_order),
+            min_contractions=2,
+            breakout_volume_mult=max(1.0, float(self.params.get("vcp_breakout_volume_mult", 1.5) or 1.5)),
+            damping_ratio=damping_ratio,
+            volume_dryup_mult=volume_dryup_mult,
+            breakout_buffer=max(0.0, breakout_buffer),
+            require_breakout_close=False,
+            require_breakout_volume=False,
+            return_reason=True,
+        )
+        if low_cheat is None:
+            self._last_low_cheat_failure_reason = f"low_cheat:{reason or 'no_base'}"
+            return None
+
+        main_pivot_price = float(low_cheat.pivot_price * (1.0 + max(0.0, breakout_buffer)))
+        last_contraction_low = _first_finite(
+            [low_cheat.last_contraction_low_price, low_cheat.base_low_price],
+            default=float("nan"),
+        )
+        if not (
+            math.isfinite(main_pivot_price)
+            and main_pivot_price > 0
+            and math.isfinite(last_contraction_low)
+            and last_contraction_low > 0
+            and last_contraction_low < main_pivot_price
+        ):
+            self._last_low_cheat_failure_reason = "low_cheat:invalid_structure"
+            return None
+
+        if close_px >= (main_pivot_price * (1.0 + _STOP_WIDTH_TOL)):
+            self._last_low_cheat_failure_reason = "low_cheat:already_above_main_pivot"
+            return None
+
+        max_distance_below_pivot = max(
+            0.0,
+            float(self.params.get("low_cheat_max_distance_below_pivot_pct", 0.05) or 0.05),
+        )
+        distance_below_pivot = (main_pivot_price - close_px) / main_pivot_price
+        if distance_below_pivot > max_distance_below_pivot:
+            self._last_low_cheat_failure_reason = "low_cheat:too_far_below_main_pivot"
+            return None
+
+        base_low_price = _first_finite([low_cheat.base_low_price, last_contraction_low], default=float("nan"))
+        base_range = main_pivot_price - base_low_price
+        if not (math.isfinite(base_low_price) and math.isfinite(base_range) and base_range > 0):
+            self._last_low_cheat_failure_reason = "low_cheat:invalid_base_range"
+            return None
+
+        right_side_min = float(self.params.get("low_cheat_right_side_min", 0.67) or 0.67)
+        right_side_fraction = (close_px - base_low_price) / base_range
+        if right_side_fraction < right_side_min:
+            self._last_low_cheat_failure_reason = "low_cheat:not_on_right_side"
+            return None
+
+        short_pivot_lookback = max(3, int(self.params.get("low_cheat_short_pivot_lookback", 5) or 5))
+        prior_window = df.iloc[max(0, i - short_pivot_lookback) : i]
+        prior_highs = pd.to_numeric(prior_window.get("high"), errors="coerce")
+        short_pivot_price = float(prior_highs.max(skipna=True)) if not prior_highs.empty else float("nan")
+        if not (math.isfinite(short_pivot_price) and short_pivot_price > 0):
+            self._last_low_cheat_failure_reason = "low_cheat:no_short_pivot"
+            return None
+
+        short_pivot_buffer = max(
+            0.0,
+            float(self.params.get("low_cheat_short_pivot_buffer_pct", breakout_buffer) or breakout_buffer),
+        )
+        short_trigger = float(short_pivot_price * (1.0 + short_pivot_buffer))
+        min_gap_to_main = max(
+            0.0,
+            float(self.params.get("low_cheat_min_gap_to_main_pivot_pct", 0.0025) or 0.0025),
+        )
+        if short_trigger >= (main_pivot_price * (1.0 - min_gap_to_main)):
+            self._last_low_cheat_failure_reason = "low_cheat:short_pivot_too_close_to_main"
+            return None
+        if close_px < short_trigger or high_px < short_trigger:
+            self._last_low_cheat_failure_reason = "low_cheat:short_pivot_not_reclaimed"
+            return None
+
+        reclaim_ma = str(self.params.get("low_cheat_reclaim_ma", "sma10") or "sma10").lower()
+        if reclaim_ma not in {"", "none", "off"}:
+            ma_values = []
+            if reclaim_ma in {"sma10", "ema10"}:
+                ma_values = [_as_float(row.get("sma10"), float("nan"))]
+            elif reclaim_ma in {"sma20", "ema20", "sma21", "ema21"}:
+                ma_values = [_as_float(row.get("sma20"), float("nan"))]
+            elif reclaim_ma in {"either", "sma10_or_sma20"}:
+                ma_values = [
+                    _as_float(row.get("sma10"), float("nan")),
+                    _as_float(row.get("sma20"), float("nan")),
+                ]
+            reclaim_level = max(v for v in ma_values if math.isfinite(v)) if any(math.isfinite(v) for v in ma_values) else float("nan")
+            if math.isfinite(reclaim_level) and close_px <= reclaim_level:
+                self._last_low_cheat_failure_reason = "low_cheat:ma_not_reclaimed"
+                return None
+
+        clv = _as_float(row.get("clv"), float("nan"))
+        if not math.isfinite(clv):
+            day_range = high_px - low_px
+            clv = ((close_px - low_px) / day_range) if day_range > 0 else 0.0
+        clv_min = float(self.params.get("low_cheat_clv_min", 0.55) or 0.55)
+        if clv < clv_min:
+            self._last_low_cheat_failure_reason = "low_cheat:weak_close"
+            return None
+
+        vol = _as_float(row.get("volume"), 0.0)
+        vol_ma50 = _as_float(row.get("vol_ma50"), float("nan"))
+        vol_min_mult = float(self.params.get("low_cheat_volume_min_mult", 0.0) or 0.0)
+        vol_max_mult = float(self.params.get("low_cheat_volume_max_mult", 0.0) or 0.0)
+        if math.isfinite(vol_ma50) and vol_ma50 > 0:
+            vol_multiple = vol / vol_ma50
+            if vol_min_mult > 0 and vol_multiple < vol_min_mult:
+                self._last_low_cheat_failure_reason = "low_cheat:volume_too_light"
+                return None
+            if vol_max_mult > 0 and vol_multiple > vol_max_mult:
+                self._last_low_cheat_failure_reason = "low_cheat:volume_too_hot"
+                return None
+        else:
+            vol_multiple = 0.0
+
+        stop_buffer_pct = max(0.0, float(self.params.get("low_cheat_stop_buffer_pct", 0.001) or 0.001))
+        stop_px = last_contraction_low * (1.0 - stop_buffer_pct)
+        max_stop_pct = float(self.params.get("low_cheat_max_stop_pct", self.params.get("max_stop_pct", 0.06)) or 0.06)
+        if stop_px <= 0 or stop_px >= short_trigger:
+            self._last_low_cheat_failure_reason = "low_cheat:invalid_stop"
+            return None
+        stop_width = (short_trigger - stop_px) / short_trigger
+        if (stop_width - max_stop_pct) > _STOP_WIDTH_TOL:
+            self._last_low_cheat_failure_reason = "low_cheat:stop_too_wide"
+            return None
+
+        proximity_score = max(0.0, 1.0 - min(1.0, distance_below_pivot / max(max_distance_below_pivot, 1e-6)))
+        tightness_score = max(0.0, 1.0 - min(1.0, (low_cheat.price_contraction_2 / max(low_cheat.price_contraction_1, 1e-6))))
+        signal_strength = (
+            (right_side_fraction * 50.0)
+            + (proximity_score * 20.0)
+            + (tightness_score * 10.0)
+            + min(10.0, max(0.0, vol_multiple * 5.0))
+        )
+
+        return {
+            "trigger_price": short_trigger,
+            "stop_price": stop_px,
+            "stop_limit_pct": float(self.params.get("low_cheat_stop_limit_pct", self.params.get("stop_limit_pct", 0.02)) or 0.02),
+            "stop_loss_type": "low_or_pct",
+            "entry_type": "low_cheat",
+            "sleeve": "breakout",
+            "max_stop_pct": max_stop_pct,
+            "entry_timing": "open",
+            "signal_mode": "open",
+            "signal_strength": float(signal_strength),
+            "size_scalar": float(self.params.get("low_cheat_size_scalar", 0.5) or 0.5),
+            "candidate_meta": {
+                "entry_variant": "low_cheat",
+                "main_pivot_price": main_pivot_price,
+                "short_pivot_price": short_trigger,
+                "last_contraction_low_price": last_contraction_low,
+            },
+        }
+
     def _check_setup_breakout_only(self, df: pd.DataFrame, i: int) -> Optional[Dict]:
         self._last_reject_reason = ""
         self._last_vcp_failure_reason = ""
+        self._last_low_cheat_failure_reason = ""
 
         warmup = int(self.params.get("warmup_bars", 200) or 200)
         if i < warmup:
@@ -758,31 +1143,27 @@ class SuperperformanceStrategy(BaseStrategy):
         if close_px <= 0:
             return self._reject("close_invalid")
 
-        # Gate 1: Trend template hierarchy.
-        sma10 = _as_float(row.get("sma10"), 0.0)
-        sma20 = _as_float(row.get("sma20"), 0.0)
-        sma50 = _as_float(row.get("sma50"), 0.0)
-        sma150 = _as_float(row.get("sma150"), 0.0)
-        sma200 = _as_float(row.get("sma200"), 0.0)
+        entry_mode = str(self.params.get("entry_mode", "both") or "both").lower()
+        allow_vcp = entry_mode in {"both", "breakout", "vcp"}
+        allow_ep = entry_mode in {"both", "ep", "episodic_pivot"}
+
+        # Gate 1: Trend template hierarchy. Breakout sleeves stay on the strict
+        # global template. EP can optionally use a relaxed template so it can
+        # participate in early-cycle recoveries without weakening VCP quality.
         trend_template_mode = str(self.params.get("trend_template_mode", "strict") or "strict").lower()
-        if trend_template_mode in {"classic", "minervini", "sepa"}:
-            sma200_lookback = int(self.params.get("sma200_rising_lookback_bars", 20) or 20)
-            sma200_prev = float("nan")
-            if (i - sma200_lookback) >= 0:
-                sma200_prev = _as_float(df.iloc[i - sma200_lookback].get("sma200"), float("nan"))
-            sma200_rising = math.isfinite(sma200_prev) and sma200 > sma200_prev
-            if not (close_px > sma50 > sma150 > sma200 and sma200_rising):
-                return self._reject(
-                    f"trend_gate classic close={close_px:.2f} sma50={sma50:.2f} "
-                    f"sma150={sma150:.2f} sma200={sma200:.2f} "
-                    f"sma200_prev={sma200_prev:.2f}"
-                )
-        else:
-            if not (close_px > sma10 > sma20 > sma50 > sma150 > sma200):
-                return self._reject(
-                    f"trend_gate strict close={close_px:.2f} sma10={sma10:.2f} sma20={sma20:.2f} "
-                    f"sma50={sma50:.2f} sma150={sma150:.2f} sma200={sma200:.2f}"
-                )
+        breakout_trend_reason = (
+            self._trend_gate_reason(df, i, mode=trend_template_mode, prefix="trend_gate")
+            if allow_vcp
+            else ""
+        )
+        ep_trend_mode = str(self.params.get("ep_trend_template_mode", "inherit") or "inherit").lower()
+        ep_trend_reason = (
+            self._trend_gate_reason(df, i, mode=ep_trend_mode, prefix="ep:trend_gate")
+            if allow_ep
+            else ""
+        )
+        if breakout_trend_reason and (not allow_ep or ep_trend_reason):
+            return self._reject(breakout_trend_reason)
 
         min_price = float(self.params.get("min_price", 2.0) or 2.0)
         if close_px < min_price:
@@ -934,32 +1315,44 @@ class SuperperformanceStrategy(BaseStrategy):
                     f"fundamental_missing_override price_action_pct={price_action_pct:.2f} < {htf_override:.2f}"
                 )
 
-        # Archetype union logic: any trigger can produce an entry.
-        entry_mode = str(self.params.get("entry_mode", "both") or "both").lower()
-        allow_vcp = entry_mode in {"both", "breakout", "vcp"}
-        allow_ep = entry_mode in {"both", "ep", "episodic_pivot"}
-
         candidates: List[Dict] = []
         vcp_candidate: Optional[Dict] = None
+        low_cheat_candidate: Optional[Dict] = None
         ep_candidate: Optional[Dict] = None
         ep_failure = ""
-        if allow_vcp:
+        if allow_vcp and not breakout_trend_reason:
             vcp_candidate = self._vcp_candidate(df, i)
             if vcp_candidate is not None:
                 candidates.append(vcp_candidate)
+            if bool(self.params.get("low_cheat_enabled", False)):
+                low_cheat_candidate = self._low_cheat_candidate(df, i)
+                if low_cheat_candidate is not None:
+                    candidates.append(low_cheat_candidate)
+        elif allow_vcp and breakout_trend_reason:
+            self._last_vcp_failure_reason = breakout_trend_reason
+            if bool(self.params.get("low_cheat_enabled", False)):
+                self._last_low_cheat_failure_reason = breakout_trend_reason
 
-        if allow_ep:
+        if allow_ep and not ep_trend_reason:
             ep_candidate = self._ep_candidate(df, i)
             if ep_candidate is not None:
                 candidates.append(ep_candidate)
             else:
                 ep_failure = self._ep_failure_reason(df, i)
+        elif allow_ep and ep_trend_reason:
+            self._last_ep_failure_reason = ep_trend_reason
+            ep_failure = ep_trend_reason
 
         if not candidates:
             details: List[str] = []
             if allow_vcp and vcp_candidate is None:
                 vcp_failure = str(self._last_vcp_failure_reason or "").strip()
                 details.append(f"vcp:{vcp_failure}" if vcp_failure else "vcp:no_breakout")
+            if allow_vcp and bool(self.params.get("low_cheat_enabled", False)) and low_cheat_candidate is None:
+                low_cheat_failure = str(self._last_low_cheat_failure_reason or "").strip()
+                details.append(
+                    f"low_cheat:{low_cheat_failure}" if low_cheat_failure else "low_cheat:no_signal"
+                )
             if allow_ep and ep_candidate is None:
                 details.append(ep_failure or "ep:no_signal")
             if details:
@@ -1089,6 +1482,40 @@ class SuperperformanceStrategy(BaseStrategy):
         entry_price = _as_float(position.get("entry_price"), 0.0)
         if entry_price <= 0:
             return None
+
+        entry_variant = str(position.get("entry_variant", "") or "").strip().lower()
+        if entry_variant == "low_cheat":
+            pyramids = int(position.get("pyramids", 0) or 0)
+            main_pivot_price = _as_float(position.get("main_pivot_price"), 0.0)
+            close_px = _as_float(df.iloc[i].get("close"), 0.0)
+            vol = _as_float(df.iloc[i].get("volume"), 0.0)
+            vol_ma50 = _as_float(df.iloc[i].get("vol_ma50"), float("nan"))
+            breakout_buffer = float(self.params.get("breakout_buffer", 0.001) or 0.001)
+            breakout_add_trigger = main_pivot_price * (1.0 + max(0.0, breakout_buffer))
+            vol_mult_min = float(self.params.get("low_cheat_breakout_add_volume_mult", 1.25) or 1.25)
+            add_fraction = float(
+                self.params.get("low_cheat_breakout_add_fraction", self.params.get("pyramid_fraction", 0.5))
+                or 0.5
+            )
+            if (
+                pyramids == 0
+                and main_pivot_price > 0
+                and close_px >= breakout_add_trigger
+                and add_fraction > 0
+                and (
+                    (not math.isfinite(vol_ma50))
+                    or vol_ma50 <= 0
+                    or vol >= (vol_ma50 * vol_mult_min)
+                )
+            ):
+                return {
+                    "add_fraction": add_fraction,
+                    "stop_to_avg_cost": bool(
+                        self.params.get("low_cheat_breakout_add_stop_to_avg_cost", True)
+                    ),
+                }
+            if pyramids >= 1:
+                return None
 
         max_adds = int(self.params.get("pyramid_max_adds", 1) or 1)
         pyramids = int(position.get("pyramids", 0) or 0)

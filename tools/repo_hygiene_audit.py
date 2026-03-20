@@ -116,6 +116,44 @@ def _check_tracked_risk_files(findings: list[Finding], tracked: list[str]) -> No
         )
 
 
+def _check_tracked_scratch_files(findings: list[Finding], tracked: list[str]) -> None:
+    backup_patterns = [
+        re.compile(r"\.bak($|[._])", re.I),
+        re.compile(r"\.\d{8}_\d{6}\.bak$", re.I),
+    ]
+    scratch_patterns = [
+        re.compile(r"^debug_[^/]+\.py$", re.I),
+        re.compile(r"^diag_trace\.py$", re.I),
+        re.compile(r"^_tmp_[^/]*", re.I),
+        re.compile(r"^optimization/_tmp_[^/]*", re.I),
+        re.compile(r"^codebase_audit\.txt$", re.I),
+        re.compile(r"(^|/).+ copy\.command$", re.I),
+    ]
+
+    backup_hits = [p for p in tracked if _match_any(p, backup_patterns)]
+    scratch_hits = [p for p in tracked if _match_any(p, scratch_patterns)]
+
+    if backup_hits:
+        findings.append(
+            Finding(
+                severity="medium",
+                category="tracked_backups",
+                message="Tracked backup files are present in git and obscure the canonical source tree.",
+                evidence=backup_hits[:80],
+            )
+        )
+
+    if scratch_hits:
+        findings.append(
+            Finding(
+                severity="medium",
+                category="tracked_scratch",
+                message="Tracked scratch/debug/duplicate-launcher files are present in git.",
+                evidence=scratch_hits[:80],
+            )
+        )
+
+
 def _check_large_tracked(findings: list[Finding], tracked: list[str]) -> None:
     large = []
     threshold = 5 * 1024 * 1024  # 5 MB
@@ -204,6 +242,7 @@ def main() -> int:
     findings: list[Finding] = []
     _check_docs(findings)
     _check_tracked_risk_files(findings, tracked)
+    _check_tracked_scratch_files(findings, tracked)
     _check_large_tracked(findings, tracked)
     _check_broad_except(findings)
     score = _score(findings)

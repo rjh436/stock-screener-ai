@@ -17,9 +17,16 @@ if str(ROOT) not in sys.path:
 from data.loader import fetch_data_pack
 from data.universe import build_russell3000_membership_by_day
 from execution.engine import run_backtest
+from optimization.walkforward import (
+    DEFAULT_WALKFORWARD_MAX_FULL_DD_PCT,
+    DEFAULT_WALKFORWARD_MIN_OOS_CAGR_PCT,
+    DEFAULT_WALKFORWARD_START,
+    parse_friction_values,
+    replay_ranked_candidates,
+)
 from strategies.strategy_loader import load_strategies
 import optimize_superperformance as opt
-from scripts.evaluate_low_turnover_alpha_frontier import _apply_realistic_costs, _pack_metrics, _score
+from scripts.evaluate_low_turnover_alpha_frontier import _apply_realistic_costs, _limit_prepared_universe, _pack_metrics, _score
 
 DEFAULT_SEEDS = [
     "config/superperformance_alpha_b9.json",
@@ -43,21 +50,23 @@ MUTATION_SPACE: Dict[str, List[Any]] = {
     "ep_close_near_high_min": [0.55, 0.65, 0.75],
     "ep_max_stop_pct": [0.10, 0.12, 0.15],
     "pyramid_threshold": [0.06, 0.08, 0.10],
-    "pyramid_fraction": [0.33, 0.50, 0.67],
+    "pyramid_fraction": [0.25, 0.33, 0.50, 0.67],
     "pyramid_max_adds": [1, 2, 3],
     "max_positions": [2, 3, 4],
-    "risk_per_trade": [0.08, 0.10, 0.12],
-    "max_pos_size_pct": [0.25, 0.3333, 0.50],
-    "max_total_exposure_pct_bull": [0.85, 0.95, 1.0],
+    "risk_per_trade": [0.06, 0.08, 0.10, 0.12],
+    "max_pos_size_pct": [0.20, 0.25, 0.3333, 0.50],
+    "max_total_exposure_pct_bull": [0.75, 0.85, 0.95, 1.0],
     "max_total_exposure_pct_bear": [0.0, 0.35, 0.7, 1.0],
-    "market_exposure_mode": ["exposure", "scaled", "hybrid"],
+    "market_exposure_mode": ["exposure", "scaled", "hybrid", "filter"],
     "use_market_regime_traffic_light": [False, True],
+    "apply_traffic_light_position_caps_in_exposure": [False, True],
+    "traffic_light_block_exposure_mode": [False, True],
     "bear_cash_mode": ["off", "hard"],
     "bear_max_positions": [0, 1, 2],
-    "yellow_risk_scalar": [0.6, 0.8, 1.0],
-    "orange_risk_scalar": [0.25, 0.45, 0.7],
+    "yellow_risk_scalar": [0.5, 0.6, 0.8, 1.0],
+    "orange_risk_scalar": [0.15, 0.25, 0.45, 0.7],
     "yellow_max_positions": [2, 3, 4],
-    "orange_max_positions": [1, 2, 3],
+    "orange_max_positions": [0, 1, 2, 3],
     "vcp_gap_chase_max_pct": [0.0, 0.005, 0.01, 0.02],
     "vcp_gap_chase_rs_min": [90, 93, 95, 97],
     "vcp_gap_chase_score_min": [55, 65, 70, 75],
@@ -104,6 +113,7 @@ def _normalize(cfg: Dict[str, Any]) -> Dict[str, Any]:
     tl = bool(out.get("use_market_regime_traffic_light", False))
     out["use_market_regime_traffic_light"] = tl
     out["traffic_light_block_exposure_mode"] = bool(out.get("traffic_light_block_exposure_mode", tl))
+    out["apply_traffic_light_position_caps_in_exposure"] = bool(out.get("apply_traffic_light_position_caps_in_exposure", tl))
 
     bear_cash = str(out.get("bear_cash_mode", "off") or "off").lower()
     if bear_cash not in {"off", "hard", "cash", "all_cash"}:
@@ -118,7 +128,7 @@ def _normalize(cfg: Dict[str, Any]) -> Dict[str, Any]:
     out["yellow_risk_scalar"] = max(0.1, min(float(out.get("yellow_risk_scalar", 0.8) or 0.8), 1.0))
     out["orange_risk_scalar"] = max(0.05, min(float(out.get("orange_risk_scalar", 0.45) or 0.45), 1.0))
     out["yellow_max_positions"] = max(1, min(int(out.get("yellow_max_positions", max_positions) or max_positions), max_positions))
-    out["orange_max_positions"] = max(1, min(int(out.get("orange_max_positions", out["yellow_max_positions"]) or out["yellow_max_positions"]), out["yellow_max_positions"]))
+    out["orange_max_positions"] = max(0, min(int(out.get("orange_max_positions", out["yellow_max_positions"]) or out["yellow_max_positions"]), out["yellow_max_positions"]))
 
     out["stop_limit_pct"] = max(0.01, min(float(out.get("stop_limit_pct", 0.03) or 0.03), 0.10))
     out["max_stop_pct"] = max(0.03, min(float(out.get("max_stop_pct", 0.06) or 0.06), 0.12))
@@ -179,6 +189,18 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--soft-trades-per-year", type=float, default=150.0)
     p.add_argument("--iterations", type=int, default=18)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--universe-limit", type=int, default=0)
+    p.add_argument("--universe-limit-mode", choices=["sample", "first"], default="sample")
+    p.add_argument("--universe-sample-seed", type=int, default=42)
+    p.add_argument("--walkforward-top-n", type=int, default=0)
+    p.add_argument("--walkforward-start", default=DEFAULT_WALKFORWARD_START)
+    p.add_argument("--walkforward-frictions", default="10")
+    p.add_argument("--walkforward-min-oos-cagr-pct", type=float, default=DEFAULT_WALKFORWARD_MIN_OOS_CAGR_PCT)
+    p.add_argument("--walkforward-max-full-dd-pct", type=float, default=DEFAULT_WALKFORWARD_MAX_FULL_DD_PCT)
+    p.add_argument("--walkforward-universe-limit", type=int, default=0)
+    p.add_argument("--walkforward-universe-limit-mode", choices=["sample", "first"], default="sample")
+    p.add_argument("--walkforward-universe-sample-seed", type=int, default=42)
+    p.add_argument("--walkforward-prepared-cache", default="")
     p.add_argument("--progress", default="tmp/alpha_neighborhood_progress.jsonl")
     p.add_argument("--out", default="tmp/alpha_neighborhood_latest.json")
     return p.parse_args()
@@ -190,9 +212,20 @@ def main() -> None:
     with open((ROOT / args.cache).resolve(), "rb") as handle:
         prepared = pickle.load(handle)
     prepared = opt.compress_data(prepared)
+    prepared, universe_info = _limit_prepared_universe(
+        prepared,
+        int(args.universe_limit),
+        str(args.universe_limit_mode),
+        int(args.universe_sample_seed),
+    )
     all_dates = list(getattr(prepared, "all_dates", []))
     membership, membership_source = build_russell3000_membership_by_day(all_dates)
     global_data = fetch_data_pack(["SPY", "VIX"], days=int(args.trading_days), backtest_mode=True) or {}
+    print(
+        f"[prep] prepared_symbols={len(getattr(prepared, 'enriched', {}) or {})} "
+        f"membership={membership_source} universe_limit={universe_info['limit']} mode={universe_info['mode']}",
+        flush=True,
+    )
 
     seed_cfgs = []
     seen = set()
@@ -240,6 +273,7 @@ def main() -> None:
         ranked = sorted(rows, key=lambda item: item.get("score", -1_000_000.0), reverse=True)
         payload = {
             "membership_source": membership_source,
+            "universe": universe_info,
             "soft_trades_per_year": float(args.soft_trades_per_year),
             "realistic_costs": {
                 "transaction_cost_bps": args.transaction_cost_bps,
@@ -259,6 +293,51 @@ def main() -> None:
             f"Score={row['score']:.2f}",
             flush=True,
         )
+
+    if int(args.walkforward_top_n) > 0:
+        rows = replay_ranked_candidates(
+            rows,
+            top_n=int(args.walkforward_top_n),
+            start_date=str(args.walkforward_start),
+            end_date=str(args.end_date),
+            transaction_cost_bps=float(args.transaction_cost_bps),
+            friction_values=parse_friction_values(args.walkforward_frictions),
+            min_oos_cagr_pct=float(args.walkforward_min_oos_cagr_pct),
+            max_full_drawdown_pct=float(args.walkforward_max_full_dd_pct),
+            universe_limit=int(args.walkforward_universe_limit),
+            universe_limit_mode=str(args.walkforward_universe_limit_mode),
+            universe_sample_seed=int(args.walkforward_universe_sample_seed),
+            prepared_cache_path=str(args.walkforward_prepared_cache),
+            report_dir=out_path.parent / f"{out_path.stem}_walkforward",
+            report_prefix="alpha_neighborhood",
+        )
+    else:
+        rows = sorted(rows, key=lambda item: item.get("score", -1_000_000.0), reverse=True)
+
+    payload = {
+        "membership_source": membership_source,
+        "universe": universe_info,
+        "soft_trades_per_year": float(args.soft_trades_per_year),
+        "realistic_costs": {
+            "transaction_cost_bps": args.transaction_cost_bps,
+            "entry_slippage_bps": args.entry_slippage_bps,
+            "exit_slippage_bps": args.exit_slippage_bps,
+        },
+        "walkforward_gate": {
+            "top_n": int(args.walkforward_top_n),
+            "start_date": str(args.walkforward_start),
+            "frictions": list(parse_friction_values(args.walkforward_frictions)),
+            "min_oos_cagr_pct": float(args.walkforward_min_oos_cagr_pct),
+            "max_full_dd_pct": float(args.walkforward_max_full_dd_pct),
+            "universe_limit": int(args.walkforward_universe_limit),
+            "universe_limit_mode": str(args.walkforward_universe_limit_mode),
+            "universe_sample_seed": int(args.walkforward_universe_sample_seed),
+            "prepared_cache": str(args.walkforward_prepared_cache or ""),
+        },
+        "rows": rows,
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     print(out_path)
 

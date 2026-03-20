@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 from data.loader import fetch_data_pack
 from data.universe import build_russell3000_membership_by_day
 from execution.engine import run_backtest
+from optimization.walkforward import enforce_cash_only
 from strategies.strategy_loader import load_strategies
 import optimize_superperformance as opt
 
@@ -72,8 +73,7 @@ def main() -> None:
 
     with open(config_path, "r") as f:
         cfg = json.load(f)
-    cfg = dict(cfg or {})
-    cfg["allow_margin"] = False
+    cfg = enforce_cash_only(dict(cfg or {}))
 
     cache_path = Path(args.cache).resolve()
     with open(cache_path, "rb") as f:

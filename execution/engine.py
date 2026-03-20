@@ -4,7 +4,7 @@ import concurrent.futures
 import json
 import operator
 import pickle
-from dataclasses import dataclass, fields as dataclass_fields
+from dataclasses import dataclass, field, fields as dataclass_fields
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -280,6 +280,8 @@ def _init_backtest_audit_report() -> Dict[str, Any]:
         "same_day_open_entries": 0,
         "same_day_open_symbols": set(),
         "same_day_open_dates": set(),
+        "cooldown_rejects": 0,
+        "reentry_new_high_rejects": 0,
         "stale_position_days": 0,
         "stale_position_symbols": set(),
         "stale_position_dates": set(),
@@ -318,6 +320,18 @@ def _audit_track_stale_position_event(
     dates = audit_report.setdefault("stale_position_dates", set())
     if isinstance(dates, set) and 0 <= day_idx < len(all_dates):
         dates.add(str(_to_naive_timestamp(all_dates[day_idx]).date()))
+
+
+def _audit_track_reentry_reject(
+    audit_report: Dict[str, Any],
+    *,
+    reason: str,
+) -> None:
+    text = str(reason or "").strip().lower()
+    if text.startswith("cooldown_"):
+        audit_report["cooldown_rejects"] = int(audit_report.get("cooldown_rejects", 0) or 0) + 1
+    elif "new_" in text and "_high" in text:
+        audit_report["reentry_new_high_rejects"] = int(audit_report.get("reentry_new_high_rejects", 0) or 0) + 1
 
 
 def _audit_track_gross_exposure(
@@ -399,6 +413,8 @@ def _finalize_backtest_audit_report(audit_report: Dict[str, Any]) -> Dict[str, A
     out["stale_position_symbol_count"] = int(len(out.get("stale_position_symbols", [])))
     out["same_day_open_day_count"] = int(len(out.get("same_day_open_dates", [])))
     out["stale_position_day_count"] = int(len(out.get("stale_position_dates", [])))
+    out["cooldown_rejects"] = int(out.get("cooldown_rejects", 0) or 0)
+    out["reentry_new_high_rejects"] = int(out.get("reentry_new_high_rejects", 0) or 0)
     if out.get("max_gross_exposure_date") is None:
         out["max_gross_exposure_date"] = "N/A"
     out["max_gross_exposure_notional"] = float(out.get("max_gross_exposure_notional", 0.0) or 0.0)
@@ -629,6 +645,122 @@ def _partial_sale_shares(total_shares: int, fraction: float) -> int:
     return max(0, min(shares_to_sell, total_shares - 1))
 
 
+def _is_stop_exit_reason(reason: Any) -> bool:
+    text = str(reason or "").strip().upper()
+    return text in {"HARD_STOP", "SAME_DAY_STOP", "NEXT_DAY_HARD_STOP", "NEXT_DAY_SAME_DAY_STOP"}
+
+
+def _record_symbol_exit_state(
+    exit_state: Dict[str, Dict[str, Any]],
+    *,
+    symbol: str,
+    day_idx: int,
+    reason: Any,
+    pnl: float,
+) -> None:
+    sym = str(symbol or "").upper()
+    if not sym:
+        return
+    pnl_val = float(pnl) if np.isfinite(pnl) else 0.0
+    exit_state[sym] = {
+        "day_idx": int(day_idx),
+        "reason": str(reason or ""),
+        "stop_exit": bool(_is_stop_exit_reason(reason)),
+        "loss_exit": bool(pnl_val <= 0.0),
+        "pnl": pnl_val,
+    }
+
+
+def _signal_reference_loc(
+    entry_loc: int,
+    *,
+    entry_timing: Any,
+    signal_mode: Any,
+) -> int:
+    timing = str(entry_timing or "").strip().lower()
+    mode = str(signal_mode or "").strip().lower()
+    if timing.startswith("same_day"):
+        return max(0, int(entry_loc))
+    if mode in {"close", "moc"} and timing in {"same_day", "same_day_close"}:
+        return max(0, int(entry_loc))
+    return max(0, int(entry_loc) - 1)
+
+
+def _passes_reentry_constraints(
+    *,
+    params: Dict[str, Any],
+    sym_data: "_SymbolArrays",
+    day_idx: int,
+    entry_loc: int,
+    entry_timing: Any,
+    signal_mode: Any,
+    last_exit: Optional[Dict[str, Any]],
+) -> Tuple[bool, str]:
+    cooldown_bars_raw = params.get("cooldown_bars_after_exit", 0)
+    try:
+        cooldown_bars = int(cooldown_bars_raw) if cooldown_bars_raw is not None else 0
+    except Exception:
+        cooldown_bars = 0
+    require_new_high = bool(params.get("reentry_requires_new_20d_high", False))
+    if cooldown_bars <= 0 and not require_new_high:
+        return True, ""
+    if not isinstance(last_exit, dict):
+        return True, ""
+
+    applies = True
+    if bool(params.get("cooldown_after_stop_only", True)) and not bool(last_exit.get("stop_exit", False)):
+        applies = False
+    if bool(params.get("cooldown_after_loss_only", True)) and not bool(last_exit.get("loss_exit", False)):
+        applies = False
+    if not applies:
+        return True, ""
+
+    last_exit_day = int(last_exit.get("day_idx", -1) or -1)
+    if cooldown_bars > 0 and last_exit_day >= 0 and int(day_idx) <= (last_exit_day + cooldown_bars):
+        return False, f"cooldown_{cooldown_bars}"
+
+    if require_new_high:
+        lookback_raw = params.get("reentry_new_high_lookback_bars", 20)
+        try:
+            lookback_bars = max(2, int(lookback_raw) if lookback_raw is not None else 20)
+        except Exception:
+            lookback_bars = 20
+        signal_loc = _signal_reference_loc(
+            entry_loc,
+            entry_timing=entry_timing,
+            signal_mode=signal_mode,
+        )
+        if signal_loc <= 0 or signal_loc >= len(sym_data.close):
+            return False, f"reentry_no_new_{lookback_bars}d_high"
+        start = max(0, signal_loc - lookback_bars)
+        prior_closes = sym_data.close[start:signal_loc]
+        if prior_closes.size == 0:
+            return False, f"reentry_no_new_{lookback_bars}d_high"
+        signal_close = float(sym_data.close[signal_loc])
+        try:
+            prior_high = float(np.nanmax(prior_closes))
+        except Exception:
+            prior_high = float("nan")
+        if (not np.isfinite(signal_close)) or (not np.isfinite(prior_high)) or signal_close <= prior_high:
+            return False, f"reentry_no_new_{lookback_bars}d_high"
+
+    return True, ""
+
+
+def _resolve_entry_gate_mode(score: float, min_entry_score: float) -> str:
+    try:
+        score = float(score)
+    except Exception:
+        score = float("nan")
+    try:
+        min_entry_score = float(min_entry_score)
+    except Exception:
+        min_entry_score = 0.0
+    if np.isfinite(min_entry_score) and min_entry_score > 0 and np.isfinite(score) and score < min_entry_score:
+        return "rank_relative_relaxed"
+    return "standard"
+
+
 def _execute_partial_sale(
     sym: str,
     pos: Dict[str, Any],
@@ -676,6 +808,7 @@ def _execute_partial_sale(
             "Reason": reason,
             "Shares": shares_to_sell,
             "Fees": entry_fee_alloc + exit_fee,
+            "EntryGateMode": str(pos.get("entry_gate_mode", "standard") or "standard"),
         }
     )
     sold_fraction = shares_to_sell / float(max(1, total_shares_before))
@@ -916,7 +1049,8 @@ def _resolve_position_exit_params(
     if not isinstance(params, dict):
         return params
     entry_type = str(pos.get("entry_type", "") or "").strip().lower()
-    if entry_type not in {"ep", "vcp"}:
+    entry_type_key = "vcp" if entry_type == "low_cheat" else entry_type
+    if entry_type_key not in {"ep", "vcp"}:
         return params
 
     out = dict(params)
@@ -925,11 +1059,11 @@ def _resolve_position_exit_params(
         if source_key in out and out.get(source_key) is not None:
             out[target_key] = out.get(source_key)
 
-    _override("time_stop_days", f"{entry_type}_time_stop_days")
-    _override("dead_money_days", f"{entry_type}_time_stop_days")
-    _override("dead_money_profit_pct", f"{entry_type}_dead_money_profit_pct")
-    _override("exit_sma_fast", f"{entry_type}_exit_sma_fast")
-    _override("exit_sma_slow", f"{entry_type}_exit_sma_slow")
+    _override("time_stop_days", f"{entry_type_key}_time_stop_days")
+    _override("dead_money_days", f"{entry_type_key}_time_stop_days")
+    _override("dead_money_profit_pct", f"{entry_type_key}_dead_money_profit_pct")
+    _override("exit_sma_fast", f"{entry_type_key}_exit_sma_fast")
+    _override("exit_sma_slow", f"{entry_type_key}_exit_sma_slow")
     return out
 
 
@@ -956,6 +1090,63 @@ def _load_sector_map() -> Dict[str, str]:
     except Exception:
         _SECTOR_MAP = {}
     return _SECTOR_MAP
+
+
+def _resolve_sector_name(symbol: str, sector_map: Optional[Dict[str, str]] = None) -> str:
+    sector_lookup = sector_map if sector_map is not None else _load_sector_map()
+    symbol_upper = (symbol or "").upper()
+    sector = str(sector_lookup.get(symbol_upper) or "").strip()
+    if sector:
+        return sector
+    return get_sector(symbol_upper)
+
+
+def _maybe_apply_vol_throttle(
+    local_max_pos: float,
+    params: Dict[str, Any],
+    sym_data: "_SymbolArrays",
+    entry_loc: int,
+) -> float:
+    if not bool(params.get("vol_throttle_enabled", False)):
+        return local_max_pos
+
+    try:
+        throttle_cap = float(params.get("vol_throttle_max_pos_size", local_max_pos) or local_max_pos)
+    except Exception:
+        throttle_cap = local_max_pos
+    if (not np.isfinite(throttle_cap)) or throttle_cap <= 0 or throttle_cap >= local_max_pos:
+        return local_max_pos
+
+    try:
+        percentile = float(params.get("vol_throttle_natr_percentile", 75.0) or 75.0)
+    except Exception:
+        percentile = 75.0
+    percentile = float(np.clip(percentile, 1.0, 99.0))
+    try:
+        lookback = int(params.get("vol_throttle_lookback_days", 252) or 252)
+    except Exception:
+        lookback = 252
+    lookback = max(20, lookback)
+
+    ref_loc = max(0, int(entry_loc) - 1)
+    natr_arr = getattr(sym_data, "natr", None)
+    if natr_arr is None or ref_loc >= len(natr_arr):
+        return local_max_pos
+
+    current_natr = float(natr_arr[ref_loc])
+    if not np.isfinite(current_natr) or current_natr <= 0:
+        return local_max_pos
+
+    start = max(0, ref_loc - lookback)
+    hist = np.asarray(natr_arr[start:ref_loc], dtype=np.float64)
+    hist = hist[np.isfinite(hist) & (hist > 0)]
+    if hist.size < 20:
+        return local_max_pos
+
+    threshold = float(np.nanpercentile(hist, percentile))
+    if np.isfinite(threshold) and current_natr >= threshold:
+        return throttle_cap
+    return local_max_pos
 
 
 def _compute_sector_rs(enriched: Dict[str, "_SymbolArrays"], all_dates: np.ndarray) -> Dict[str, np.ndarray]:
@@ -1675,6 +1866,7 @@ class _Candidate:
     entry_type: str = ""
     entry_timing: str = "next_day"
     sleeve: str = "breakout"
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -1692,7 +1884,7 @@ def _normalize_sleeve_name(value: Any) -> str:
 
 def _infer_sleeve_from_entry_type(entry_type: str) -> str:
     key = str(entry_type or "").strip().lower()
-    if key in {"vcp", "ep", "breakout"}:
+    if key in {"vcp", "ep", "breakout", "low_cheat"}:
         return "breakout"
     if key == "continuation":
         return "continuation"
@@ -2518,6 +2710,8 @@ def _legacy_run_backtest(
                     cand_entry_timing = "next_day"
                     entry_type = ""
                     cand_sleeve = "breakout"
+                    cand_size_scalar = 1.0
+                    cand_metadata: Dict[str, Any] = {}
 
                     decision_signal_strength = float("nan")
                     if isinstance(decision, dict):
@@ -2529,6 +2723,13 @@ def _legacy_run_backtest(
                         cand_sleeve = str(
                             decision.get("sleeve", _infer_sleeve_from_entry_type(entry_type)) or "breakout"
                         ).strip().lower()
+                        try:
+                            cand_size_scalar = float(decision.get("size_scalar", 1.0) or 1.0)
+                        except Exception:
+                            cand_size_scalar = 1.0
+                        raw_metadata = decision.get("candidate_meta", {})
+                        if isinstance(raw_metadata, dict):
+                            cand_metadata = dict(raw_metadata)
                         raw_entry_timing = decision.get("entry_timing") or decision.get("signal_mode")
                         if isinstance(raw_entry_timing, str):
                             timing = raw_entry_timing.lower()
@@ -2689,12 +2890,31 @@ def _legacy_run_backtest(
                         min_entry_score = float(min_entry_score)
                     except Exception:
                         min_entry_score = 0.0
-                    if np.isfinite(min_entry_score) and min_entry_score > 0 and score < min_entry_score:
+                    try:
+                        rank_relative_min_candidates = int(params.get("rank_relative_min_candidates", 0) or 0)
+                    except Exception:
+                        rank_relative_min_candidates = 0
+                    rank_relative_floor_score = params.get("rank_relative_floor_score", min_entry_score)
+                    try:
+                        rank_relative_floor_score = float(rank_relative_floor_score)
+                    except Exception:
+                        rank_relative_floor_score = min_entry_score
+                    candidate_score_floor = min_entry_score
+                    if (
+                        rank_relative_min_candidates > 0
+                        and np.isfinite(rank_relative_floor_score)
+                        and rank_relative_floor_score > 0
+                    ):
+                        candidate_score_floor = min(candidate_score_floor, rank_relative_floor_score)
+                    if np.isfinite(candidate_score_floor) and candidate_score_floor > 0 and score < candidate_score_floor:
                         if sym.upper() in known_winner_syms:
                             trace_logger.log_reject(
                                 date_val=all_dates[entry_day_idx],
                                 symbol=sym,
-                                reason=f"score_gate score={score:.2f} < min_entry_score={min_entry_score:.2f}",
+                                reason=(
+                                    f"score_gate score={score:.2f} < "
+                                    f"candidate_floor={candidate_score_floor:.2f}"
+                                ),
                             )
                         continue
 
@@ -2743,11 +2963,12 @@ def _legacy_run_backtest(
                             strat.name,
                             entry_i,
                             float(stop_limit_pct),
-                            1.0,
+                            float(cand_size_scalar),
                             str(cand_signal_mode),
                             entry_type,
                             str(cand_entry_timing),
                             str(cand_sleeve or "breakout"),
+                            cand_metadata,
                         )
                     )
                     curr_date_str = str(all_dates[entry_day_idx])[:10]
@@ -2763,14 +2984,20 @@ def _legacy_run_backtest(
         positions = port["positions"]
         entries_list = []
         trades_list = []
+        last_exit_state: Dict[str, Dict[str, Any]] = {}
         equity_curve = []
         equity_curve_daily = []
         trade_outcomes = []
         audit_report = _init_backtest_audit_report()
         mtm = float(cash)
+        sector_map = _load_sector_map()
         
         params = _flatten_params(getattr(strat, "params", getattr(strat, "genome", {})) or {})
         max_pos = int(params.get("max_positions", 10) or 10)
+        try:
+            max_sector_positions = int(params.get("max_sector_positions", 0) or 0)
+        except Exception:
+            max_sector_positions = 0
         risk_per_trade = float(params.get("risk_per_trade", 0.01) or 0.01)
         max_pos_size_pct = float(params.get("max_pos_size_pct", 0.30) or 0.30)
         try:
@@ -3022,7 +3249,15 @@ def _legacy_run_backtest(
                                         "Reason": "STALE_DATA_EXIT",
                                         "Shares": shares,
                                         "Fees": entry_fee_remaining + exit_fee,
+                                        "EntryGateMode": str(pos.get("entry_gate_mode", "standard") or "standard"),
                                     }
+                                )
+                                _record_symbol_exit_state(
+                                    last_exit_state,
+                                    symbol=sym,
+                                    day_idx=day_idx,
+                                    reason="STALE_DATA_EXIT",
+                                    pnl=pnl,
                                 )
                                 to_remove.append(sym)
                     continue
@@ -3061,7 +3296,15 @@ def _legacy_run_backtest(
                                         "Reason": "STALE_DATA_EXIT",
                                         "Shares": shares,
                                         "Fees": entry_fee_remaining + exit_fee,
+                                        "EntryGateMode": str(pos.get("entry_gate_mode", "standard") or "standard"),
                                     }
+                                )
+                                _record_symbol_exit_state(
+                                    last_exit_state,
+                                    symbol=sym,
+                                    day_idx=day_idx,
+                                    reason="STALE_DATA_EXIT",
+                                    pnl=pnl,
                                 )
                                 to_remove.append(sym)
                     continue
@@ -3097,7 +3340,15 @@ def _legacy_run_backtest(
                                     "Reason": f"NEXT_DAY_{pending_reason}",
                                     "Shares": shares,
                                     "Fees": entry_fee_remaining + exit_fee,
+                                    "EntryGateMode": str(pos.get("entry_gate_mode", "standard") or "standard"),
                                 }
+                            )
+                            _record_symbol_exit_state(
+                                last_exit_state,
+                                symbol=sym,
+                                day_idx=day_idx,
+                                reason=f"NEXT_DAY_{pending_reason}",
+                                pnl=pnl,
                             )
                             to_remove.append(sym)
                             continue
@@ -3168,6 +3419,7 @@ def _legacy_run_backtest(
                                         "Reason": "PYRAMID_ADD",
                                         "Shares": add_shares,
                                         "Fees": add_fee,
+                                        "EntryGateMode": str(pos.get("entry_gate_mode", "standard") or "standard"),
                                     })
                 
                 # Exit Logic
@@ -3309,7 +3561,15 @@ def _legacy_run_backtest(
                         "Reason": reason,
                         "Shares": shares,
                         "Fees": entry_fee_remaining + exit_fee,
+                        "EntryGateMode": str(pos.get("entry_gate_mode", "standard") or "standard"),
                     })
+                    _record_symbol_exit_state(
+                        last_exit_state,
+                        symbol=sym,
+                        day_idx=day_idx,
+                        reason=reason,
+                        pnl=pnl,
+                    )
                     to_remove.append(sym)
                     continue
                 
@@ -3331,6 +3591,35 @@ def _legacy_run_backtest(
             else:
                 day_candidates = [c for c in candidates if c.strategy_name == strat.name]
             # -----------------------------------------------------------
+            try:
+                min_entry_score = float(params.get("min_entry_score", 0.0) or 0.0)
+            except Exception:
+                min_entry_score = 0.0
+            try:
+                rank_relative_min_candidates = int(params.get("rank_relative_min_candidates", 0) or 0)
+            except Exception:
+                rank_relative_min_candidates = 0
+            rank_relative_floor_score = params.get("rank_relative_floor_score", min_entry_score)
+            try:
+                rank_relative_floor_score = float(rank_relative_floor_score)
+            except Exception:
+                rank_relative_floor_score = min_entry_score
+            if np.isfinite(min_entry_score) and min_entry_score > 0:
+                strict_candidates = [c for c in day_candidates if float(c.score) >= min_entry_score]
+            else:
+                strict_candidates = list(day_candidates)
+            if (
+                rank_relative_min_candidates > 0
+                and np.isfinite(rank_relative_floor_score)
+                and rank_relative_floor_score > 0
+            ):
+                relaxed_candidates = [c for c in day_candidates if float(c.score) >= rank_relative_floor_score]
+                if len(relaxed_candidates) >= rank_relative_min_candidates:
+                    day_candidates = relaxed_candidates
+                else:
+                    day_candidates = strict_candidates
+            else:
+                day_candidates = strict_candidates
             day_candidates.sort(key=lambda x: x.score, reverse=True)
             log_regime_skips = bool(params.get("log_regime_skips", True))
             if log_regime_skips and regime_block_new_entries and regime_skip_log_count < 80:
@@ -3356,6 +3645,18 @@ def _legacy_run_backtest(
                 if len(positions) >= max_pos_today: break
                 if cand.sym in positions: continue
 
+                if max_sector_positions > 0:
+                    cand_sector = _resolve_sector_name(cand.sym, sector_map)
+                    if cand_sector and cand_sector != "Unknown":
+                        held_in_sector = sum(
+                            1
+                            for held_sym in positions.keys()
+                            if _resolve_sector_name(held_sym, sector_map) == cand_sector
+                        )
+                        if held_in_sector >= max_sector_positions:
+                            DBG(f"{cand.sym}: REJECTED - Sector cap hit ({cand_sector})")
+                            continue
+
                 sym_data = enriched.get(cand.sym)
                 if sym_data is None:
                     continue
@@ -3371,8 +3672,24 @@ def _legacy_run_backtest(
                 entry_sleeve = _normalize_sleeve_name(
                     getattr(cand, "sleeve", _infer_sleeve_from_entry_type(entry_type))
                 )
+                entry_gate_mode = _resolve_entry_gate_mode(float(cand.score), min_entry_score)
 
                 signal_mode = str(cand.signal_mode or params.get("signal_mode", "after_close")).lower()
+                reentry_ok, reentry_reason = _passes_reentry_constraints(
+                    params=params,
+                    sym_data=sym_data,
+                    day_idx=day_idx,
+                    entry_loc=entry_loc,
+                    entry_timing=getattr(cand, "entry_timing", "next_day"),
+                    signal_mode=signal_mode,
+                    last_exit=last_exit_state.get(str(cand.sym).upper()),
+                )
+                if not reentry_ok:
+                    _audit_track_reentry_reject(
+                        audit_report,
+                        reason=reentry_reason,
+                    )
+                    continue
                 if signal_mode in {"market", "open", "moo"}:
                     filled, fill_px = True, open_px
                 elif signal_mode in {"close", "moc"}:
@@ -3439,7 +3756,10 @@ def _legacy_run_backtest(
                 else:
                     size_scalar = 1.0
 
-                risk_amt = mtm_equity * risk_per_trade * size_scalar * regime_risk_scalar
+                cand_size_scalar = float(getattr(cand, "size_scalar", 1.0) or 1.0)
+                if (not np.isfinite(cand_size_scalar)) or cand_size_scalar <= 0:
+                    cand_size_scalar = 1.0
+                risk_amt = mtm_equity * risk_per_trade * size_scalar * regime_risk_scalar * cand_size_scalar
                 dist = max(entry_px - stop_px, entry_px * 0.005)
                 shares = int(risk_amt / dist)
                 
@@ -3449,6 +3769,18 @@ def _legacy_run_backtest(
                     local_max_pos = min(local_max_pos, float(params.get("ep_max_pos_size_pct", 0.15) or 0.15))
                 elif entry_type == "vcp":
                     local_max_pos = min(local_max_pos, float(params.get("vcp_max_pos_size_pct", 0.25) or 0.25))
+                elif entry_type == "low_cheat":
+                    local_max_pos = min(
+                        local_max_pos,
+                        float(
+                            params.get(
+                                "low_cheat_max_pos_size_pct",
+                                params.get("vcp_max_pos_size_pct", local_max_pos),
+                            )
+                            or local_max_pos
+                        ),
+                    )
+                local_max_pos = _maybe_apply_vol_throttle(local_max_pos, params, sym_data, entry_loc)
 
                 max_cap = mtm_equity * local_max_pos
                 if shares * entry_px > max_cap:
@@ -3525,7 +3857,15 @@ def _legacy_run_backtest(
                                     "Reason": "SAME_DAY_STOP",
                                     "Shares": shares,
                                     "Fees": entry_fee + exit_fee,
+                                    "EntryGateMode": entry_gate_mode,
                                 }
+                            )
+                            _record_symbol_exit_state(
+                                last_exit_state,
+                                symbol=cand.sym,
+                                day_idx=day_idx,
+                                reason="SAME_DAY_STOP",
+                                pnl=pnl,
                             )
                             continue
                     positions[cand.sym] = {
@@ -3547,6 +3887,10 @@ def _legacy_run_backtest(
                         "initial_risk": max(entry_px - stop_px, entry_px * 0.001),
                         "pivot": cand.entry_px,
                         "entry_fee_remaining": entry_fee,
+                        "entry_gate_mode": entry_gate_mode,
+                        "candidate_metadata": dict(getattr(cand, "metadata", {}) or {}),
+                        "entry_variant": str((getattr(cand, "metadata", {}) or {}).get("entry_variant", "") or ""),
+                        "main_pivot_price": float((getattr(cand, "metadata", {}) or {}).get("main_pivot_price", 0.0) or 0.0),
                     }
                     entries_list.append(
                         {
@@ -3558,6 +3902,7 @@ def _legacy_run_backtest(
                             "EntryType": entry_type,
                             "Sleeve": entry_sleeve,
                             "Score": float(cand.score),
+                            "EntryGateMode": entry_gate_mode,
                         }
                     )
 
@@ -3689,6 +4034,8 @@ def _legacy_run_backtest(
             print(
                 "Audit: "
                 f"same_day_open_entries={int(audit.get('same_day_open_entries', 0) or 0)}, "
+                f"cooldown_rejects={int(audit.get('cooldown_rejects', 0) or 0)}, "
+                f"new_high_rejects={int(audit.get('reentry_new_high_rejects', 0) or 0)}, "
                 f"stale_position_days={int(audit.get('stale_position_days', 0) or 0)}, "
                 f"max_gross_pct={float(audit.get('max_gross_exposure_pct', 0.0) or 0.0):.2%}, "
                 f"entries(vcp/ep/other)="

@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+from optimization.robustness import build_summary_metrics, promotion_gate_status, years_between
 
 ROOT = Path(__file__).resolve().parents[1]
 OPTIMIZER = ROOT / "optimize_superperformance.py"
@@ -364,6 +365,34 @@ def _load_in_sample_metrics() -> Dict[str, Any]:
     }
 
 
+def _in_sample_snapshot(in_sample: Dict[str, Any]) -> Dict[str, Any]:
+    train_start = str(os.getenv("APEX_WF_TRAIN_START", "2006-02-16") or "2006-02-16")
+    train_end = str(os.getenv("APEX_WF_TRAIN_END", "2018-12-31") or "2018-12-31")
+    sample_years = max(0.25, float(years_between(train_start, train_end)))
+    return build_summary_metrics(
+        cagr_pct=float(in_sample.get("cagr", 0.0) or 0.0),
+        max_dd_pct=float(in_sample.get("dd", 999.0) or 999.0),
+        total_trades=int(in_sample.get("trades", 0) or 0),
+        sample_years=sample_years,
+        final_value=0.0,
+        max_gross_exposure_pct=1.0,
+    )
+
+
+def _oos_snapshot(result: Dict[str, Any]) -> Dict[str, Any]:
+    start = str(result.get("start", "") or "").strip()
+    end = str(result.get("end", "") or "").strip()
+    sample_years = max(0.25, float(years_between(start, end))) if start and end else 1.0
+    return build_summary_metrics(
+        cagr_pct=float(result.get("cagr_pct", 0.0) or 0.0),
+        max_dd_pct=float(result.get("max_drawdown_pct", 999.0) or 999.0),
+        total_trades=int(result.get("total_trades", 0) or 0),
+        sample_years=sample_years,
+        final_value=0.0,
+        max_gross_exposure_pct=1.0,
+    )
+
+
 def _promotable(
     in_sample: Dict[str, Any],
     oos_results: List[Dict[str, Any]],
@@ -372,6 +401,12 @@ def _promotable(
 ) -> bool:
     mode = str(known_gate_mode or "penalty").strip().lower()
     if mode in {"hard", "strict", "require", "required"} and not bool(known_gate.get("pass", False)):
+        return False
+    gate_ok, _, _ = promotion_gate_status(
+        _in_sample_snapshot(in_sample),
+        max_drawdown_gate_pct=float(os.getenv("APEX_WF_MAX_IS_DD", "32") or "32"),
+    )
+    if not gate_ok:
         return False
     cagr = float(in_sample.get("cagr", 0.0) or 0.0)
     dd = float(in_sample.get("dd", 999.0) or 999.0)
@@ -385,7 +420,16 @@ def _promotable(
         return False
     if trades < int(os.getenv("APEX_WF_MIN_IS_TRADES", "120") or "120"):
         return False
-    return all(bool(r.get("pass", False)) for r in oos_results)
+    for res in oos_results:
+        if not bool(res.get("pass", False)):
+            return False
+        res_ok, _, _ = promotion_gate_status(
+            _oos_snapshot(res),
+            max_drawdown_gate_pct=float(res.get("max_dd_req", os.getenv("APEX_WF_OOS_MAX_DD", "35")) or 35.0),
+        )
+        if not res_ok:
+            return False
+    return True
 
 
 def _default_windows() -> List[OOSWindow]:

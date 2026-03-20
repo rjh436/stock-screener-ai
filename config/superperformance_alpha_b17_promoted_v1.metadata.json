@@ -1,0 +1,27 @@
+{
+  "promoted_at": "2026-03-19",
+  "source_config_path": "/tmp/frontier_b17_control_20260319.json",
+  "validation_report_path": "tmp/b17_control_walkforward_20260319.json",
+  "validation_window": {
+    "start_date": "2016-01-01",
+    "end_date": "2026-03-02"
+  },
+  "constraints": {
+    "allow_margin": false,
+    "max_total_exposure_pct_bull": 1.0,
+    "max_total_exposure_pct_bear": 1.0
+  },
+  "acceptance": {
+    "cash_only_ok": true,
+    "full_cagr_pct": 14.93895487222292,
+    "full_max_dd_pct": 28.01295703546095,
+    "oos_36_12_cagr_pct": 20.187825282755867,
+    "oos_60_12_cagr_pct": 30.79809211541109,
+    "meets_min_robust_target": true,
+    "meets_stretch_target": true
+  },
+  "notes": [
+    "Promoted from the validated cash-only B17 control genome.",
+    "This artifact documents the accepted baseline before entry-quality experiments such as rank-relative relaxation are compared against it."
+  ]
+}

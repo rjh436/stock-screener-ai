@@ -1,0 +1,40 @@
+{
+  "label": "Hybrid Benchmark v2 (ETF 10 / SMID 70 / B17 20)",
+  "allocation": {
+    "etf_pct": 10,
+    "smid_pct": 70,
+    "b17_pct": 20
+  },
+  "sleeves": {
+    "etf": "config/etf_rotation_growth_core5_residual_defensive_calmar_v1.json",
+    "smid": "config/smid_pullback_r3000_tc4_tb003_v1.json",
+    "b17": "config/superperformance_alpha_b17_promoted_v1.json"
+  },
+  "cash_only": true,
+  "validated": {
+    "promotion_date": "2026-03-19",
+    "holdout_window": {
+      "start_date": "2021-01-01",
+      "end_date": "2025-12-31"
+    },
+    "holdout_cagr_pct": 37.3187,
+    "holdout_dd_pct": 12.9104,
+    "holdout_calmar": 2.8906,
+    "walkforward_window": {
+      "start_date": "2016-01-01",
+      "end_date": "2026-03-02"
+    },
+    "full_cagr_pct": 28.0467,
+    "full_max_dd_pct": 13.8900,
+    "full_calmar": 2.0192,
+    "oos_36_12_cagr_pct": 34.9908,
+    "oos_60_12_cagr_pct": 33.3601,
+    "worst_12mo_fold_pct": -0.3085,
+    "walkforward_accept": true
+  },
+  "source_artifacts": {
+    "holdout_grid": "tmp/hybrid_allocation_grid_daily_20260319.json",
+    "walkforward": "tmp/hybrid_b17_walkforward_20260319.json"
+  },
+  "supersedes": "tmp/hybrid_holdout_promoted.json"
+}

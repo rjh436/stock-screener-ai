@@ -16,10 +16,17 @@ if str(ROOT) not in sys.path:
 from data.loader import fetch_data_pack
 from data.universe import build_russell3000_membership_by_day
 from execution.engine import run_backtest
+from optimization.walkforward import (
+    DEFAULT_WALKFORWARD_MAX_FULL_DD_PCT,
+    DEFAULT_WALKFORWARD_MIN_OOS_CAGR_PCT,
+    DEFAULT_WALKFORWARD_START,
+    parse_friction_values,
+    replay_ranked_candidates,
+)
 from strategies.strategy_loader import load_strategies
 import optimize_superperformance as opt
 
-from scripts.evaluate_low_turnover_alpha_frontier import _pack_metrics, _score
+from scripts.evaluate_low_turnover_alpha_frontier import _limit_prepared_universe, _pack_metrics, _score
 
 
 DEFAULT_BASE_CONFIGS = [
@@ -57,9 +64,21 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--exit-slippage-bps", type=float, default=10.0)
     parser.add_argument("--soft-trades-per-year", type=float, default=150.0)
     parser.add_argument("--max-candidates", type=int, default=20)
+    parser.add_argument("--universe-limit", type=int, default=0)
+    parser.add_argument("--universe-limit-mode", choices=["sample", "first"], default="sample")
+    parser.add_argument("--universe-sample-seed", type=int, default=42)
     parser.add_argument("--progress", default="tmp/autonomous_cagr_search_progress.jsonl")
     parser.add_argument("--out", default="tmp/autonomous_cagr_search_latest.json")
     parser.add_argument("--skip-10y", action="store_true")
+    parser.add_argument("--walkforward-top-n", type=int, default=0)
+    parser.add_argument("--walkforward-start", default=DEFAULT_WALKFORWARD_START)
+    parser.add_argument("--walkforward-frictions", default="10")
+    parser.add_argument("--walkforward-min-oos-cagr-pct", type=float, default=DEFAULT_WALKFORWARD_MIN_OOS_CAGR_PCT)
+    parser.add_argument("--walkforward-max-full-dd-pct", type=float, default=DEFAULT_WALKFORWARD_MAX_FULL_DD_PCT)
+    parser.add_argument("--walkforward-universe-limit", type=int, default=0)
+    parser.add_argument("--walkforward-universe-limit-mode", choices=["sample", "first"], default="sample")
+    parser.add_argument("--walkforward-universe-sample-seed", type=int, default=42)
+    parser.add_argument("--walkforward-prepared-cache", default="")
     return parser.parse_args()
 
 
@@ -183,9 +202,20 @@ def main() -> None:
     with open((ROOT / args.cache).resolve(), "rb") as handle:
         prepared = pickle.load(handle)
     prepared = opt.compress_data(prepared)
+    prepared, universe_info = _limit_prepared_universe(
+        prepared,
+        int(args.universe_limit),
+        str(args.universe_limit_mode),
+        int(args.universe_sample_seed),
+    )
     all_dates = list(getattr(prepared, "all_dates", []))
     membership, membership_source = build_russell3000_membership_by_day(all_dates)
     global_data = _fetch_global_data(args.trading_days)
+    print(
+        f"[prep] prepared_symbols={len(getattr(prepared, 'enriched', {}) or {})} "
+        f"membership={membership_source} universe_limit={universe_info['limit']} mode={universe_info['mode']}",
+        flush=True,
+    )
 
     rows: List[Dict[str, Any]] = []
     for idx, raw_cfg in enumerate(_candidate_pool(args), start=1):
@@ -209,6 +239,7 @@ def main() -> None:
         ranked = sorted(rows, key=lambda item: item.get("score", -1_000_000.0), reverse=True)
         payload = {
             "membership_source": membership_source,
+            "universe": universe_info,
             "soft_trades_per_year": float(args.soft_trades_per_year),
             "realistic_costs": {
                 "transaction_cost_bps": args.transaction_cost_bps,
@@ -219,6 +250,51 @@ def main() -> None:
         }
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    if int(args.walkforward_top_n) > 0:
+        rows = replay_ranked_candidates(
+            rows,
+            top_n=int(args.walkforward_top_n),
+            start_date=str(args.walkforward_start),
+            end_date=str(args.end_date),
+            transaction_cost_bps=float(args.transaction_cost_bps),
+            friction_values=parse_friction_values(args.walkforward_frictions),
+            min_oos_cagr_pct=float(args.walkforward_min_oos_cagr_pct),
+            max_full_drawdown_pct=float(args.walkforward_max_full_dd_pct),
+            universe_limit=int(args.walkforward_universe_limit),
+            universe_limit_mode=str(args.walkforward_universe_limit_mode),
+            universe_sample_seed=int(args.walkforward_universe_sample_seed),
+            prepared_cache_path=str(args.walkforward_prepared_cache),
+            report_dir=out_path.parent / f"{out_path.stem}_walkforward",
+            report_prefix="autonomous",
+        )
+    else:
+        rows = sorted(rows, key=lambda item: item.get("score", -1_000_000.0), reverse=True)
+
+    payload = {
+        "membership_source": membership_source,
+        "universe": universe_info,
+        "soft_trades_per_year": float(args.soft_trades_per_year),
+        "realistic_costs": {
+            "transaction_cost_bps": args.transaction_cost_bps,
+            "entry_slippage_bps": args.entry_slippage_bps,
+            "exit_slippage_bps": args.exit_slippage_bps,
+        },
+        "walkforward_gate": {
+            "top_n": int(args.walkforward_top_n),
+            "start_date": str(args.walkforward_start),
+            "frictions": list(parse_friction_values(args.walkforward_frictions)),
+            "min_oos_cagr_pct": float(args.walkforward_min_oos_cagr_pct),
+            "max_full_dd_pct": float(args.walkforward_max_full_dd_pct),
+            "universe_limit": int(args.walkforward_universe_limit),
+            "universe_limit_mode": str(args.walkforward_universe_limit_mode),
+            "universe_sample_seed": int(args.walkforward_universe_sample_seed),
+            "prepared_cache": str(args.walkforward_prepared_cache or ""),
+        },
+        "rows": rows,
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     print(out_path)
 

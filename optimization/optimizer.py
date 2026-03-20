@@ -15,6 +15,7 @@ from data.indices import get_index_symbols
 from data.loader import fetch_data_pack
 from execution.engine import DEFAULT_SCORING_WEIGHTS, PreparedBacktestData, prepare_backtest_data, run_backtest
 from optimization.evolution import EvolutionEngine
+from optimization.robustness import single_window_fitness
 from strategies.generic import GenericStrategy
 
 
@@ -31,7 +32,6 @@ EXPORT_TOP_INCOME = 8  # includes "income" and "hybrid"
 MANDATE_CAGR_TARGET = 0.40
 MANDATE_PROFIT_TARGET = 0.05
 MANDATE_WIN_TARGET = 0.60
-
 
 logger = logging.getLogger(__name__)
 if not logging.getLogger().handlers:
@@ -68,22 +68,11 @@ def _threshold_multiplier(value: float, target: float, *, power_below: float) ->
 
 def calculate_fitness(result: Dict) -> float:
     """
-    Fitness objective:
-    - Primary: CAGR
-    - Constraint: max drawdown must be < 25%
-    - Tie-breaker: win rate
+    Favor strategies that combine CAGR with enough sample size and basic robustness.
+    This optimizer still evaluates a single historical window, so the gates here are
+    intentionally conservative to avoid selecting sparse or obviously fragile winners.
     """
-    cagr = _to_float(result.get("cagr", 0.0) or 0.0)
-    win_rate = _to_float(result.get("hit_rate", 0.0) or 0.0) / 100.0
-    max_dd_pct = _to_float(result.get("max_drawdown_pct", 0.0) or 0.0)
-
-    if abs(max_dd_pct) >= 25.0:
-        return 0.0
-
-    if cagr <= 0:
-        return 0.0
-
-    return float((cagr * 1000.0) + win_rate)
+    return single_window_fitness(result, max_drawdown_gate_pct=25.0)
 
 
 class Optimizer:

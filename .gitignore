@@ -100,6 +100,17 @@ config/backtest_baselines.json.tmp
 .env
 .env.*
 !.env.example
+/*.bak*
+/debug_*.py
+/diag_*.py
+/_tmp_*
+/optimization/_tmp_*
+/codebase_audit.txt
+/* copy.command
+/execution/*.bak*
+/simulation/*.bak*
+/data/*.bak*
+/config/*.bak*
 logs/
 exports/
 snapshots/

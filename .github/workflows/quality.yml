@@ -1,0 +1,38 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  focused-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run focused quality checks
+        env:
+          PYTHONPATH: .
+        run: |
+          python tests/test_repo_hygiene_audit.py
+          python tests/test_robustness.py
+          python tests/test_walkforward.py
+          python tests/test_autonomous_promotion_gates.py
+          python tests/test_optimizer_fitness.py
+          python tests/test_evaluate_low_turnover_alpha_frontier.py
+          python tests/test_run_autonomous_cagr_search.py
+          python tests/test_optimize_alpha_neighborhood_realistic.py
+          python tools/repo_hygiene_audit.py

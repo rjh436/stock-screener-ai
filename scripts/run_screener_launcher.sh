@@ -132,15 +132,20 @@ if python tools/auto_login.py; then
     PID_FILE="logs/streamlit.pid"
     echo "🚀 Launching Streamlit App (detached)..."
     echo "📝 Runtime log: $RUNTIME_LOG"
-    nohup python -u -m streamlit run app.py --server.fileWatcherType=none >> "$RUNTIME_LOG" 2>&1 &
+    nohup python -u -m streamlit run app.py --server.fileWatcherType=none --server.headless true --server.port 8501 >> "$RUNTIME_LOG" 2>&1 &
     STREAMLIT_PID=$!
     echo "$STREAMLIT_PID" > "$PID_FILE"
-    sleep 2
-    if kill -0 "$STREAMLIT_PID" 2>/dev/null; then
-        echo "✅ Streamlit started (PID: $STREAMLIT_PID)"
-        echo "🌐 Open: http://localhost:8501"
-        exit 0
-    fi
+    for _ in $(seq 1 15); do
+        if lsof -ti:8501 >/dev/null 2>&1; then
+            echo "✅ Streamlit started (PID: $STREAMLIT_PID)"
+            echo "🌐 Open: http://localhost:8501"
+            exit 0
+        fi
+        if ! kill -0 "$STREAMLIT_PID" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
 
     echo "❌ Streamlit failed to stay running. Last log lines:"
     tail -n 80 "$RUNTIME_LOG" || true

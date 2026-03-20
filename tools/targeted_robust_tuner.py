@@ -24,6 +24,8 @@ if str(ROOT) not in sys.path:
 from data.loader import fetch_data_pack
 from data.universe import get_universe_symbols
 from execution.engine import run_backtest
+from optimization.robustness import build_summary_metrics, promotion_gate_status, rejection_score
+from optimization.walkforward import DEFAULT_WALKFORWARD_START, promotion_walkforward_status
 from strategies.superperformance import SuperperformanceStrategy
 
 
@@ -39,6 +41,31 @@ RECENT_END = str(os.getenv("APEX_TUNER_RECENT_END_DATE", "2026-02-13") or "2026-
 TX_COST_BPS = float(os.getenv("APEX_TUNER_COST_BPS", "50") or "50")
 MAX_WORKERS = int(os.getenv("APEX_TUNER_WORKERS", "2") or "2")
 SHORTLIST_NON_BASELINE = int(os.getenv("APEX_TUNER_SHORTLIST", "2") or "2")
+ENABLE_WALKFORWARD_GATE = str(os.getenv("APEX_TUNER_SKIP_WF_GATE", "0") or "0").strip().lower() not in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+PROMOTION_WF_START = str(os.getenv("APEX_TUNER_WF_START_DATE", DEFAULT_WALKFORWARD_START) or DEFAULT_WALKFORWARD_START)
+
+
+def _parse_env_friction_values(raw: str) -> tuple[float, ...]:
+    values: list[float] = []
+    for part in str(raw or "").split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            value = float(text)
+        except Exception:
+            continue
+        if value >= 0.0:
+            values.append(float(value))
+    return tuple(values) or (10.0,)
+
+
+PROMOTION_WF_FRICTIONS = _parse_env_friction_values(str(os.getenv("APEX_TUNER_WF_FRICTIONS", "10") or "10"))
 
 
 _WORKER_PREPARED = None
@@ -303,6 +330,9 @@ def _run_task(task: Tuple[str, Dict[str, Any], str, str, str, float]) -> EvalRes
 
 
 def _stage_score(res: EvalResult) -> float:
+    ok, code, _ = promotion_gate_status(_result_metrics(res), max_drawdown_gate_pct=30.0)
+    if not ok:
+        return rejection_score(code or 999)
     score = float(res.cagr)
     score += min(max(res.pf, 0.0), 6.0) * 2.5
     score -= max(0.0, res.dd - 30.0) * 2.0
@@ -312,12 +342,29 @@ def _stage_score(res: EvalResult) -> float:
 
 
 def _final_score(full_res: EvalResult, recent_res: EvalResult) -> float:
+    full_ok, full_code, _ = promotion_gate_status(_result_metrics(full_res), max_drawdown_gate_pct=35.0)
+    recent_ok, recent_code, _ = promotion_gate_status(_result_metrics(recent_res), max_drawdown_gate_pct=35.0)
+    if not full_ok:
+        return rejection_score(full_code or 999)
+    if not recent_ok:
+        return rejection_score(recent_code or 999)
     score = (full_res.cagr * 0.65) + (recent_res.cagr * 0.35)
     score += min(max(full_res.pf, 0.0), 6.0) * 2.0
     score += min(max(recent_res.pf, 0.0), 6.0) * 1.0
     score -= max(0.0, full_res.dd - 30.0) * 1.8
     score -= max(0.0, recent_res.dd - 20.0) * 0.8
     return score
+
+
+def _result_metrics(res: EvalResult) -> Dict[str, Any]:
+    sample_years = max((pd.Timestamp(res.end_date) - pd.Timestamp(res.start_date)).days / 365.25, 0.25)
+    return build_summary_metrics(
+        cagr_pct=res.cagr,
+        max_dd_pct=res.dd,
+        total_trades=res.trades,
+        sample_years=sample_years,
+        max_gross_exposure_pct=1.0,
+    )
 
 
 def _promotable(best: Dict[str, Any], baseline: Dict[str, Any]) -> bool:
@@ -327,6 +374,10 @@ def _promotable(best: Dict[str, Any], baseline: Dict[str, Any]) -> bool:
     full_base: EvalResult = baseline["full"]
     recent_best: EvalResult = best["recent"]
     recent_base: EvalResult = baseline["recent"]
+    full_best_ok, _, _ = promotion_gate_status(_result_metrics(full_best), max_drawdown_gate_pct=35.0)
+    recent_best_ok, _, _ = promotion_gate_status(_result_metrics(recent_best), max_drawdown_gate_pct=35.0)
+    if not full_best_ok or not recent_best_ok:
+        return False
     if full_best.cagr < (full_base.cagr + 0.5):
         return False
     if recent_best.cagr < (recent_base.cagr - 1.5):
@@ -349,6 +400,17 @@ def _write_strategy_promotion(configs: Dict[str, Dict[str, Any]], winner_name: s
     winner_cfg.pop("name", None)
     winner_cfg.pop("type", None)
     CONFIG_WINNER.write_text(json.dumps(winner_cfg, indent=4))
+
+
+def _walkforward_promotion_check(cfg: Dict[str, Any], name: str) -> tuple[bool, str, Dict[str, Any], Dict[str, Any]]:
+    return promotion_walkforward_status(
+        cfg,
+        start_date=PROMOTION_WF_START,
+        end_date=FULL_END,
+        transaction_cost_bps=float(cfg.get("transaction_cost_bps", 2.0) or 2.0),
+        friction_values=PROMOTION_WF_FRICTIONS or (10.0,),
+        config_path=f"targeted_robust_tuner::{name}",
+    )
 
 
 def main() -> int:
@@ -466,12 +528,34 @@ def main() -> int:
 
     best_row = merged[0]
     promote = _promotable(best_row, baseline_row)
+    walkforward_report: Dict[str, Any] | None = None
+    walkforward_summary: Dict[str, Any] | None = None
+    walkforward_reason = ""
+
+    if promote and ENABLE_WALKFORWARD_GATE:
+        print(
+            f"[WalkForward] validating {best_row['name']} "
+            f"{PROMOTION_WF_START} -> {FULL_END} frictions={','.join(str(x) for x in PROMOTION_WF_FRICTIONS or (10.0,))}"
+        )
+        wf_ok, wf_reason, wf_summary, wf_report = _walkforward_promotion_check(candidate_cfgs[best_row["name"]], best_row["name"])
+        walkforward_report = wf_report
+        walkforward_summary = wf_summary
+        walkforward_reason = wf_reason
+        print(
+            f"[WalkForward] 36/12={wf_summary['stitched_36_12_cagr_pct']:.2f}% "
+            f"60/12={wf_summary['stitched_60_12_cagr_pct']:.2f}% "
+            f"DD={wf_summary['full_max_dd_pct']:.2f}%"
+        )
+        if not wf_ok:
+            promote = False
 
     if promote:
         _write_strategy_promotion(candidate_cfgs, best_row["name"])
         decision = f"PROMOTED {best_row['name']}"
     else:
         decision = f"KEPT baseline (best={best_row['name']})"
+        if walkforward_reason:
+            decision += f" [{walkforward_reason}]"
 
     report = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -494,7 +578,15 @@ def main() -> int:
             for row in merged
         ],
         "promoted": bool(promote),
+        "walkforward": {
+            "enabled": bool(ENABLE_WALKFORWARD_GATE),
+            "summary": walkforward_summary,
+            "reason": walkforward_reason,
+        },
     }
+    if walkforward_report is not None:
+        report["walkforward"]["report_path"] = str(LOG_DIR / f"targeted_robust_tuner_walkforward_{ts}.json")
+        Path(report["walkforward"]["report_path"]).write_text(json.dumps(walkforward_report, indent=2))
     report_path.write_text(json.dumps(report, indent=2))
     latest_path.write_text(json.dumps(report, indent=2))
 

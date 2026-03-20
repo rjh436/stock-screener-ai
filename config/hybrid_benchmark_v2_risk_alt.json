@@ -1,0 +1,43 @@
+{
+  "label": "Hybrid Benchmark v2 Risk Alt (ETF 0 / SMID 70 / B17 30)",
+  "allocation": {
+    "etf_pct": 0,
+    "smid_pct": 70,
+    "b17_pct": 30
+  },
+  "sleeves": {
+    "etf": "config/etf_rotation_growth_core5_residual_defensive_calmar_v1.json",
+    "smid": "config/smid_pullback_r3000_tc4_tb003_v1.json",
+    "b17": "config/superperformance_alpha_b17_promoted_v1.json"
+  },
+  "cash_only": true,
+  "validated": {
+    "promotion_date": "2026-03-19",
+    "holdout_window": {
+      "start_date": "2021-01-01",
+      "end_date": "2025-12-31"
+    },
+    "holdout_cagr_pct": 39.0900,
+    "holdout_dd_pct": 13.3382,
+    "holdout_calmar": 2.9307,
+    "walkforward_window": {
+      "start_date": "2016-01-01",
+      "end_date": "2026-03-02"
+    },
+    "full_cagr_pct": 26.9803,
+    "full_max_dd_pct": 12.6022,
+    "full_calmar": 2.1409,
+    "oos_36_12_cagr_pct": 34.5045,
+    "oos_60_12_cagr_pct": 34.1868,
+    "worst_12mo_fold_pct": 1.0165,
+    "walkforward_accept": true
+  },
+  "source_artifacts": {
+    "holdout_grid": "tmp/hybrid_allocation_grid_daily_20260319.json",
+    "walkforward": "tmp/hybrid_b17_walkforward_20260319.json"
+  },
+  "notes": [
+    "Risk-minimizing alternate to the promoted v2 benchmark.",
+    "Higher full-window Calmar and no negative 12-month OOS folds, but lower full-window CAGR than H3."
+  ]
+}

@@ -46,6 +46,7 @@ from simulation.paper_trader import PaperTrader, MAX_POSITIONS
 from strategies.strategy_loader import load_strategies
 
 CONFIG_PATH = "config/generated_strategies.json"
+PRIMARY_STRATEGY_CONFIG_PATH = os.path.join("config", "superperformance_winner.json")
 BASELINE_CONFIG_PATH = os.path.join("config", "backtest_baselines.json")
 UNIVERSE_OPTIONS = ["SP500", "SP100", "SP1500", "NASDAQ100", "RUSSELL3000"]
 DEFAULT_UNIVERSE = "RUSSELL3000"
@@ -80,11 +81,10 @@ HYBRID_BENCHMARK_CANDIDATES = {
     },
 }
 HYBRID_BENCHMARK_DEFAULT_LABEL = "Validated Hybrid Benchmark (25/75)"
-PRIMARY_STRATEGY_OPTIONS = ["Hybrid Benchmark", "ETF Benchmark", "Stock Benchmark", "Stock Research"]
-STOCK_RESEARCH_LEADERS = [
-    "Superperformance Alpha B4",
-    "Superperformance Practical Risk-Off Only",
-]
+HYBRID_VALIDATED_BENCHMARK_CONFIG = os.path.join("config", "hybrid_benchmark_v2.json")
+HYBRID_VALIDATED_RISK_ALT_CONFIG = os.path.join("config", "hybrid_benchmark_v2_risk_alt.json")
+HYBRID_LEGACY_HOLDOUT_ARTIFACT = os.path.join("tmp", "hybrid_holdout_promoted.json")
+PRIMARY_STRATEGY_OPTIONS = ["Apex Swing"]
 ETF_PAPER_STATE_FILE = os.path.join("data", "etf_paper_state.json")
 HYBRID_BENCHMARK_PAPER_STATE_FILE = os.path.join("data", "hybrid_benchmark_paper_state.json")
 STOCK_BENCHMARK_PAPER_STATE_FILE = os.path.join("data", "stock_benchmark_paper_state.json")
@@ -293,8 +293,15 @@ def _is_wealth_strategy(config: dict) -> bool:
     return True  # SHOW ALL STRATEGIES (Debug Mode)
 
 def load_strategy_configs():
+    if os.path.exists(PRIMARY_STRATEGY_CONFIG_PATH):
+        with open(PRIMARY_STRATEGY_CONFIG_PATH, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict):
+            winner = dict(payload)
+            winner["enabled_by_default"] = True
+            return [winner]
     if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "r") as f:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             payload = json.load(f)
         if isinstance(payload, list):
             return [s for s in payload if isinstance(s, dict) and _is_wealth_strategy(s)]
@@ -327,12 +334,90 @@ def render_mode_header(title: str, subtitle: str) -> None:
     )
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(ZoneInfo("UTC")).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _load_hybrid_benchmark_catalog() -> Dict[str, Any]:
+    def _load_json(path: str) -> Dict[str, Any]:
+        try:
+            return json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    legacy_payload = _load_json(HYBRID_LEGACY_HOLDOUT_ARTIFACT)
+    legacy_default_holdout: Dict[str, Any] = {}
+    for row in list(legacy_payload.get("hybrids") or []):
+        try:
+            etf_weight = float(row.get("etf_weight"))
+        except Exception:
+            continue
+        if abs(etf_weight - 0.25) < 1e-9:
+            legacy_default_holdout = dict(row.get("holdout") or {})
+            break
+
+    return {
+        "promoted": _load_json(HYBRID_VALIDATED_BENCHMARK_CONFIG),
+        "risk_alt": _load_json(HYBRID_VALIDATED_RISK_ALT_CONFIG),
+        "legacy_default_holdout": legacy_default_holdout,
+    }
+
+
+def _fmt_pct(value: Any, decimals: int = 2) -> str:
+    try:
+        num = float(value)
+    except Exception:
+        return "n/a"
+    if not math.isfinite(num):
+        return "n/a"
+    return f"{num:.{decimals}f}%"
+
+
+def _render_hybrid_benchmark_reference_notice() -> None:
+    catalog = _load_hybrid_benchmark_catalog()
+    promoted = dict(catalog.get("promoted") or {})
+    promoted_validated = dict(promoted.get("validated") or {})
+    risk_alt = dict(catalog.get("risk_alt") or {})
+    risk_alt_validated = dict(risk_alt.get("validated") or {})
+    legacy_default_holdout = dict(catalog.get("legacy_default_holdout") or {})
+
+    st.warning(
+        "The current Hybrid Benchmark GUI still runs the legacy ETF + SMID implementation. "
+        "The promoted cash-only v2 benchmark adds a B17 sleeve and is shown here as the validated reference until live B17 integration is wired."
+    )
+
+    promoted_label = str(promoted.get("label") or "Hybrid Benchmark v2")
+    st.caption(
+        f"Promoted benchmark: {promoted_label} | "
+        f"holdout {_fmt_pct(promoted_validated.get('holdout_cagr_pct'))} CAGR / "
+        f"{_fmt_pct(promoted_validated.get('holdout_dd_pct'))} max DD | "
+        f"full walk-forward {_fmt_pct(promoted_validated.get('full_cagr_pct'))} CAGR / "
+        f"{_fmt_pct(promoted_validated.get('full_max_dd_pct'))} max DD."
+    )
+
+    risk_alt_label = str(risk_alt.get("label") or "Hybrid Benchmark v2 Risk Alt")
+    st.caption(
+        f"Risk alt: {risk_alt_label} | "
+        f"holdout {_fmt_pct(risk_alt_validated.get('holdout_cagr_pct'))} CAGR / "
+        f"{_fmt_pct(risk_alt_validated.get('holdout_dd_pct'))} max DD | "
+        f"full walk-forward {_fmt_pct(risk_alt_validated.get('full_cagr_pct'))} CAGR / "
+        f"{_fmt_pct(risk_alt_validated.get('full_max_dd_pct'))} max DD."
+    )
+    if legacy_default_holdout:
+        st.caption(
+            f"Legacy two-sleeve reference (25/75 ETF/SMID): "
+            f"{_fmt_pct(legacy_default_holdout.get('cagr_pct'))} CAGR / "
+            f"{_fmt_pct(legacy_default_holdout.get('max_dd_pct'))} max DD on the 2021-01-01 to 2025-12-31 holdout."
+        )
+
+
 def _display_profile_label(label: str) -> str:
     mapping = {
         ETF_FROZEN_DEFAULT_LABEL: "ETF Baseline",
         "Higher Return ETF Benchmark": "ETF Higher Return",
-        HYBRID_BENCHMARK_DEFAULT_LABEL: "Hybrid 25/75",
-        "Balanced Hybrid Benchmark (50/50)": "Hybrid 50/50",
+        HYBRID_BENCHMARK_DEFAULT_LABEL: "Legacy Hybrid 25/75",
+        "Balanced Hybrid Benchmark (50/50)": "Legacy Hybrid 50/50",
         STOCK_BENCHMARK_DEFAULT_LABEL: "Stock Leader",
         "Higher Return Stock Benchmark": "Stock Higher Return",
     }
@@ -437,7 +522,7 @@ def _render_target_allocation_with_tail_controls(
     if weights.empty:
         order_df, column_config = _prepare_target_order_table(df, planning_capital=planning_capital)
         st.subheader(title)
-        st.dataframe(order_df, use_container_width=True, hide_index=True, column_config=column_config)
+        st.dataframe(order_df, width="stretch", hide_index=True, column_config=column_config)
         return
 
     st.subheader(title)
@@ -497,12 +582,12 @@ def _render_target_allocation_with_tail_controls(
         display_df = pd.concat([display_df, pd.DataFrame([summary_row])], ignore_index=True)
 
     order_df, column_config = _prepare_target_order_table(display_df, planning_capital=planning_capital)
-    st.dataframe(order_df, use_container_width=True, hide_index=True, column_config=column_config)
+    st.dataframe(order_df, width="stretch", hide_index=True, column_config=column_config)
 
     if dust_positions > 0:
         with st.expander(f"Show hidden small allocations ({dust_positions} rows, {dust_gross:.1%} gross)"):
             dust_order_df, dust_column_config = _prepare_target_order_table(tail_df, planning_capital=planning_capital)
-            st.dataframe(dust_order_df, use_container_width=True, hide_index=True, column_config=dust_column_config)
+            st.dataframe(dust_order_df, width="stretch", hide_index=True, column_config=dust_column_config)
 
 
 def _render_rebalance_with_tail_controls(
@@ -520,7 +605,7 @@ def _render_rebalance_with_tail_controls(
     if delta_weights.empty:
         order_df, column_config = _prepare_rebalance_order_table(df, planning_capital=planning_capital)
         st.subheader(title)
-        st.dataframe(order_df, use_container_width=True, hide_index=True, column_config=column_config)
+        st.dataframe(order_df, width="stretch", hide_index=True, column_config=column_config)
         return
 
     st.subheader(title)
@@ -573,12 +658,12 @@ def _render_rebalance_with_tail_controls(
         display_df = pd.concat([display_df, pd.DataFrame([summary_row])], ignore_index=True)
 
     order_df, column_config = _prepare_rebalance_order_table(display_df, planning_capital=planning_capital)
-    st.dataframe(order_df, use_container_width=True, hide_index=True, column_config=column_config)
+    st.dataframe(order_df, width="stretch", hide_index=True, column_config=column_config)
 
     if hidden_rows > 0:
         with st.expander(f"Show hidden rebalance tail ({hidden_rows} rows, {hidden_gross:.1%} gross)"):
             dust_order_df, dust_column_config = _prepare_rebalance_order_table(tail_df, planning_capital=planning_capital)
-            st.dataframe(dust_order_df, use_container_width=True, hide_index=True, column_config=dust_column_config)
+            st.dataframe(dust_order_df, width="stretch", hide_index=True, column_config=dust_column_config)
 
 
 def _prepare_rebalance_order_table(
@@ -920,6 +1005,58 @@ def _write_json_payload(path: str, payload: Any) -> None:
         json.dump(payload, f, indent=2, default=str)
 
 
+def _persist_streamlit_export(file_name: str, payload_json: str) -> Dict[str, Any]:
+    safe_name = Path(file_name).name or "benchmark_result.json"
+    export_targets = {
+        "workspace_path": (Path("exports") / "streamlit_results" / safe_name).resolve(),
+        "downloads_path": Path.home() / "Downloads" / safe_name,
+    }
+    saved_paths: Dict[str, str] = {}
+    errors: Dict[str, str] = {}
+    for key, path in export_targets.items():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(payload_json, encoding="utf-8")
+            saved_paths[key] = str(path)
+        except Exception as exc:
+            errors[key] = f"{path}: {exc}"
+    return {"saved_paths": saved_paths, "errors": errors}
+
+
+def _persist_streamlit_bytes(file_name: str, payload: bytes) -> Dict[str, Any]:
+    safe_name = Path(file_name).name or "streamlit_export.bin"
+    export_targets = {
+        "workspace_path": (Path("exports") / "streamlit_results" / safe_name).resolve(),
+        "downloads_path": Path.home() / "Downloads" / safe_name,
+    }
+    saved_paths: Dict[str, str] = {}
+    errors: Dict[str, str] = {}
+    for key, path in export_targets.items():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+            saved_paths[key] = str(path)
+        except Exception as exc:
+            errors[key] = f"{path}: {exc}"
+    return {"saved_paths": saved_paths, "errors": errors}
+
+
+def _render_streamlit_export_status(export_meta: Mapping[str, Any]) -> None:
+    saved_paths = dict(export_meta.get("saved_paths") or {})
+    workspace_path = saved_paths.get("workspace_path")
+    downloads_path = saved_paths.get("downloads_path")
+    if workspace_path:
+        st.caption(f"Saved workspace copy: `{workspace_path}`")
+    if downloads_path:
+        st.caption(f"Saved Downloads copy: `{downloads_path}`")
+    errors = dict(export_meta.get("errors") or {})
+    if errors:
+        st.warning(
+            "Automatic JSON export failed for: "
+            + " | ".join(str(message) for message in errors.values())
+        )
+
+
 def _read_pickle_payload(path: str, default: Any) -> Any:
     try:
         if os.path.exists(path):
@@ -1113,7 +1250,7 @@ def _build_etf_live_snapshot(
         "loaded_symbols": [sym for sym in symbols if sym in data],
         "requested_end_date": requested_end_ts.date().isoformat(),
         "resolved_end_date": latest_signal_dt.date().isoformat(),
-        "built_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "built_at_utc": _utc_now_iso(),
     }
 
 
@@ -1145,7 +1282,7 @@ def _save_etf_paper_state(state: Mapping[str, Any]) -> None:
             for sym, weight in dict(state.get("holdings") or {}).items()
             if _safe_float(weight, 0.0) > 0.0
         },
-        "updated_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "updated_at_utc": _utc_now_iso(),
     }
     _write_json_payload(ETF_PAPER_STATE_FILE, payload)
 
@@ -1379,6 +1516,7 @@ def _render_etf_benchmark_lab(default_end_date: str, *, etf_profile_label: str) 
         "This is the current validated winner and the clean benchmark path."
     )
     st.caption("Blind Holdout is the validation view. Full Sample is the long-run context view.")
+    st.info("This ETF workspace is not the 30%+ CAGR lane. That result belongs to the Stock Benchmark workspace.")
     _render_benchmark_execution_note(_current_benchmark_planning_capital())
     bench_m1, bench_m2, bench_m3 = st.columns(3)
     bench_m1.metric("Frozen Holdout CAGR", "22.04%")
@@ -1520,6 +1658,7 @@ def _render_etf_benchmark_lab(default_end_date: str, *, etf_profile_label: str) 
             st.line_chart(full_curve.set_index("Date")["Equity"])
 
     payload_json = json.dumps(etf_result, indent=2, default=str)
+    export_meta = _persist_streamlit_export("etf_benchmark_result.json", payload_json)
     st.download_button(
         label="📥 Export ETF Benchmark Result (JSON)",
         data=payload_json.encode("utf-8"),
@@ -1527,6 +1666,7 @@ def _render_etf_benchmark_lab(default_end_date: str, *, etf_profile_label: str) 
         mime="application/json",
         key="dl_etf_benchmark_json",
     )
+    _render_streamlit_export_status(export_meta)
 
 
 def _load_stock_benchmark_helpers():
@@ -2107,7 +2247,7 @@ def _build_stock_benchmark_live_snapshot(
                 "resolved_end_date": end_ts.date().isoformat(),
                 "used_end_date_fallback": bool(day_back > 0),
                 "used_lookback_fallback": bool(window_days != int(lookback_days)),
-                "built_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                "built_at_utc": _utc_now_iso(),
             }
 
     detail = "; ".join(attempt_errors[-6:]) if attempt_errors else "no fallback attempts recorded"
@@ -2142,7 +2282,7 @@ def _save_stock_benchmark_paper_state(state: Mapping[str, Any]) -> None:
             for sym, weight in dict(state.get("holdings") or {}).items()
             if _safe_float(weight, 0.0) > 0.0
         },
-        "updated_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "updated_at_utc": _utc_now_iso(),
     }
     _write_json_payload(STOCK_BENCHMARK_PAPER_STATE_FILE, payload)
 
@@ -2260,7 +2400,7 @@ def _build_hybrid_benchmark_live_snapshot(*, profile_label: str, end_date: Optio
         "stock_snapshot": stock_snapshot,
         "requested_end_date": requested_end_date,
         "resolved_end_date": sync_end_date,
-        "built_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "built_at_utc": _utc_now_iso(),
     }
 
 
@@ -2292,7 +2432,7 @@ def _save_hybrid_benchmark_paper_state(state: Mapping[str, Any]) -> None:
             for sym, weight in dict(state.get("holdings") or {}).items()
             if _safe_float(weight, 0.0) > 0.0
         },
-        "updated_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "updated_at_utc": _utc_now_iso(),
     }
     _write_json_payload(HYBRID_BENCHMARK_PAPER_STATE_FILE, payload)
 
@@ -2302,13 +2442,14 @@ def _render_hybrid_benchmark_live_screener(hybrid_profile_label: str) -> None:
     expected_end_date = _latest_completed_market_session_date()
     render_mode_header(
         "🧩 Hybrid Benchmark",
-        "Review the selected fixed blend of the ETF anchor and the validated stock benchmark candidate.",
+        "Review the currently wired legacy ETF + SMID hybrid implementation and compare it against the promoted v2 benchmark reference.",
     )
     st.caption(
-        "This path combines the production ETF anchor with the validated stock benchmark candidate. "
+        "This live workflow currently combines only the ETF anchor and the validated SMID benchmark. "
         "Signals remain close-to-next-day only."
     )
-    st.caption("Use this view to review the blended ETF and stock allocations before the next trading session.")
+    st.caption("Use this view to review the legacy blended ETF and stock allocations before the next trading session.")
+    _render_hybrid_benchmark_reference_notice()
     _render_benchmark_execution_note(planning_capital)
     refresh_requested = st.button("Refresh Hybrid Snapshot", type="primary", key="refresh_hybrid_live_snapshot")
     if refresh_requested:
@@ -2411,9 +2552,10 @@ def _render_hybrid_benchmark_simulator(hybrid_profile_label: str) -> None:
     expected_end_date = _latest_completed_market_session_date()
     render_mode_header(
         "🎮 Hybrid Benchmark Paper Allocator",
-        "Track the selected hybrid benchmark using the same target schedule as Live Screener and Backtest.",
+        "Track the currently wired legacy ETF + SMID hybrid implementation using the same target schedule as Live Screener and Backtest.",
     )
     st.caption("Use Adopt Latest only after reviewing both ETF and stock sleeve changes below.")
+    _render_hybrid_benchmark_reference_notice()
     _render_benchmark_execution_note(planning_capital)
     refresh_requested = st.button("Refresh Hybrid Recommendation", type="primary", key="refresh_hybrid_sim_snapshot")
     if refresh_requested:
@@ -2825,6 +2967,7 @@ def _render_stock_benchmark_lab(default_end_date: str, *, stock_profile_label: s
         "This is the concentrated SMID pullback lane that beat the frozen ETF benchmark in PIT Russell holdout testing."
     )
     st.caption("Blind Holdout is the truth-testing view. Full Sample is descriptive only.")
+    st.info("This is the cash-only benchmark lane that produced the 30%+ full-window CAGR result.")
     _render_benchmark_execution_note(_current_benchmark_planning_capital())
     m1, m2, m3 = st.columns(3)
     m1.metric("Validated Holdout CAGR", "36.00%")
@@ -2963,6 +3106,7 @@ def _render_stock_benchmark_lab(default_end_date: str, *, stock_profile_label: s
             st.line_chart(full_curve.set_index("Date")["Equity"])
 
     payload_json = json.dumps(result, indent=2, default=str)
+    export_meta = _persist_streamlit_export("stock_benchmark_result.json", payload_json)
     st.download_button(
         label="📥 Export Stock Benchmark Result (JSON)",
         data=payload_json.encode("utf-8"),
@@ -2970,22 +3114,36 @@ def _render_stock_benchmark_lab(default_end_date: str, *, stock_profile_label: s
         mime="application/json",
         key="dl_stock_benchmark_json",
     )
+    _render_streamlit_export_status(export_meta)
 
 
 def _render_hybrid_benchmark_lab(default_end_date: str, *, hybrid_profile_label: str) -> None:
     st.markdown("### 🧩 Hybrid Benchmark Lab")
     st.caption(
-        "Run the fixed ETF + stock benchmark blends outside the generic stock-strategy engine. "
-        "This is the current recommended combined frontier."
+        "Run the currently wired legacy ETF + SMID benchmark blends outside the generic stock-strategy engine."
     )
-    st.caption("Blind Holdout is the validation view for the fixed blend. Full Sample is the long-run context view.")
+    st.caption("Blind Holdout is the validation view for the legacy fixed blend. Full Sample is the long-run context view.")
+    _render_hybrid_benchmark_reference_notice()
     _render_benchmark_execution_note(_current_benchmark_planning_capital())
+    hybrid_catalog = _load_hybrid_benchmark_catalog()
+    hybrid_promoted = dict(hybrid_catalog.get("promoted") or {})
+    hybrid_promoted_validated = dict(hybrid_promoted.get("validated") or {})
+    hybrid_legacy_holdout = dict(hybrid_catalog.get("legacy_default_holdout") or {})
     h1, h2, h3 = st.columns(3)
-    h1.metric("Validated Holdout CAGR", "33.71%")
-    h2.metric("Validated Holdout Max DD", "14.92%")
-    h3.metric("Default Blend", "25% ETF / 75% Stock")
+    h1.metric("Promoted v2 Holdout CAGR", _fmt_pct(hybrid_promoted_validated.get("holdout_cagr_pct")))
+    h2.metric("Promoted v2 Holdout Max DD", _fmt_pct(hybrid_promoted_validated.get("holdout_dd_pct")))
+    h3.metric("Selected Legacy Blend", _display_profile_label(hybrid_profile_label))
+    if hybrid_legacy_holdout:
+        st.caption(
+            f"Selected GUI default legacy reference: {_fmt_pct(hybrid_legacy_holdout.get('cagr_pct'))} CAGR / "
+            f"{_fmt_pct(hybrid_legacy_holdout.get('max_dd_pct'))} max DD."
+        )
 
     st.info(f"Using hybrid profile from the sidebar: **{_display_profile_label(hybrid_profile_label)}**")
+    st.info(
+        "Run Hybrid Benchmark currently evaluates the legacy ETF + SMID blend selected above. "
+        "It does not yet include the B17 sleeve used by the promoted v2 benchmark."
+    )
     eval_mode = st.radio(
         "Hybrid Evaluation Mode",
         ["Blind Holdout", "Full Sample"],
@@ -3141,7 +3299,7 @@ def _render_hybrid_benchmark_lab(default_end_date: str, *, hybrid_profile_label:
         )
         st.dataframe(
             comp_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "Train CAGR %": st.column_config.NumberColumn(format="%.2f"),
@@ -3152,6 +3310,7 @@ def _render_hybrid_benchmark_lab(default_end_date: str, *, hybrid_profile_label:
         )
 
     payload_json = json.dumps(result, indent=2, default=str)
+    export_meta = _persist_streamlit_export("hybrid_benchmark_result.json", payload_json)
     st.download_button(
         label="📥 Export Hybrid Benchmark Result (JSON)",
         data=payload_json.encode("utf-8"),
@@ -3159,6 +3318,7 @@ def _render_hybrid_benchmark_lab(default_end_date: str, *, hybrid_profile_label:
         mime="application/json",
         key="dl_hybrid_benchmark_json",
     )
+    _render_streamlit_export_status(export_meta)
 
 
 def _is_market_open_et(now: datetime | None = None) -> bool:
@@ -3616,16 +3776,11 @@ def _write_missing_symbols_report(
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🎯 Apex Sniper")
-    st.caption("Benchmark and research trading workspace")
+    st.caption("Single-strategy swing trading workspace")
     st.markdown("---")
-    st.info("Benchmark suite active")
+    st.info("Apex Swing production profile active")
     mode = st.radio("Select Mode", ["Live Screener", "Backtest", "Simulator"])
-    primary_strategy = st.radio(
-        "Strategy Workspace",
-        PRIMARY_STRATEGY_OPTIONS,
-        index=PRIMARY_STRATEGY_OPTIONS.index("Hybrid Benchmark"),
-        help="Keep Live Screener, Backtest, and Simulator aligned to the ETF baseline, the hybrid benchmark, the stock benchmark, or the broader stock research engine.",
-    )
+    primary_strategy = PRIMARY_STRATEGY_OPTIONS[0]
 
     st.markdown("### ✅ Accuracy")
     pit_as_of = pd.Timestamp.utcnow().tz_localize(None).date().isoformat()
@@ -3647,217 +3802,74 @@ with st.sidebar:
         st.caption("Accuracy mode: `APEX_BACKTEST_ACCURACY_MODE=warn|block|off`")
         st.caption("Russell min coverage: `APEX_BACKTEST_MIN_COVERAGE_RUSSELL` (defaults are duration-aware in block/warn mode)")
         st.caption("Run validator: `./.venv/bin/python tools/validate_pit_universe.py --strict`")
-    
-    st.markdown("### 🏁 Current Focus")
-    if primary_strategy == "ETF Benchmark":
-        st.markdown(
-            "- **Workspace:** ETF Benchmark\n"
-            "- **Benchmark family:** Residual-defensive leveraged ETF rotation\n"
-            "- **Validated baseline:** 22.04% CAGR / 25.45% DD blind holdout"
-        )
-    elif primary_strategy == "Hybrid Benchmark":
-        st.markdown(
-            "- **Workspace:** Hybrid Benchmark\n"
-            "- **Combined frontier:** Fixed ETF + stock benchmark blends\n"
-            "- **Validated default holdout:** 33.71% CAGR / 14.92% DD\n"
-            "- **Status:** default recommended workspace; ETF remains the production anchor"
-        )
-    elif primary_strategy == "Stock Benchmark":
-        st.markdown(
-            "- **Workspace:** Stock Benchmark\n"
-            "- **Research leader:** SMID Pullback R3000 TC4 TB003 V1\n"
-            "- **Validated holdout:** 36.00% CAGR / 17.05% DD\n"
-            "- **Status:** research-first; hybrid is the strongest combined candidate"
-        )
-    else:
-        st.markdown(
-            "- **Workspace:** Stock Research\n"
-            "- **Best stock profile:** Superperformance Alpha B4\n"
-            "- **Defensive stock profile:** Superperformance Practical Risk-Off Only"
-        )
 
     selected_etf_profile_label = ETF_FROZEN_DEFAULT_LABEL
     selected_hybrid_profile_label = HYBRID_BENCHMARK_DEFAULT_LABEL
     selected_stock_benchmark_label = STOCK_BENCHMARK_DEFAULT_LABEL
-    if primary_strategy == "ETF Benchmark":
-        st.markdown("### 🏦 ETF Benchmark Profile")
-        selected_etf_profile_label = st.selectbox(
-            "ETF Strategy",
-            list(ETF_FROZEN_BENCHMARKS.keys()),
-            index=list(ETF_FROZEN_BENCHMARKS.keys()).index(ETF_FROZEN_DEFAULT_LABEL),
-            format_func=_display_profile_label,
-            key="sidebar_etf_profile",
-        )
-        st.caption(
-            "This selection is shared by Live Screener, Backtest, and Simulator."
-        )
-    elif primary_strategy == "Hybrid Benchmark":
-        st.markdown("### 🧩 Hybrid Benchmark Profile")
-        selected_hybrid_profile_label = st.selectbox(
-            "Hybrid Benchmark",
-            list(HYBRID_BENCHMARK_CANDIDATES.keys()),
-            index=list(HYBRID_BENCHMARK_CANDIDATES.keys()).index(HYBRID_BENCHMARK_DEFAULT_LABEL),
-            format_func=_display_profile_label,
-            key="sidebar_hybrid_benchmark_profile",
-        )
-        st.caption(
-            "This fixed blend is shared by Live Screener, Backtest, and Simulator."
-        )
-    elif primary_strategy == "Stock Benchmark":
-        st.markdown("### 📘 Stock Benchmark Profile")
-        selected_stock_benchmark_label = st.selectbox(
-            "Stock Benchmark",
-            list(STOCK_BENCHMARK_CANDIDATES.keys()),
-            index=list(STOCK_BENCHMARK_CANDIDATES.keys()).index(STOCK_BENCHMARK_DEFAULT_LABEL),
-            format_func=_display_profile_label,
-            key="sidebar_stock_benchmark_profile",
-        )
-        st.caption(
-            "This selection is shared by Live Screener, Backtest, and Simulator."
-        )
-
-    if primary_strategy in {"ETF Benchmark", "Hybrid Benchmark", "Stock Benchmark"}:
-        st.markdown("### 💵 Order Planning")
-        st.number_input(
-            "Planning Capital ($)",
-            min_value=1000.0,
-            step=10000.0,
-            value=float(_safe_float(st.session_state.get("benchmark_planning_capital"), 100000.0)),
-            key="benchmark_planning_capital",
-            help="Benchmark order tables convert target weights into estimated dollars and shares using this account size. The backtest logic is unchanged.",
-        )
-        st.caption("Share estimates use the latest close for planning. Modeled fills remain next-session open plus slippage.")
-
-    st.markdown("### 🧭 Quick Start")
-    if primary_strategy == "ETF Benchmark":
-        st.caption("1. Use Live Screener for today’s allocation.")
-        st.caption("2. Use Backtest for blind holdout or full-sample validation.")
-        st.caption("3. Use Simulator to adopt the current paper allocation.")
-        st.caption("4. Benchmark orders are modeled at the next open; planning tables convert weights into estimated dollars and shares.")
-    elif primary_strategy == "Hybrid Benchmark":
-        st.caption("1. Review the selected hybrid allocation in Live Screener.")
-        st.caption("2. Validate the selected blend in Backtest before changing weights.")
-        st.caption("3. Use Simulator to mirror the hybrid target book.")
-        st.caption("4. Planning tables show estimated dollars and shares at the latest close for next-open execution.")
-    elif primary_strategy == "Stock Benchmark":
-        st.caption("1. Review the current stock target list in Live Screener.")
-        st.caption("2. Use Backtest for coverage-gated validation across the concentrated stock candidates.")
-        st.caption("3. Treat Simulator as research paper trading, not production.")
-        st.caption("4. Planning tables show estimated dollars and shares using the selected benchmark planning capital.")
-    else:
-        st.caption("1. Select stock strategies to include in the workspace.")
-        st.caption("2. Run scans/backtests only after confirming the PIT status.")
-        st.caption("3. Use Simulator for discretionary paper execution.")
 
     strategies_list = load_strategy_configs()
-    strategies_map = {s['name']: s for s in strategies_list}
-    selected_strategies = []
-    if primary_strategy == "Stock Research" and strategies_list:
-        st.markdown("### 📘 Stock Research Profiles")
-        priority_names = set(STOCK_RESEARCH_LEADERS)
-        ordered_strategies = sorted(
-            strategies_list,
-            key=lambda s: (
-                0 if str(s.get("name", "")) in priority_names else 1,
-                str(s.get("name", "")),
-            ),
+    strategies_map = {s.get("name", f"Strategy {i+1}"): s for i, s in enumerate(strategies_list)}
+    selected_strategies = strategies_list[:1]
+    active_strategy = dict(selected_strategies[0]) if selected_strategies else {}
+
+    st.markdown("### 🏁 Current Focus")
+    if active_strategy:
+        st.markdown(
+            "- **Workspace:** Apex Swing\n"
+            "- **Mandate:** cash-only, next-day executable swing trading\n"
+            "- **Style:** Minervini/Qullamaggie hybrid with EP, VCP, and low-cheat entries\n"
+            "- **Objective:** maximize realistic long-run CAGR while keeping trade count low and drawdown controlled"
         )
-        selected_names = []
-        with st.expander("Manage stock profiles", expanded=(mode != "Backtest")):
-            for i, s in enumerate(ordered_strategies):
-                strat_name = s.get("name", "")
-                default_enabled = bool(s.get("enabled_by_default", True))
-                label = strat_name
-                if strat_name in priority_names:
-                    label = f"⭐ {strat_name}"
-                use = st.checkbox(label, value=default_enabled, key=f"chk_{strat_name}_{i}")
-                if use:
-                    selected_strategies.append(s)
-                    selected_names.append(strat_name)
+    else:
+        st.error("No production strategy config is available. Restore `config/superperformance_winner.json`.")
 
-                with st.expander(f"Strategy Guide: {s.get('name', 'Strategy')}"):
-                    try:
-                        limit_ratio = float(s.get("limit_ratio")) if s.get("limit_ratio") is not None else None
-                    except Exception:
-                        limit_ratio = None
+    st.markdown("### 💵 Order Planning")
+    st.number_input(
+        "Planning Capital ($)",
+        min_value=1000.0,
+        step=10000.0,
+        value=float(_safe_float(st.session_state.get("benchmark_planning_capital"), 100000.0)),
+        key="benchmark_planning_capital",
+        help="Planning tables convert target weights into estimated dollars and shares using this account size. Backtest logic is unchanged.",
+    )
+    st.caption("Share estimates use the latest close for planning. Modeled fills remain next-session open plus configured slippage.")
 
-                    try:
-                        stop_loss_atr = float(s.get("stop_loss_atr", 3.0) or 3.0)
-                    except Exception:
-                        stop_loss_atr = 3.0
+    st.markdown("### 🧭 Quick Start")
+    st.caption("1. Use Live Screener after the close to build the next-session watchlist.")
+    st.caption("2. Use Backtest for strict point-in-time validation and exportable results.")
+    st.caption("3. Use Simulator to practice the nightly scan, next-open entry, and exit workflow.")
 
-                    try:
-                        trail_activation = float(s.get("trail_activation", 1.0) or 1.0)
-                    except Exception:
-                        trail_activation = 1.0
-
-                    try:
-                        trail_atr = float(s.get("trail_atr", stop_loss_atr) or stop_loss_atr)
-                    except Exception:
-                        trail_atr = stop_loss_atr
-
-                    try:
-                        time_stop = int(s.get("time_stop", 45) or 45)
-                    except Exception:
-                        time_stop = 45
-                    time_stop = max(1, time_stop)
-
-                    limit_desc = "market/open (no limit ratio set)"
-                    if limit_ratio is not None and limit_ratio > 0:
-                        limit_desc = f"{limit_ratio:.2f}× prior close (~{(1.0 - limit_ratio) * 100.0:.1f}% below)"
-
-                    trail_activation_desc = f"+{(trail_activation - 1.0) * 100.0:.0f}% (activation {trail_activation:.2f})"
-
-                    strat_name_lc = str(strat_name).strip().lower()
-                    strat_type_lc = str(s.get("type", "") or "").strip().lower()
-                    if strat_type_lc == "superperformance" or "superperformance" in strat_name_lc:
-                        rs_gate = float(s.get("rs_gate_min", 85) or 85)
-                        growth_gate = float(s.get("fundamental_growth_min_pct", 20) or 20)
-                        min_score = float(s.get("min_entry_score", 0) or 0)
-                        max_stop = float(s.get("max_stop_pct", 0.06) or 0.06) * 100.0
-                        time_stop_days = int(s.get("time_stop_days", 5) or 5)
-                        risk_trade = float(s.get("risk_per_trade", 0.01) or 0.01) * 100.0
-                        entry_mode = str(s.get("entry_mode", "both") or "both").upper()
-                        st.markdown(
-                            f"""
+    st.markdown("### 📘 Apex Swing Blueprint")
+    if active_strategy:
+        rs_gate = float(active_strategy.get("rs_gate_min", 85) or 85)
+        growth_gate = float(active_strategy.get("fundamental_growth_min_pct", 10) or 10)
+        min_score = float(active_strategy.get("min_entry_score", 0) or 0)
+        max_stop = float(active_strategy.get("max_stop_pct", 0.06) or 0.06) * 100.0
+        time_stop_days = int(active_strategy.get("time_stop_days", 7) or 7)
+        risk_trade = float(active_strategy.get("risk_per_trade", 0.01) or 0.01) * 100.0
+        max_positions = int(active_strategy.get("max_positions", 3) or 3)
+        entry_mode = str(active_strategy.get("entry_mode", "both") or "both").upper()
+        st.caption(f"Active profile: `{active_strategy.get('name', 'Apex Swing')}`")
+        st.markdown(
+            f"""
 **Gate Logic**
-- Trend template: close > SMA10 > SMA20 > SMA50 > SMA150 > SMA200
+- Core trend gate stays strict for breakout entries.
 - RS gate: **>= {rs_gate:.0f}**
 - Fundamental growth: **>= {growth_gate:.0f}%**
 
 **Entry Logic**
 - Archetype union: **{entry_mode}**
+- Execution model: **after close signal, next-session order**
 - Composite score floor: **>= {min_score:.1f}**
 
 **Risk & Exit**
+- Max positions: **{max_positions}**
 - Initial stop cap: **{max_stop:.1f}%**
-- Risk per trade: **{risk_trade:.2f}%**
-- Time stop: **{time_stop_days} days**
+- Risk per trade: **{risk_trade:.1f}%**
+- Global dead-money clock: **{time_stop_days} bars**
 """
-                        )
-                    else:
-                        st.markdown(
-                            f"""
-**Strategy Mandate**
-- Elite sniper gate: **Score >= {MIN_ENTRY_SCORE:.0f}**
-- RSI pullback rule: **RSI2 < 20**
+        )
 
-**Execution**
-- Limit orders: fills at {limit_desc}
-
-**Risk & Exit**
-- ATR stop: **{stop_loss_atr:.2f}x**
-- Trail activation: **{trail_activation_desc}**
-- Trail width: **{trail_atr:.2f}x ATR**
-- Time exit: **{time_stop} trading days**
-"""
-                        )
-        if selected_names:
-            st.caption(f"Selected stock profiles: {', '.join(selected_names)}")
-        else:
-            st.caption("Selected stock profiles: none")
-    elif primary_strategy == "Stock Research":
-        st.error("⚠️ No strategies found in config file!")
 
 # --- 1. LIVE SCREENER ---
 if mode == "Live Screener":
@@ -3872,7 +3884,7 @@ if mode == "Live Screener":
         st.stop()
     render_mode_header(
         "🚀 Daily Opportunity Scanner",
-        "Scan the Russell 3000 workflow with point-in-time universe alignment and real-time progress visibility.",
+        "Scan the Apex Swing production engine after the close and build a next-session execution list with point-in-time universe alignment.",
     )
     if "scan_results" not in st.session_state:
         st.session_state.scan_results = None
@@ -4277,7 +4289,7 @@ if mode == "Live Screener":
                     if st.button(
                         f"💸 Flash Sell / Liquidate ({len(liquidation_symbols)})", 
                         type="primary", 
-                        use_container_width=True,
+                        width="stretch",
                         key="btn_flash_liq"
                     ):
                         with st.spinner(f"Liquidating {', '.join(liquidation_symbols)}..."):
@@ -4311,7 +4323,7 @@ if mode == "Live Screener":
                 if not targets.empty:
                     st.dataframe(
                         targets[["Symbol", "Strategy", "Score", "Price", "Stop Loss", "Target"]],
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True
                     )
                 else:
@@ -4320,7 +4332,7 @@ if mode == "Live Screener":
             with col2:
                 st.subheader("🔄 Smart Swaps (Advisory)")
                 if swap_recommendations:
-                    st.dataframe(pd.DataFrame(swap_recommendations), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(swap_recommendations), width="stretch", hide_index=True)
                     if best_buy is None:
                         st.caption("Strategy: Raise Cash (No Buys Available)")
                     else:
@@ -4330,7 +4342,7 @@ if mode == "Live Screener":
         
                 st.subheader("🔭 Watchtower")
                 if not watchtower.empty:
-                    st.dataframe(watchtower[["Symbol", "Score", "Status"]], use_container_width=True, hide_index=True)
+                    st.dataframe(watchtower[["Symbol", "Score", "Status"]], width="stretch", hide_index=True)
 
             # --- SECTOR RADAR (Preserved) ---
             with st.expander("📊 Sector Risk Radar"):
@@ -4349,8 +4361,8 @@ if mode == "Live Screener":
 # --- 2. BACKTEST ---
 elif mode == "Backtest":
     render_mode_header(
-        "📈 Historical Performance Lab",
-        "Run institutional-grade historical simulations with accuracy gating, PIT coverage checks, and exportable diagnostics.",
+        "📈 Apex Swing Backtest Lab",
+        "Run disciplined historical validations for Apex Swing with accuracy gating, PIT coverage checks, and exportable diagnostics.",
     )
 
     today = pd.Timestamp.utcnow().tz_localize(None).normalize()
@@ -4377,7 +4389,7 @@ elif mode == "Backtest":
         st.write("Duration:")
         c1, c2, c3, c4, c5 = st.columns(5)
         dur_map = {"1 Year": 252, "5 Years": 1260, "10 Years": 2520, "20 Years": 5040, "Max": 10000}
-        if "bt_duration" not in st.session_state: st.session_state.bt_duration = "5 Years"
+        if "bt_duration" not in st.session_state: st.session_state.bt_duration = "10 Years"
         
         for label in dur_map:
             if c1.button(label) if label=="1 Year" else c2.button(label) if label=="5 Years" else c3.button(label) if label=="10 Years" else c4.button(label) if label=="20 Years" else c5.button(label):
@@ -4436,10 +4448,9 @@ elif mode == "Backtest":
         f"Stale <= {thresholds_hint['max_stale_ratio']:.0%}"
     )
 
-    st.markdown("### 🧪 Stock Strategy Research Lab")
+    st.markdown("### 🧪 Apex Swing Validation Lab")
     st.caption(
-        "This section is for experimental stock-profile backtests. "
-        "The ETF benchmark is the current validated winner and is available in the separate ETF workspace."
+        "Validate the single production Apex Swing profile across strict point-in-time universes, exportable results, and repeatability checks."
     )
 
     run_backtest_btn = st.button(
@@ -4867,12 +4878,19 @@ elif mode == "Backtest":
                     now_et = datetime.now(ZoneInfo("America/New_York")).date()
                     end_lag = (now_et - loaded_end_dt.date()).days
                     if end_lag > max_end_lag_days:
-                        st.warning(
-                            f"Cached prepared data ends on {loaded_end_dt.date().isoformat()} "
-                            f"({end_lag} days stale). Refreshing for accuracy."
-                        )
-                        cache_hit = False
-                        prepared = None
+                        if accuracy_mode == "block":
+                            st.warning(
+                                f"Cached prepared data ends on {loaded_end_dt.date().isoformat()} "
+                                f"({end_lag} days stale). Refreshing for verified accuracy."
+                            )
+                            cache_hit = False
+                            prepared = None
+                        else:
+                            st.warning(
+                                f"Cached prepared data ends on {loaded_end_dt.date().isoformat()} "
+                                f"({end_lag} days stale). Using cached data in warn mode. "
+                                "Enable Verified run to force a fresh rebuild."
+                            )
 
                 if not cache_hit:
                     # Re-enter with fresh data for stale cache case.
@@ -5112,7 +5130,7 @@ elif mode == "Backtest":
                     },
                 ]
                 st.markdown("**Accuracy Scorecard**")
-                st.dataframe(pd.DataFrame(scorecard_rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(scorecard_rows), width="stretch", hide_index=True)
 
                 quality_gate_failed = len(lock_blockers) > 0
                 if quality_gate_failed:
@@ -5348,7 +5366,7 @@ elif mode == "Backtest":
                         daily_rows = audit.get("gross_exposure_daily") or []
                         if isinstance(daily_rows, list) and daily_rows:
                             tail = daily_rows[-10:]
-                            st.dataframe(pd.DataFrame(tail), use_container_width=True, hide_index=True)
+                            st.dataframe(pd.DataFrame(tail), width="stretch", hide_index=True)
 
                 strategy_name = str(res.get("strategy_name") or res.get("strategy") or name or "Backtest_Result")
                 baseline_key = _baseline_key(
@@ -5469,7 +5487,7 @@ elif mode == "Backtest":
                         f"`{baseline_record.get('locked_at_utc', 'unknown')}` "
                         f"for fingerprint `{run_ctx.get('strategy_fingerprint', strategy_fp)}`."
                     )
-                    st.dataframe(pd.DataFrame(checks), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(checks), width="stretch", hide_index=True)
 
                     if st.button("🗑️ Clear Baseline", key=f"clear_baseline_{i}_{strategy_name}"):
                         payload = _load_backtest_baselines()
@@ -5490,6 +5508,10 @@ elif mode == "Backtest":
                 if not equity_df.empty:
                     try:
                         csv_data = equity_df.to_csv(index=False).encode('utf-8')
+                        export_meta = _persist_streamlit_bytes(
+                            f"{safe_name}_backtest.csv",
+                            csv_data,
+                        )
                         st.download_button(
                             label="📥 Export Result (CSV)",
                             data=csv_data,
@@ -5497,6 +5519,7 @@ elif mode == "Backtest":
                             mime="text/csv",
                             key=f"dl_{safe_name}_{i}"  # Ensure 'i' comes from the loop variable
                         )
+                        _render_streamlit_export_status(export_meta)
                     except Exception as e:
                         st.error(f"⚠️ Export failed for {strategy_name}: {e}")
                 else:
@@ -5514,8 +5537,8 @@ elif mode == "Simulator":
         _render_stock_benchmark_simulator(selected_stock_benchmark_label)
         st.stop()
     render_mode_header(
-        "🎮 Paper Trader (Pro)",
-        "Execute a realistic paper-trading cycle with nightly scans, morning fills/exits, and live portfolio monitoring.",
+        "🎮 Apex Swing Paper Trader",
+        "Practice the intended workflow: after-close scan, next-open entries, and disciplined swing management.",
     )
     sim_universe = st.selectbox(
         "Universe",
@@ -5757,7 +5780,7 @@ elif mode == "Simulator":
                 unsafe_allow_html=True,
             )
 
-            if c_cols[8].button("SELL", key=f"sell_{sym}", use_container_width=True):
+            if c_cols[8].button("SELL", key=f"sell_{sym}", width="stretch"):
                 success, msg = pt.close_position(sym, reason="Manual")
                 if success:
                     st.toast(f"✅ {msg}")
@@ -5793,7 +5816,7 @@ elif mode == "Simulator":
             c_cols[2].write(f"${est_price:.2f}" if est_price else "N/A")
             c_cols[3].write(strat)
             c_cols[4].write(queued_at)
-            if c_cols[5].button("CANCEL", key=f"cancel_{sym}_{idx}", use_container_width=True):
+            if c_cols[5].button("CANCEL", key=f"cancel_{sym}_{idx}", width="stretch"):
                 st.session_state.pending_fill_logs = pt.cancel_pending_order(sym)
                 st.rerun()
             st.markdown("<hr style='margin: 5px 0'>", unsafe_allow_html=True)
@@ -5835,14 +5858,16 @@ elif mode == "Simulator":
                     initial_buys = history_df[history_df["Reason"] == "INITIAL_BUY"].tail(10)
                     if not initial_buys.empty:
                         st.caption("Latest INITIAL_BUY entries")
-                        st.dataframe(initial_buys, use_container_width=True)
-                st.dataframe(history_df.tail(20), use_container_width=True)
+                        st.dataframe(initial_buys, width="stretch")
+                st.dataframe(history_df.tail(20), width="stretch")
                 csv_data = history_df.to_csv(index=False).encode("utf-8")
+                export_meta = _persist_streamlit_bytes("sim_trade_history.csv", csv_data)
                 st.download_button(
                     label="📥 Export Performance Audit (CSV)",
                     data=csv_data,
                     file_name="sim_trade_history.csv",
                     mime="text/csv",
                 )
+                _render_streamlit_export_status(export_meta)
     else:
         st.caption("No closed trades yet.")

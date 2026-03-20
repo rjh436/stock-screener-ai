@@ -77,8 +77,8 @@ if OBJECTIVE_PROFILE == "superperformance":
     _TARGET_DEFAULT = "35.0"
     _MIN_CAGR_DEFAULT = "20.0"
 elif OBJECTIVE_PROFILE == "no_leverage":
-    _TARGET_DEFAULT = "20.0"
-    _MIN_CAGR_DEFAULT = "12.0"
+    _TARGET_DEFAULT = "24.0"
+    _MIN_CAGR_DEFAULT = "14.0"
 else:
     _TARGET_DEFAULT = "25.0"
     _MIN_CAGR_DEFAULT = "10.0"
@@ -99,7 +99,19 @@ MIN_TRADES_HARD_FLOOR = int(
 MIN_ACTIVE_YEARS = float(
     os.getenv("APEX_MIN_ACTIVE_YEARS", _MIN_ACTIVE_YEARS_DEFAULT) or _MIN_ACTIVE_YEARS_DEFAULT
 )
-MAX_TRADES_SOFT = int(os.getenv("APEX_MAX_TRADES_SOFT", "700") or "700")
+# Legacy total-trade cap. Default off in favor of annualized trade velocity shaping.
+MAX_TRADES_SOFT = int(os.getenv("APEX_MAX_TRADES_SOFT", "0") or "0")
+MIN_TRADES_PER_YEAR_FLOOR = float(os.getenv("APEX_MIN_TRADES_PER_YEAR_FLOOR", "15.0") or "15.0")
+TARGET_TRADES_PER_YEAR_MIN = float(os.getenv("APEX_TARGET_TRADES_PER_YEAR_MIN", "25.0") or "25.0")
+TARGET_TRADES_PER_YEAR_MAX = float(os.getenv("APEX_TARGET_TRADES_PER_YEAR_MAX", "120.0") or "120.0")
+MAX_TRADES_PER_YEAR_SOFT = float(os.getenv("APEX_MAX_TRADES_PER_YEAR_SOFT", "200.0") or "200.0")
+TRADES_PER_YEAR_LOW_PENALTY_MULT = float(
+    os.getenv("APEX_TRADES_PER_YEAR_LOW_PENALTY_MULT", "6.0") or "6.0"
+)
+TRADES_PER_YEAR_HIGH_PENALTY_MULT = float(
+    os.getenv("APEX_TRADES_PER_YEAR_HIGH_PENALTY_MULT", "0.8") or "0.8"
+)
+TRADES_PER_YEAR_TARGET_BONUS = float(os.getenv("APEX_TRADES_PER_YEAR_TARGET_BONUS", "12.0") or "12.0")
 OPTIMIZER_COST_BPS = float(os.getenv("APEX_OPTIMIZER_COST_BPS", "2.0") or "2.0")
 OPTIMIZER_ENTRY_SLIPPAGE_BPS = float(
     os.getenv("APEX_OPTIMIZER_ENTRY_SLIPPAGE_BPS", "4.0") or "4.0"
@@ -120,14 +132,16 @@ if GENOME_TIMEOUT_MIN < 0:
     GENOME_TIMEOUT_MIN = 0.0
 IMMIGRANT_FRAC = float(os.getenv("APEX_IMMIGRANT_FRAC", "0.30") or "0.30")
 ELITE_COUNT = int(os.getenv("APEX_ELITE_COUNT", "5") or "5")
-RECENT_5Y_CAGR_FLOOR = float(os.getenv("APEX_RECENT_5Y_CAGR_FLOOR", "12.0") or "12.0")
-RECENT_3Y_CAGR_FLOOR = float(os.getenv("APEX_RECENT_3Y_CAGR_FLOOR", "14.0") or "14.0")
-RECENT_5Y_CAGR_TARGET = float(os.getenv("APEX_RECENT_5Y_CAGR_TARGET", "16.0") or "16.0")
-RECENT_3Y_CAGR_TARGET = float(os.getenv("APEX_RECENT_3Y_CAGR_TARGET", "18.0") or "18.0")
-RECENT_5Y_WEIGHT = float(os.getenv("APEX_RECENT_5Y_WEIGHT", "0.25") or "0.25")
-RECENT_3Y_WEIGHT = float(os.getenv("APEX_RECENT_3Y_WEIGHT", "0.10") or "0.10")
-RECENT_5Y_PENALTY_MULT = float(os.getenv("APEX_RECENT_5Y_PENALTY_MULT", "3.0") or "3.0")
-RECENT_3Y_PENALTY_MULT = float(os.getenv("APEX_RECENT_3Y_PENALTY_MULT", "2.0") or "2.0")
+RECENT_5Y_CAGR_FLOOR = float(os.getenv("APEX_RECENT_5Y_CAGR_FLOOR", "15.0") or "15.0")
+RECENT_3Y_CAGR_FLOOR = float(os.getenv("APEX_RECENT_3Y_CAGR_FLOOR", "16.0") or "16.0")
+RECENT_5Y_CAGR_TARGET = float(os.getenv("APEX_RECENT_5Y_CAGR_TARGET", "20.0") or "20.0")
+RECENT_3Y_CAGR_TARGET = float(os.getenv("APEX_RECENT_3Y_CAGR_TARGET", "22.0") or "22.0")
+RECENT_5Y_WEIGHT = float(os.getenv("APEX_RECENT_5Y_WEIGHT", "0.35") or "0.35")
+RECENT_3Y_WEIGHT = float(os.getenv("APEX_RECENT_3Y_WEIGHT", "0.20") or "0.20")
+RECENT_5Y_PENALTY_MULT = float(os.getenv("APEX_RECENT_5Y_PENALTY_MULT", "4.0") or "4.0")
+RECENT_3Y_PENALTY_MULT = float(os.getenv("APEX_RECENT_3Y_PENALTY_MULT", "3.0") or "3.0")
+RECENT_5Y_TARGET_BONUS = float(os.getenv("APEX_RECENT_5Y_TARGET_BONUS", "0.40") or "0.40")
+RECENT_3Y_TARGET_BONUS = float(os.getenv("APEX_RECENT_3Y_TARGET_BONUS", "0.35") or "0.35")
 WORST_12M_FLOOR_PCT = float(os.getenv("APEX_WORST_12M_FLOOR_PCT", "-20.0") or "-20.0")
 WORST_12M_PENALTY_MULT = float(os.getenv("APEX_WORST_12M_PENALTY_MULT", "2.5") or "2.5")
 WORST_24M_CAGR_FLOOR = float(os.getenv("APEX_WORST_24M_CAGR_FLOOR", "8.0") or "8.0")
@@ -142,8 +156,22 @@ NEGATIVE_YEAR_SOFT_CAP = int(os.getenv("APEX_NEGATIVE_YEAR_SOFT_CAP", "2") or "2
 NEGATIVE_YEAR_PENALTY = float(os.getenv("APEX_NEGATIVE_YEAR_PENALTY", "4.0") or "4.0")
 STITCHED_OOS_TRAIN_YEARS = int(os.getenv("APEX_STITCHED_OOS_TRAIN_YEARS", "3") or "3")
 STITCHED_OOS_TEST_YEARS = int(os.getenv("APEX_STITCHED_OOS_TEST_YEARS", "1") or "1")
-STITCHED_OOS_CAGR_FLOOR = float(os.getenv("APEX_STITCHED_OOS_CAGR_FLOOR", "12.0") or "12.0")
-STITCHED_OOS_PENALTY_MULT = float(os.getenv("APEX_STITCHED_OOS_PENALTY_MULT", "3.0") or "3.0")
+STITCHED_OOS_CAGR_FLOOR = float(os.getenv("APEX_STITCHED_OOS_CAGR_FLOOR", "15.0") or "15.0")
+STITCHED_OOS_TARGET = float(os.getenv("APEX_STITCHED_OOS_TARGET", "18.0") or "18.0")
+STITCHED_OOS_WEIGHT = float(os.getenv("APEX_STITCHED_OOS_WEIGHT", "2.25") or "2.25")
+STITCHED_OOS_PENALTY_MULT = float(os.getenv("APEX_STITCHED_OOS_PENALTY_MULT", "6.0") or "6.0")
+STITCHED_OOS_TARGET_BONUS = float(os.getenv("APEX_STITCHED_OOS_TARGET_BONUS", "0.60") or "0.60")
+CALMAR_WEIGHT = float(os.getenv("APEX_CALMAR_WEIGHT", "5.0") or "5.0")
+CALMAR_FLOOR = float(os.getenv("APEX_CALMAR_FLOOR", "0.85") or "0.85")
+CALMAR_TARGET = float(os.getenv("APEX_CALMAR_TARGET", "1.25") or "1.25")
+CALMAR_FLOOR_PENALTY_MULT = float(os.getenv("APEX_CALMAR_FLOOR_PENALTY_MULT", "25.0") or "25.0")
+CALMAR_TARGET_BONUS = float(os.getenv("APEX_CALMAR_TARGET_BONUS", "8.0") or "8.0")
+DD_PENALTY_START_SOFT = float(os.getenv("APEX_DD_PENALTY_START_SOFT", "18.0") or "18.0")
+DD_PENALTY_START_HARD = float(os.getenv("APEX_DD_PENALTY_START_HARD", "22.0") or "22.0")
+DD_PENALTY_START_CLIFF = float(os.getenv("APEX_DD_PENALTY_START_CLIFF", "27.0") or "27.0")
+DD_PENALTY_MULT_SOFT = float(os.getenv("APEX_DD_PENALTY_MULT_SOFT", "0.75") or "0.75")
+DD_PENALTY_MULT_HARD = float(os.getenv("APEX_DD_PENALTY_MULT_HARD", "1.75") or "1.75")
+DD_PENALTY_MULT_CLIFF = float(os.getenv("APEX_DD_PENALTY_MULT_CLIFF", "4.5") or "4.5")
 FUNDAMENTAL_PARQUET_DIR = str(
     os.getenv("APEX_FUNDAMENTAL_PARQUET_DIR", os.path.join("data", "fundamentals", "edgar_income"))
 )
@@ -219,21 +247,27 @@ if OBJECTIVE_PROFILE == "no_leverage":
             "min_price": [6, 8, 10, 12],
             "min_avg_volume_30": [100000, 150000, 200000, 300000],
             "max_total_exposure_pct_bull": [0.8, 0.9, 1.0],
-            "max_total_exposure_pct_bear": [0.0, 0.05, 0.10],
-            "max_positions": [4, 5, 6],
-            "risk_per_trade": [0.008, 0.01, 0.012, 0.015],
-            "max_pos_size_pct": [0.15, 0.20, 0.25],
-            "rs_gate_min": [85, 88, 90, 92],
+            "max_total_exposure_pct_bear": [0.0, 0.05],
+            "max_positions": [4, 5, 6, 8],
+            "risk_per_trade": [0.006, 0.008, 0.01, 0.012],
+            "max_pos_size_pct": [0.12, 0.15, 0.18, 0.20, 0.22],
+            "rs_gate_min": [80, 82, 85, 88, 90, 92],
             "fundamental_growth_min_pct": [10, 15, 20, 25],
-            "min_entry_score": [35, 45, 55],
+            "min_entry_score": [25, 30, 35, 45, 55],
             "vcp_lookback_bars": [40, 60, 80],
+            "breakout_buffer": [0.0, 0.0005, 0.001, 0.002],
             "adr_min_pct": [2.0, 2.5, 3.0],
             "prior_runup_min_pct": [10, 15, 20],
             "ep_gap_pct": [6, 8],
-            "ep_close_near_high_min": [0.70, 0.75, 0.80, 0.85],
+            "ep_close_near_high_min": [0.65, 0.70, 0.75, 0.80],
             "ep_entry_mode": ["close"],
-            "stop_limit_pct": [0.03, 0.05],
+            "ep_max_stop_pct": [0.10, 0.12, 0.15],
+            "max_stop_pct": [0.05, 0.06, 0.08],
+            "stop_limit_pct": [0.02, 0.03, 0.05],
+            "stop_loss_atr_bull": [2.5, 3, 4, 5],
             "time_stop_days": [10, 12, 15, 20, 25],
+            "pyramid_fraction": [0.5],
+            "pyramid_max_adds": [1, 2],
             "trend_template_mode": ["classic"],
             "vcp_trigger_mode": ["setup", "close_confirmed"],
             "vcp_gap_chase_max_pct": [0.0, 0.01, 0.02, 0.03],
@@ -925,6 +959,25 @@ def evaluate_genome(genome_id_and_genome):
             max_pos_size = max_exposure / max_positions
             strategy_config["max_pos_size_pct"] = max_pos_size
             genome_adj["max_pos_size_pct"] = max_pos_size
+        risk_per_trade = float(strategy_config.get("risk_per_trade", 0.01) or 0.01)
+        if not np.isfinite(risk_per_trade):
+            risk_per_trade = 0.01
+        max_stop_pct = float(strategy_config.get("max_stop_pct", 0.08) or 0.08)
+        ep_max_stop_pct = float(strategy_config.get("ep_max_stop_pct", 0.12) or 0.12)
+        if OBJECTIVE_PROFILE == "no_leverage":
+            if max_exposure >= 0.95 and max_positions <= 4:
+                max_pos_size = min(max_pos_size, 0.20)
+            if max_stop_pct >= 0.08:
+                risk_per_trade = min(risk_per_trade, 0.01)
+                max_pos_size = min(max_pos_size, 0.18)
+            elif max_stop_pct >= 0.06:
+                risk_per_trade = min(risk_per_trade, 0.012)
+            if ep_max_stop_pct >= 0.15:
+                risk_per_trade = min(risk_per_trade, 0.01)
+            strategy_config["risk_per_trade"] = risk_per_trade
+            genome_adj["risk_per_trade"] = risk_per_trade
+            strategy_config["max_pos_size_pct"] = max_pos_size
+            genome_adj["max_pos_size_pct"] = max_pos_size
         # After-close scan, next-day stop order (EP overrides with same-day close)
         strategy_config["signal_mode"] = "after_close"
         entry_day_stop_mode = str(
@@ -1164,11 +1217,12 @@ def evaluate_genome(genome_id_and_genome):
 
         trades_floor = max(float(MIN_TRADES_FLOOR), 1.0)
         trade_factor = max(0.0, min(float(trades) / trades_floor, 1.0))
+        trades_per_year = float(trades) / years if years > 0 else float(trades)
         quality_bonus = ((pf_clipped - 1.0) * 6.0) + ((ratio_clipped - 1.5) * 4.0)
         quality_bonus = max(-20.0, quality_bonus) * trade_factor
 
         score = cagr_curve * 6.0
-        score += calmar * 3.0
+        score += calmar * CALMAR_WEIGHT
         score += quality_bonus
 
         # Hard-bias away from low-return / poor-quality / low-sample profiles.
@@ -1189,9 +1243,24 @@ def evaluate_genome(genome_id_and_genome):
         if active_period_years < MIN_ACTIVE_YEARS:
             score -= (MIN_ACTIVE_YEARS - active_period_years) * 8.0
 
-        if max_dd > 30.0:
-            score -= (max_dd - 30.0) * 1.5
-        if trades > MAX_TRADES_SOFT:
+        if calmar < CALMAR_FLOOR:
+            score -= (CALMAR_FLOOR - calmar) * CALMAR_FLOOR_PENALTY_MULT
+        if calmar > CALMAR_TARGET:
+            score += (calmar - CALMAR_TARGET) * CALMAR_TARGET_BONUS
+
+        dd_soft = max(0.0, max_dd - DD_PENALTY_START_SOFT)
+        dd_hard = max(0.0, max_dd - DD_PENALTY_START_HARD)
+        dd_cliff = max(0.0, max_dd - DD_PENALTY_START_CLIFF)
+        score -= dd_soft * DD_PENALTY_MULT_SOFT
+        score -= dd_hard * DD_PENALTY_MULT_HARD
+        score -= dd_cliff * DD_PENALTY_MULT_CLIFF
+        if trades_per_year < MIN_TRADES_PER_YEAR_FLOOR:
+            score -= (MIN_TRADES_PER_YEAR_FLOOR - trades_per_year) * TRADES_PER_YEAR_LOW_PENALTY_MULT
+        elif TARGET_TRADES_PER_YEAR_MIN <= trades_per_year <= TARGET_TRADES_PER_YEAR_MAX:
+            score += TRADES_PER_YEAR_TARGET_BONUS
+        elif trades_per_year > MAX_TRADES_PER_YEAR_SOFT:
+            score -= (trades_per_year - MAX_TRADES_PER_YEAR_SOFT) * TRADES_PER_YEAR_HIGH_PENALTY_MULT
+        if MAX_TRADES_SOFT > 0 and trades > MAX_TRADES_SOFT:
             score -= (trades - MAX_TRADES_SOFT) / 35.0
         if cagr_pct <= 0.0:
             score -= 25.0
@@ -1207,6 +1276,8 @@ def evaluate_genome(genome_id_and_genome):
             score += recent_5y_cagr * RECENT_5Y_WEIGHT
             if recent_5y_cagr < RECENT_5Y_CAGR_FLOOR:
                 score -= (RECENT_5Y_CAGR_FLOOR - recent_5y_cagr) * RECENT_5Y_PENALTY_MULT
+            elif recent_5y_cagr > RECENT_5Y_CAGR_TARGET:
+                score += (recent_5y_cagr - RECENT_5Y_CAGR_TARGET) * RECENT_5Y_TARGET_BONUS
         else:
             score -= 3.0
 
@@ -1214,6 +1285,8 @@ def evaluate_genome(genome_id_and_genome):
             score += recent_3y_cagr * RECENT_3Y_WEIGHT
             if recent_3y_cagr < RECENT_3Y_CAGR_FLOOR:
                 score -= (RECENT_3Y_CAGR_FLOOR - recent_3y_cagr) * RECENT_3Y_PENALTY_MULT
+            elif recent_3y_cagr > RECENT_3Y_CAGR_TARGET:
+                score += (recent_3y_cagr - RECENT_3Y_CAGR_TARGET) * RECENT_3Y_TARGET_BONUS
         else:
             score -= 2.0
 
@@ -1221,9 +1294,11 @@ def evaluate_genome(genome_id_and_genome):
             score -= (WORST_12M_FLOOR_PCT - worst_12m_return_pct) * WORST_12M_PENALTY_MULT
 
         if np.isfinite(stitched_oos_cagr):
-            score += stitched_oos_cagr * 1.5
+            score += stitched_oos_cagr * STITCHED_OOS_WEIGHT
             if stitched_oos_cagr < STITCHED_OOS_CAGR_FLOOR:
                 score -= (STITCHED_OOS_CAGR_FLOOR - stitched_oos_cagr) * STITCHED_OOS_PENALTY_MULT
+            elif stitched_oos_cagr > STITCHED_OOS_TARGET:
+                score += (stitched_oos_cagr - STITCHED_OOS_TARGET) * STITCHED_OOS_TARGET_BONUS
         else:
             score -= 6.0
 
@@ -1268,6 +1343,8 @@ def evaluate_genome(genome_id_and_genome):
             and pf_clipped >= max(1.20, MIN_PF_FLOOR)
             and ratio_clipped >= max(2.5, MIN_WINLOSS_RATIO)
             and trades >= MIN_TRADES_FLOOR
+            and calmar >= CALMAR_FLOOR
+            and max_dd <= DD_PENALTY_START_CLIFF
             and (not np.isfinite(stitched_oos_cagr) or stitched_oos_cagr >= STITCHED_OOS_CAGR_FLOOR)
         )
         if is_super_candidate:
@@ -1469,13 +1546,15 @@ if __name__ == "__main__":
             "true",
             "yes",
         }
-        if write_cache:
+        if write_cache and universe_limit <= 0:
             try:
                 with open(cache_path, "wb") as f:
                     pickle.dump(prepared, f, protocol=pickle.HIGHEST_PROTOCOL)
                 print(f"💾 Saved indicator cache: {cache_path}")
             except Exception as exc:
                 print(f"⚠️ Failed to save indicator cache: {exc}")
+        elif write_cache:
+            print("💾 Skipping indicator cache write for limited-universe run.")
     else:
         print(f"📊 DATA POOL: {len(prepared.enriched)} tickers prepared (cache).")
     if PRUNE_PREPARED_DF:

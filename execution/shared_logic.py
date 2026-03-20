@@ -414,7 +414,11 @@ def _generic_exit_decision(
     # >20%: stop to breakeven | >40%: trail SMA50 | >100%: trail SMA10.
     profit_pct = (close_px - entry_px) / entry_px if entry_px > 0 else 0.0
 
-    be_threshold = _as_float(params.get("breakeven_profit_pct", 0.20), 0.20)
+    # Superperformance configs historically used breakeven_at_pct; honor both keys.
+    be_threshold = _as_float(
+        params.get("breakeven_profit_pct", params.get("breakeven_at_pct", 0.20)),
+        0.20,
+    )
     if be_threshold > 1.0:
         be_threshold /= 100.0
     if profit_pct >= max(0.0, be_threshold) and entry_px > new_stop:

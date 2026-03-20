@@ -1,0 +1,35 @@
+{
+  "promoted_at": "2026-03-19",
+  "source_config_path": "config/superperformance_alpha_lc2c_cd3_easier_trigger.json",
+  "validation_report_path": "tmp/alpha_low_cheat_lc2c_cd3_fullcache_20260319.json",
+  "validation_window": {
+    "start_date": "2016-03-02",
+    "end_date": "2026-03-02"
+  },
+  "constraints": {
+    "allow_margin": false,
+    "max_total_exposure_pct_bull": 1.0,
+    "max_total_exposure_pct_bear": 1.0,
+    "same_day_open_entries": 0
+  },
+  "acceptance": {
+    "cash_only_ok": true,
+    "full_10y_cagr_pct": 27.096837763933213,
+    "full_10y_max_dd_pct": 28.18110732125627,
+    "trades_per_year": 27.403751369112815,
+    "stitched_oos_cagr_pct": 36.06932518826478,
+    "worst_12m_return_pct": -20.435877176038908,
+    "entry_counts": {
+      "vcp": 58,
+      "ep": 152,
+      "other": 66
+    },
+    "meets_full_cache_promotion_gate": true,
+    "meets_30pct_target": false
+  },
+  "notes": [
+    "Promoted after full-cache confirmation of the easier-trigger low-cheat branch with CD3 overlay.",
+    "This is the current best cash-only swing-style Superperformance alpha in the repo: next-day executable, ~27 trades/year, and max drawdown below 30%.",
+    "Remaining open question is whether concentration in a small set of fat-tail winners accounts for a disproportionate share of the gain versus LC2/B17."
+  ]
+}

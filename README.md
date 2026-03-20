@@ -62,6 +62,34 @@ Or:
 - Treat low-coverage runs as non-baseline research only.
 - Review generated missing-symbol reports before locking new baselines.
 
+## Canonical Research Workflow
+
+Prefer the realistic, cache-backed PIT evaluation scripts for candidate selection:
+
+1. Rank seed candidates under realistic friction:
+
+```bash
+PYTHONPATH=. ./.venv/bin/python scripts/evaluate_low_turnover_alpha_frontier.py --out tmp/alpha_frontier_latest.json
+```
+
+2. Expand around the current frontier with realistic costs:
+
+```bash
+PYTHONPATH=. ./.venv/bin/python scripts/run_autonomous_cagr_search.py --out tmp/autonomous_cagr_search_latest.json
+PYTHONPATH=. ./.venv/bin/python scripts/optimize_alpha_neighborhood_realistic.py --out tmp/alpha_neighborhood_latest.json
+```
+
+3. Run walk-forward robustness on finalists before promoting configs:
+
+```bash
+PYTHONPATH=. ./.venv/bin/python scripts/run_superperformance_walkforward.py --config config/superperformance_multi_sleeve_allocator_v1.json
+```
+
+Notes:
+
+- These scripts use realistic friction settings, PIT Russell 3000 membership where applicable, and robustness-aware ranking.
+- Treat `optimization/optimizer.py` and the older `Run_Optimizer.command` path as exploratory single-window search only. They should not be the final authority for promoting a strategy.
+
 ## Automated QA / Product Audit
 
 Run all primary checks:
@@ -117,4 +145,3 @@ At minimum:
 ## Contributing
 
 See `CONTRIBUTING.md` for branch, testing, and PR expectations.
-

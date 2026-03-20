@@ -909,6 +909,27 @@ class PaperTrader:
             # Now compute position value and sector exposure after sizing
             position_val = shares * price
             sec = self._resolve_sector(cand["symbol"])
+            genome = (cand.get("genome", {}) or {})
+            try:
+                max_sector_positions = int(genome.get("max_sector_positions", 0) or 0)
+            except Exception:
+                max_sector_positions = 0
+            if max_sector_positions > 0 and sec != "Unknown":
+                open_sector_count = sum(
+                    1 for sym in self.state["positions"].keys()
+                    if self._resolve_sector(sym) == sec
+                )
+                queued_sector_count = sum(
+                    1 for order in orders
+                    if self._resolve_sector(order.get("symbol", "")) == sec
+                )
+                if (open_sector_count + queued_sector_count) >= max_sector_positions:
+                    logs.append(
+                        f"⚠️ REJECTED {cand['symbol']}: Sector {sec} already has "
+                        f"{open_sector_count + queued_sector_count} positions "
+                        f"(limit: {max_sector_positions})"
+                    )
+                    continue
             projected_exp = (sector_exposure.get(sec, 0.0) + position_val) / current_equity if current_equity > 0 else 1.0
 
             if projected_exp > SECTOR_CAP:
