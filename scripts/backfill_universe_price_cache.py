@@ -4,15 +4,19 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set, Tuple
+
+import pandas as pd
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data.loader import fetch_data_pack
-from data.universe import get_universe_symbols_pit_window_with_meta
+from data.universe import get_universe_symbols_pit_with_meta, get_universe_symbols_pit_window_with_meta
 
 
 def _parse_args() -> argparse.Namespace:
@@ -23,8 +27,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--days", type=int, default=3200)
     parser.add_argument("--batch-size", type=int, default=250)
     parser.add_argument("--max-batches", type=int, default=0)
-    parser.add_argument("--max-workers", type=int, default=12)
-    parser.add_argument("--targets", default="missing,incomplete")
+    parser.add_argument("--max-workers", type=int, default=24)
+    parser.add_argument("--targets", default="missing,incomplete,stale")
+    parser.add_argument("--max-lag-days", type=int, default=2)
     parser.add_argument("--force-fresh", action="store_true")
     parser.add_argument("--out", default="")
     return parser.parse_args()
@@ -34,6 +39,9 @@ def _resolve_symbols(universe: str, start_date: str, end_date: str) -> Tuple[Lis
     name = str(universe).strip().upper()
     if name != "RUSSELL3000":
         raise ValueError(f"Unsupported universe for cache backfill: {universe}")
+    if str(start_date).strip() == str(end_date).strip():
+        symbols, source = get_universe_symbols_pit_with_meta("RUSSELL3000", start_date)
+        return list(symbols), str(source)
     symbols, source = get_universe_symbols_pit_window_with_meta("RUSSELL3000", start_date, end_date)
     return list(symbols), str(source)
 
@@ -72,6 +80,35 @@ def _quality_summary(report: Mapping[str, Any]) -> Dict[str, int]:
     }
 
 
+def _stale_cache_symbols(symbols: Sequence[str], *, max_lag_days: int) -> List[str]:
+    cache_dir = ROOT / "data" / "cache"
+    now_et = datetime.now(ZoneInfo("America/New_York")).date()
+    stale: List[str] = []
+    for raw in symbols:
+        sym = str(raw or "").strip().upper()
+        if not sym:
+            continue
+        parquet_path = cache_dir / f"{sym}.parquet"
+        csv_path = cache_dir / f"{sym}.csv"
+        path = parquet_path if parquet_path.exists() else csv_path
+        if not path.exists():
+            continue
+        try:
+            if path.suffix == ".parquet":
+                df = pd.read_parquet(path)
+            else:
+                df = pd.read_csv(path, index_col=0, parse_dates=True)
+            if df is None or df.empty:
+                stale.append(sym)
+                continue
+            last_dt = pd.Timestamp(df.index[-1]).tz_localize(None).date()
+            if (now_et - last_dt).days > int(max_lag_days):
+                stale.append(sym)
+        except Exception:
+            stale.append(sym)
+    return _dedupe(stale)
+
+
 def main() -> None:
     args = _parse_args()
     symbols, source = _resolve_symbols(args.universe, args.start_date, args.end_date)
@@ -84,11 +121,15 @@ def main() -> None:
     fetch_data_pack(symbols, days=int(args.days), backtest_mode=True, quality_report=before_quality)
     target_modes = [part.strip().lower() for part in str(args.targets).split(",") if part.strip()]
     targets = _select_target_symbols(before_quality, target_modes)
+    stale_targets: List[str] = []
+    if "stale" in target_modes:
+        stale_targets = _stale_cache_symbols(symbols, max_lag_days=int(args.max_lag_days))
+        targets = _dedupe(list(targets) + stale_targets)
     print(
         f"before: loaded={before_quality.get('loaded', 0)} "
         f"missing={before_quality.get('missing', 0)} "
         f"incomplete={before_quality.get('incomplete_history', 0)} "
-        f"stale={before_quality.get('stale', 0)} "
+        f"stale_cache={len(stale_targets)} "
         f"target_symbols={len(targets)}"
     )
 
@@ -120,16 +161,20 @@ def main() -> None:
 
     after_quality: Dict[str, Any] = {}
     fetch_data_pack(symbols, days=int(args.days), backtest_mode=True, quality_report=after_quality)
+    after_stale_targets = _stale_cache_symbols(symbols, max_lag_days=int(args.max_lag_days))
     payload = {
         "universe": str(args.universe),
         "universe_source": source,
         "start_date": str(args.start_date),
         "end_date": str(args.end_date),
         "days": int(args.days),
+        "max_lag_days": int(args.max_lag_days),
         "targets": target_modes,
         "force_fresh": bool(args.force_fresh),
         "before": _quality_summary(before_quality),
         "after": _quality_summary(after_quality),
+        "before_stale_cache": int(len(stale_targets)),
+        "after_stale_cache": int(len(after_stale_targets)),
         "target_symbols": int(len(targets)),
         "batches_run": int(len(batch_reports)),
         "batch_reports": batch_reports,

@@ -57,11 +57,19 @@ class SchwabData:
         self._next_allowed_ts = 0.0
         self._base_min_interval_s = self._get_min_request_interval_s()
         self._dynamic_min_interval_s = self._base_min_interval_s
+        self._auth_invalid = False
+        self._auth_invalid_detail = ""
 
     def _ensure(self):
+        if self._auth_invalid:
+            detail = self._auth_invalid_detail or "token_invalid"
+            raise RuntimeError(f"Schwab auth unavailable: {detail}")
         if self._cli is not None:
             return
         with self._ensure_lock:
+            if self._auth_invalid:
+                detail = self._auth_invalid_detail or "token_invalid"
+                raise RuntimeError(f"Schwab auth unavailable: {detail}")
             if self._cli is not None:
                 return
 
@@ -83,13 +91,30 @@ class SchwabData:
                 print(f"👉 Please run 'python3 Reset_Auth_Final.py' to fix this.")
                 raise e
 
+    def _mark_auth_invalid(self, detail: Exception | str) -> None:
+        msg = str(detail).strip() or "token_invalid"
+        self._auth_invalid = True
+        self._auth_invalid_detail = msg
+
+    @staticmethod
+    def _looks_auth_invalid(err: Exception | str) -> bool:
+        msg = str(err).lower()
+        return (
+            "token_invalid" in msg
+            or "invalid token" in msg
+            or "access token" in msg
+            or "401" in msg
+            or "unauthorized" in msg
+            or "invalid_client" in msg
+        )
+
     @staticmethod
     def _get_rate_limit_concurrency() -> int:
         try:
-            v = int(os.getenv("SCHWAB_API_CONCURRENCY", "6"))
+            v = int(os.getenv("SCHWAB_API_CONCURRENCY", "10"))
         except Exception:
-            v = 6
-        return max(1, min(v, 16))
+            v = 10
+        return max(1, min(v, 24))
 
     @staticmethod
     def _get_min_request_interval_s() -> float:
@@ -103,9 +128,9 @@ class SchwabData:
                 pass
 
         try:
-            v = float(os.getenv("SCHWAB_API_MIN_INTERVAL", "0.50"))
+            v = float(os.getenv("SCHWAB_API_MIN_INTERVAL", "0.20"))
         except Exception:
-            v = 0.50
+            v = 0.20
         return max(0.0, v)
 
     @staticmethod
@@ -188,6 +213,9 @@ class SchwabData:
                     )
 
                 status = getattr(r, "status_code", None)
+                if status == 401:
+                    self._mark_auth_invalid(f"HTTP 401 for {symbol}")
+                    break
                 if status == 429:
                     self._note_rate_limit()
                     retry_after = None
@@ -215,6 +243,9 @@ class SchwabData:
                 # Schwab sometimes returns an error payload as a dict; treat it as a retryable failure
                 # if it looks like rate limiting.
                 if isinstance(j, dict):
+                    if self._looks_auth_invalid(j):
+                        self._mark_auth_invalid(j)
+                        break
                     if self._looks_rate_limited(j):
                         time.sleep(self._retry_sleep_s(attempt, max_s=backoff_max))
                         continue
@@ -230,6 +261,9 @@ class SchwabData:
 
             except Exception as e:
                 last_exc = e
+                if self._looks_auth_invalid(e):
+                    self._mark_auth_invalid(e)
+                    break
                 if attempt >= max_tries:
                     break
 
@@ -256,6 +290,9 @@ class SchwabData:
                     r = self._cli.get_quote(symbol)
 
                 status = getattr(r, "status_code", None)
+                if status == 401:
+                    self._mark_auth_invalid(f"HTTP 401 for {symbol}")
+                    break
                 if status == 429:
                     self._note_rate_limit()
                     time.sleep(self._retry_sleep_s(attempt, max_s=backoff_max))
@@ -266,6 +303,9 @@ class SchwabData:
                     continue
 
                 j = r.json()
+                if self._looks_auth_invalid(j):
+                    self._mark_auth_invalid(j)
+                    break
                 if isinstance(j, dict) and self._looks_rate_limited(j):
                     self._note_rate_limit()
                     time.sleep(self._retry_sleep_s(attempt, max_s=backoff_max))
@@ -275,6 +315,9 @@ class SchwabData:
 
             except Exception as e:
                 last_exc = e
+                if self._looks_auth_invalid(e):
+                    self._mark_auth_invalid(e)
+                    break
                 if attempt >= max_tries:
                     break
 
@@ -310,6 +353,9 @@ class SchwabData:
                         r = self._cli.quote(chunk)
 
                     status = getattr(r, "status_code", None)
+                    if status == 401:
+                        self._mark_auth_invalid(f"HTTP 401 during quote batch {i // chunk_size + 1}")
+                        break
                     if status == 429:
                         self._note_rate_limit()
                         time.sleep(self._retry_sleep_s(attempt, max_s=backoff_max))
@@ -320,6 +366,9 @@ class SchwabData:
                         continue
 
                     j = r.json()
+                    if self._looks_auth_invalid(j):
+                        self._mark_auth_invalid(j)
+                        break
                     if isinstance(j, dict) and self._looks_rate_limited(j):
                         self._note_rate_limit()
                         time.sleep(self._retry_sleep_s(attempt, max_s=backoff_max))
@@ -339,6 +388,9 @@ class SchwabData:
                     break
 
                 except Exception as e:
+                    if self._looks_auth_invalid(e):
+                        self._mark_auth_invalid(e)
+                        break
                     if attempt >= max_tries:
                         break
 
@@ -348,6 +400,9 @@ class SchwabData:
                         continue
 
                     time.sleep(min(1.0, backoff_max))
+
+            if self._auth_invalid:
+                break
 
         return results
 

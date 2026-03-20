@@ -3352,13 +3352,13 @@ def _recommended_fetch_workers(symbol_count: int, *, cache_only: bool = False) -
             pass
     cpu = os.cpu_count() or 8
     if symbol_count >= 2000:
-        workers = min(24, max(8, cpu * (2 if cache_only else 1)))
+        workers = min(32, max(12, cpu * 2))
     elif symbol_count >= 800:
-        workers = min(18, max(8, int(cpu * (1.5 if cache_only else 1.0))))
+        workers = min(24, max(10, int(cpu * (2.0 if cache_only else 1.5))))
     elif symbol_count >= 250:
-        workers = min(14, max(6, cpu if cache_only else max(4, cpu // 2)))
+        workers = min(18, max(8, int(cpu * (1.25 if cache_only else 1.0))))
     else:
-        workers = min(10, max(4, cpu // 2))
+        workers = min(12, max(4, int(cpu * 0.75)))
     return max(1, min(int(workers), 32))
 
 
@@ -3977,16 +3977,19 @@ if mode == "Live Screener":
             st.stop()
         scan_now_et = datetime.now(ZoneInfo("America/New_York"))
         market_open = _is_market_open_et(scan_now_et)
-        force_fresh_daily = not market_open
+        # Apex Swing is an after-close workflow. Reuse the local cache aggressively and
+        # refresh only stale symbols instead of forcing a full-universe API refresh.
+        force_fresh_daily = False
+        require_fresh_daily = False
         max_lag_days = 1 if not market_open else 2
         if market_open:
             status_msg.info(
-                "📦 Using the latest completed daily bar. Intraday live quote injection is disabled "
-                "because Apex Swing is an after-close, next-day execution workflow."
+                "📦 Using cached daily history plus any stale-symbol refreshes. "
+                "Intraday live quote injection is disabled because Apex Swing is an after-close, next-day execution workflow."
             )
         else:
             status_msg.info(
-                "📦 Running an after-close daily scan. Fetching the latest completed daily bar without live quote injection."
+                "📦 Running an after-close daily scan from the local cache and refreshing only stale symbols."
             )
         base_days = 400
         data = fetch_data_pack(
@@ -3994,6 +3997,7 @@ if mode == "Live Screener":
             days=base_days,
             max_workers=_recommended_fetch_workers(len(symbols), cache_only=False),
             force_fresh=force_fresh_daily,
+            require_fresh=require_fresh_daily,
             inject_live=False,
             max_lag_days=max_lag_days,
             progress_callback=_update_live_fetch_progress,
@@ -4005,6 +4009,7 @@ if mode == "Live Screener":
             days=600,
             max_workers=_recommended_fetch_workers(3, cache_only=False),
             force_fresh=force_fresh_daily,
+            require_fresh=require_fresh_daily,
             inject_live=False,
             max_lag_days=max_lag_days,
         ) or {}
