@@ -1999,6 +1999,25 @@ def prepare_backtest_data(
     requested_symbols = list(symbol_universe or []) if symbol_universe else symbols
     requested_upper = {str(s).upper() for s in requested_symbols if str(s).strip()}
 
+    expected_end_dt: Optional[pd.Timestamp] = None
+
+    def _consider_expected_end(df: Optional[pd.DataFrame]) -> None:
+        nonlocal expected_end_dt
+        if df is None or df.empty:
+            return
+        try:
+            candidate = pd.Timestamp(df.index.max()).tz_localize(None)
+        except Exception:
+            return
+        if expected_end_dt is None or candidate > expected_end_dt:
+            expected_end_dt = candidate
+
+    for df_candidate in data_dict.values():
+        _consider_expected_end(df_candidate)
+    if global_data:
+        for df_candidate in global_data.values():
+            _consider_expected_end(df_candidate)
+
     # Speed hack: reuse cached indicator computations if present
     disable_indicator_cache = os.environ.get("APEX_DISABLE_INDICATOR_CACHE", "").strip() in ("1", "true", "True", "yes", "YES")
     min_cache_coverage = float(os.environ.get("APEX_MIN_CACHE_COVERAGE", "0.60") or "0.60")
@@ -2041,6 +2060,14 @@ def prepare_backtest_data(
                             prepared_cached = None
                     if prepared_cached is not None and not _prepared_covers_start_date(prepared_cached, start_date):
                         prepared_cached = None
+                    if prepared_cached is not None and expected_end_dt is not None:
+                        try:
+                            cached_end_dt = pd.Timestamp(prepared_cached.all_dates[-1]).tz_localize(None)
+                        except Exception:
+                            prepared_cached = None
+                        else:
+                            if cached_end_dt < expected_end_dt:
+                                prepared_cached = None
                     if prepared_cached is None:
                         raise ValueError("Cached prepared data does not cover requested symbols.")
                     prepared_cached = _normalize_prepared_calendar(prepared_cached)
