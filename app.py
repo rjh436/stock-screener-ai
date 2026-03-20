@@ -6,6 +6,7 @@ import json
 import hashlib
 import math
 import pickle
+import subprocess
 import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -47,6 +48,9 @@ from strategies.strategy_loader import load_strategies
 
 CONFIG_PATH = "config/generated_strategies.json"
 PRIMARY_STRATEGY_CONFIG_PATH = os.path.join("config", "superperformance_winner.json")
+PRIMARY_STRATEGY_METADATA_PATH = os.path.join(
+    "config", "superperformance_alpha_lc2c_cd3_promoted_v2.metadata.json"
+)
 BASELINE_CONFIG_PATH = os.path.join("config", "backtest_baselines.json")
 UNIVERSE_OPTIONS = ["SP500", "SP100", "SP1500", "NASDAQ100", "RUSSELL3000"]
 DEFAULT_UNIVERSE = "RUSSELL3000"
@@ -1041,20 +1045,66 @@ def _persist_streamlit_bytes(file_name: str, payload: bytes) -> Dict[str, Any]:
     return {"saved_paths": saved_paths, "errors": errors}
 
 
-def _render_streamlit_export_status(export_meta: Mapping[str, Any]) -> None:
+def _reveal_path_in_finder(path_str: str) -> Tuple[bool, str]:
+    try:
+        path = Path(path_str).expanduser().resolve()
+        if not path.exists():
+            return False, f"Path not found: {path}"
+        subprocess.run(["open", "-R", str(path)], check=True)
+        return True, str(path)
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _render_streamlit_export_status(export_meta: Mapping[str, Any], key_prefix: str = "streamlit_export") -> None:
     saved_paths = dict(export_meta.get("saved_paths") or {})
     workspace_path = saved_paths.get("workspace_path")
     downloads_path = saved_paths.get("downloads_path")
+    if workspace_path or downloads_path:
+        st.success("Export saved successfully.")
     if workspace_path:
         st.caption(f"Saved workspace copy: `{workspace_path}`")
     if downloads_path:
         st.caption(f"Saved Downloads copy: `{downloads_path}`")
+    if workspace_path or downloads_path:
+        button_cols = st.columns(2)
+        if downloads_path:
+            if button_cols[0].button("Reveal Downloads Export", key=f"{key_prefix}_downloads"):
+                ok, detail = _reveal_path_in_finder(downloads_path)
+                if ok:
+                    st.toast("Opened Downloads export in Finder.", icon="📁")
+                else:
+                    st.warning(f"Could not reveal Downloads export: {detail}")
+        if workspace_path:
+            if button_cols[1].button("Reveal Workspace Export", key=f"{key_prefix}_workspace"):
+                ok, detail = _reveal_path_in_finder(workspace_path)
+                if ok:
+                    st.toast("Opened workspace export in Finder.", icon="📁")
+                else:
+                    st.warning(f"Could not reveal workspace export: {detail}")
     errors = dict(export_meta.get("errors") or {})
     if errors:
         st.warning(
             "Automatic JSON export failed for: "
             + " | ".join(str(message) for message in errors.values())
         )
+
+
+def _load_primary_strategy_reference() -> Dict[str, Any]:
+    payload = _read_json_payload(PRIMARY_STRATEGY_METADATA_PATH, {})
+    if not isinstance(payload, dict):
+        return {}
+    metrics = payload.get("metrics_10y") or {}
+    if not isinstance(metrics, dict):
+        return {}
+    return {
+        "label": str(payload.get("promoted_name") or "Research promotion reference"),
+        "cagr_pct": _safe_float(metrics.get("cagr_pct"), float("nan")),
+        "max_dd_pct": _safe_float(metrics.get("max_dd_pct"), float("nan")),
+        "trades_per_year": _safe_float(metrics.get("trades_per_year"), float("nan")),
+        "stitched_oos_cagr_pct": _safe_float(metrics.get("stitched_oos_cagr_pct"), float("nan")),
+        "source_note": "Prepared-sample research artifact on 3326 symbols through 2026-03-02.",
+    }
 
 
 def _read_pickle_payload(path: str, default: Any) -> Any:
@@ -4469,6 +4519,16 @@ elif mode == "Backtest":
         "📈 Apex Swing Backtest Lab",
         "Run disciplined historical validations for Apex Swing with accuracy gating, PIT coverage checks, and exportable diagnostics.",
     )
+    primary_reference = _load_primary_strategy_reference()
+    if primary_reference:
+        st.info(
+            "Research reference for the shipped profile: "
+            f"{_fmt_pct(primary_reference.get('cagr_pct'))} 10Y CAGR / "
+            f"{_fmt_pct(primary_reference.get('max_dd_pct'))} max DD / "
+            f"{primary_reference.get('trades_per_year', float('nan')):.1f} trades per year. "
+            "Do not compare strict GUI runs to that reference unless the Accuracy Scorecard passes. "
+            f"{primary_reference.get('source_note', '')}"
+        )
 
     today = pd.Timestamp.utcnow().tz_localize(None).normalize()
     bt_end_date = today.date().isoformat()
@@ -5241,7 +5301,7 @@ elif mode == "Backtest":
                 if quality_gate_failed:
                     blocker_msg = "; ".join(lock_blockers)
                     if accuracy_mode == "block":
-                        show_blocked_results = _env_flag("APEX_BACKTEST_SHOW_BLOCKED_RESULTS", "1")
+                        show_blocked_results = _env_flag("APEX_BACKTEST_SHOW_BLOCKED_RESULTS", "0")
                         if show_blocked_results:
                             st.warning(
                                 "Accuracy gate failed for strict mode: "
@@ -5254,6 +5314,14 @@ elif mode == "Backtest":
                                 "Accuracy gate blocked this run: "
                                 f"{blocker_msg}. Results withheld to avoid biased metrics."
                             )
+                            if primary_reference:
+                                st.caption(
+                                    "The research reference for this profile is "
+                                    f"{_fmt_pct(primary_reference.get('cagr_pct'))} CAGR / "
+                                    f"{_fmt_pct(primary_reference.get('max_dd_pct'))} max DD, "
+                                    "but this strict GUI run did not clear the accuracy gate and should not be "
+                                    "compared to that reference."
+                                )
                             if not coverage_pass:
                                 st.caption(
                                     "Coverage gaps usually indicate data-provider constraints in PIT windows "
@@ -5624,7 +5692,7 @@ elif mode == "Backtest":
                             mime="text/csv",
                             key=f"dl_{safe_name}_{i}"  # Ensure 'i' comes from the loop variable
                         )
-                        _render_streamlit_export_status(export_meta)
+                        _render_streamlit_export_status(export_meta, key_prefix=f"{safe_name}_{i}")
                     except Exception as e:
                         st.error(f"⚠️ Export failed for {strategy_name}: {e}")
                 else:
