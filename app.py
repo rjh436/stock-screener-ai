@@ -3910,9 +3910,43 @@ if mode == "Live Screener":
         status_msg = st.empty()
         timer_msg = st.empty()
         start_time = time.time()
+        fetch_stage_base = 0.20
+        fetch_stage_span = 0.40
+        analyze_stage_base = 0.60
+        analyze_stage_span = 0.40
+
+        def _update_live_fetch_progress(payload: dict) -> None:
+            total = max(1, int(payload.get("total") or 0))
+            completed = max(0, min(total, int(payload.get("completed") or 0)))
+            pending = max(0, int(payload.get("pending") or 0))
+            elapsed_sec = float(payload.get("elapsed_sec") or 0.0)
+            stalled_for = float(payload.get("stalled_for_sec") or 0.0)
+            stage_pct = fetch_stage_base + (fetch_stage_span * (completed / total))
+            progress_bar.progress(
+                min(stage_pct, analyze_stage_base),
+                text=f"{int(stage_pct * 100)}% Complete",
+            )
+            if completed < total:
+                status_msg.info(
+                    f"📦 Loading daily history for {completed:,}/{total:,} symbols "
+                    f"({pending:,} pending)."
+                )
+            else:
+                status_msg.info(f"📦 Daily history ready for {completed:,}/{total:,} symbols.")
+
+            if stalled_for >= 1:
+                timer_msg.caption(
+                    f"⏱️ Loading history... {completed:,}/{total:,} complete, "
+                    f"{pending:,} pending, idle {int(stalled_for)}s"
+                )
+            else:
+                timer_msg.caption(
+                    f"⏱️ Loading history... {completed:,}/{total:,} complete, "
+                    f"{pending:,} pending, elapsed {int(elapsed_sec)}s"
+                )
 
         status_msg.info(f"📦 Resolving {universe} constituents...")
-        progress_bar.progress(0.2, text="20% Complete")
+        progress_bar.progress(fetch_stage_base, text=f"{int(fetch_stage_base * 100)}% Complete")
         if universe in ("Russell 3000", "RUSSELL3000"):
             live_as_of = datetime.now(ZoneInfo("UTC")).date().isoformat()
             try:
@@ -3941,22 +3975,38 @@ if mode == "Live Screener":
             status_msg.empty()
             timer_msg.empty()
             st.stop()
+        scan_now_et = datetime.now(ZoneInfo("America/New_York"))
+        market_open = _is_market_open_et(scan_now_et)
+        force_fresh_daily = not market_open
+        max_lag_days = 1 if not market_open else 2
+        if market_open:
+            status_msg.info(
+                "📦 Using the latest completed daily bar. Intraday live quote injection is disabled "
+                "because Apex Swing is an after-close, next-day execution workflow."
+            )
+        else:
+            status_msg.info(
+                "📦 Running an after-close daily scan. Fetching the latest completed daily bar without live quote injection."
+            )
         base_days = 400
         data = fetch_data_pack(
             symbols,
             days=base_days,
             max_workers=_recommended_fetch_workers(len(symbols), cache_only=False),
-            force_fresh=True,
-            inject_live=True,
-            max_lag_days=0,
+            force_fresh=force_fresh_daily,
+            inject_live=False,
+            max_lag_days=max_lag_days,
+            progress_callback=_update_live_fetch_progress,
         )
+        progress_bar.progress(0.55, text="55% Complete")
+        status_msg.info("📦 Primary symbol history loaded. Fetching market context...")
         g_data = fetch_data_pack(
             ["SPY", "$VIX", "VIX"],
             days=600,
             max_workers=_recommended_fetch_workers(3, cache_only=False),
-            force_fresh=True,
-            inject_live=True,
-            max_lag_days=0,
+            force_fresh=force_fresh_daily,
+            inject_live=False,
+            max_lag_days=max_lag_days,
         ) or {}
         spy_df = g_data.get("SPY")
         vix_df = g_data.get("$VIX")
@@ -3972,6 +4022,8 @@ if mode == "Live Screener":
             timer_msg.empty()
         else:
             strat_objects = load_strategies(selected_strategies)
+            progress_bar.progress(analyze_stage_base, text=f"{int(analyze_stage_base * 100)}% Complete")
+            status_msg.info("🧮 Preparing indicators and scoring inputs...")
             prepared_live = prepare_backtest_data(
                 data,
                 symbol_universe=symbols,
@@ -4100,9 +4152,9 @@ if mode == "Live Screener":
 
                 if total_symbols:
                     pct = i / total_symbols
-                    progress_pct = 0.2 + (0.8 * pct)
+                    progress_pct = analyze_stage_base + (analyze_stage_span * pct)
                 else:
-                    progress_pct = 0.2
+                    progress_pct = analyze_stage_base
 
                 if i <= 50:
                     eta_text = "⏱️ Calibrating..."
