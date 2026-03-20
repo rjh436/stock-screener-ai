@@ -3977,11 +3977,12 @@ if mode == "Live Screener":
             st.stop()
         scan_now_et = datetime.now(ZoneInfo("America/New_York"))
         market_open = _is_market_open_et(scan_now_et)
-        # Apex Swing is an after-close workflow. Reuse the local cache aggressively and
-        # refresh only stale symbols instead of forcing a full-universe API refresh.
+        latest_session_date = pd.Timestamp(_latest_completed_market_session_date()).date()
+        # Apex Swing is an after-close workflow. Reuse the local cache when it already
+        # contains the latest completed NYSE session, and reject stale symbols otherwise.
         force_fresh_daily = False
-        require_fresh_daily = False
-        max_lag_days = 1 if not market_open else 2
+        require_fresh_daily = True
+        max_lag_days = max(0, int((scan_now_et.date() - latest_session_date).days))
         if market_open:
             status_msg.info(
                 "📦 Using cached daily history plus any stale-symbol refreshes. "
@@ -3991,7 +3992,12 @@ if mode == "Live Screener":
             status_msg.info(
                 "📦 Running an after-close daily scan from the local cache and refreshing only stale symbols."
             )
+        st.caption(
+            f"Fresh-session target: latest completed NYSE session = `{latest_session_date.isoformat()}` "
+            f"(allowed calendar lag `{max_lag_days}` day{'s' if max_lag_days != 1 else ''})."
+        )
         base_days = 400
+        quality_live: dict[str, Any] = {}
         data = fetch_data_pack(
             symbols,
             days=base_days,
@@ -4001,9 +4007,11 @@ if mode == "Live Screener":
             inject_live=False,
             max_lag_days=max_lag_days,
             progress_callback=_update_live_fetch_progress,
+            quality_report=quality_live,
         )
         progress_bar.progress(0.55, text="55% Complete")
         status_msg.info("📦 Primary symbol history loaded. Fetching market context...")
+        quality_global: dict[str, Any] = {}
         g_data = fetch_data_pack(
             ["SPY", "$VIX", "VIX"],
             days=600,
@@ -4012,12 +4020,52 @@ if mode == "Live Screener":
             require_fresh=require_fresh_daily,
             inject_live=False,
             max_lag_days=max_lag_days,
+            quality_report=quality_global,
         ) or {}
         spy_df = g_data.get("SPY")
         vix_df = g_data.get("$VIX")
         if vix_df is None:
             vix_df = g_data.get("VIX")
         global_data = {"SPY": spy_df, "VIX": vix_df}
+        loaded_symbols = int(quality_live.get("loaded", len(data)) or len(data))
+        requested_symbols = int(quality_live.get("requested", len(symbols)) or len(symbols))
+        live_cov = (loaded_symbols / float(max(1, requested_symbols))) if requested_symbols > 0 else 0.0
+        try:
+            min_live_cov = float(os.getenv("APEX_LIVE_MIN_FRESH_COVERAGE", "0.90") or "0.90")
+        except Exception:
+            min_live_cov = 0.90
+        min_live_cov = max(0.50, min(min_live_cov, 1.00))
+        if live_cov < 1.0:
+            stale_count = int(quality_live.get("stale", 0) or 0)
+            missing_count = int(quality_live.get("missing", 0) or 0)
+            st.warning(
+                f"Live screener freshness coverage: {loaded_symbols:,}/{requested_symbols:,} "
+                f"symbols ({live_cov:.1%}) on session `{latest_session_date.isoformat()}`. "
+                f"Missing={missing_count:,}, stale_rejected={stale_count:,}."
+            )
+        else:
+            st.success(
+                f"Live screener freshness confirmed: {loaded_symbols:,}/{requested_symbols:,} symbols "
+                f"match session `{latest_session_date.isoformat()}`."
+            )
+        if live_cov < min_live_cov:
+            st.error(
+                f"Live screener freshness coverage {live_cov:.1%} is below the required "
+                f"threshold of {min_live_cov:.0%}. Refresh the cache/auth path before acting on results."
+            )
+            progress_bar.empty()
+            status_msg.empty()
+            timer_msg.empty()
+            st.stop()
+        if spy_df is None or spy_df.empty or vix_df is None or vix_df.empty:
+            st.error(
+                "Market context is not fresh enough for a live screener run. "
+                "SPY/VIX must match the latest completed session."
+            )
+            progress_bar.empty()
+            status_msg.empty()
+            timer_msg.empty()
+            st.stop()
         results = []
         
         if not selected_strategies:
