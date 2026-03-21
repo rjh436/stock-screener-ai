@@ -19,6 +19,7 @@
     "ep_close_near_high_min": 0.55,
     "ep_entry_mode": "close",
     "ep_force_next_day": true,
+    "ep_trend_template_mode": "price_above_sma50",
     "vcp_entry_mode": "next_day",
     "ep_max_stop_pct": 0.12,
     "score_mode": "dual_core",

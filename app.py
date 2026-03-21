@@ -49,7 +49,7 @@ from strategies.strategy_loader import load_strategies
 CONFIG_PATH = "config/generated_strategies.json"
 PRIMARY_STRATEGY_CONFIG_PATH = os.path.join("config", "superperformance_winner.json")
 PRIMARY_STRATEGY_METADATA_PATH = os.path.join(
-    "config", "superperformance_alpha_lc2c_cd3_promoted_v2.metadata.json"
+    "config", "superperformance_epd1_strict_validated.json"
 )
 BASELINE_CONFIG_PATH = os.path.join("config", "backtest_baselines.json")
 UNIVERSE_OPTIONS = ["SP500", "SP100", "SP1500", "NASDAQ100", "RUSSELL3000"]
@@ -1098,12 +1098,15 @@ def _load_primary_strategy_reference() -> Dict[str, Any]:
     if not isinstance(metrics, dict):
         return {}
     return {
-        "label": str(payload.get("promoted_name") or "Research promotion reference"),
+        "label": str(payload.get("reference_name") or payload.get("promoted_name") or "Research promotion reference"),
         "cagr_pct": _safe_float(metrics.get("cagr_pct"), float("nan")),
         "max_dd_pct": _safe_float(metrics.get("max_dd_pct"), float("nan")),
         "trades_per_year": _safe_float(metrics.get("trades_per_year"), float("nan")),
         "stitched_oos_cagr_pct": _safe_float(metrics.get("stitched_oos_cagr_pct"), float("nan")),
-        "source_note": "Prepared-sample research artifact on 3326 symbols through 2026-03-02.",
+        "source_note": str(
+            payload.get("source_note")
+            or "Prepared-sample research artifact; compare to strict GUI runs only when the accuracy scorecard passes."
+        ),
     }
 
 
@@ -3870,6 +3873,14 @@ with st.sidebar:
             "- **Style:** Minervini/Qullamaggie hybrid with EP, VCP, and low-cheat entries\n"
             "- **Objective:** maximize realistic long-run CAGR while keeping trade count low and drawdown controlled"
         )
+        primary_reference = _load_primary_strategy_reference()
+        if primary_reference:
+            st.caption(
+                "Strict validated baseline: "
+                f"{_fmt_pct(primary_reference.get('cagr_pct'))} CAGR / "
+                f"{_fmt_pct(primary_reference.get('max_dd_pct'))} max DD / "
+                f"{primary_reference.get('trades_per_year', float('nan')):.1f} trades per year."
+            )
     else:
         st.error("No production strategy config is available. Restore `config/superperformance_winner.json`.")
 
@@ -4522,11 +4533,11 @@ elif mode == "Backtest":
     primary_reference = _load_primary_strategy_reference()
     if primary_reference:
         st.info(
-            "Research reference for the shipped profile: "
+            "Strict validated reference for the shipped profile: "
             f"{_fmt_pct(primary_reference.get('cagr_pct'))} 10Y CAGR / "
             f"{_fmt_pct(primary_reference.get('max_dd_pct'))} max DD / "
             f"{primary_reference.get('trades_per_year', float('nan')):.1f} trades per year. "
-            "Do not compare strict GUI runs to that reference unless the Accuracy Scorecard passes. "
+            "Use this as the production benchmark when the Accuracy Scorecard passes. "
             f"{primary_reference.get('source_note', '')}"
         )
 

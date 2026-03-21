@@ -1,0 +1,36 @@
+{
+  "start_date": "2016-03-21",
+  "end_date": "2026-03-20",
+  "membership_source": "pit_snapshot_window",
+  "requested_symbol_count": 5196,
+  "loaded_symbol_count": 3340,
+  "loaded_start": "2016-03-21T00:00:00.000000000",
+  "loaded_end": "2026-03-20T00:00:00.000000000",
+  "prepared_cache_path": "data/cache_indicators.pkl",
+  "used_prepared_cache": true,
+  "rows": [
+    {
+      "config_path": "config/superperformance_alpha_lc2c_cd3_promoted_v2.json",
+      "strategy_name": "Superperformance Alpha LC2c CD3 Promoted V2",
+      "cagr_pct": 21.75901437663903,
+      "max_dd_pct": 29.341385367166723,
+      "total_trades": 189,
+      "hit_rate_pct": 31.216931216931215,
+      "final_value": 715583.148799464,
+      "first_trade_date": "2017-04-05T00:00:00"
+    },
+    {
+      "config_path": "config/superperformance_alpha_lc2c_cd3_epd1.json",
+      "strategy_name": "Superperformance Alpha LC2c CD3 EPD1",
+      "cagr_pct": 35.51865765492448,
+      "max_dd_pct": 24.07774049526285,
+      "total_trades": 226,
+      "hit_rate_pct": 32.743362831858406,
+      "final_value": 2086646.2127835094,
+      "first_trade_date": "2017-04-05T00:00:00"
+    }
+  ],
+  "membership_by_day_source": "pit_snapshot_timeline",
+  "require_pit_membership": true,
+  "completed": true
+}

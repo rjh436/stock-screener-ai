@@ -1,0 +1,23 @@
+{
+  "reference_at": "2026-03-20 18:30:00 EDT",
+  "reference_name": "Apex Swing EPD1 Research Reference",
+  "reference_from": "config/superperformance_alpha_lc2c_cd3_epd1.json",
+  "previous_reference": "config/superperformance_alpha_lc2c_cd3_promoted_v2.metadata.json",
+  "artifacts": {
+    "leader_grid": "tmp/alpha_lc2c_epd_grid_leaderb17seed_20260320.json",
+    "full_cache": "tmp/alpha_lc2c_cd3_epd1_fullcache_10y_only_20260320.json"
+  },
+  "constraints": {
+    "allow_margin": false,
+    "signal_mode": "after_close",
+    "next_day_execution_only": true
+  },
+  "source_note": "Prepared-sample research artifact on 3326 accessible symbols through 2026-03-20. Strict GUI PIT runs remain the production truth only when the accuracy scorecard passes.",
+  "metrics_10y": {
+    "cagr_pct": 38.69358257335165,
+    "max_dd_pct": 24.56133191698283,
+    "trades_per_year": 31.0,
+    "same_day_open_entries": 0.0
+  },
+  "branch_summary": "EP-only trend-template decoupling materially improved the prepared-sample 10Y result while keeping drawdown below 25%, trade count low, next-day execution intact, and leverage disabled."
+}

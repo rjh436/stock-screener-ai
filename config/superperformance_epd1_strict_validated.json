@@ -1,0 +1,25 @@
+{
+  "validated_at": "2026-03-21 00:15:00 EDT",
+  "reference_name": "Apex Swing EPD1 Strict PIT Validation",
+  "reference_from": "config/superperformance_alpha_lc2c_cd3_epd1.json",
+  "previous_validated_reference": "config/superperformance_alpha_lc2c_cd3_promoted_v2.metadata.json",
+  "artifacts": {
+    "strict_compare": "tmp/strict_ep_compare_20260321.json",
+    "research_fast_lane": "tmp/alpha_lc2c_cd3_epd1_fullcache_10y_only_20260320.json"
+  },
+  "constraints": {
+    "allow_margin": false,
+    "signal_mode": "after_close",
+    "next_day_execution_only": true,
+    "require_pit_membership": true
+  },
+  "source_note": "Strict PIT-enforced cached validation path from 2016-03-21 through 2026-03-20 with 3340 loaded symbols out of 5196 requested. This is the current production truth for Apex Swing.",
+  "metrics_10y": {
+    "cagr_pct": 35.51865765492448,
+    "max_dd_pct": 24.07774049526285,
+    "trades_per_year": 22.60283106625253,
+    "same_day_open_entries": 0.0,
+    "total_trades": 226.0
+  },
+  "branch_summary": "EP-only trend-template decoupling survived the strict PIT-enforced path and materially outperformed the prior shipped winner while keeping cash-only, next-day execution, and reasonable drawdown."
+}
