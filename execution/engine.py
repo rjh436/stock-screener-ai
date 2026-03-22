@@ -769,6 +769,7 @@ def _execute_partial_sale(
     sell_fraction: float,
     reason: str,
     trades_list: List[Dict[str, Any]],
+    exit_date: Any = None,
     transaction_cost_bps: float = 0.0,
     exit_slippage_bps: float = 0.0,
 ) -> Tuple[float, float]:
@@ -803,6 +804,7 @@ def _execute_partial_sale(
             "Symbol": sym,
             "Entry": entry_px,
             "Exit": effective_sell_px,
+            "ExitDate": exit_date,
             "PnL": pnl,
             "Return %": ret_pct,
             "Reason": reason,
@@ -874,6 +876,7 @@ def _maybe_take_partial_profit(
             sell_fraction=pp_frac,
             reason=partial_reason,
             trades_list=trades_list,
+            exit_date=sym_data.df.index[loc],
             transaction_cost_bps=transaction_cost_bps,
             exit_slippage_bps=exit_slippage_bps,
         )
@@ -912,6 +915,7 @@ def _maybe_take_partial_profit(
         sell_fraction=float(params.get("partial_profit_fraction", 0.5) or 0.5),
         reason=f"PARTIAL_{str(fast_sma).upper()}",
         trades_list=trades_list,
+        exit_date=sym_data.df.index[loc],
         transaction_cost_bps=transaction_cost_bps,
         exit_slippage_bps=exit_slippage_bps,
     )
@@ -1519,6 +1523,8 @@ def _compute_indicators(
         else:
             df["vix"] = 20.0
         df["vix"] = df["vix"].fillna(20.0)
+        df["vix_sma20"] = df["vix"].rolling(20, min_periods=1).mean()
+        df["vix_sma200"] = df["vix"].rolling(200, min_periods=1).mean()
 
         df["sma50"] = df["close"].rolling(50).mean()
         df["sma200"] = df["close"].rolling(200).mean()
@@ -1839,6 +1845,9 @@ class _SymbolArrays:
     spysma20: np.ndarray
     spysma50: np.ndarray
     spysma200: np.ndarray
+    vix: np.ndarray
+    vixsma20: np.ndarray
+    vixsma200: np.ndarray
     rsrating: np.ndarray
     momrank: np.ndarray
     adr_pct: np.ndarray
@@ -2170,6 +2179,9 @@ def prepare_backtest_data(
                 spysma20=_get_np_col(df, "spy_sma20", np.nan, length=n),
                 spysma50=_get_np_col(df, "spy_sma50", np.nan, length=n),
                 spysma200=_get_np_col(df, "spy_sma200", np.nan, length=n),
+                vix=_get_np_col(df, "vix", np.nan, length=n),
+                vixsma20=_get_np_col(df, "vix_sma20", np.nan, length=n),
+                vixsma200=_get_np_col(df, "vix_sma200", np.nan, length=n),
                 rsrating=np.zeros(n, dtype=np.float64),
                 momrank=np.zeros(n, dtype=np.float64),
                 adr_pct=_get_np_col(df, "adr_pct", np.nan, length=n),
@@ -2627,6 +2639,65 @@ def _legacy_run_backtest(
                                     reason=f"regime_filter spy_close={spy_c:.2f} < spy_sma200={spy_200:.2f}",
                                 )
                             continue
+
+                    # Exact market-context entry gate for next-day swing execution.
+                    # This blocks only fresh entries; open positions keep normal exits.
+                    if bool(params.get("use_market_context_entry_gate", False)):
+                        spy_c = float(sd.spyclose[prev_i]) if prev_i >= 0 else float("nan")
+                        spy_50 = float(sd.spysma50[prev_i]) if prev_i >= 0 else float("nan")
+                        spy_200 = float(sd.spysma200[prev_i]) if prev_i >= 0 else float("nan")
+                        vix_c = float(sd.vix[prev_i]) if prev_i >= 0 else float("nan")
+                        if prev_i >= 0 and hasattr(sd, "vixsma20"):
+                            vix_20 = float(sd.vixsma20[prev_i])
+                        elif prev_i >= 0:
+                            vix_window = sd.vix[max(0, prev_i - 19): prev_i + 1]
+                            vix_20 = float(np.nanmean(vix_window)) if len(vix_window) else float("nan")
+                        else:
+                            vix_20 = float("nan")
+
+                        require_spy_trend = bool(params.get("market_entry_require_spy_50_200", True))
+                        vix_max = params.get("market_entry_vix_max")
+                        vix_sma20_max = params.get("market_entry_vix_sma20_max")
+
+                        if require_spy_trend:
+                            if not (
+                                np.isfinite(spy_c)
+                                and np.isfinite(spy_50)
+                                and np.isfinite(spy_200)
+                                and spy_c > spy_50 > spy_200
+                            ):
+                                if sym.upper() in known_winner_syms:
+                                    trace_logger.log_reject(
+                                        date_val=all_dates[day_idx],
+                                        symbol=sym,
+                                        reason=(
+                                            "market_context_gate "
+                                            f"spy_close={spy_c:.2f} spy_sma50={spy_50:.2f} spy_sma200={spy_200:.2f}"
+                                        ),
+                                    )
+                                continue
+
+                        if vix_max is not None:
+                            vix_max_val = float(vix_max)
+                            if not (np.isfinite(vix_c) and vix_c < vix_max_val):
+                                if sym.upper() in known_winner_syms:
+                                    trace_logger.log_reject(
+                                        date_val=all_dates[day_idx],
+                                        symbol=sym,
+                                        reason=f"market_context_gate vix={vix_c:.2f} >= {vix_max_val:.2f}",
+                                    )
+                                continue
+
+                        if vix_sma20_max is not None:
+                            vix_sma20_max_val = float(vix_sma20_max)
+                            if not (np.isfinite(vix_20) and vix_20 < vix_sma20_max_val):
+                                if sym.upper() in known_winner_syms:
+                                    trace_logger.log_reject(
+                                        date_val=all_dates[day_idx],
+                                        symbol=sym,
+                                        reason=f"market_context_gate vix_sma20={vix_20:.2f} >= {vix_sma20_max_val:.2f}",
+                                    )
+                                continue
 
                     # Optional trend mode gate
                     mode = params.get("trend_mode")
@@ -3271,6 +3342,7 @@ def _legacy_run_backtest(
                                         "Symbol": sym,
                                         "Entry": float(pos.get("entry_price", 0.0) or 0.0),
                                         "Exit": exit_px,
+                                        "ExitDate": all_dates[day_idx],
                                         "PnL": pnl,
                                         "Return %": ((pnl / invested) * 100) if invested > 0 else 0.0,
                                         "Reason": "STALE_DATA_EXIT",
@@ -3318,6 +3390,7 @@ def _legacy_run_backtest(
                                         "Symbol": sym,
                                         "Entry": float(pos.get("entry_price", 0.0) or 0.0),
                                         "Exit": exit_px,
+                                        "ExitDate": all_dates[day_idx],
                                         "PnL": pnl,
                                         "Return %": ((pnl / invested) * 100) if invested > 0 else 0.0,
                                         "Reason": "STALE_DATA_EXIT",
@@ -3362,6 +3435,7 @@ def _legacy_run_backtest(
                                     "Symbol": sym,
                                     "Entry": pos["entry_price"],
                                     "Exit": pending_exit_px,
+                                    "ExitDate": all_dates[day_idx],
                                     "PnL": pnl,
                                     "Return %": ((pnl / invested) * 100) if invested > 0 else 0.0,
                                     "Reason": f"NEXT_DAY_{pending_reason}",
@@ -3441,6 +3515,7 @@ def _legacy_run_backtest(
                                     pos["initial_risk"] = max(pos["entry_price"] - pos["stop_price"], pos["entry_price"] * 0.001)
                                     trades_list.append({
                                         "Symbol": sym, "Entry": pos["entry_price"], "Exit": current_open,
+                                        "ExitDate": all_dates[day_idx],
                                         "PnL": 0.0,
                                         "Return %": 0.0,
                                         "Reason": "PYRAMID_ADD",
@@ -3583,6 +3658,7 @@ def _legacy_run_backtest(
                     invested = (shares * pos["entry_price"]) + entry_fee_remaining
                     trades_list.append({
                         "Symbol": sym, "Entry": pos["entry_price"], "Exit": exit_px,
+                        "ExitDate": all_dates[day_idx],
                         "PnL": pnl,
                         "Return %": ((pnl / invested) * 100) if invested > 0 else 0.0,
                         "Reason": reason,
@@ -3879,6 +3955,7 @@ def _legacy_run_backtest(
                                     "Symbol": cand.sym,
                                     "Entry": entry_px,
                                     "Exit": same_day_exit_px,
+                                    "ExitDate": all_dates[day_idx],
                                     "PnL": pnl,
                                     "Return %": ((pnl / invested) * 100) if invested > 0 else 0.0,
                                     "Reason": "SAME_DAY_STOP",

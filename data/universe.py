@@ -176,7 +176,13 @@ def build_russell3000_membership_by_day(
     Build day-level PIT membership references aligned to all_dates.
     Each day points to the latest snapshot <= that day.
     """
-    if not all_dates:
+    if all_dates is None:
+        return [], "unavailable"
+    try:
+        total_dates = len(all_dates)
+    except Exception:
+        total_dates = 0
+    if total_dates == 0:
         return [], "unavailable"
 
     snapshots = _load_russell_3000_snapshot_series()
@@ -446,6 +452,13 @@ def _load_russell_3000_snapshot_series() -> List[Tuple[date, frozenset[str]]]:
     if not series:
         return []
     return sorted(series.items(), key=lambda x: x[0])
+
+
+def get_russell3000_pit_timeline_bounds() -> Tuple[Optional[date], Optional[date], int]:
+    snapshots = _load_russell_3000_snapshot_series()
+    if not snapshots:
+        return None, None, 0
+    return snapshots[0][0], snapshots[-1][0], len(snapshots)
 
 
 def _load_russell_3000_pit_from_ranges(as_of: date) -> List[str]:

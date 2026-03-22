@@ -5,7 +5,10 @@
   "previous_validated_reference": "config/superperformance_alpha_lc2c_cd3_promoted_v2.metadata.json",
   "artifacts": {
     "strict_compare": "tmp/strict_ep_compare_20260321.json",
-    "research_fast_lane": "tmp/alpha_lc2c_cd3_epd1_fullcache_10y_only_20260320.json"
+    "research_fast_lane": "tmp/alpha_lc2c_cd3_epd1_fullcache_10y_only_20260320.json",
+    "max_verified_baseline": "tmp/strict_max_verified_tlhard_compare_20260321.json",
+    "max_verified_vix_only": "tmp/strict_max_verified_vix25_only_full_20260321.json",
+    "max_verified_vix_only_late": "tmp/strict_vix25_only_late_20260321.json"
   },
   "constraints": {
     "allow_margin": false,
@@ -20,6 +23,48 @@
     "trades_per_year": 22.60283106625253,
     "same_day_open_entries": 0.0,
     "total_trades": 226.0
+  },
+  "metrics_max_verified": {
+    "window_label": "Max Verified",
+    "start_date": "2006-09-29",
+    "end_date": "2026-03-20",
+    "cagr_pct": 16.67420103292827,
+    "max_dd_pct": 30.057857319364928,
+    "trades_per_year": 19.313739827010622,
+    "same_day_open_entries": 0.0,
+    "total_trades": 376.0,
+    "disclosure_note": "Treat Max Verified as a long-window regime-risk disclosure. The 10Y strict PIT result remains the production benchmark and validated operating envelope."
+  },
+  "regime_risk_summary": {
+    "status": "architecture_hardening_terminated",
+    "conclusion": "No static market-level entry gate improved 20Y risk-adjusted returns on the strict PIT Russell 3000 path.",
+    "failed_entry_gate_experiments": [
+      {
+        "name": "Traffic-light hard cash",
+        "cagr_pct": 14.657924267572442,
+        "max_dd_pct": 28.888358756685008,
+        "total_trades": 325.0
+      },
+      {
+        "name": "SPY SMA50/200 plus VIX<25",
+        "cagr_pct": 10.90410842691596,
+        "max_dd_pct": 30.685866548707747,
+        "total_trades": 203.0
+      },
+      {
+        "name": "Spot VIX<25 only",
+        "cagr_pct": 13.865515415138962,
+        "max_dd_pct": 28.913681828428157,
+        "total_trades": 353.0
+      }
+    ],
+    "late_window_vix_only": {
+      "start_date": "2017-01-03",
+      "end_date": "2026-03-20",
+      "cagr_pct": 32.46305591346834,
+      "max_dd_pct": 20.58398808402243,
+      "total_trades": 216.0
+    }
   },
   "branch_summary": "EP-only trend-template decoupling survived the strict PIT-enforced path and materially outperformed the prior shipped winner while keeping cash-only, next-day execution, and reasonable drawdown."
 }

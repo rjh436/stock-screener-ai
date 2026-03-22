@@ -1,3 +1,4 @@
+import io
 import streamlit as st
 import pandas as pd
 import sys
@@ -26,6 +27,7 @@ from data.universe import (
     get_universe_symbols_pit_window_with_meta,
     build_russell3000_membership_by_day,
     get_russell3000_pit_status,
+    get_russell3000_pit_timeline_bounds,
 )
 from execution.engine import (
     MIN_ENTRY_SCORE,
@@ -89,6 +91,7 @@ HYBRID_VALIDATED_BENCHMARK_CONFIG = os.path.join("config", "hybrid_benchmark_v2.
 HYBRID_VALIDATED_RISK_ALT_CONFIG = os.path.join("config", "hybrid_benchmark_v2_risk_alt.json")
 HYBRID_LEGACY_HOLDOUT_ARTIFACT = os.path.join("tmp", "hybrid_holdout_promoted.json")
 PRIMARY_STRATEGY_OPTIONS = ["Apex Swing"]
+MARKET_CONTEXT_FETCH_SYMBOLS = ["SPY", "^VIX", "$VIX", "VIX"]
 ETF_PAPER_STATE_FILE = os.path.join("data", "etf_paper_state.json")
 HYBRID_BENCHMARK_PAPER_STATE_FILE = os.path.join("data", "hybrid_benchmark_paper_state.json")
 STOCK_BENCHMARK_PAPER_STATE_FILE = os.path.join("data", "stock_benchmark_paper_state.json")
@@ -790,6 +793,117 @@ def normalize_equity_curve_df(equity_curve) -> pd.DataFrame:
     return df_ec[["Date", "Equity"]].reset_index(drop=True)
 
 
+def _normalize_calendar_date(value: Any) -> Any:
+    ts = pd.to_datetime(value, errors="coerce")
+    if pd.isna(ts):
+        return pd.NaT
+    try:
+        ts = ts.tz_localize(None)
+    except Exception:
+        pass
+    return ts.normalize()
+
+
+def _build_backtest_yearly_summary_df(res: Mapping[str, Any]) -> pd.DataFrame:
+    equity_df = normalize_equity_curve_df((res or {}).get("equity_curve", []))
+    if equity_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "Year",
+                "PeriodStart",
+                "PeriodEnd",
+                "TradesPerYear",
+                "TradeCountBasis",
+                "StrategyReturnPct",
+                "MaxDrawdownPct",
+                "StartEquity",
+                "EndEquity",
+            ]
+        )
+
+    yearly_trade_counts: Dict[int, int] = {}
+    trade_count_basis = "opened_entries"
+    trades_df = pd.DataFrame((res or {}).get("trades_list", []) or [])
+    if not trades_df.empty and "ExitDate" in trades_df.columns:
+        if "Reason" in trades_df.columns:
+            trades_df = trades_df[trades_df["Reason"] != "PYRAMID_ADD"]
+        trades_df["ExitDate"] = trades_df["ExitDate"].map(_normalize_calendar_date)
+        trades_df = trades_df.dropna(subset=["ExitDate"])
+        if not trades_df.empty:
+            yearly_trade_counts = (
+                trades_df.groupby(trades_df["ExitDate"].dt.year).size().astype(int).to_dict()
+            )
+            trade_count_basis = "closed_trades"
+
+    if not yearly_trade_counts:
+        entries_df = pd.DataFrame((res or {}).get("entries_list", []) or [])
+        if not entries_df.empty and "EntryDate" in entries_df.columns:
+            entries_df["EntryDate"] = entries_df["EntryDate"].map(_normalize_calendar_date)
+            entries_df = entries_df.dropna(subset=["EntryDate"])
+            if not entries_df.empty:
+                yearly_trade_counts = (
+                    entries_df.groupby(entries_df["EntryDate"].dt.year).size().astype(int).to_dict()
+                )
+
+    rows: List[Dict[str, Any]] = []
+    for year, grp in equity_df.groupby(equity_df["Date"].dt.year):
+        start_dt = grp["Date"].iloc[0]
+        end_dt = grp["Date"].iloc[-1]
+        start_equity = float(grp["Equity"].iloc[0] or 0.0)
+        end_equity = float(grp["Equity"].iloc[-1] or 0.0)
+        strategy_return_pct = ((end_equity / start_equity) - 1.0) * 100.0 if start_equity > 0 else 0.0
+        drawdown = ((grp["Equity"] / grp["Equity"].cummax()) - 1.0).min()
+        max_drawdown_pct = 0.0 if pd.isna(drawdown) else abs(float(drawdown)) * 100.0
+        rows.append(
+            {
+                "Year": int(year),
+                "PeriodStart": start_dt.date().isoformat(),
+                "PeriodEnd": end_dt.date().isoformat(),
+                "TradesPerYear": int(yearly_trade_counts.get(int(year), 0)),
+                "TradeCountBasis": trade_count_basis,
+                "StrategyReturnPct": float(strategy_return_pct),
+                "MaxDrawdownPct": max_drawdown_pct,
+                "StartEquity": float(start_equity),
+                "EndEquity": float(end_equity),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def _build_backtest_export_csv_bytes(res: Mapping[str, Any]) -> bytes:
+    yearly_df = _build_backtest_yearly_summary_df(res)
+    equity_df = normalize_equity_curve_df((res or {}).get("equity_curve", []))
+
+    export_frames: List[pd.DataFrame] = []
+    if not yearly_df.empty:
+        yearly_block = yearly_df.copy()
+        yearly_block.insert(0, "Section", "ANNUAL_SUMMARY")
+        export_frames.append(yearly_block)
+        export_frames.append(pd.DataFrame([{"Section": ""}]))
+
+    if not equity_df.empty:
+        daily_block = equity_df.copy()
+        daily_block.insert(0, "Section", "DAILY_EQUITY")
+        export_frames.append(daily_block)
+
+    if not export_frames:
+        return b""
+
+    all_columns: List[str] = []
+    for frame in export_frames:
+        for column in frame.columns:
+            if column not in all_columns:
+                all_columns.append(column)
+
+    with io.StringIO() as buffer:
+        for idx, frame in enumerate(export_frames):
+            if idx > 0:
+                buffer.write("\n")
+            frame.reindex(columns=all_columns).to_csv(buffer, index=False)
+        return buffer.getvalue().encode("utf-8")
+
+
 def _load_etf_runner_helpers():
     from scripts.run_etf_rotation_walkforward import (
         _build_allocator_target_schedule,
@@ -1045,6 +1159,14 @@ def _persist_streamlit_bytes(file_name: str, payload: bytes) -> Dict[str, Any]:
     return {"saved_paths": saved_paths, "errors": errors}
 
 
+def _timestamped_export_name(file_name: str) -> str:
+    path = Path(file_name)
+    stamp = datetime.now(ZoneInfo("America/New_York")).strftime("%Y%m%d_%H%M%S")
+    stem = path.stem or "export"
+    suffix = path.suffix or ""
+    return f"{stem}_{stamp}{suffix}"
+
+
 def _reveal_path_in_finder(path_str: str) -> Tuple[bool, str]:
     try:
         path = Path(path_str).expanduser().resolve()
@@ -1097,6 +1219,9 @@ def _load_primary_strategy_reference() -> Dict[str, Any]:
     metrics = payload.get("metrics_10y") or {}
     if not isinstance(metrics, dict):
         return {}
+    max_verified = payload.get("metrics_max_verified") or {}
+    if not isinstance(max_verified, dict):
+        max_verified = {}
     return {
         "label": str(payload.get("reference_name") or payload.get("promoted_name") or "Research promotion reference"),
         "cagr_pct": _safe_float(metrics.get("cagr_pct"), float("nan")),
@@ -1107,6 +1232,13 @@ def _load_primary_strategy_reference() -> Dict[str, Any]:
             payload.get("source_note")
             or "Prepared-sample research artifact; compare to strict GUI runs only when the accuracy scorecard passes."
         ),
+        "max_verified_cagr_pct": _safe_float(max_verified.get("cagr_pct"), float("nan")),
+        "max_verified_max_dd_pct": _safe_float(max_verified.get("max_dd_pct"), float("nan")),
+        "max_verified_trades_per_year": _safe_float(max_verified.get("trades_per_year"), float("nan")),
+        "max_verified_label": str(max_verified.get("window_label") or "Max Verified"),
+        "max_verified_start_date": str(max_verified.get("start_date") or ""),
+        "max_verified_end_date": str(max_verified.get("end_date") or ""),
+        "max_verified_note": str(max_verified.get("disclosure_note") or ""),
     }
 
 
@@ -1161,6 +1293,77 @@ def _latest_completed_market_session_date() -> str:
     if now_ts.hour < 16 or (now_ts.hour == 16 and now_ts.minute < 15):
         effective = (effective - pd.tseries.offsets.BDay(1)).normalize()
     return effective.date().isoformat()
+
+
+def _frame_last_session_date(df: Any) -> Optional[pd.Timestamp]:
+    if df is None or getattr(df, "empty", True):
+        return None
+    try:
+        idx = pd.DatetimeIndex(df.index).tz_localize(None)
+        last_ts = idx.max()
+    except Exception:
+        return None
+    if pd.isna(last_ts):
+        return None
+    return pd.Timestamp(last_ts).normalize()
+
+
+def _pick_freshest_market_frame(
+    data_map: Mapping[str, Any],
+    symbols: Sequence[str],
+) -> tuple[Any, Optional[str], Optional[pd.Timestamp]]:
+    best_df = None
+    best_symbol: Optional[str] = None
+    best_last_dt: Optional[pd.Timestamp] = None
+    for symbol in symbols:
+        df = data_map.get(symbol)
+        last_dt = _frame_last_session_date(df)
+        if last_dt is None:
+            continue
+        if best_last_dt is None or last_dt > best_last_dt:
+            best_df = df
+            best_symbol = symbol
+            best_last_dt = last_dt
+    return best_df, best_symbol, best_last_dt
+
+
+def _load_market_context(
+    *,
+    days: int,
+    backtest_mode: bool = False,
+    max_workers: Optional[int] = None,
+    force_fresh: bool = False,
+    require_fresh: bool = False,
+    inject_live: bool = False,
+    max_lag_days: Optional[int] = None,
+    quality_report: Optional[Dict[str, Any]] = None,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    g_data = fetch_data_pack(
+        MARKET_CONTEXT_FETCH_SYMBOLS,
+        days=days,
+        backtest_mode=backtest_mode,
+        max_workers=max_workers,
+        force_fresh=force_fresh,
+        require_fresh=require_fresh,
+        inject_live=inject_live,
+        max_lag_days=max_lag_days,
+        quality_report=quality_report,
+    ) or {}
+    spy_df, spy_symbol, spy_last_dt = _pick_freshest_market_frame(g_data, ("SPY",))
+    vix_df, vix_symbol, vix_last_dt = _pick_freshest_market_frame(g_data, ("^VIX", "$VIX", "VIX"))
+    meta = {
+        "spy_symbol": spy_symbol,
+        "spy_last_session": spy_last_dt.date().isoformat() if spy_last_dt is not None else None,
+        "vix_symbol": vix_symbol,
+        "vix_last_session": vix_last_dt.date().isoformat() if vix_last_dt is not None else None,
+        "raw_symbols": list(g_data.keys()),
+    }
+    if quality_report is not None:
+        try:
+            quality_report.update(meta)
+        except Exception:
+            pass
+    return {"SPY": spy_df, "VIX": vix_df}, meta
 
 
 def _snapshot_is_current(
@@ -3524,6 +3727,9 @@ def _trade_diagnostics(res: dict) -> dict:
     profit_factor_display = None
     trade_count_display = int(res.get("total_trades", 0) or 0)
     win_rate_display = float(res.get("hit_rate", 0.0) or 0.0)
+    avg_winner_dollar_display = 0.0
+    avg_loser_dollar_display = 0.0
+    payoff_ratio_display = None
 
     trades = res.get("trades_list", [])
     if not trades:
@@ -3533,6 +3739,9 @@ def _trade_diagnostics(res: dict) -> dict:
             "profit_factor": profit_factor_display,
             "trade_count": trade_count_display,
             "win_rate_pct": win_rate_display,
+            "avg_winner_dollar": avg_winner_dollar_display,
+            "avg_loser_dollar": avg_loser_dollar_display,
+            "payoff_ratio": payoff_ratio_display,
         }
 
     df_trades = pd.DataFrame(trades)
@@ -3550,12 +3759,21 @@ def _trade_diagnostics(res: dict) -> dict:
             trade_count_display = int(len(pnl_series))
             win_rate_display = float((pnl_series > 0).mean() * 100.0)
             expectancy_dollar_display = float(pnl_series.mean())
+            winners = pnl_series[pnl_series > 0]
+            losers = pnl_series[pnl_series < 0]
+            if not winners.empty:
+                avg_winner_dollar_display = float(winners.mean())
+            if not losers.empty:
+                avg_loser_dollar_display = abs(float(losers.mean()))
             gross_profit = float(pnl_series[pnl_series > 0].sum())
             gross_loss = float(-pnl_series[pnl_series < 0].sum())
             if gross_loss > 0:
                 profit_factor_display = gross_profit / gross_loss
+                if avg_loser_dollar_display > 0:
+                    payoff_ratio_display = avg_winner_dollar_display / avg_loser_dollar_display
             elif gross_profit > 0:
                 profit_factor_display = float("inf")
+                payoff_ratio_display = float("inf")
 
     return {
         "avg_trade_pct": float(avg_trade_pct_display),
@@ -3563,27 +3781,19 @@ def _trade_diagnostics(res: dict) -> dict:
         "profit_factor": profit_factor_display,
         "trade_count": int(trade_count_display),
         "win_rate_pct": float(win_rate_display),
+        "avg_winner_dollar": float(avg_winner_dollar_display),
+        "avg_loser_dollar": float(avg_loser_dollar_display),
+        "payoff_ratio": payoff_ratio_display,
     }
 
 
 def _accuracy_mode() -> str:
-    """
-    Accuracy policy:
-    - block: stop runs that fail coverage threshold
-    - warn: allow run but flag results as lower-confidence
-    - off: no coverage enforcement
-    """
-    raw = str(os.getenv("APEX_BACKTEST_ACCURACY_MODE", "warn") or "warn").strip().lower()
-    if raw in {"block", "strict", "hard", "enforce"}:
-        return "block"
-    if raw in {"off", "none", "disable", "disabled"}:
-        return "off"
-    # Default mode keeps backtesting available while still surfacing accuracy risk.
-    return "warn"
+    # The product now enforces strict accuracy on every backtest run.
+    return "block"
 
 
 def _effective_accuracy_mode(*, verified_run: bool) -> str:
-    return "block" if verified_run else _accuracy_mode()
+    return "block"
 
 
 def _duration_years(duration_label: str | None) -> int | None:
@@ -3597,6 +3807,60 @@ def _duration_years(duration_label: str | None) -> int | None:
         "20 years": 20,
     }
     return mapping.get(key)
+
+
+def _backtest_duration_options(universe_name: str) -> List[str]:
+    if str(universe_name or "").upper() in {"RUSSELL3000", "RUSSELL 3000"}:
+        return ["1 Year", "5 Years", "10 Years", "Max Verified"]
+    return ["1 Year", "5 Years", "10 Years", "20 Years", "Max"]
+
+
+def _resolve_backtest_window(
+    *,
+    universe_name: str,
+    duration_label: str,
+    end_ts: pd.Timestamp,
+) -> tuple[str, Optional[pd.Timestamp], Optional[str], Optional[str]]:
+    label = str(duration_label or "").strip() or "10 Years"
+    normalized_universe = str(universe_name or "").upper()
+    note: Optional[str] = None
+    cache_token: Optional[str] = None
+
+    if normalized_universe in {"RUSSELL3000", "RUSSELL 3000"} and label in {"20 Years", "Max", "Max Verified"}:
+        first_snapshot_dt, last_snapshot_dt, snapshot_count = get_russell3000_pit_timeline_bounds()
+        if first_snapshot_dt is not None:
+            start_ts = pd.Timestamp(first_snapshot_dt).normalize()
+            span_days = max(1, int((end_ts - start_ts).days))
+            span_years = span_days / 365.25
+            label = "Max Verified"
+            cache_token = f"max_verified_{start_ts.date().isoformat()}"
+            if last_snapshot_dt is not None and snapshot_count > 0:
+                note = (
+                    "Russell 3000 PIT history begins on "
+                    f"`{first_snapshot_dt.isoformat()}`. "
+                    f"`Max Verified` uses the longest fully supported strict window "
+                    f"({span_years:.1f} years) through `{end_ts.date().isoformat()}` "
+                    f"from `{snapshot_count}` PIT snapshots ending `{last_snapshot_dt.isoformat()}`. "
+                    "Treat this as a long-window regime-risk disclosure, not the main production benchmark."
+                )
+            else:
+                note = (
+                    "Russell 3000 PIT history begins on "
+                    f"`{first_snapshot_dt.isoformat()}`. "
+                    "`Max Verified` uses the longest fully supported strict window and should be read as a regime-risk disclosure."
+                )
+            return label, start_ts, note, cache_token
+        note = (
+            "Russell 3000 strict backtests require PIT membership history. "
+            "PIT snapshots are unavailable, so `Max Verified` cannot be resolved."
+        )
+        return "Max Verified", None, note, "max_verified_unavailable"
+
+    years = _duration_years(label)
+    if years:
+        start_ts = (end_ts - pd.DateOffset(years=years)).normalize()
+        return label, start_ts, note, None
+    return label, None, note, None
 
 
 def _min_coverage_threshold(
@@ -3881,6 +4145,17 @@ with st.sidebar:
                 f"{_fmt_pct(primary_reference.get('max_dd_pct'))} max DD / "
                 f"{primary_reference.get('trades_per_year', float('nan')):.1f} trades per year."
             )
+            max_verified_cagr = primary_reference.get("max_verified_cagr_pct")
+            if not math.isnan(_safe_float(max_verified_cagr, float("nan"))):
+                st.caption(
+                    "Max Verified disclosure: "
+                    f"{_fmt_pct(primary_reference.get('max_verified_cagr_pct'))} CAGR / "
+                    f"{_fmt_pct(primary_reference.get('max_verified_max_dd_pct'))} max DD / "
+                    f"{primary_reference.get('max_verified_trades_per_year', float('nan')):.1f} trades per year "
+                    f"from `{primary_reference.get('max_verified_start_date')}` through "
+                    f"`{primary_reference.get('max_verified_end_date')}`. "
+                    f"{primary_reference.get('max_verified_note', '')}"
+                )
     else:
         st.error("No production strategy config is available. Restore `config/superperformance_winner.json`.")
 
@@ -4073,8 +4348,7 @@ if mode == "Live Screener":
         progress_bar.progress(0.55, text="55% Complete")
         status_msg.info("📦 Primary symbol history loaded. Fetching market context...")
         quality_global: dict[str, Any] = {}
-        g_data = fetch_data_pack(
-            ["SPY", "$VIX", "VIX"],
+        global_data, market_ctx_meta = _load_market_context(
             days=600,
             max_workers=_recommended_fetch_workers(3, cache_only=False),
             force_fresh=force_fresh_daily,
@@ -4082,12 +4356,9 @@ if mode == "Live Screener":
             inject_live=False,
             max_lag_days=max_lag_days,
             quality_report=quality_global,
-        ) or {}
-        spy_df = g_data.get("SPY")
-        vix_df = g_data.get("$VIX")
-        if vix_df is None:
-            vix_df = g_data.get("VIX")
-        global_data = {"SPY": spy_df, "VIX": vix_df}
+        )
+        spy_df = global_data.get("SPY")
+        vix_df = global_data.get("VIX")
         loaded_symbols = int(quality_live.get("loaded", len(data)) or len(data))
         requested_symbols = int(quality_live.get("requested", len(symbols)) or len(symbols))
         live_cov = (loaded_symbols / float(max(1, requested_symbols))) if requested_symbols > 0 else 0.0
@@ -4121,7 +4392,10 @@ if mode == "Live Screener":
         if spy_df is None or spy_df.empty or vix_df is None or vix_df.empty:
             st.error(
                 "Market context is not fresh enough for a live screener run. "
-                "SPY/VIX must match the latest completed session."
+                f"SPY source={market_ctx_meta.get('spy_symbol') or 'missing'} "
+                f"(session={market_ctx_meta.get('spy_last_session') or 'missing'}), "
+                f"VIX source={market_ctx_meta.get('vix_symbol') or 'missing'} "
+                f"(session={market_ctx_meta.get('vix_last_session') or 'missing'})."
             )
             progress_bar.empty()
             status_msg.empty()
@@ -4540,6 +4814,17 @@ elif mode == "Backtest":
             "Use this as the production benchmark when the Accuracy Scorecard passes. "
             f"{primary_reference.get('source_note', '')}"
         )
+        max_verified_cagr = _safe_float(primary_reference.get("max_verified_cagr_pct"), float("nan"))
+        if not math.isnan(max_verified_cagr):
+            st.warning(
+                "Max Verified is a long-window regime-risk disclosure, not the main benchmark: "
+                f"{_fmt_pct(primary_reference.get('max_verified_cagr_pct'))} CAGR / "
+                f"{_fmt_pct(primary_reference.get('max_verified_max_dd_pct'))} max DD / "
+                f"{primary_reference.get('max_verified_trades_per_year', float('nan')):.1f} trades per year "
+                f"from `{primary_reference.get('max_verified_start_date')}` through "
+                f"`{primary_reference.get('max_verified_end_date')}`. "
+                f"{primary_reference.get('max_verified_note', '')}"
+            )
 
     today = pd.Timestamp.utcnow().tz_localize(None).normalize()
     bt_end_date = today.date().isoformat()
@@ -4562,21 +4847,31 @@ elif mode == "Backtest":
         )
     
     with col_dur:
-        st.write("Duration:")
-        c1, c2, c3, c4, c5 = st.columns(5)
-        dur_map = {"1 Year": 252, "5 Years": 1260, "10 Years": 2520, "20 Years": 5040, "Max": 10000}
-        if "bt_duration" not in st.session_state: st.session_state.bt_duration = "10 Years"
-        
-        for label in dur_map:
-            if c1.button(label) if label=="1 Year" else c2.button(label) if label=="5 Years" else c3.button(label) if label=="10 Years" else c4.button(label) if label=="20 Years" else c5.button(label):
+        st.write("Verified Window:")
+        duration_options = _backtest_duration_options(bt_universe)
+        if "bt_duration" not in st.session_state:
+            st.session_state.bt_duration = "10 Years"
+        if st.session_state.bt_duration not in duration_options:
+            st.session_state.bt_duration = "Max Verified" if "Max Verified" in duration_options else "10 Years"
+        cols = st.columns(len(duration_options))
+        for idx, label in enumerate(duration_options):
+            if cols[idx].button(label):
                 st.session_state.bt_duration = label
-    
-    bt_duration = st.session_state.bt_duration
-    days = dur_map.get(bt_duration, 1260)
-    year_map = {"1 Year": 1, "5 Years": 5, "10 Years": 10, "20 Years": 20}
-    bt_years = year_map.get(bt_duration)
-    bt_start_ts = (today - pd.DateOffset(years=bt_years)).normalize() if bt_years else None
+
+    requested_bt_duration = st.session_state.bt_duration
+    bt_duration, bt_start_ts, bt_window_note, bt_duration_cache_token = _resolve_backtest_window(
+        universe_name=bt_universe,
+        duration_label=requested_bt_duration,
+        end_ts=today,
+    )
+    if bt_window_note:
+        st.caption(bt_window_note)
     bt_start_date = bt_start_ts.date().isoformat() if bt_start_ts is not None else None
+    if bt_start_ts is not None:
+        days = max(int((today - bt_start_ts).days), 252)
+    else:
+        dur_map = {"Max": 10000}
+        days = dur_map.get(bt_duration, 10000)
 
     # Pull enough calendar history for the requested window + warmup bars.
     if bt_start_ts is not None:
@@ -4595,19 +4890,11 @@ elif mode == "Backtest":
     else:
         st.info(f"Settings: **{bt_universe}** for **{bt_duration}**")
     st.caption(f"Strategy fingerprint: `{strategy_fp}`")
-    if "bt_verified_run" not in st.session_state:
-        st.session_state.bt_verified_run = False
-    verified_run = st.toggle(
-        "Verified run (strict accuracy gate)",
-        value=bool(st.session_state.bt_verified_run),
-        help=(
-            "When enabled, this run uses strict accuracy rules (higher minimum coverage, "
-            "full-lookback enforcement, and lock gating)."
-        ),
-    )
-    st.session_state.bt_verified_run = bool(verified_run)
-    run_accuracy_mode = _effective_accuracy_mode(verified_run=bool(verified_run))
+    verified_run = True
+    run_accuracy_mode = _effective_accuracy_mode(verified_run=True)
     cache_mode_token = "strict" if run_accuracy_mode == "block" else run_accuracy_mode
+    if bt_duration_cache_token:
+        cache_mode_token = f"{cache_mode_token}|{bt_duration_cache_token}"
     cache_key = (
         f"btv6|{bt_universe}|{bt_duration}|{bt_start_date or 'max'}|"
         f"{strategy_fp}|{cache_mode_token}"
@@ -4617,9 +4904,9 @@ elif mode == "Backtest":
         accuracy_mode=run_accuracy_mode,
         duration_label=bt_duration,
     )
+    st.success("Strict accuracy mode is always on. Backtests only run when the dataset passes the required validation gates.")
     st.caption(
-        f"Run accuracy mode: `{run_accuracy_mode}` | "
-        f"Coverage >= {thresholds_hint['min_coverage']:.0%}, "
+        f"Accuracy gates: Coverage >= {thresholds_hint['min_coverage']:.0%}, "
         f"Recent >= {thresholds_hint['min_recent_coverage']:.0%}, "
         f"Stale <= {thresholds_hint['max_stale_ratio']:.0%}"
     )
@@ -4980,25 +5267,18 @@ elif mode == "Backtest":
                     # Fetch global context once (required for RS + VIX overlays in the engine).
                     stage_msg.caption("Stage: Loading market context (SPY/VIX)...")
                     global_workers = _recommended_fetch_workers(3, cache_only=cache_only_first)
-                    g_data = fetch_data_pack(
-                        ["SPY", "$VIX", "VIX"],
+                    global_data, market_ctx_meta = _load_market_context(
                         days=fetch_days,
                         backtest_mode=cache_only_first,
                         max_workers=global_workers,
-                    ) or {}
-                    spy_df = g_data.get("SPY")
+                    )
+                    spy_df = global_data.get("SPY")
                     if spy_df is None or spy_df.empty:
-                        g_data = fetch_data_pack(
-                            ["SPY", "$VIX", "VIX"],
+                        global_data, market_ctx_meta = _load_market_context(
                             days=fetch_days,
                             backtest_mode=False,
                             max_workers=_recommended_fetch_workers(3, cache_only=False),
-                        ) or {}
-                    spy_df = g_data.get("SPY")
-                    vix_df = g_data.get("$VIX")
-                    if vix_df is None:
-                        vix_df = g_data.get("VIX")
-                    global_data = {"SPY": spy_df, "VIX": vix_df}
+                        )
 
                     # Turbo: precompute indicators/arrays once, then reuse across all strategies.
                     stage_msg.caption("Stage: Building indicators and PIT-aligned data...")
@@ -5021,30 +5301,21 @@ elif mode == "Backtest":
                     expected_symbol_count = len(symbols)
                     expected_symbols = list(symbols)
                     del data
-                    del g_data
                     gc.collect()
                     cache_hit = prepared is not None
                 elif not global_data:
-                    g_data = fetch_data_pack(
-                        ["SPY", "$VIX", "VIX"],
+                    global_data, market_ctx_meta = _load_market_context(
                         days=fetch_days,
                         backtest_mode=True,
                         max_workers=_recommended_fetch_workers(3, cache_only=True),
-                    ) or {}
-                    spy_df = g_data.get("SPY")
+                    )
+                    spy_df = global_data.get("SPY")
                     if spy_df is None or spy_df.empty:
-                        g_data = fetch_data_pack(
-                            ["SPY", "$VIX", "VIX"],
+                        global_data, market_ctx_meta = _load_market_context(
                             days=fetch_days,
                             backtest_mode=False,
                             max_workers=_recommended_fetch_workers(3, cache_only=False),
-                        ) or {}
-                    spy_df = g_data.get("SPY")
-                    vix_df = g_data.get("$VIX")
-                    if vix_df is None:
-                        vix_df = g_data.get("VIX")
-                    global_data = {"SPY": spy_df, "VIX": vix_df}
-                    del g_data
+                        )
 
                 if cache_hit and getattr(prepared, "all_dates", None) is not None and len(prepared.all_dates) > 0:
                     stage_msg.caption("Stage: Validating cached dataset freshness...")
@@ -5103,17 +5374,11 @@ elif mode == "Backtest":
                             quality_report=quality_rebuild,
                         ) or {}
                         _merge_quality(quality_rebuild)
-                        g_data = fetch_data_pack(
-                            ["SPY", "$VIX", "VIX"],
+                        global_data, market_ctx_meta = _load_market_context(
                             days=fetch_days,
                             backtest_mode=False,
                             max_workers=_recommended_fetch_workers(3, cache_only=False),
-                        ) or {}
-                        spy_df = g_data.get("SPY")
-                        vix_df = g_data.get("$VIX")
-                        if vix_df is None:
-                            vix_df = g_data.get("VIX")
-                        global_data = {"SPY": spy_df, "VIX": vix_df}
+                        )
                         prepared = prepare_backtest_data(
                             data,
                             symbol_universe=symbols,
@@ -5400,13 +5665,21 @@ elif mode == "Backtest":
                                     f"`{membership_source}`"
                                 )
                             else:
-                                timeline_msg = (
-                                    "PIT timeline could not be constructed for this run."
-                                )
+                                first_snapshot_dt, last_snapshot_dt, snapshot_count = get_russell3000_pit_timeline_bounds()
+                                timeline_msg = "The Russell 3000 PIT timeline is incomplete for the selected window."
+                                if first_snapshot_dt is not None:
+                                    timeline_msg += (
+                                        f" Verified PIT history starts on `{first_snapshot_dt.isoformat()}`"
+                                    )
+                                    if last_snapshot_dt is not None:
+                                        timeline_msg += (
+                                            f" and currently ends with snapshot `{last_snapshot_dt.isoformat()}`"
+                                        )
+                                    timeline_msg += f" across `{snapshot_count}` snapshots."
                                 if run_requires_pit_membership:
                                     st.error(
-                                        f"{timeline_msg} Verified mode requires complete day-level PIT membership; "
-                                        "run aborted."
+                                        f"{timeline_msg} Choose `Max Verified` or a shorter duration that begins on or "
+                                        "after the PIT start date."
                                     )
                                 else:
                                     st.warning(
@@ -5420,7 +5693,7 @@ elif mode == "Backtest":
                             and bt_universe in ("Russell 3000", "RUSSELL3000")
                             and universe_membership_by_day is None
                         ):
-                            status_text.text("Backtest aborted: missing day-level PIT membership.")
+                            status_text.text("Backtest aborted: selected window exceeds verified Russell 3000 PIT coverage.")
                         else:
                             try:
                                 raw_results = run_backtest(
@@ -5507,6 +5780,10 @@ elif mode == "Backtest":
                 profit_factor_display = diagnostics["profit_factor"]
                 trade_count_display = diagnostics["trade_count"]
                 win_rate_display = diagnostics["win_rate_pct"]
+                avg_winner_dollar_display = diagnostics["avg_winner_dollar"]
+                avg_loser_dollar_display = diagnostics["avg_loser_dollar"]
+                payoff_ratio_display = diagnostics["payoff_ratio"]
+                yearly_summary_df = _build_backtest_yearly_summary_df(res)
 
                 profit_factor_label = "n/a"
                 if profit_factor_display == float("inf"):
@@ -5516,11 +5793,40 @@ elif mode == "Backtest":
 
                 col1, col2, col3, col4, col5 = st.columns(5)
                 col1.metric("CAGR", f"{res.get('cagr', 0):.1%}")
-                col2.metric("Win Rate", f"{win_rate_display:.1f}%")
-                col3.metric("Profit Factor", profit_factor_label)
-                col4.metric("Expectancy ($)", f"${expectancy_dollar_display:,.2f}")
+                col2.metric(
+                    "Win Rate",
+                    f"{win_rate_display:.1f}%",
+                    help="Percent of closed trades with positive dollar PnL. Breakout systems can run lower win rates if winners are much larger than losers.",
+                )
+                col3.metric(
+                    "Profit Factor",
+                    profit_factor_label,
+                    help="Gross dollars won divided by gross dollars lost. A value above 1.0 means the system makes more on winners than it loses on losers.",
+                )
+                col4.metric(
+                    "Avg Profit / Trade",
+                    f"${expectancy_dollar_display:,.2f}",
+                    help="Average closed-trade PnL in dollars. This is the same value many reports call expectancy.",
+                )
                 col5.metric("Total Trades", trade_count_display)
                 st.caption(f"Avg Trade % (unweighted): {avg_trade_pct_display:.2f}%")
+                if trade_count_display > 0:
+                    payoff_label = "n/a"
+                    if payoff_ratio_display == float("inf"):
+                        payoff_label = "∞"
+                    elif payoff_ratio_display is not None and pd.notna(payoff_ratio_display):
+                        payoff_label = f"{float(payoff_ratio_display):.2f}x"
+                    st.caption(
+                        "Expectancy here means average dollar PnL per closed trade. "
+                        f"Avg winner: ${avg_winner_dollar_display:,.2f} | "
+                        f"Avg loser: ${avg_loser_dollar_display:,.2f} | "
+                        f"Winner/loser size ratio: {payoff_label}"
+                    )
+                    if win_rate_display < 40.0 and (payoff_ratio_display or 0.0) > 1.0:
+                        st.info(
+                            "This is a positively skewed breakout profile: it accepts many small losses and depends on a smaller set of large trend winners. "
+                            "That is consistent with Qullamaggie- and Minervini-style swing trading."
+                        )
                 first_trade_date = res.get("first_trade_date")
                 active_cagr = res.get("active_period_cagr")
                 active_days = int(res.get("active_period_days") or 0)
@@ -5679,6 +5985,30 @@ elif mode == "Backtest":
                         _save_backtest_baselines(payload)
                         st.success("Baseline cleared.")
 
+                if not yearly_summary_df.empty:
+                    with st.expander("Year-by-Year Breakdown", expanded=False):
+                        basis = str(yearly_summary_df["TradeCountBasis"].iloc[0] or "closed_trades")
+                        if basis == "closed_trades":
+                            st.caption("Trades Per Year counts closed trades by `ExitDate` in each calendar year.")
+                        else:
+                            st.caption(
+                                "Trades Per Year counts new positions initiated in each calendar year. "
+                                "This fallback is used when the run does not include exit timestamps."
+                            )
+                        yearly_display = yearly_summary_df.drop(columns=["TradeCountBasis"], errors="ignore").copy()
+                        st.dataframe(
+                            yearly_display,
+                            width="stretch",
+                            hide_index=True,
+                            column_config={
+                                "StrategyReturnPct": st.column_config.NumberColumn("Strategy Return %", format="%.2f"),
+                                "MaxDrawdownPct": st.column_config.NumberColumn("Max DD %", format="%.2f"),
+                                "TradesPerYear": st.column_config.NumberColumn("Trades / Year", format="%d"),
+                                "StartEquity": st.column_config.NumberColumn("Start Equity", format="$%.2f"),
+                                "EndEquity": st.column_config.NumberColumn("End Equity", format="$%.2f"),
+                            },
+                        )
+
                 if not df_ec.empty:
                     st.line_chart(df_ec.set_index("Date")["Equity"])
                 elif ec_data:
@@ -5691,18 +6021,21 @@ elif mode == "Backtest":
 
                 if not equity_df.empty:
                     try:
-                        csv_data = equity_df.to_csv(index=False).encode('utf-8')
+                        csv_data = _build_backtest_export_csv_bytes(res)
+                        export_file_name = _timestamped_export_name(f"{safe_name}_backtest.csv")
                         export_meta = _persist_streamlit_bytes(
-                            f"{safe_name}_backtest.csv",
+                            export_file_name,
                             csv_data,
                         )
                         st.download_button(
                             label="📥 Export Result (CSV)",
                             data=csv_data,
-                            file_name=f"{safe_name}_backtest.csv",
+                            file_name=export_file_name,
                             mime="text/csv",
                             key=f"dl_{safe_name}_{i}"  # Ensure 'i' comes from the loop variable
                         )
+                        if not yearly_summary_df.empty:
+                            st.caption("CSV now includes an annual summary section followed by the daily equity curve.")
                         _render_streamlit_export_status(export_meta, key_prefix=f"{safe_name}_{i}")
                     except Exception as e:
                         st.error(f"⚠️ Export failed for {strategy_name}: {e}")
@@ -5786,18 +6119,12 @@ elif mode == "Simulator":
                 inject_live=True,
                 max_lag_days=0,
             )
-            g_data = fetch_data_pack(
-                ["SPY", "$VIX", "VIX"],
+            global_data, market_ctx_meta = _load_market_context(
                 days=600,
                 max_workers=_recommended_fetch_workers(3, cache_only=False),
                 inject_live=True,
                 max_lag_days=0,
-            ) or {}
-            spy_df = g_data.get("SPY")
-            vix_df = g_data.get("$VIX")
-            if vix_df is None:
-                vix_df = g_data.get("VIX")
-            global_data = {"SPY": spy_df, "VIX": vix_df}
+            )
             progress_bar = st.progress(0)
             status_text = st.empty()
 
@@ -6045,11 +6372,12 @@ elif mode == "Simulator":
                         st.dataframe(initial_buys, width="stretch")
                 st.dataframe(history_df.tail(20), width="stretch")
                 csv_data = history_df.to_csv(index=False).encode("utf-8")
-                export_meta = _persist_streamlit_bytes("sim_trade_history.csv", csv_data)
+                export_file_name = _timestamped_export_name("sim_trade_history.csv")
+                export_meta = _persist_streamlit_bytes(export_file_name, csv_data)
                 st.download_button(
                     label="📥 Export Performance Audit (CSV)",
                     data=csv_data,
-                    file_name="sim_trade_history.csv",
+                    file_name=export_file_name,
                     mime="text/csv",
                 )
                 _render_streamlit_export_status(export_meta)

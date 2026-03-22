@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
@@ -33,6 +35,12 @@ def _load_prepared_cache(path: Path):
     return payload
 
 
+def _save_prepared_cache(path: Path, prepared) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as f:
+        pickle.dump({"prepared": prepared}, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
 def _write_out(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2))
@@ -43,6 +51,20 @@ def _prepared_bounds(prepared) -> tuple[str | None, str | None]:
     if all_dates is None or len(all_dates) == 0:
         return None, None
     return str(all_dates[0]), str(all_dates[-1])
+
+
+def _prepared_covers_window(prepared, start_date: str, end_date: str) -> bool:
+    all_dates = getattr(prepared, "all_dates", None)
+    if all_dates is None or len(all_dates) == 0:
+        return False
+    try:
+        loaded_start = pd.Timestamp(all_dates[0]).tz_localize(None)
+        loaded_end = pd.Timestamp(all_dates[-1]).tz_localize(None)
+        need_start = pd.Timestamp(start_date).tz_localize(None)
+        need_end = pd.Timestamp(end_date).tz_localize(None)
+    except Exception:
+        return False
+    return loaded_start <= need_start and loaded_end >= need_end
 
 
 def main() -> int:
@@ -59,6 +81,11 @@ def main() -> int:
         "--prepared-cache",
         default="data/cache_indicators.pkl",
         help="Optional PreparedBacktestData pickle to reuse instead of rebuilding.",
+    )
+    parser.add_argument(
+        "--save-prepared-cache",
+        default=None,
+        help="Optional path to persist a rebuilt prepared cache for later reuse.",
     )
     parser.add_argument(
         "--rebuild-prepared",
@@ -90,8 +117,13 @@ def main() -> int:
     used_prepared_cache = False
     if not args.rebuild_prepared and prepared_cache_path.exists():
         prepared = _load_prepared_cache(prepared_cache_path)
-        used_prepared_cache = True
+        if _prepared_covers_window(prepared, args.start_date, args.end_date):
+            used_prepared_cache = True
+        else:
+            prepared = None
     else:
+        prepared = None
+    if prepared is None:
         data = fetch_data_pack(
             symbols,
             days=args.days,
@@ -104,6 +136,9 @@ def main() -> int:
             start_date=args.start_date,
             global_data=global_data,
         )
+        save_cache_path = args.save_prepared_cache
+        if save_cache_path:
+            _save_prepared_cache(Path(save_cache_path), prepared)
 
     rows: list[dict[str, Any]] = []
     loaded_start, loaded_end = _prepared_bounds(prepared)

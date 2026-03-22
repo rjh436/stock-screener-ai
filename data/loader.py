@@ -23,6 +23,11 @@ _MISS_CACHE_DIR = os.path.join("data", "cache", "_miss")
 _SYMBOL_ALIAS_CACHE: Optional[Dict[str, List[str]]] = None
 _SYMBOL_ALIAS_LOCK = threading.Lock()
 _FALLBACK_HTTP = requests.Session() if requests is not None else None
+_SPECIAL_SYMBOL_ALIASES: Dict[str, List[str]] = {
+    "^VIX": ["$VIX", "VIX"],
+    "$VIX": ["^VIX", "VIX"],
+    "VIX": ["^VIX", "$VIX"],
+}
 
 
 def _truthy_env(name: str, default: bool = False) -> bool:
@@ -115,6 +120,9 @@ def _symbol_aliases(sym: str) -> List[str]:
         if v not in aliases:
             aliases.append(v)
 
+    for mapped in _SPECIAL_SYMBOL_ALIASES.get(s, []):
+        _add(mapped)
+
     for mapped in _load_symbol_aliases().get(s, []):
         _add(mapped)
 
@@ -127,6 +135,21 @@ def _symbol_aliases(sym: str) -> List[str]:
     _add(s.replace("-", "."))
     _add(s.replace(".", "").replace("/", "").replace("-", ""))
     return aliases
+
+
+def _has_cached_alias_file(symbol: str, cache_dir: str) -> bool:
+    for alias in _symbol_aliases(symbol):
+        if os.path.exists(os.path.join(cache_dir, f"{alias}.parquet")):
+            return True
+        if os.path.exists(os.path.join(cache_dir, f"{alias}.csv")):
+            return True
+    return False
+
+
+def _clear_missing_symbol_family(sym: str) -> None:
+    for alias in _symbol_aliases(sym):
+        for scope in ("base", "schwab", "fallback"):
+            _clear_missing_symbol(alias, scope=scope)
 
 
 def _missing_symbol_path(sym: str, *, scope: str = "base") -> str:
@@ -664,49 +687,59 @@ def fetch_single_symbol(
     symbol = str(sym or "").strip().upper()
     if not symbol:
         return None
+    cache_candidates = _symbol_aliases(symbol)
 
     required_start = _required_history_start(days)
     recent_primary_miss = _is_recent_missing_symbol(symbol) or _is_recent_missing_symbol(symbol, scope="schwab")
     recent_fallback_miss = _is_recent_missing_symbol(symbol, scope="fallback")
+    has_alias_cache = _has_cached_alias_file(symbol, cache_dir)
     if (
         not force_fresh
         and not cache_only
-        and not os.path.exists(os.path.join(cache_dir, f"{symbol}.parquet"))
+        and not has_alias_cache
         and recent_primary_miss
         and (not _fallback_enabled() or recent_fallback_miss)
     ):
         return None
 
     # Legacy CSV cache compatibility.
-    cache_path = os.path.join(cache_dir, f"{symbol}.csv")
-    if not force_fresh and os.path.exists(cache_path):
-        try:
-            if (time.time() - os.path.getmtime(cache_path)) < 43200:
-                df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
-                df = clean_dataframe(df)
-                if cache_only or _has_required_history(df, required_start):
-                    return df
-        except Exception:
-            pass
+    if not force_fresh:
+        for cache_symbol in cache_candidates:
+            cache_path = os.path.join(cache_dir, f"{cache_symbol}.csv")
+            if not os.path.exists(cache_path):
+                continue
+            try:
+                if (time.time() - os.path.getmtime(cache_path)) < 43200:
+                    df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+                    df = clean_dataframe(df)
+                    if cache_only or _has_required_history(df, required_start):
+                        return df
+            except Exception:
+                continue
 
     # Prefer very fresh parquet cache for hot reruns.
-    try:
-        cache_path = os.path.join(cache_dir, f"{symbol}.parquet")
-        if not force_fresh and os.path.exists(cache_path):
-            mtime = os.path.getmtime(cache_path)
-            if (time.time() - mtime) < 43200:
-                df = pd.read_parquet(cache_path)
-                df = clean_dataframe(df)
-                if cache_only or _has_required_history(df, required_start):
-                    return df
-    except Exception:
-        pass
+    if not force_fresh:
+        for cache_symbol in cache_candidates:
+            try:
+                cache_path = os.path.join(cache_dir, f"{cache_symbol}.parquet")
+                if not os.path.exists(cache_path):
+                    continue
+                mtime = os.path.getmtime(cache_path)
+                if (time.time() - mtime) < 43200:
+                    df = pd.read_parquet(cache_path)
+                    df = clean_dataframe(df)
+                    if cache_only or _has_required_history(df, required_start):
+                        return df
+            except Exception:
+                continue
 
     if cache_only:
-        try:
-            df = DataCache.get_cached_data(symbol, allow_stale=True, validate=False)
-            df = clean_dataframe(df)
-            if df is not None and not df.empty:
+        for cache_symbol in cache_candidates:
+            try:
+                df = DataCache.get_cached_data(cache_symbol, allow_stale=True, validate=False)
+                df = clean_dataframe(df)
+                if df is None or df.empty:
+                    continue
                 first_date = df.index.min()
                 if first_date > (required_start + timedelta(days=30)):
                     print(
@@ -719,9 +752,9 @@ def fetch_single_symbol(
                 if df.index.tz is not None:
                     df.index = df.index.tz_localize(None)
                 return df[df.index >= required_start]
-        except Exception as e:
-            print(f"❌ Cache read error ({symbol}): {e}")
-            df = None
+            except Exception as e:
+                print(f"❌ Cache read error ({cache_symbol} -> {symbol}): {e}")
+                continue
 
     if max_lag_days is None:
         if inject_live or force_fresh or require_fresh:
@@ -738,8 +771,13 @@ def fetch_single_symbol(
 
     # Keep stale cache available so we can incrementally refresh instead of discarding
     # a full 5-year history (which dramatically increases API load and rate-limits).
-    df = DataCache.get_cached_data(symbol, allow_stale=True)
-    df = clean_dataframe(df)
+    df = None
+    for cache_symbol in cache_candidates:
+        candidate = DataCache.get_cached_data(cache_symbol, allow_stale=True)
+        candidate = clean_dataframe(candidate)
+        if candidate is not None and not candidate.empty:
+            df = candidate
+            break
 
     start_naive = required_start
 
@@ -784,9 +822,7 @@ def fetch_single_symbol(
             else:
                 df = df_new
             DataCache.save_to_cache(symbol, df)
-            _clear_missing_symbol(symbol)
-            _clear_missing_symbol(symbol, scope="schwab")
-            _clear_missing_symbol(symbol, scope="fallback")
+            _clear_missing_symbol_family(symbol)
     elif not cache_only and (df is None or df.empty):
         _mark_missing_symbol(symbol)
         _mark_missing_symbol(symbol, scope="schwab")
@@ -807,7 +843,12 @@ def fetch_single_symbol(
     can_try_fallback = (
         not cache_only
         and _fallback_enabled()
-        and (force_fresh or not _is_recent_missing_symbol(symbol, scope="fallback"))
+        and (
+            force_fresh
+            or require_fresh
+            or has_alias_cache
+            or not _is_recent_missing_symbol(symbol, scope="fallback")
+        )
     )
     if needs_backfill and can_try_fallback:
         fb_df, fb_source = _fetch_fallback_history(symbol, start=start, end=end)
@@ -820,9 +861,7 @@ def fetch_single_symbol(
                 df = fb_df
             if df is not None and not df.empty:
                 DataCache.save_to_cache(symbol, df)
-                _clear_missing_symbol(symbol)
-                _clear_missing_symbol(symbol, scope="schwab")
-                _clear_missing_symbol(symbol, scope="fallback")
+                _clear_missing_symbol_family(symbol)
                 _note_source_hit(f"fallback_{fb_source}")
         else:
             _mark_missing_symbol(symbol, scope="fallback")
