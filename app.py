@@ -871,8 +871,146 @@ def _build_backtest_yearly_summary_df(res: Mapping[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _build_backtest_trade_ledger_df(res: Mapping[str, Any]) -> pd.DataFrame:
+    """Build a closed/open trade ledger from the engine's entry and exit events."""
+    entry_rows = list((res or {}).get("entries_list", []) or [])
+    exit_rows = list((res or {}).get("trades_list", []) or [])
+    if not entry_rows and not exit_rows:
+        return pd.DataFrame()
+
+    def _event_date(value: Any) -> Any:
+        ts = _normalize_calendar_date(value)
+        if pd.isna(ts):
+            return None
+        return ts.date().isoformat()
+
+    def _safe_num(value: Any, default: float = 0.0) -> float:
+        try:
+            out = float(value)
+        except Exception:
+            return default
+        if pd.isna(out):
+            return default
+        return out
+
+    open_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+    for idx, raw_entry in enumerate(entry_rows, start=1):
+        entry = dict(raw_entry or {})
+        symbol = str(entry.get("Symbol") or "").upper()
+        if not symbol:
+            continue
+        entry["_ledger_id"] = idx
+        entry["_remaining_shares"] = int(_safe_num(entry.get("Shares"), 0.0))
+        open_by_symbol.setdefault(symbol, []).append(entry)
+
+    ledger_rows: List[Dict[str, Any]] = []
+    for raw_exit in exit_rows:
+        exit_event = dict(raw_exit or {})
+        reason = str(exit_event.get("Reason") or "")
+        symbol = str(exit_event.get("Symbol") or "").upper()
+        exit_shares = int(_safe_num(exit_event.get("Shares"), 0.0))
+
+        matched_entry: Dict[str, Any] = {}
+        if symbol and reason != "PYRAMID_ADD":
+            queue = open_by_symbol.get(symbol, [])
+            while queue and int(_safe_num(queue[0].get("_remaining_shares"), 0.0)) <= 0:
+                queue.pop(0)
+            if queue:
+                matched_entry = queue[0]
+                remaining = int(_safe_num(matched_entry.get("_remaining_shares"), 0.0))
+                if exit_shares > 0:
+                    matched_entry["_remaining_shares"] = max(0, remaining - exit_shares)
+                else:
+                    matched_entry["_remaining_shares"] = 0
+
+        entry_price = _safe_num(exit_event.get("Entry"), _safe_num(matched_entry.get("Entry"), 0.0))
+        exit_price = _safe_num(exit_event.get("Exit"), 0.0)
+        pnl = _safe_num(exit_event.get("PnL"), 0.0)
+        return_pct = _safe_num(exit_event.get("Return %"), 0.0)
+        fees = _safe_num(exit_event.get("Fees"), 0.0)
+        entry_date = _event_date(matched_entry.get("EntryDate"))
+        exit_date = _event_date(exit_event.get("ExitDate"))
+        days_held = None
+        try:
+            if entry_date and exit_date:
+                days_held = int((pd.Timestamp(exit_date) - pd.Timestamp(entry_date)).days)
+        except Exception:
+            days_held = None
+
+        ledger_rows.append(
+            {
+                "TradeID": matched_entry.get("_ledger_id"),
+                "Symbol": symbol,
+                "Status": "ADD" if reason == "PYRAMID_ADD" else "CLOSED",
+                "EntryDate": entry_date,
+                "ExitDate": exit_date,
+                "DaysHeld": days_held,
+                "EntryPrice": entry_price,
+                "ExitPrice": exit_price,
+                "Shares": exit_shares,
+                "EntryType": matched_entry.get("EntryType"),
+                "Sleeve": matched_entry.get("Sleeve"),
+                "Score": matched_entry.get("Score"),
+                "EntryGateMode": exit_event.get("EntryGateMode") or matched_entry.get("EntryGateMode"),
+                "ExitReason": reason,
+                "PnL": pnl,
+                "ReturnPct": return_pct,
+                "Fees": fees,
+            }
+        )
+
+    for symbol, queue in open_by_symbol.items():
+        for entry in queue:
+            remaining = int(_safe_num(entry.get("_remaining_shares"), 0.0))
+            if remaining <= 0:
+                continue
+            ledger_rows.append(
+                {
+                    "TradeID": entry.get("_ledger_id"),
+                    "Symbol": symbol,
+                    "Status": "OPEN",
+                    "EntryDate": _event_date(entry.get("EntryDate")),
+                    "ExitDate": None,
+                    "DaysHeld": None,
+                    "EntryPrice": _safe_num(entry.get("Entry"), 0.0),
+                    "ExitPrice": None,
+                    "Shares": remaining,
+                    "EntryType": entry.get("EntryType"),
+                    "Sleeve": entry.get("Sleeve"),
+                    "Score": entry.get("Score"),
+                    "EntryGateMode": entry.get("EntryGateMode"),
+                    "ExitReason": "OPEN",
+                    "PnL": None,
+                    "ReturnPct": None,
+                    "Fees": _safe_num(entry.get("Fees"), 0.0),
+                }
+            )
+
+    columns = [
+        "TradeID",
+        "Symbol",
+        "Status",
+        "EntryDate",
+        "ExitDate",
+        "DaysHeld",
+        "EntryPrice",
+        "ExitPrice",
+        "Shares",
+        "EntryType",
+        "Sleeve",
+        "Score",
+        "EntryGateMode",
+        "ExitReason",
+        "PnL",
+        "ReturnPct",
+        "Fees",
+    ]
+    return pd.DataFrame(ledger_rows).reindex(columns=columns)
+
+
 def _build_backtest_export_csv_bytes(res: Mapping[str, Any]) -> bytes:
     yearly_df = _build_backtest_yearly_summary_df(res)
+    ledger_df = _build_backtest_trade_ledger_df(res)
     equity_df = normalize_equity_curve_df((res or {}).get("equity_curve", []))
 
     export_frames: List[pd.DataFrame] = []
@@ -880,6 +1018,12 @@ def _build_backtest_export_csv_bytes(res: Mapping[str, Any]) -> bytes:
         yearly_block = yearly_df.copy()
         yearly_block.insert(0, "Section", "ANNUAL_SUMMARY")
         export_frames.append(yearly_block)
+        export_frames.append(pd.DataFrame([{"Section": ""}]))
+
+    if not ledger_df.empty:
+        ledger_block = ledger_df.copy()
+        ledger_block.insert(0, "Section", "TRADE_LEDGER")
+        export_frames.append(ledger_block)
         export_frames.append(pd.DataFrame([{"Section": ""}]))
 
     if not equity_df.empty:
@@ -4440,7 +4584,7 @@ if mode == "Live Screener":
                         for strat in strat_objects:
                             s_conf = strat.params or {}
                             entry_signal = strat.entry(df_ind, signal_i)
-                            entry_ok = bool(entry_signal)
+                            setup_ok = bool(entry_signal)
 
                             prev_close = row_signal.get("close", 0.0) or 0.0
                             open_px = row_current.get("open", row_current.get("close", 0.0)) or 0.0
@@ -4457,24 +4601,34 @@ if mode == "Live Screener":
                             if limit_ratio is None:
                                 limit_ratio = s_conf.get("limit_ratio")
 
+                            signal_mode = str(s_conf.get("signal_mode", "after_close") or "after_close").lower()
+                            has_next_bar = current_i > signal_i
+                            pending_after_close = setup_ok and signal_mode == "after_close" and not has_next_bar
                             filled = False
                             entry_px = open_px or row_current.get("close", 0.0)
                             try:
                                 trigger_val = float(trigger_px) if trigger_px is not None else float("nan")
                             except Exception:
                                 trigger_val = float("nan")
-                            if trigger_val == trigger_val and trigger_val > 0:
-                                filled, entry_px = compute_stop_fill(
-                                    open_px,
-                                    high_px,
-                                    trigger_val,
-                                    stop_limit_pct,
-                                )
+                            if pending_after_close:
+                                # A fresh after-close signal has no next-session bar yet. Treat it as a
+                                # queueable setup and show the actual stop/limit trigger instead of trying
+                                # to prove a fill on the signal bar.
+                                filled = True
+                                entry_px = trigger_val if trigger_val == trigger_val and trigger_val > 0 else prev_close
                             else:
-                                filled, entry_px = compute_limit_fill(prev_close, open_px, low_px, limit_ratio)
+                                if trigger_val == trigger_val and trigger_val > 0:
+                                    filled, entry_px = compute_stop_fill(
+                                        open_px,
+                                        high_px,
+                                        trigger_val,
+                                        stop_limit_pct,
+                                    )
+                                else:
+                                    filled, entry_px = compute_limit_fill(prev_close, open_px, low_px, limit_ratio)
                             if not (entry_px and entry_px == entry_px):
                                 entry_px = open_px or row_current.get("close", 0.0)
-                            entry_ok = entry_ok and filled and entry_px > 0
+                            entry_ok = setup_ok and filled and entry_px > 0
 
                             signal_atr = row_signal.get("atr14", prev_close * 0.02)
                             if not (signal_atr and signal_atr == signal_atr):
@@ -4506,6 +4660,10 @@ if mode == "Live Screener":
                                 weights,
                             )
                             score = apply_strategy_score_multipliers(raw_score, s_conf)
+                            try:
+                                min_entry_score = float(s_conf.get("min_entry_score", MIN_ENTRY_SCORE))
+                            except Exception:
+                                min_entry_score = float(MIN_ENTRY_SCORE)
 
                             exits = s_conf.get("exit_rules", [])
                             target_txt = (
@@ -4518,12 +4676,20 @@ if mode == "Live Screener":
                                 {
                                     "Symbol": sym,
                                     "Strategy": s_conf.get("name", strat.name),
+                                    "SignalDate": str(pd.Timestamp(row_signal.name).date()),
+                                    "OrderType": (
+                                        "QUEUE_NEXT_SESSION"
+                                        if pending_after_close
+                                        else ("FILLED_OR_TRIGGERED" if filled else "WAIT_FOR_TRIGGER")
+                                    ),
+                                    "TriggerPx": trigger_val if trigger_val == trigger_val and trigger_val > 0 else None,
                                     "Price": row_current["close"],
                                     "EntryPx": entry_px,
                                     "RSI2": row_current.get("rsi2"),
                                     "Stop Loss": stop_price,
                                     "Target": target_txt,
                                     "Score": score,
+                                    "MinEntryScore": min_entry_score,
                                     "Entry_OK": entry_ok,
                                 }
                             )
@@ -4580,7 +4746,9 @@ if mode == "Live Screener":
                 for row in results:
                     sym = row.get("Symbol")
                     score_val = row.get("Score", 0.0) or 0.0
+                    min_score_val = row.get("MinEntryScore", MIN_ENTRY_SCORE) or MIN_ENTRY_SCORE
                     entry_ok = bool(row.pop("Entry_OK", False))
+                    order_type = str(row.get("OrderType") or "")
                     rsi2_val = row.pop("RSI2", None)
                     rsi2_num = None
                     try:
@@ -4597,12 +4765,12 @@ if mode == "Live Screener":
                             status_txt = "⚠️ WAIT: RSI2 High"
                         else:
                             status_txt = "⚠️ WAIT: Pattern Incomplete"
-                    elif score_val < MIN_ENTRY_SCORE:
-                        status_txt = f"⚠️ SKIP: Low Score ({score_val:.1f})"
+                    elif score_val < min_score_val:
+                        status_txt = f"⚠️ SKIP: Low Score ({score_val:.1f} < {min_score_val:.1f})"
                     elif slots_remaining <= 0:
                         status_txt = "⚠️ REJECTED: Slots Full"
                     else:
-                        status_txt = "✅ TRADABLE"
+                        status_txt = "✅ TRADABLE: Queue Order" if order_type == "QUEUE_NEXT_SESSION" else "✅ TRADABLE"
                         slots_remaining -= 1
                     row["Status"] = status_txt
             st.session_state.scan_results = pd.DataFrame(results)
@@ -4638,9 +4806,14 @@ if mode == "Live Screener":
 
             # Bucket 1: Alpha Targets (Strictly Tradable)
             # Used for the Left Panel ("Buy Now")
+            min_score_series = pd.to_numeric(
+                df.get("MinEntryScore", pd.Series(MIN_ENTRY_SCORE, index=df.index)),
+                errors="coerce",
+            ).fillna(float(MIN_ENTRY_SCORE))
+            score_series = pd.to_numeric(df.get("Score", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0.0)
             targets = df[
                 (df["Status"].str.contains("✅ TRADABLE", na=False)) &
-                (df["Score"] >= MIN_ENTRY_SCORE)
+                (score_series >= min_score_series)
             ].sort_values("Score", ascending=False).head(15)
 
             # Bucket 2: Swap Pool (Tradable OR Blocked by Slots)
@@ -4651,7 +4824,7 @@ if mode == "Live Screener":
                     df["Status"].str.contains("✅ TRADABLE", na=False) |
                     df["Status"].str.contains("REJECTED: Slots Full", na=False)
                 ) &
-                (df["Score"] >= MIN_ENTRY_SCORE)
+                (score_series >= min_score_series)
             ].sort_values("Score", ascending=False)
 
             # Bucket 3: Watchtower
@@ -4762,7 +4935,21 @@ if mode == "Live Screener":
                 st.subheader("🎯 Alpha Targets")
                 if not targets.empty:
                     st.dataframe(
-                        targets[["Symbol", "Strategy", "Score", "Price", "Stop Loss", "Target"]],
+                        targets[
+                            [
+                                "Symbol",
+                                "Strategy",
+                                "SignalDate",
+                                "OrderType",
+                                "TriggerPx",
+                                "Score",
+                                "MinEntryScore",
+                                "Price",
+                                "EntryPx",
+                                "Stop Loss",
+                                "Target",
+                            ]
+                        ],
                         width="stretch",
                         hide_index=True
                     )
@@ -6035,7 +6222,9 @@ elif mode == "Backtest":
                             key=f"dl_{safe_name}_{i}"  # Ensure 'i' comes from the loop variable
                         )
                         if not yearly_summary_df.empty:
-                            st.caption("CSV now includes an annual summary section followed by the daily equity curve.")
+                            st.caption(
+                                "CSV includes annual summary, trade ledger, and daily equity sections."
+                            )
                         _render_streamlit_export_status(export_meta, key_prefix=f"{safe_name}_{i}")
                     except Exception as e:
                         st.error(f"⚠️ Export failed for {strategy_name}: {e}")
